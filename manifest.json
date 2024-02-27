@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "fit",
+	"name": "Fit",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "File gIT - a barebone git system for files in obsidian",
+	"author": "joshuakto",
+	"authorUrl": "https://github.com/joshuakto",
+	"fundingUrl": "https://www.buymeacoffee.com/joshuakto",
 	"isDesktopOnly": false
 }
