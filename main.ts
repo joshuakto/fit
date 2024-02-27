@@ -1,25 +1,109 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-
+import { Add } from 'src/add';
+import { Commit } from 'src/commit';
+import { Fit } from 'src/fit';
 // Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
-	mySetting: string;
+export interface MyPluginSettings {
+	pat: string;
+	owner: string;
+	repo: string;
+	branch: string;
+	deviceName: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+	pat: "<Personal-Access-Token>",
+	owner: "<Github-Username>",
+	repo: "<Repository-Name>",
+	branch: "main",
+	deviceName: ""
 }
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
-
+	fit: Fit;
+	commit = new Commit("Hello")
+	add = new Add(this.app.vault.adapter)
+	
 	async onload() {
 		await this.loadSettings();
+		this.fit = new Fit("testRepo", this.settings)
 
 		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
+		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', async (evt: MouseEvent) => {
+			if (this.settings.pat === "<Personal-Access-Token>") {
+				new Notice("Please provide git personal access tokens in Fit settings and try again.")
+				return
+			}
+			if (this.settings.owner === "<Github-Username>") {
+				new Notice("Please provide git repo owner in Fit settings and try again.")
+				return
+			}
+			if (this.settings.repo === "<Repository-Name>") {
+				this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
+			}
+			// const fileExist = await this.add.stageFile('mountFuji.jpeg')
+			// new Notice(this.settings.pat);
+			// new Notice(String(this.fit.auth));
+			// const gitAuth = await this.fit.octokit.rest.users.getAuthenticated();
 			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+			// new Notice(this.commit.id)
+			// new Notice(String(fileExist))
+			// new Notice(String(gitAuth.data.id))
+			// const repos = await this.fit.octokit.rest.repos.get(
+			// 	{owner: 'joshuakto', repo: 'life-vault'}
+			// )
+			// new Notice(String(repos.data.commits_url))
+			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
+			const latestCommit = await this.fit.octokit.rest.git.getRef({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				ref: `heads/${this.settings.branch}`
+			})
+			const latestCommitSha = latestCommit.data.object.sha;
+			const latestCommitData = await this.fit.octokit.rest.git.getCommit({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				commit_sha: latestCommitSha
+			})
+			const files = this.app.vault.getFiles()
+			const content = await this.app.vault.adapter.read(files[0].path)
+			const blob = await this.fit.octokit.rest.git.createBlob({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				content,
+				encoding: 'utf-8',
+			})
+			const tree = [{
+				path: files[0].path,
+				mode: `100644`,
+				type: `blob`,
+				sha: blob.data.sha
+			}]
+			const newTree = await this.fit.octokit.rest.git.createTree({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				tree: tree as any,
+				base_tree: latestCommitData.data.tree.sha
+			})
+			const message = `Commit from ${this.settings.deviceName} on ${new Date().toLocaleString()}`
+			const newCommit = await this.fit.octokit.rest.git.createCommit({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				message,
+				tree: newTree.data.sha,
+				parents: [latestCommitSha]
+			})
+			const updatedRef = await this.fit.octokit.rest.git.updateRef({
+				owner: this.settings.owner,
+				repo: this.settings.repo,
+				ref: `heads/${this.settings.branch}`,
+				sha: newCommit.data.sha
+			})
+			console.log(updatedRef.data.url)
+			new Notice(`Successful pushed to ${this.settings.repo} (${message})`)
 		});
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
@@ -121,14 +205,56 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('Github Personal Access Token')
+			.setDesc('Remember to give it the appropriate access for reading and writing to the storage repo.')
 			.addText(text => text
 				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setValue(this.plugin.settings.pat)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.pat = value;
 					await this.plugin.saveSettings();
 				}));
+		new Setting(containerEl)
+			.setName('Github Username')
+			.setDesc('Your Github handle.')
+			.addText(text => text
+				.setPlaceholder('Enter your username')
+				.setValue(this.plugin.settings.owner)
+				.onChange(async (value) => {
+					this.plugin.settings.owner = value;
+					await this.plugin.saveSettings();
+				}));
+		new Setting(containerEl)
+			.setName('Github Repository Name')
+			.setDesc('The repo you dedicate to tracking this vault.')
+			.addText(text => text
+				.setPlaceholder('Enter your repository name')
+				.setValue(this.plugin.settings.repo)
+				.onChange(async (value) => {
+					this.plugin.settings.repo = value;
+					await this.plugin.saveSettings();
+				}));
+		new Setting(containerEl)
+			.setName('Branch Name')
+			.setDesc('The branch name you set to push to (default to main)')
+			.addText(text => text
+				.setPlaceholder('Enter the branch name')
+				.setValue(this.plugin.settings.branch)
+				.onChange(async (value) => {
+					this.plugin.settings.branch = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Device Name')
+			.setDesc('The name of this device, used to decorate commit message')
+			.addText(text => text
+				.setPlaceholder('Enter device name')
+				.setValue(this.plugin.settings.deviceName)
+				.onChange(async (value) => {
+					this.plugin.settings.deviceName = value;
+					await this.plugin.saveSettings();
+				}));
+
 	}
 }
