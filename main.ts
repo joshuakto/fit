@@ -20,18 +20,41 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	deviceName: ""
 }
 
+
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 	fit: Fit;
 	commit = new Commit("Hello")
 	add = new Add(this.app.vault.adapter)
 	
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	async createTreeNodeFromFile(filepath: string): Promise<any> {
+		// temp function of stageFile: check if file exists in vault data adapter
+		const fileExists = this.add.stageFile(filepath)
+		if (!fileExists) {
+			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
+		}
+		const content = await this.app.vault.adapter.read(filepath)
+		const encoding = 'utf-8'
+		const blob = await this.fit.octokit.rest.git.createBlob({
+			owner: this.settings.owner,
+			repo: this.settings.repo,
+			content, encoding
+		})
+		return {
+			path: filepath,
+			mode: '100644',
+			type: 'blob',
+			sha: blob.data.sha
+		}
+	}
+
 	async onload() {
 		await this.loadSettings();
 		this.fit = new Fit("testRepo", this.settings)
 
 		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', async (evt: MouseEvent) => {
+		const ribbonIconEl = this.addRibbonIcon('github', 'Fit', async (evt: MouseEvent) => {
 			if (this.settings.pat === "<Personal-Access-Token>") {
 				new Notice("Please provide git personal access tokens in Fit settings and try again.")
 				return
@@ -43,62 +66,36 @@ export default class MyPlugin extends Plugin {
 			if (this.settings.repo === "<Repository-Name>") {
 				this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
 			}
-			// const fileExist = await this.add.stageFile('mountFuji.jpeg')
-			// new Notice(this.settings.pat);
-			// new Notice(String(this.fit.auth));
-			// const gitAuth = await this.fit.octokit.rest.users.getAuthenticated();
-			// Called when the user clicks the icon.
-			// new Notice(this.commit.id)
-			// new Notice(String(fileExist))
-			// new Notice(String(gitAuth.data.id))
-			// const repos = await this.fit.octokit.rest.repos.get(
-			// 	{owner: 'joshuakto', repo: 'life-vault'}
-			// )
-			// new Notice(String(repos.data.commits_url))
+			const owner = this.settings.owner
+			const repo = this.settings.repo
 			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
 			const latestCommit = await this.fit.octokit.rest.git.getRef({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
+				owner, repo,
 				ref: `heads/${this.settings.branch}`
 			})
 			const latestCommitSha = latestCommit.data.object.sha;
 			const latestCommitData = await this.fit.octokit.rest.git.getCommit({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
+				owner, repo,
 				commit_sha: latestCommitSha
 			})
+
 			const files = this.app.vault.getFiles()
-			const content = await this.app.vault.adapter.read(files[0].path)
-			const blob = await this.fit.octokit.rest.git.createBlob({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
-				content,
-				encoding: 'utf-8',
-			})
-			const tree = [{
-				path: files[0].path,
-				mode: `100644`,
-				type: `blob`,
-				sha: blob.data.sha
-			}]
+			const treeNodes = await Promise.all(files.map((f) => {
+				return this.createTreeNodeFromFile(f.path)
+			}))
 			const newTree = await this.fit.octokit.rest.git.createTree({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				tree: tree as any,
+				owner, repo,
+				tree: treeNodes,
 				base_tree: latestCommitData.data.tree.sha
 			})
 			const message = `Commit from ${this.settings.deviceName} on ${new Date().toLocaleString()}`
 			const newCommit = await this.fit.octokit.rest.git.createCommit({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
-				message,
+				owner, repo, message,
 				tree: newTree.data.sha,
 				parents: [latestCommitSha]
 			})
 			const updatedRef = await this.fit.octokit.rest.git.updateRef({
-				owner: this.settings.owner,
-				repo: this.settings.repo,
+				owner, repo,
 				ref: `heads/${this.settings.branch}`,
 				sha: newCommit.data.sha
 			})
