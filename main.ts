@@ -1,4 +1,5 @@
 import { RestEndpointMethodTypes } from '@octokit/plugin-rest-endpoint-methods';
+import { warn } from 'console';
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import { Add } from 'src/add';
 import { Fit } from 'src/fit';
@@ -97,18 +98,19 @@ export default class MyPlugin extends Plugin {
 		return true
 	}
 
-	compareSha(remoteSha: {[k:string]:string}, lastFetchedRemoteSha: {[k:string]:string}): Array<{path: string, status: 'added' | 'removed' | 'changed'}> {
-		const allPaths = Array.from(new Set([...Object.keys(remoteSha), ...Object.keys(lastFetchedRemoteSha)]));
+	// compare currentSha with storedSha and check for differences, files only in currentSha are considerd added, while files only in storedSha are considered removed
+	compareSha(currentSha: {[k:string]:string}, storedSha: {[k:string]:string}): Array<{path: string, status: 'added' | 'removed' | 'changed'}> {
+		const allPaths = Array.from(new Set([...Object.keys(currentSha), ...Object.keys(storedSha)]));
 	
 		return allPaths.reduce<{path: string, status: 'added' | 'removed' | 'changed'}[]>((changes, path) => {
-			const inRemote = path in remoteSha;
-			const inLastFetched = path in lastFetchedRemoteSha;
+			const inCurrent = path in currentSha;
+			const inStored = path in storedSha;
 	
-			if (inRemote && !inLastFetched) {
+			if (inCurrent && !inStored) {
 				changes.push({ path, status: 'added' });
-			} else if (!inRemote && inLastFetched) {
+			} else if (!inCurrent && inStored) {
 				changes.push({ path, status: 'removed' });
-			} else if (inRemote && inLastFetched && remoteSha[path] !== lastFetchedRemoteSha[path]) {
+			} else if (inCurrent && inStored && currentSha[path] !== storedSha[path]) {
 				changes.push({ path, status: 'changed' });
 			}
 			// Unchanged files are implicitly handled by not adding them to the changes array
@@ -126,7 +128,6 @@ export default class MyPlugin extends Plugin {
 			if (!this.checkSettingsConfigured()) {
 				return
 			}
-			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
 			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
 			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
 			const pluginLocalStore = await this.loadData()
@@ -148,7 +149,6 @@ export default class MyPlugin extends Plugin {
 				return null
 			}).filter(entry => entry!==null) as [string, string][])
 			
-			// TODO checked for changed files by iterating and comparing the remote sha
 			let addToLocal: Record<string, string> = {};
 			let deleteFromLocal: Array<string> = [];
 			// if lastFetchedRemoteSha is not in local store yet, update every file
@@ -175,14 +175,6 @@ export default class MyPlugin extends Plugin {
 			}
 
 			// Update changed files locally TODO: need to check if there are clashing local changes, if so, prompt above for user confirmation before proceeding
-			// const remoteBlob = await this.fit.octokit.rest.git.getBlob({
-			// 	owner: this.fit.owner,
-			// 	repo: this.fit.repo,
-			// 	file_sha: remoteSha['test.md']
-			// })
-			// const decodedContent = atob(remoteBlob.data.content);
-			// this.app.vault.create('test.md', decodedContent)
-			// this.app.vault.modify()
 			const filewriting = Object.entries(addToLocal).map(async entry=>{
 				const path = entry[0]
 				const content = entry[1]
@@ -204,7 +196,9 @@ export default class MyPlugin extends Plugin {
 			}).filter(Boolean) as Promise<{path: string, type: string}>[]
 			const fileOps = await Promise.all([...filewriting, ...deletion])
 			pluginLocalStore.lastFetchedCommitSha = latestRemoteCommitSha
-			this.saveData({...pluginLocalStore, lastFetchedRemoteSha: {...remoteSha}})
+			pluginLocalStore.lastFetchedRemoteSha = remoteSha
+			pluginLocalStore.localSha = await this.computeLocalSha()
+			this.saveData(pluginLocalStore)
 			fileOps.map(op=> new Notice(`${op.path} ${op.type} completed.`))
 		});
 
@@ -230,28 +224,45 @@ export default class MyPlugin extends Plugin {
 			const localSha = await this.computeLocalSha()
 
 			let changedFiles: Array<{path: string, type: string, extension?: string}>;
-			if (pluginLocalStore.localSha) {
-				changedFiles = files.flatMap((f: TFile) => {
-					if (!(Object.keys(pluginLocalStore.localSha).includes(f.path))) {
-						return { path: f.path, type: 'created', extension: f.extension };
-					} else if (localSha[f.path] !== pluginLocalStore.localSha[f.path]) {
-						return { path: f.path, type: 'changed', extension: f.extension };
-					}
-					return []
-				});
-			} else {
-				// mark all files as changed if no local sha for previous commit is found
+			// mark all files as changed if local sha for previous commit is not found
+			if (!pluginLocalStore.localSha) {
 				changedFiles = files.map(f=> {return {
 					path: f.path, type: 'changed', extension: f.extension}})
+				// changedFiles = files.flatMap((f: TFile) => {
+				// 	if (!(Object.keys(pluginLocalStore.localSha).includes(f.path))) {
+				// 		return { path: f.path, type: 'created', extension: f.extension };
+				// 	} else if (localSha[f.path] !== pluginLocalStore.localSha[f.path]) {
+				// 		return { path: f.path, type: 'changed', extension: f.extension };
+				// 	}
+				// 	return []
+				// });
+			} else {
+				const localChanges = this.compareSha(localSha, pluginLocalStore.localSha)
+				changedFiles = localChanges.flatMap(change=>{
+					if (change.status == "removed") {
+						return {path: change.path, type: 'deleted'}
+					} else {
+						const file = this.app.vault.getFileByPath(change.path)
+						if (!file) {
+							warn(`${file} included in local changes (added/modified) but not found`)
+							return []
+						}
+						if (change.status == "added") {
+							return {path: change.path, type: 'created', extension: file.extension}
+						} else {
+							return {path: change.path, type: 'changed', extension: file.extension}
+						}
+					}
+				})
 			}
-			const { data: latestRemoteTree } = await this.fit.getTree(latestRemoteCommitSha)
-			const removedFiles:Array<{path: string, type: string}>  = latestRemoteTree.tree.flatMap(node=> {
-				if(!(node.type == "tree") && node.path && !Object.keys(localSha).includes(node.path)) {
-					return {path: node.path, type: 'deleted'}
-				}
-				return []
-			})
-			changedFiles.push(...removedFiles)
+			// const { data: latestRemoteTree } = await this.fit.getTree(latestRemoteCommitSha)
+			// const removedFiles:Array<{path: string, type: string}>  = latestRemoteTree.tree.flatMap(node=> {
+			// 	if(!(node.type == "tree") && node.path && !Object.keys(localSha).includes(node.path)) {
+			// 		return {path: node.path, type: 'deleted'}
+			// 	}
+			// 	return []
+			// })
+			// changedFiles.push(...removedFiles)
 			if (changedFiles.length == 0) {
 				new Notice("No local changes detected.")
 				return
