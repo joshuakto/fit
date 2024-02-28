@@ -1,7 +1,7 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { Add } from 'src/add';
-import { Commit } from 'src/commit';
 import { Fit } from 'src/fit';
+
 // Remember to rename these classes and interfaces!
 
 export interface MyPluginSettings {
@@ -17,36 +17,55 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	owner: "<Github-Username>",
 	repo: "<Repository-Name>",
 	branch: "main",
-	deviceName: ""
+	deviceName: "",
 }
 
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 	fit: Fit;
-	commit = new Commit("Hello")
 	add = new Add(this.app.vault.adapter)
 	
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	async createTreeNodeFromFile(filepath: string): Promise<any> {
+	async createTreeNodeFromFile({path, type}: {path: string, type: string}): Promise<any> {
+		if (type === "deleted") {
+			return {
+				path: path,
+				mode: '100644',
+				type: 'blob',
+				sha: null
+			}	
+		}
 		// temp function of stageFile: check if file exists in vault data adapter
-		const fileExists = this.add.stageFile(filepath)
+		const fileExists = this.add.stageFile(path)
 		if (!fileExists) {
 			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
 		}
-		const content = await this.app.vault.adapter.read(filepath)
+		const content = await this.app.vault.adapter.read(path)
 		const encoding = 'utf-8'
 		const blob = await this.fit.octokit.rest.git.createBlob({
 			owner: this.settings.owner,
 			repo: this.settings.repo,
 			content, encoding
 		})
+		console.log(`blob sha: ${path} -- ${blob.data.sha}`)
 		return {
-			path: filepath,
+			path: path,
 			mode: '100644',
 			type: 'blob',
 			sha: blob.data.sha
 		}
+	}
+
+	async computeLocalSha(): Promise<{[k:string]:string}> {
+		const paths = this.app.vault.getFiles().map(f=>f.path)
+		return Object.fromEntries(
+			await Promise.all(
+				paths.map(async (p: string): Promise<[string, string]> =>{
+					return [p, await this.fit.fileSha1(await this.app.vault.adapter.read(p))]
+				})
+			)
+		)
 	}
 
 	async onload() {
@@ -55,6 +74,7 @@ export default class MyPlugin extends Plugin {
 
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('github', 'Fit', async (evt: MouseEvent) => {
+			const pluginLocalStore = await this.loadData()
 			if (this.settings.pat === "<Personal-Access-Token>") {
 				new Notice("Please provide git personal access tokens in Fit settings and try again.")
 				return
@@ -80,8 +100,63 @@ export default class MyPlugin extends Plugin {
 			})
 
 			const files = this.app.vault.getFiles()
-			const treeNodes = await Promise.all(files.map((f) => {
-				return this.createTreeNodeFromFile(f.path)
+			new Notice("test sha")
+			const localSha = await this.computeLocalSha()
+
+			let changedFiles: Array<{path: string, type: string}>;
+			if (pluginLocalStore.localSha) {
+				changedFiles = Object.keys(localSha).flatMap(path => {
+					if (!(Object.keys(pluginLocalStore.localSha).includes(path))) {
+						return { path, type: 'created' };
+					} else if (localSha[path] !== pluginLocalStore.localSha[path]) {
+						return { path, type: 'changed' };
+					}
+					return []
+				});
+			} else {
+				// mark all files as changed if no local sha for previous commit is found
+				changedFiles = files.map(f=> {return {path: f.path, type: 'changed'}})
+			}
+			const { data: latestRemoteTree } = await this.fit.octokit.rest.git.getTree({
+				owner, repo, tree_sha: latestCommitSha, recursive: 'true',
+			});
+			const removedFiles:Array<{path: string, type: string}>  = latestRemoteTree.tree.flatMap(node=> {
+				if(!(node.type == "tree") && node.path && !Object.keys(localSha).includes(node.path)) {
+					return {path: node.path, type: 'deleted'}
+				}
+				return []
+			})
+			changedFiles.push(...removedFiles)
+			if (changedFiles.length == 0) {
+				new Notice("Local copy already up to date.")
+				return
+			}
+
+			this.saveData({...this.settings, localSha: {...localSha}})
+
+			// const tmpContent0 = await this.app.vault.adapter.read(files[0].path)
+			// const tmpContent1 = await this.app.vault.adapter.read(files[1].path)
+			// const tmpContent2 = await this.app.vault.adapter.read(files[2].path)
+			// const tmpContent3 = await this.app.vault.adapter.read(files[3].path)
+			// console.log(`${files[0].path}: ${await this.fit.fileSha1(tmpContent0)}`)
+			// console.log(`${files[1].path}: ${await this.fit.fileSha1(tmpContent1)}`)
+			// console.log(`${files[2].path}: ${await this.fit.fileSha1(tmpContent2)}`)
+			// console.log(`${files[3].path}: ${await this.fit.fileSha1(tmpContent3)}`)
+			// // --- Testing ---
+			// // Get the tree associated with the latest commit
+			// const { data: latestTree } = await this.fit.octokit.rest.git.getTree({
+			// 	owner,
+			// 	repo,
+			// 	tree_sha: latestCommitSha,
+			// 	recursive: 'true',
+			// });
+			// // Create a map of file paths to SHA for easy lookup
+			// const fileShaMap = new Map(latestTree.tree.map(file => [file.path, file.sha]));
+			// console.log(fileShaMap)
+			// //--- Testing --- 
+
+			const treeNodes = await Promise.all(changedFiles.map((f) => {
+				return this.createTreeNodeFromFile(f)
 			}))
 			const newTree = await this.fit.octokit.rest.git.createTree({
 				owner, repo,
