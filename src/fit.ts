@@ -1,5 +1,6 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods"
 import { MyPluginSettings } from "main"
+import { Vault } from "obsidian"
 import { Octokit } from "octokit"
 
 export interface IFit {
@@ -7,6 +8,8 @@ export interface IFit {
     repo: string
     branch: string
     deviceName: string
+    // fitDir: string
+    // vault: Vault
     octokit: Octokit
     fileSha1: (path: string) => Promise<string>
     getTree: (tree_sha: string) => Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]>
@@ -18,13 +21,30 @@ export class Fit implements IFit {
     auth: string | undefined
     branch: string
     deviceName: string
+    // fitDir: string
+    // vault: Vault
     octokit: Octokit
 
-    constructor(setting: MyPluginSettings) {
+    constructor(setting: MyPluginSettings, vault: Vault) {
+        // this.vault = vault
+        this.refreshSetting(setting)
+    }
+
+    refreshSetting(setting: MyPluginSettings) {
         this.owner = setting.owner
         this.repo = setting.repo
         this.branch = setting.branch
         this.deviceName = setting.deviceName
+        // this.fitDir = setting.fitDir
+        // const anc  = this.vault.getFolderByPath(this.fitDir)
+        // console.log(anc)
+        // console.log(this.fitDir)
+        // console.log(this.vault.getFolderByPath(".fit/"))
+        // console.log(this.vault.getFolderByPath("typescript"))
+        // if (this.vault.getFolderByPath(this.fitDir)==null) {
+        //     console.log("hi")
+        //     this.vault.createFolder(this.fitDir)
+        // }
         this.octokit = new Octokit({auth: setting.pat})
     }
 
@@ -78,6 +98,17 @@ export class Fit implements IFit {
             repo: this.repo,
             tree: treeNode,
             base_tree: base_tree_sha
+        })
+    }
+
+    async createCommit(treeSha: string, parentSha: string): Promise<RestEndpointMethodTypes["git"]["createCommit"]["response"]> {
+        const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
+        return await this.octokit.rest.git.createCommit({
+            owner: this.owner,
+            repo: this.repo,
+            message,
+            tree: treeSha,
+            parents: [parentSha]
         })
     }
 
