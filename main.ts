@@ -12,7 +12,6 @@ export interface MyPluginSettings {
 	repo: string;
 	branch: string;
 	deviceName: string;
-	// fitDir: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -21,7 +20,6 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
-	// fitDir: ".fit"
 }
 
 interface LocalStores {
@@ -97,12 +95,20 @@ export default class MyPlugin extends Plugin {
 		}
 	}
 
+	async computeFileLocalSha(path: string): Promise<string> {
+		const localFile = await this.app.vault.adapter.read(path)
+		if (!localFile) {
+			throw new Error(`Attempting to compute local sha for ${path}, but file not found.`);
+		}
+		return await this.fit.fileSha1(localFile)
+	}
+
 	async computeLocalSha(): Promise<{[k:string]:string}> {
 		const paths = this.app.vault.getFiles().map(f=>f.path)
 		return Object.fromEntries(
 			await Promise.all(
 				paths.map(async (p: string): Promise<[string, string]> =>{
-					return [p, await this.fit.fileSha1(await this.app.vault.adapter.read(p))]
+					return [p, await this.computeFileLocalSha(p)]
 				})
 			)
 		)
@@ -120,9 +126,6 @@ export default class MyPlugin extends Plugin {
 		if (["<Repository-Name>", ""].includes(this.settings.repo)) {
 			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
 		}
-		// if (this.settings.fitDir == "") {
-		// 	this.settings.fitDir = ".fit"
-		// }
 		this.fit.refreshSetting(this.settings)
 		return true
 	}
@@ -143,7 +146,6 @@ export default class MyPlugin extends Plugin {
 				changes.push({ path, status: 'changed' });
 			}
 			// Unchanged files are implicitly handled by not adding them to the changes array
-	
 			return changes;
 		}, []);
 	}
@@ -211,7 +213,7 @@ export default class MyPlugin extends Plugin {
 				}).filter(Boolean) as string[]
 				if (remoteChanges.some(change => localChangePaths.includes(change.path))){
 					// TODO allow user to act on this notice
-					// TODO START HERE: get the right copy from git (original messed up) then investigate why localSha computed is different (likely due to inconsistency issue of the plugin store, perhaps read obsidian store to think of better ways to handle plugin storage)
+					// TODO investigate why localSha computed is different
 					console.log("DEBUG HERE")
 					console.log(localChanges)
 					console.log(realtimeLocalSha)
@@ -226,7 +228,6 @@ export default class MyPlugin extends Plugin {
 						const {data} = await this.fit.getBlob(remoteSha[change.path])
 						if (extension && ["png", "jpeg", "pdf"].includes(extension)) {
 							// if file type is in the above list, keep as base64 encoding
-							// return {[path]: {content: data.content, enc: "base64"}}
 							addToLocal = {...addToLocal, [change.path]: {content: data.content, enc: "base64"}}
 						} else {
 							const decodedContent = atob(data.content);
@@ -367,7 +368,10 @@ export default class MyPlugin extends Plugin {
 			id: 'open-sample-modal-simple',
 			name: 'Open sample modal (simple)',
 			callback: () => {
-				new SampleModal(this.app).open();
+				new ComputeFileLocalShaModal(
+					this.app, 
+					async (queryFile) => console.log(await this.computeFileLocalSha(queryFile))
+				).open();
 			}
 		});
 		// This adds an editor command that can perform some operation on the current editor instance
@@ -390,7 +394,10 @@ export default class MyPlugin extends Plugin {
 					// If checking is true, we're simply "checking" if the command can be run.
 					// If checking is false, then we want to actually perform the operation.
 					if (!checking) {
-						new SampleModal(this.app).open();
+						new ComputeFileLocalShaModal(
+							this.app, 
+							async (queryFile) => console.log(await this.computeFileLocalSha(queryFile))
+						).open();
 					}
 
 					// This command will only show up in Command Palette when the check function returns true
@@ -407,22 +414,11 @@ export default class MyPlugin extends Plugin {
 
 		// for debugging
 		this.addRibbonIcon('combine', 'Debug', async (evt: MouseEvent) => {
-			console.log("localStore")
-			console.log(this.localStore)
-			console.log("localStore after loading")
-			await this.loadLocalStore()
-			console.log(this.localStore)
-			console.log("localStore after saving")
-			this.localStore.localSha = {'a':'2'}
-			this.localStore.lastFetchedRemoteSha = {'a':'2'}
-			this.localStore.lastFetchedCommitSha = "asdfasfda"
-			await this.saveLocalStore()
-			console.log(this.localStore)
-			console.log("setting")
-			console.log(this.settings)
-			this.loadSettings()
-			console.log("setting after loading")
-			console.log(this.settings)
+			this.loadLocalStore()
+			console.log("localSha")
+			console.log(this.localStore.localSha)
+			console.log("computedLocalSha")
+			console.log(await this.computeLocalSha())
 		})
 	}
 
@@ -465,14 +461,34 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
+class ComputeFileLocalShaModal extends Modal {
+	queryFile: string;
+	onSubmit: (result: string) => void;
+
+	constructor(app: App, onSubmit: (result: string) => void) {
 		super(app);
+		this.onSubmit = onSubmit;
 	}
 
 	onOpen() {
 		const {contentEl} = this;
-		contentEl.setText('Woah!');
+		contentEl.createEl("h1", { text: "Input the filename you want to compute local Sha for:" });
+		new Setting(contentEl)
+		.setName("Name")
+		.addText((text) =>
+			text.onChange((value) => {
+			this.queryFile = value
+			}));
+
+		new Setting(contentEl)
+		.addButton((btn) =>
+			btn
+			.setButtonText("Submit")
+			.setCta()
+			.onClick(() => {
+				this.close();
+				this.onSubmit(this.queryFile);
+			}));
 	}
 
 	onClose() {
@@ -545,17 +561,5 @@ class SampleSettingTab extends PluginSettingTab {
 					this.plugin.settings.deviceName = value;
 					await this.plugin.saveSettings();
 				}));
-
-		// new Setting(containerEl)
-		// 	.setName('Fit directory')
-		// 	.setDesc('The storage directory for fit to function properly (content not to be edited)')
-		// 	.addText(text => text
-		// 		.setPlaceholder('.fit by default')
-		// 		.setValue(this.plugin.settings.fitDir)
-		// 		.onChange(async (value) => {
-		// 			this.plugin.settings.fitDir = value;
-		// 			await this.plugin.saveSettings();
-		// 		}));
-
 	}
 }

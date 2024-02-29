@@ -8,8 +8,6 @@ export interface IFit {
     repo: string
     branch: string
     deviceName: string
-    // fitDir: string
-    // vault: Vault
     octokit: Octokit
     fileSha1: (path: string) => Promise<string>
     getTree: (tree_sha: string) => Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]>
@@ -21,12 +19,9 @@ export class Fit implements IFit {
     auth: string | undefined
     branch: string
     deviceName: string
-    // fitDir: string
-    // vault: Vault
     octokit: Octokit
 
     constructor(setting: MyPluginSettings, vault: Vault) {
-        // this.vault = vault
         this.refreshSetting(setting)
     }
 
@@ -35,16 +30,6 @@ export class Fit implements IFit {
         this.repo = setting.repo
         this.branch = setting.branch
         this.deviceName = setting.deviceName
-        // this.fitDir = setting.fitDir
-        // const anc  = this.vault.getFolderByPath(this.fitDir)
-        // console.log(anc)
-        // console.log(this.fitDir)
-        // console.log(this.vault.getFolderByPath(".fit/"))
-        // console.log(this.vault.getFolderByPath("typescript"))
-        // if (this.vault.getFolderByPath(this.fitDir)==null) {
-        //     console.log("hi")
-        //     this.vault.createFolder(this.fitDir)
-        // }
         this.octokit = new Octokit({auth: setting.pat})
     }
 
