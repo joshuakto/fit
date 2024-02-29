@@ -1,8 +1,8 @@
 import { RestEndpointMethodTypes } from '@octokit/plugin-rest-endpoint-methods';
 import { warn } from 'console';
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { Add } from 'src/add';
 import { Fit } from 'src/fit';
+import { compareSha } from 'src/utils';
 
 // Remember to rename these classes and interfaces!
 
@@ -49,7 +49,6 @@ export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 	localStore: LocalStores
 	fit: Fit;
-	add = new Add(this.app.vault.adapter)
 	
 	async createTreeNodeFromFile(
 		{path, type, extension}: {path: string, type: string, extension?: string}): 
@@ -61,6 +60,9 @@ export default class MyPlugin extends Plugin {
 				type: 'blob',
 				sha: null
 			}
+		}
+		if (!this.app.vault.adapter.exists(path)) {
+			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
 		}
 		let encoding: string;
 		let content: string 
@@ -77,16 +79,7 @@ export default class MyPlugin extends Plugin {
 			encoding = 'utf-8'
 			content = await this.app.vault.adapter.read(path)
 		}
-		// temp function of stageFile: check if file exists in vault data adapter
-		const fileExists = this.add.stageFile(path)
-		if (!fileExists) {
-			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
-		}
-		const blob = await this.fit.octokit.rest.git.createBlob({
-			owner: this.settings.owner,
-			repo: this.settings.repo,
-			content, encoding
-		})
+		const blob = await this.fit.createBlob(content, encoding)
 		return {
 			path: path,
 			mode: '100644',
@@ -96,11 +89,12 @@ export default class MyPlugin extends Plugin {
 	}
 
 	async computeFileLocalSha(path: string): Promise<string> {
-		const localFile = await this.app.vault.adapter.read(path)
-		if (!localFile) {
+		if (!await this.app.vault.adapter.exists(path)) {
 			throw new Error(`Attempting to compute local sha for ${path}, but file not found.`);
 		}
-		return await this.fit.fileSha1(localFile)
+		// compute sha1 based on path and file content
+		const localFile = await this.app.vault.adapter.read(path)
+		return await this.fit.fileSha1(path + localFile)
 	}
 
 	async computeLocalSha(): Promise<{[k:string]:string}> {
@@ -130,25 +124,6 @@ export default class MyPlugin extends Plugin {
 		return true
 	}
 
-	// compare currentSha with storedSha and check for differences, files only in currentSha are considerd added, while files only in storedSha are considered removed
-	compareSha(currentSha: {[k:string]:string}, storedSha: {[k:string]:string}): Array<{path: string, status: 'added' | 'removed' | 'changed'}> {
-		const allPaths = Array.from(new Set([...Object.keys(currentSha), ...Object.keys(storedSha)]));
-	
-		return allPaths.reduce<{path: string, status: 'added' | 'removed' | 'changed'}[]>((changes, path) => {
-			const inCurrent = path in currentSha;
-			const inStored = path in storedSha;
-	
-			if (inCurrent && !inStored) {
-				changes.push({ path, status: 'added' });
-			} else if (!inCurrent && inStored) {
-				changes.push({ path, status: 'removed' });
-			} else if (inCurrent && inStored && currentSha[path] !== storedSha[path]) {
-				changes.push({ path, status: 'changed' });
-			}
-			// Unchanged files are implicitly handled by not adding them to the changes array
-			return changes;
-		}, []);
-	}
 
 	async onload() {
 		await this.loadSettings();
@@ -161,7 +136,7 @@ export default class MyPlugin extends Plugin {
 			}
 			await this.loadLocalStore()
 			const realtimeLocalSha = await this.computeLocalSha();
-			const localChanges = this.compareSha(realtimeLocalSha, this.localStore.localSha)
+			const localChanges = compareSha(realtimeLocalSha, this.localStore.localSha)
 			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
 			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
 			if (latestRemoteCommitSha == this.localStore.lastFetchedCommitSha) {
@@ -204,7 +179,7 @@ export default class MyPlugin extends Plugin {
 				}))
 				addToLocal = Object.assign({}, ...entries)
 			} else {
-				const remoteChanges = this.compareSha(remoteSha, this.localStore.lastFetchedRemoteSha)
+				const remoteChanges = compareSha(remoteSha, this.localStore.lastFetchedRemoteSha)
 				const localChangePaths = localChanges.map(c=>c.path)
 				const clashedChanges = remoteChanges.map(change => {
 					if (localChangePaths.includes(change.path)) {
@@ -213,11 +188,6 @@ export default class MyPlugin extends Plugin {
 				}).filter(Boolean) as string[]
 				if (remoteChanges.some(change => localChangePaths.includes(change.path))){
 					// TODO allow user to act on this notice
-					// TODO investigate why localSha computed is different
-					console.log("DEBUG HERE")
-					console.log(localChanges)
-					console.log(realtimeLocalSha)
-					console.log(this.localStore.localSha)
 					new Notice("Unsaved local changes clashes with remote changes, aborting.")
 					clashedChanges.map(clash => console.log(`Clashing file: ${clash}`))
 					return
@@ -240,7 +210,7 @@ export default class MyPlugin extends Plugin {
 				new Notice("Pull complete, local copy up to date.")
 			}
 
-			// Update changed files locally TODO: need to check if there are clashing local changes, if so, prompt above for user confirmation before proceeding
+			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
 			const filewriting = Object.entries(addToLocal).map(async entry=>{
 				const path = entry[0]
 				const {content, enc} = entry[1]
@@ -273,7 +243,7 @@ export default class MyPlugin extends Plugin {
 			this.localStore.lastFetchedRemoteSha = remoteSha
 			this.localStore.localSha = await this.computeLocalSha()
 			await this.saveLocalStore()
-			fileOps.map(op=> new Notice(`${op.path} ${op.type} completed.`))
+			fileOps.map(op=> new Notice(`${op.path} ${op.type} completed.`, 10000))
 		});
 
 		// for debugging
@@ -323,7 +293,7 @@ export default class MyPlugin extends Plugin {
 				changedFiles = files.map(f=> {return {
 					path: f.path, type: 'changed', extension: f.extension}})
 			} else {
-				const localChanges = this.compareSha(localSha, this.localStore.localSha)
+				const localChanges = compareSha(localSha, this.localStore.localSha)
 				changedFiles = localChanges.flatMap(change=>{
 					if (change.status == "removed") {
 						return {path: change.path, type: 'deleted'}
@@ -355,6 +325,10 @@ export default class MyPlugin extends Plugin {
 			await this.fit.updateRef(`heads/${this.settings.branch}`, newCommit.sha)
 			await this.saveData({...this.settings, localSha, lastFetchedCommitSha: newCommit.sha})
 			new Notice(`Successful pushed to ${this.settings.repo}`)
+			changedFiles.map(({path, type}): void=>{
+				const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
+				new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)
+			})
 		});
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');

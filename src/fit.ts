@@ -75,6 +75,15 @@ export class Fit implements IFit {
         return tree
     }
 
+    async createBlob(content: string, encoding: string): Promise<RestEndpointMethodTypes["git"]["createBlob"]["response"]> {
+        const blob = await this.octokit.rest.git.createBlob({
+            owner: this.owner,
+            repo: this.repo,
+            content, encoding
+        })
+        return blob
+    }
+
     async createTree(
         treeNode: RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"], base_tree_sha: string): 
         Promise<RestEndpointMethodTypes["git"]["createTree"]["response"]> {
