@@ -1,6 +1,7 @@
 import { VaultOperations } from "./vaultOps";
 import { getFileEncoding } from "./utils";
 import { Fit } from "./fit";
+import { Notice } from "obsidian";
 
 export interface IFitPull {
     vaultOps: VaultOperations
@@ -15,6 +16,16 @@ export class FitPull implements IFitPull {
     constructor(fit: Fit, vaultOps: VaultOperations) {
         this.vaultOps = vaultOps
         this.fit = fit
+    }
+
+    async performPrePullChecks(): Promise<boolean> {
+        const {data: latestRef} = await this.fit.getRef(`heads/${this.fit.branch}`)
+        const latestRemoteCommitSha = latestRef.object.sha;
+        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
+            new Notice("Local copy already up to date")
+            return false
+        }
+        return true
     }
 
     // Get changes from remote, pathShaMap is coupled to the Fit plugin design

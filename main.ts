@@ -1,4 +1,3 @@
-import { warn } from 'console';
 import { Notice, Plugin } from 'obsidian';
 import { ComputeFileLocalShaModal } from 'pluginModal';
 import { Fit } from 'src/fit';
@@ -83,12 +82,13 @@ export default class FitPlugin extends Plugin {
 			await this.loadLocalStore()
 			const realtimeLocalSha = await this.fit.computeLocalSha();
 			const localChanges = compareSha(realtimeLocalSha, this.localStore.localSha)
-			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
-			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
-			if (latestRemoteCommitSha == this.localStore.lastFetchedCommitSha) {
-				new Notice("Local copy already up to date")
+			if (!await this.fitPull.performPrePullChecks()) {
+				// TODO incoporate more checks into the above func
 				return
 			}
+			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
+			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
+
 			// Since remote changes are detected, get the latest remote tree
 			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
 			
@@ -161,39 +161,10 @@ export default class FitPlugin extends Plugin {
 				// TODO incoporate more checks into the above func
 				return
 			}
-			// if (latestRemoteCommitSha != this.localStore.lastFetchedCommitSha) {
-			// 	new Notice("Remote changed after last pull/write, please pull again.")
-			// 	return
-			// }
 			const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
-			
-			const files = this.app.vault.getFiles()
 			const localSha = await this.fit.computeLocalSha()
-
-			let changedFiles: Array<{path: string, type: string, extension?: string}>;
-			// mark all files as changed if local sha for previous commit is not found
-			if (!this.localStore.localSha) {
-				changedFiles = files.map(f=> {return {
-					path: f.path, type: 'changed', extension: f.extension}})
-			} else {
-				const localChanges = compareSha(localSha, this.localStore.localSha)
-				changedFiles = localChanges.flatMap(change=>{
-					if (change.status == "removed") {
-						return {path: change.path, type: 'deleted'}
-					} else {
-						const file = this.app.vault.getFileByPath(change.path)
-						if (!file) {
-							warn(`${file} included in local changes (added/modified) but not found`)
-							return []
-						}
-						if (change.status == "added") {
-							return {path: change.path, type: 'created', extension: file.extension}
-						} else {
-							return {path: change.path, type: 'changed', extension: file.extension}
-						}
-					}
-				})
-			}
+			const changedFiles = await this.fitPush.getLocalChanges(localSha)
+			
 			if (changedFiles.length == 0) {
 				new Notice("No local changes detected.")
 				return
@@ -211,7 +182,6 @@ export default class FitPlugin extends Plugin {
 			this.localStore.lastFetchedCommitSha = newCommit.sha
 			this.localStore.lastFetchedRemoteSha = updatedRemoteSha
 			this.saveLocalStore()
-			// await this.saveData({...this.settings, localSha, lastFetchedCommitSha: newCommit.sha})
 			new Notice(`Successful pushed to ${this.settings.repo}`)
 			changedFiles.map(({path, type}): void=>{
 				const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
