@@ -29,6 +29,7 @@ export class Fit implements IFit {
     octokit: Octokit
     vault: Vault
 
+
     constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
         this.loadSettings(setting)
         this.loadLocalStore(localStores)

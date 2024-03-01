@@ -17,3 +17,13 @@ export function compareSha(currentSha: {[k:string]:string}, storedSha: {[k:strin
         return changes;
     }, []);
 }
+
+// Using file extension to determine encoding of files (works in most cases)
+export function getFileEncoding(path: string): string {
+    const extension = path.match(/[^.]+$/)?.[0];
+    const isBinary = extension && ["png", "jpg", "jpeg", "pdf"].includes(extension);
+    if (isBinary) {
+        return "base64"
+    } 
+    return "utf-8"
+}

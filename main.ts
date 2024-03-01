@@ -1,9 +1,12 @@
 import { warn } from 'console';
-import { Notice, Plugin, base64ToArrayBuffer } from 'obsidian';
+import { Notice, Plugin } from 'obsidian';
 import { ComputeFileLocalShaModal } from 'pluginModal';
 import { Fit } from 'src/fit';
+import { FitPull } from 'src/fitPull';
+import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { compareSha } from 'src/utils';
+import { VaultOperations } from 'src/vaultOps';
 
 // Remember to rename these classes and interfaces!
 
@@ -40,6 +43,9 @@ export default class FitPlugin extends Plugin {
 	settings: FitSettings;
 	localStore: LocalStores
 	fit: Fit;
+	vaultOps: VaultOperations;
+	fitPull: FitPull
+	fitPush: FitPush
 	
 	
 
@@ -58,12 +64,16 @@ export default class FitPlugin extends Plugin {
 		this.fit.loadSettings(this.settings)
 		return true
 	}
+	
 
 
 	async onload() {
 		await this.loadSettings();
 		await this.loadLocalStore();
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
+		this.vaultOps = new VaultOperations(this.app.vault)
+		this.fitPull = new FitPull(this.fit, this.vaultOps)
+		this.fitPush = new FitPush(this.fit, this.vaultOps)
 
 		// pull remote to local
 		this.addRibbonIcon('github', 'Fit pull', async (evt: MouseEvent) => {
@@ -82,94 +92,47 @@ export default class FitPlugin extends Plugin {
 			// Since remote changes are detected, get the latest remote tree
 			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
 			
-			let addToLocal: Record<string, {content: string, enc: string}> = {};
-			let deleteFromLocal: Array<string> = [];
-			// if lastFetchedCommitSha is not in local store yet, update every file
+			let addToLocal: Array<{path: string, content: string, encoding: string}> = [];
+			const deleteFromLocal: Array<string> = [];
+
 			if (!this.localStore.lastFetchedCommitSha) {
-				if (localChanges.length > 0){
-					// TODO allow user to act on this notice
-					new Notice("Unsaved local changes detected, aborting remote file dump.")
-					console.log(localChanges)
+				if (localChanges.length > 0) {
+					new Notice("Unsaved local changes detected, aborting remote file dump.");
+
+					console.log(localChanges);
 				}
-				const entries = await Promise.all(Object.entries(remoteSha).map(async (kv) => {
-					const path = kv[0]
-					const file_sha = kv[1]
-					const extension = path.match(/[^.]+$/)?.[0];
-					const {data} = await this.fit.getBlob(file_sha)
-					// if file type is in the following list, keep as base64 encoding
-					if (extension && ["png", "jpg" ,"jpeg", "pdf"].includes(extension)) {
-						return {[path]: {content: data.content, enc: "base64"}}
-					}
-					const contentUtf8 = atob(data.content)
-					return {[path]: {content: contentUtf8, enc: "utf-8"}}
-				}))
-				addToLocal = Object.assign({}, ...entries)
+				addToLocal = await this.fitPull.getRemoteNonDeletionChanges(remoteSha);
 			} else {
-				const remoteChanges = compareSha(remoteSha, this.localStore.lastFetchedRemoteSha)
-				const localChangePaths = localChanges.map(c=>c.path)
-				const clashedChanges = remoteChanges.map(change => {
-					if (localChangePaths.includes(change.path)) {
-						return change.path
-					}
-				}).filter(Boolean) as string[]
-				if (remoteChanges.some(change => localChangePaths.includes(change.path))){
-					// TODO allow user to act on this notice
-					new Notice("Unsaved local changes clashes with remote changes, aborting.")
-					clashedChanges.map(clash => console.log(`Clashing file: ${clash}`))
-					return
+				const remoteChanges = compareSha(remoteSha, this.localStore.lastFetchedRemoteSha);
+				const localChangePaths = localChanges.map(c => c.path);
+				const clashedChanges = remoteChanges.filter(change => localChangePaths.includes(change.path)).map(change => change.path);
+
+				if (clashedChanges.length > 0) {
+					new Notice("Unsaved local changes clash with remote changes, aborting.");
+					clashedChanges.forEach(clash => console.log(`Clashing file: ${clash}`));
+					return;
 				}
-				await Promise.all(remoteChanges.map(async change => {
+
+				const changesToProcess = remoteChanges.reduce((acc, change) => {
 					if (["changed", "added"].includes(change.status)) {
-						const extension = change.path.match(/[^.]+$/)?.[0];
-						const {data} = await this.fit.getBlob(remoteSha[change.path])
-						if (extension && ["png", "jpg", "jpeg", "pdf"].includes(extension)) {
-							// if file type is in the above list, keep as base64 encoding
-							addToLocal = {...addToLocal, [change.path]: {content: data.content, enc: "base64"}}
-						} else {
-							const decodedContent = atob(data.content);
-							addToLocal = {...addToLocal, [change.path]: {content: decodedContent, enc: "utf-8"}}
-						}
-					} else {
-						deleteFromLocal = [...deleteFromLocal, change.path]
+						acc[change.path] = remoteSha[change.path];
+					} else if (change.status === "removed") {
+						deleteFromLocal.push(change.path);
 					}
-				}))
+					return acc;
+				}, {} as Record<string, string>);
+
+				addToLocal = await this.fitPull.getRemoteNonDeletionChanges(changesToProcess)
 			}
 			
 			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
-			const filewriting = Object.entries(addToLocal).map(async entry=>{
-				const path = entry[0]
-				const {content, enc} = entry[1]
-				const file = this.app.vault.getFileByPath(path)
-				if (file) {
-					if (enc == "utf-8") {
-						await this.app.vault.modify(file, content)
-					} else if (enc == "base64") {
-						await this.app.vault.modifyBinary(file, base64ToArrayBuffer(content))
-					}
-					return {path, type: "modified on"}
-				} else {
-					if (enc == "utf-8") {
-						await this.app.vault.create(path, content)
-					} else if (enc == "base64") {
-						await this.app.vault.createBinary(path, base64ToArrayBuffer(content))
-					}
-					return {path, type: "created on"}
-				}
-			})
-			const deletion = deleteFromLocal.map(async f=> {
-				const file = this.app.vault.getFileByPath(f)
-				if (file) { 
-					await this.app.vault.delete(file)
-					return {path: file.path, type: "deleted from"}
-				}
-			}).filter(Boolean) as Promise<{path: string, type: string}>[]
-			const fileOps = await Promise.all([...filewriting, ...deletion])
+			// TODO fix bug (Attempting to computeSha for local file but not found) [likely becasue delete operation already done but path still in localStore.localSha]
+			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
 			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
 			this.localStore.lastFetchedRemoteSha = remoteSha
 			this.localStore.localSha = await this.fit.computeLocalSha()
 			await this.saveLocalStore()
 			new Notice("Pull complete, local copy up to date.")
-			fileOps.map(op=> new Notice(`${op.path} ${op.type} local drive.`, 10000))
 		});
 
 		// for debugging
@@ -194,10 +157,14 @@ export default class FitPlugin extends Plugin {
 			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
 			const {data: latestRef} = await this.fit.getRef(`heads/${this.settings.branch}`)
 			const latestRemoteCommitSha = latestRef.object.sha;
-			if (latestRemoteCommitSha != this.localStore.lastFetchedCommitSha) {
-				new Notice("Remote changed after last pull/write, please pull again.")
+			if (!await this.fitPush.performPrePushChecks()) {
+				// TODO incoporate more checks into the above func
 				return
 			}
+			// if (latestRemoteCommitSha != this.localStore.lastFetchedCommitSha) {
+			// 	new Notice("Remote changed after last pull/write, please pull again.")
+			// 	return
+			// }
 			const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
 			
 			const files = this.app.vault.getFiles()
