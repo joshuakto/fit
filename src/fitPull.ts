@@ -1,5 +1,5 @@
 import { VaultOperations } from "./vaultOps";
-import { getFileEncoding } from "./utils";
+import { ChangeType, compareSha, getFileEncoding } from "./utils";
 import { Fit } from "./fit";
 import { Notice } from "obsidian";
 
@@ -18,18 +18,59 @@ export class FitPull implements IFitPull {
         this.fit = fit
     }
 
-    async performPrePullChecks(): Promise<boolean> {
-        const {data: latestRef} = await this.fit.getRef(`heads/${this.fit.branch}`)
-        const latestRemoteCommitSha = latestRef.object.sha;
-        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
-            new Notice("Local copy already up to date")
-            return false
+    async getLocalChanges(): Promise<{path: string, status: ChangeType}[]> {
+        if (!this.fit.localSha) {
+            // assumes every local files are created if no localSha is found
+            return this.vaultOps.vault.getFiles().map(f => {
+                return {path: f.path, status: "added" as ChangeType}})
         }
-        return true
+        const currentLocalSha = await this.fit.computeLocalSha()
+        const localChanges = compareSha(currentLocalSha, this.fit.localSha)
+        return localChanges
+    }
+
+    async getRemoteChanges(
+        latestRemoteCommitSha: string): 
+        Promise<[{path: string, status: ChangeType, currentSha: string}[], {[k: string]: string}]> {
+            const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+            if (!this.fit.lastFetchedRemoteSha) {
+                Object.keys(remoteTreeSha).map(path=>{
+                    return {path, status: "added" as ChangeType}
+                })
+            }
+            const remoteChanges = compareSha(remoteTreeSha, this.fit.lastFetchedRemoteSha)
+            return [remoteChanges, remoteTreeSha]
+    }
+
+    getClashedChanges(localChangePaths: Array<string>, remoteChangePaths: Array<string>) {
+        const clashedFiles: Array<string> = localChangePaths.filter(path => remoteChangePaths.includes(path))
+        const remoteOnly: Array<string> = remoteChangePaths.filter(path => !localChangePaths.includes(path))
+        return {clashedFiles, remoteOnly}
+    }
+
+    async performPrePullChecks(
+        latestRemoteCommitSha: string): 
+        Promise<null | [{path: string, status: ChangeType, currentSha: string}[], {[k:string]: string}]> {
+            if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
+                new Notice("Local copy already up to date")
+                return null
+            }
+            const localChanges = await this.getLocalChanges()
+            const [remoteChanges, remoteSha] = await this.getRemoteChanges(latestRemoteCommitSha)
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const {clashedFiles, remoteOnly} = this.getClashedChanges(localChanges.map(c=>c.path), remoteChanges.map(c=>c.path))
+            // TODO handle clashes without completely blocking pull
+            if (clashedFiles.length > 0) {
+                new Notice("Unsaved local changes clash with remote changes, aborting.");
+                console.log("clashed files:")
+                console.log(clashedFiles)
+                return null
+            }
+            return [remoteChanges, remoteSha]
     }
 
     // Get changes from remote, pathShaMap is coupled to the Fit plugin design
-    async getRemoteNonDeletionChanges(pathShaMap: Record<string, string>) {
+    async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
         const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
             const encoding = getFileEncoding(path)
             const {data} = await this.fit.getBlob(file_sha);

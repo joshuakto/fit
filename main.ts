@@ -4,7 +4,6 @@ import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
-import { compareSha } from 'src/utils';
 import { VaultOperations } from 'src/vaultOps';
 
 // Remember to rename these classes and interfaces!
@@ -80,53 +79,23 @@ export default class FitPlugin extends Plugin {
 				return
 			}
 			await this.loadLocalStore()
-			const realtimeLocalSha = await this.fit.computeLocalSha();
-			const localChanges = compareSha(realtimeLocalSha, this.localStore.localSha)
-			if (!await this.fitPull.performPrePullChecks()) {
-				// TODO incoporate more checks into the above func
-				return
+			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+			const checkResult = await this.fitPull.performPrePullChecks(latestRemoteCommitSha)
+			if (!checkResult) {
+				return // early return to abort pull
 			}
-			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
-			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
+			const [remoteChanges, remoteSha] = checkResult
 
-			// Since remote changes are detected, get the latest remote tree
-			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-			
-			let addToLocal: Array<{path: string, content: string, encoding: string}> = [];
-			const deleteFromLocal: Array<string> = [];
-
-			if (!this.localStore.lastFetchedCommitSha) {
-				if (localChanges.length > 0) {
-					new Notice("Unsaved local changes detected, aborting remote file dump.");
-
-					console.log(localChanges);
-				}
-				addToLocal = await this.fitPull.getRemoteNonDeletionChanges(remoteSha);
-			} else {
-				const remoteChanges = compareSha(remoteSha, this.localStore.lastFetchedRemoteSha);
-				const localChangePaths = localChanges.map(c => c.path);
-				const clashedChanges = remoteChanges.filter(change => localChangePaths.includes(change.path)).map(change => change.path);
-
-				if (clashedChanges.length > 0) {
-					new Notice("Unsaved local changes clash with remote changes, aborting.");
-					clashedChanges.forEach(clash => console.log(`Clashing file: ${clash}`));
-					return;
-				}
-
-				const changesToProcess = remoteChanges.reduce((acc, change) => {
-					if (["changed", "added"].includes(change.status)) {
-						acc[change.path] = remoteSha[change.path];
-					} else if (change.status === "removed") {
-						deleteFromLocal.push(change.path);
-					}
+			const deleteFromLocal = remoteChanges.filter(c=>c.status=="removed").map(c=>c.path)
+			const changesToProcess = remoteChanges.filter(c=>c.status!="removed").reduce(
+				(acc, change) => {
+					acc[change.path] = change.currentSha;
 					return acc;
 				}, {} as Record<string, string>);
 
-				addToLocal = await this.fitPull.getRemoteNonDeletionChanges(changesToProcess)
-			}
+			const addToLocal = await this.fitPull.getRemoteNonDeletionChangesContent(changesToProcess)
 			
 			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
-			// TODO fix bug (Attempting to computeSha for local file but not found) [likely becasue delete operation already done but path still in localStore.localSha]
 			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
 			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
 			this.localStore.lastFetchedRemoteSha = remoteSha
@@ -138,8 +107,9 @@ export default class FitPlugin extends Plugin {
 		// for debugging
 		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
 			await this.loadLocalStore()
-			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
-			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
+			// const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
+			// const latestRemoteCommitSha = latestRemoteCommit.object.sha;
+			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
 			// Since remote changes are detected, get the latest remote tree
 			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
 			this.localStore.localSha = await this.fit.computeLocalSha()
@@ -155,8 +125,7 @@ export default class FitPlugin extends Plugin {
 			}
 			await this.loadLocalStore()
 			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
-			const {data: latestRef} = await this.fit.getRef(`heads/${this.settings.branch}`)
-			const latestRemoteCommitSha = latestRef.object.sha;
+			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
 			if (!await this.fitPush.performPrePushChecks()) {
 				// TODO incoporate more checks into the above func
 				return
@@ -164,7 +133,7 @@ export default class FitPlugin extends Plugin {
 			const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
 			const localSha = await this.fit.computeLocalSha()
 			const changedFiles = await this.fitPush.getLocalChanges(localSha)
-			
+
 			if (changedFiles.length == 0) {
 				new Notice("No local changes detected.")
 				return
@@ -182,11 +151,11 @@ export default class FitPlugin extends Plugin {
 			this.localStore.lastFetchedCommitSha = newCommit.sha
 			this.localStore.lastFetchedRemoteSha = updatedRemoteSha
 			this.saveLocalStore()
-			new Notice(`Successful pushed to ${this.settings.repo}`)
 			changedFiles.map(({path, type}): void=>{
 				const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
 				new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)
 			})
+			new Notice(`Successful pushed to ${this.settings.repo}`)
 		});
 		
 		// Perform additional things with the ribbon

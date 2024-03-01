@@ -92,6 +92,12 @@ export class Fit implements IFit {
         })
     }
 
+    // Get the sha of the latest commit in the default branch (set by user in setting)
+    async getLatestRemoteCommitSha(): Promise<string> {
+        const {data: latestRef} = await this.getRef(`heads/${this.branch}`)
+        return latestRef.object.sha
+    }
+
     async getCommit(commit_sha: string): Promise<RestEndpointMethodTypes["git"]["getCommit"]["response"]> {
         return this.octokit.rest.git.getCommit({
             owner: this.owner,

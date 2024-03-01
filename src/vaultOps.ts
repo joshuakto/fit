@@ -54,12 +54,12 @@ export class VaultOperations implements IVaultOperations {
         deleteFromLocal: Array<string>) {
             // Process file additions or updates
             const writeOperations = addToLocal.map(async ({path, content}) => {
-                this.writeToLocal(path, content)
+                await this.writeToLocal(path, content)
             });
         
             // Process file deletions
             const deletionOperations = deleteFromLocal.map(async (path) => {
-                this.deleteFromLocal(path)
+                await this.deleteFromLocal(path)
             });
             await Promise.all([...writeOperations, ...deletionOperations]);
     }
