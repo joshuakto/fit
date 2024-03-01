@@ -1,5 +1,5 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods"
-import { MyPluginSettings } from "main"
+import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "octokit"
 
@@ -8,7 +8,11 @@ export interface IFit {
     repo: string
     branch: string
     deviceName: string
+    localSha: Record<string, string>
+	lastFetchedCommitSha: string | null
+	lastFetchedRemoteSha: Record<string, string>
     octokit: Octokit
+    vault: Vault
     fileSha1: (path: string) => Promise<string>
     getTree: (tree_sha: string) => Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]>
 }
@@ -19,18 +23,30 @@ export class Fit implements IFit {
     auth: string | undefined
     branch: string
     deviceName: string
+    localSha: Record<string, string>
+	lastFetchedCommitSha: string | null
+	lastFetchedRemoteSha: Record<string, string>
     octokit: Octokit
+    vault: Vault
 
-    constructor(setting: MyPluginSettings, vault: Vault) {
-        this.refreshSetting(setting)
+    constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
+        this.loadSettings(setting)
+        this.loadLocalStore(localStores)
+        this.vault = vault
     }
 
-    refreshSetting(setting: MyPluginSettings) {
+    loadSettings(setting: FitSettings) {
         this.owner = setting.owner
         this.repo = setting.repo
         this.branch = setting.branch
         this.deviceName = setting.deviceName
         this.octokit = new Octokit({auth: setting.pat})
+    }
+
+    loadLocalStore(localStore: LocalStores) {
+        this.localSha = localStore.localSha
+        this.lastFetchedCommitSha = localStore.lastFetchedCommitSha
+        this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha
     }
 
     async fileSha1(fileContent: string): Promise<string> {
@@ -40,6 +56,28 @@ export class Fit implements IFit {
         const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         return hashHex;
     }
+
+    async computeFileLocalSha(path: string): Promise<string> {
+		if (!await this.vault.adapter.exists(path)) {
+			throw new Error(`Attempting to compute local sha for ${path}, but file not found.`);
+		}
+		// compute sha1 based on path and file content
+		const localFile = await this.vault.adapter.read(path)
+		return await this.fileSha1(path + localFile)
+	}
+
+	async computeLocalSha(): Promise<{[k:string]:string}> {
+		const paths = this.vault.getFiles().map(f=>f.path)
+		return Object.fromEntries(
+			await Promise.all(
+				paths.map(async (p: string): Promise<[string, string]> =>{
+					return [p, await this.computeFileLocalSha(p)]
+				})
+			)
+		)
+	}
+
+
 
     async getRef(ref: string): Promise<RestEndpointMethodTypes["git"]["getRef"]["response"]> {
         return this.octokit.rest.git.getRef({
@@ -75,6 +113,22 @@ export class Fit implements IFit {
         return tree
     }
 
+    // get the remote tree sha in the format compatible with local store
+    async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
+        const {data: remoteTree} = await this.getTree(tree_sha)
+        const remoteSha = Object.fromEntries(remoteTree.tree.map((node) : [string, string] | null=>{
+            // currently ignoreing directory changes
+            if (node.type=="blob") {
+                if (!node.path || !node.sha) {
+                    throw new Error("Path and sha not found for blob node in remote");
+                }
+                return [node.path, node.sha]
+            }
+            return null
+        }).filter(Boolean) as [string, string][])
+        return remoteSha
+    }
+
     async createBlob(content: string, encoding: string): Promise<RestEndpointMethodTypes["git"]["createBlob"]["response"]> {
         const blob = await this.octokit.rest.git.createBlob({
             owner: this.owner,
@@ -83,6 +137,44 @@ export class Fit implements IFit {
         })
         return blob
     }
+
+    async createTreeNodeFromFile(
+		{path, type, extension}: {path: string, type: string, extension?: string}): 
+		Promise<RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"][number]> {
+		if (type === "deleted") {
+			return {
+				path,
+				mode: '100644',
+				type: 'blob',
+				sha: null
+			}
+		}
+		if (!this.vault.adapter.exists(path)) {
+			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
+		}
+		let encoding: string;
+		let content: string 
+		if (extension && ["pdf", "png", "jpeg"].includes(extension)) {
+			encoding = "base64"
+			const fileArrayBuf = await this.vault.adapter.readBinary(path)
+			const uint8Array = new Uint8Array(fileArrayBuf);
+			let binaryString = '';
+			for (let i = 0; i < uint8Array.length; i++) {
+				binaryString += String.fromCharCode(uint8Array[i]);
+			}
+			content = btoa(binaryString);
+		} else {
+			encoding = 'utf-8'
+			content = await this.vault.adapter.read(path)
+		}
+		const blob = await this.createBlob(content, encoding)
+		return {
+			path: path,
+			mode: '100644',
+			type: 'blob',
+			sha: blob.data.sha
+		}
+	}
 
     async createTree(
         treeNode: RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"], base_tree_sha: string): 

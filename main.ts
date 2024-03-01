@@ -1,12 +1,13 @@
-import { RestEndpointMethodTypes } from '@octokit/plugin-rest-endpoint-methods';
 import { warn } from 'console';
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { Notice, Plugin, base64ToArrayBuffer } from 'obsidian';
+import { ComputeFileLocalShaModal } from 'pluginModal';
 import { Fit } from 'src/fit';
+import FitSettingTab from 'src/fitSetting';
 import { compareSha } from 'src/utils';
 
 // Remember to rename these classes and interfaces!
 
-export interface MyPluginSettings {
+export interface FitSettings {
 	pat: string;
 	owner: string;
 	repo: string;
@@ -14,7 +15,7 @@ export interface MyPluginSettings {
 	deviceName: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
+const DEFAULT_SETTINGS: FitSettings = {
 	pat: "<Personal-Access-Token>",
 	owner: "<Github-Username>",
 	repo: "<Repository-Name>",
@@ -22,7 +23,7 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	deviceName: "",
 }
 
-interface LocalStores {
+export interface LocalStores {
 	localSha: Record<string, string>
 	lastFetchedCommitSha: string | null
 	lastFetchedRemoteSha: Record<string, string>
@@ -34,79 +35,13 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 	lastFetchedRemoteSha: {}
 }
 
-function base64ToArrayBuffer(base64String: string): ArrayBuffer {
-	const binaryString = atob(base64String);
-	const len = binaryString.length;
-	const bytes = new Uint8Array(len)
-	for (let i = 0; i < len; i++) {
-		bytes[i] = binaryString.charCodeAt(i)
-	}
-	return bytes.buffer
-}
 
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class FitPlugin extends Plugin {
+	settings: FitSettings;
 	localStore: LocalStores
 	fit: Fit;
 	
-	async createTreeNodeFromFile(
-		{path, type, extension}: {path: string, type: string, extension?: string}): 
-		Promise<RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"][number]> {
-		if (type === "deleted") {
-			return {
-				path,
-				mode: '100644',
-				type: 'blob',
-				sha: null
-			}
-		}
-		if (!this.app.vault.adapter.exists(path)) {
-			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
-		}
-		let encoding: string;
-		let content: string 
-		if (extension && ["pdf", "png", "jpeg"].includes(extension)) {
-			encoding = "base64"
-			const fileArrayBuf = await this.app.vault.adapter.readBinary(path)
-			const uint8Array = new Uint8Array(fileArrayBuf);
-			let binaryString = '';
-			for (let i = 0; i < uint8Array.length; i++) {
-				binaryString += String.fromCharCode(uint8Array[i]);
-			}
-			content = btoa(binaryString);
-		} else {
-			encoding = 'utf-8'
-			content = await this.app.vault.adapter.read(path)
-		}
-		const blob = await this.fit.createBlob(content, encoding)
-		return {
-			path: path,
-			mode: '100644',
-			type: 'blob',
-			sha: blob.data.sha
-		}
-	}
-
-	async computeFileLocalSha(path: string): Promise<string> {
-		if (!await this.app.vault.adapter.exists(path)) {
-			throw new Error(`Attempting to compute local sha for ${path}, but file not found.`);
-		}
-		// compute sha1 based on path and file content
-		const localFile = await this.app.vault.adapter.read(path)
-		return await this.fit.fileSha1(path + localFile)
-	}
-
-	async computeLocalSha(): Promise<{[k:string]:string}> {
-		const paths = this.app.vault.getFiles().map(f=>f.path)
-		return Object.fromEntries(
-			await Promise.all(
-				paths.map(async (p: string): Promise<[string, string]> =>{
-					return [p, await this.computeFileLocalSha(p)]
-				})
-			)
-		)
-	}
+	
 
 	checkSettingsConfigured(): boolean {
 		if (["<Personal-Access-Token> ", ""].includes(this.settings.pat)) {
@@ -120,14 +55,15 @@ export default class MyPlugin extends Plugin {
 		if (["<Repository-Name>", ""].includes(this.settings.repo)) {
 			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
 		}
-		this.fit.refreshSetting(this.settings)
+		this.fit.loadSettings(this.settings)
 		return true
 	}
 
 
 	async onload() {
 		await this.loadSettings();
-		this.fit = new Fit(this.settings, this.app.vault)
+		await this.loadLocalStore();
+		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
 
 		// pull remote to local
 		this.addRibbonIcon('github', 'Fit pull', async (evt: MouseEvent) => {
@@ -135,7 +71,7 @@ export default class MyPlugin extends Plugin {
 				return
 			}
 			await this.loadLocalStore()
-			const realtimeLocalSha = await this.computeLocalSha();
+			const realtimeLocalSha = await this.fit.computeLocalSha();
 			const localChanges = compareSha(realtimeLocalSha, this.localStore.localSha)
 			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
 			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
@@ -144,17 +80,7 @@ export default class MyPlugin extends Plugin {
 				return
 			}
 			// Since remote changes are detected, get the latest remote tree
-			const { data: latestRemoteTree } = await this.fit.getTree(latestRemoteCommitSha)
-			const remoteSha = Object.fromEntries(latestRemoteTree.tree.map((node) : [string, string] | null=>{
-				// currently ignoreing directory changes
-				if (node.type=="blob") {
-					if (!node.path || !node.sha) {
-						throw new Error("Path and sha not found for blob node in remote");
-					}
-					return [node.path, node.sha]
-				}
-				return null
-			}).filter(Boolean) as [string, string][])
+			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
 			
 			let addToLocal: Record<string, {content: string, enc: string}> = {};
 			let deleteFromLocal: Array<string> = [];
@@ -171,7 +97,7 @@ export default class MyPlugin extends Plugin {
 					const extension = path.match(/[^.]+$/)?.[0];
 					const {data} = await this.fit.getBlob(file_sha)
 					// if file type is in the following list, keep as base64 encoding
-					if (extension && ["png", "jpeg", "pdf"].includes(extension)) {
+					if (extension && ["png", "jpg" ,"jpeg", "pdf"].includes(extension)) {
 						return {[path]: {content: data.content, enc: "base64"}}
 					}
 					const contentUtf8 = atob(data.content)
@@ -196,7 +122,7 @@ export default class MyPlugin extends Plugin {
 					if (["changed", "added"].includes(change.status)) {
 						const extension = change.path.match(/[^.]+$/)?.[0];
 						const {data} = await this.fit.getBlob(remoteSha[change.path])
-						if (extension && ["png", "jpeg", "pdf"].includes(extension)) {
+						if (extension && ["png", "jpg", "jpeg", "pdf"].includes(extension)) {
 							// if file type is in the above list, keep as base64 encoding
 							addToLocal = {...addToLocal, [change.path]: {content: data.content, enc: "base64"}}
 						} else {
@@ -207,9 +133,8 @@ export default class MyPlugin extends Plugin {
 						deleteFromLocal = [...deleteFromLocal, change.path]
 					}
 				}))
-				new Notice("Pull complete, local copy up to date.")
 			}
-
+			
 			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
 			const filewriting = Object.entries(addToLocal).map(async entry=>{
 				const path = entry[0]
@@ -221,29 +146,30 @@ export default class MyPlugin extends Plugin {
 					} else if (enc == "base64") {
 						await this.app.vault.modifyBinary(file, base64ToArrayBuffer(content))
 					}
-					return {path, type: "modification"}
+					return {path, type: "modified on"}
 				} else {
 					if (enc == "utf-8") {
 						await this.app.vault.create(path, content)
 					} else if (enc == "base64") {
 						await this.app.vault.createBinary(path, base64ToArrayBuffer(content))
 					}
-					return {path, type: "creation"}
+					return {path, type: "created on"}
 				}
 			})
 			const deletion = deleteFromLocal.map(async f=> {
 				const file = this.app.vault.getFileByPath(f)
 				if (file) { 
 					await this.app.vault.delete(file)
-					return {path: file.path, type: "deletion"}
+					return {path: file.path, type: "deleted from"}
 				}
 			}).filter(Boolean) as Promise<{path: string, type: string}>[]
 			const fileOps = await Promise.all([...filewriting, ...deletion])
 			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
 			this.localStore.lastFetchedRemoteSha = remoteSha
-			this.localStore.localSha = await this.computeLocalSha()
+			this.localStore.localSha = await this.fit.computeLocalSha()
 			await this.saveLocalStore()
-			fileOps.map(op=> new Notice(`${op.path} ${op.type} completed.`, 10000))
+			new Notice("Pull complete, local copy up to date.")
+			fileOps.map(op=> new Notice(`${op.path} ${op.type} local drive.`, 10000))
 		});
 
 		// for debugging
@@ -252,18 +178,8 @@ export default class MyPlugin extends Plugin {
 			const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
 			const latestRemoteCommitSha = latestRemoteCommit.object.sha;
 			// Since remote changes are detected, get the latest remote tree
-			const { data: latestRemoteTree } = await this.fit.getTree(latestRemoteCommitSha)
-			const remoteSha = Object.fromEntries(latestRemoteTree.tree.map((node) : [string, string] | null=>{
-				// currently ignoreing directory changes
-				if (node.type=="blob") {
-					if (!node.path || !node.sha) {
-						throw new Error("Path and sha not found for blob node in remote");
-					}
-					return [node.path, node.sha]
-				}
-				return null
-			}).filter(Boolean) as [string, string][])
-			this.localStore.localSha = await this.computeLocalSha()
+			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+			this.localStore.localSha = await this.fit.computeLocalSha()
 			this.localStore.lastFetchedRemoteSha = remoteSha
 			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
 			await this.saveLocalStore()
@@ -285,7 +201,7 @@ export default class MyPlugin extends Plugin {
 			const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
 			
 			const files = this.app.vault.getFiles()
-			const localSha = await this.computeLocalSha()
+			const localSha = await this.fit.computeLocalSha()
 
 			let changedFiles: Array<{path: string, type: string, extension?: string}>;
 			// mark all files as changed if local sha for previous commit is not found
@@ -317,19 +233,25 @@ export default class MyPlugin extends Plugin {
 			}
 
 			const treeNodes = await Promise.all(changedFiles.map((f) => {
-				return this.createTreeNodeFromFile(f)
+				return this.fit.createTreeNodeFromFile(f)
 			}))
 
 			const {data: newTree} = await this.fit.createTree(treeNodes, latestCommit.tree.sha)
 			const {data: newCommit} = await this.fit.createCommit(newTree.sha, latestRemoteCommitSha)
-			await this.fit.updateRef(`heads/${this.settings.branch}`, newCommit.sha)
-			await this.saveData({...this.settings, localSha, lastFetchedCommitSha: newCommit.sha})
+			const {data: updatedRef} = await this.fit.updateRef(`heads/${this.settings.branch}`, newCommit.sha)
+			const updatedRemoteSha = await this.fit.getRemoteTreeSha(updatedRef.object.sha)
+			this.localStore.localSha = localSha
+			this.localStore.lastFetchedCommitSha = newCommit.sha
+			this.localStore.lastFetchedRemoteSha = updatedRemoteSha
+			this.saveLocalStore()
+			// await this.saveData({...this.settings, localSha, lastFetchedCommitSha: newCommit.sha})
 			new Notice(`Successful pushed to ${this.settings.repo}`)
 			changedFiles.map(({path, type}): void=>{
 				const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
 				new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)
 			})
 		});
+		
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
 
@@ -339,49 +261,18 @@ export default class MyPlugin extends Plugin {
 
 		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
+			id: 'compute-file-local-sha',
+			name: 'Compute local sha for file (Debug)',
 			callback: () => {
 				new ComputeFileLocalShaModal(
 					this.app, 
-					async (queryFile) => console.log(await this.computeFileLocalSha(queryFile))
+					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
 				).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new ComputeFileLocalShaModal(
-							this.app, 
-							async (queryFile) => console.log(await this.computeFileLocalSha(queryFile))
-						).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
 			}
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new FitSettingTab(this.app, this));
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
@@ -392,7 +283,7 @@ export default class MyPlugin extends Plugin {
 			console.log("localSha")
 			console.log(this.localStore.localSha)
 			console.log("computedLocalSha")
-			console.log(await this.computeLocalSha())
+			console.log(await this.fit.computeLocalSha())
 		})
 	}
 
@@ -402,138 +293,38 @@ export default class MyPlugin extends Plugin {
 
 	async loadSettings() {
 		const settings = await this.loadData();
-		const relevantSettings: MyPluginSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof MyPluginSettings) => {
+		const  settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof FitSettings) => {
 			if (settings.hasOwnProperty(key)) {
 				obj[key] = settings[key];
 			}
-			obj[key] = settings[key];
 			return obj;
-		}, {} as MyPluginSettings);
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, relevantSettings);
+		}, {} as FitSettings);
+		this.settings = settingsObj
 	}
 
 	async loadLocalStore() {
 		const localStore = await this.loadData()
-		const relevantStore: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce((obj, key: keyof LocalStores) => {
+		const localStoreObj: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce((obj, key: keyof LocalStores) => {
 			if (localStore.hasOwnProperty(key)) {
 				obj[key] = localStore[key];
 			}
 			return obj;
 		}, {} as LocalStores);
-		this.localStore = Object.assign({}, DEFAULT_LOCAL_STORE, relevantStore)
+		this.localStore = localStoreObj
 	}
 
 	// allow saving of local stores property, passed in properties will override existing stored value
 	async saveLocalStore() {
 		const data = await this.loadData()
 		await this.saveData({...data, ...this.localStore})
+		// sync local store to Fit class as well upon saving
+		this.fit.loadLocalStore(this.localStore)
 	}
 
 	async saveSettings() {
 		const data = await this.loadData()
 		await this.saveData({...data, ...this.settings});
-	}
-}
-
-class ComputeFileLocalShaModal extends Modal {
-	queryFile: string;
-	onSubmit: (result: string) => void;
-
-	constructor(app: App, onSubmit: (result: string) => void) {
-		super(app);
-		this.onSubmit = onSubmit;
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.createEl("h1", { text: "Input the filename you want to compute local Sha for:" });
-		new Setting(contentEl)
-		.setName("Name")
-		.addText((text) =>
-			text.onChange((value) => {
-			this.queryFile = value
-			}));
-
-		new Setting(contentEl)
-		.addButton((btn) =>
-			btn
-			.setButtonText("Submit")
-			.setCta()
-			.onClick(() => {
-				this.close();
-				this.onSubmit(this.queryFile);
-			}));
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Github Personal Access Token')
-			.setDesc('Remember to give it the appropriate access for reading and writing to the storage repo.')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.pat)
-				.onChange(async (value) => {
-					this.plugin.settings.pat = value;
-					await this.plugin.saveSettings();
-				}));
-		new Setting(containerEl)
-			.setName('Github Username')
-			.setDesc('Your Github handle.')
-			.addText(text => text
-				.setPlaceholder('Enter your username')
-				.setValue(this.plugin.settings.owner)
-				.onChange(async (value) => {
-					this.plugin.settings.owner = value;
-					await this.plugin.saveSettings();
-				}));
-		new Setting(containerEl)
-			.setName('Github Repository Name')
-			.setDesc('The repo you dedicate to tracking this vault.')
-			.addText(text => text
-				.setPlaceholder('Enter your repository name')
-				.setValue(this.plugin.settings.repo)
-				.onChange(async (value) => {
-					this.plugin.settings.repo = value;
-					await this.plugin.saveSettings();
-				}));
-		new Setting(containerEl)
-			.setName('Branch Name')
-			.setDesc('The branch name you set to push to (default to main)')
-			.addText(text => text
-				.setPlaceholder('Enter the branch name')
-				.setValue(this.plugin.settings.branch)
-				.onChange(async (value) => {
-					this.plugin.settings.branch = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Device Name')
-			.setDesc('The name of this device, used to decorate commit message')
-			.addText(text => text
-				.setPlaceholder('Enter device name')
-				.setValue(this.plugin.settings.deviceName)
-				.onChange(async (value) => {
-					this.plugin.settings.deviceName = value;
-					await this.plugin.saveSettings();
-				}));
+		// sync settings to Fit class as well upon saving
+		this.fit.loadSettings(this.settings)
 	}
 }
