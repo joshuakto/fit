@@ -14,8 +14,8 @@ This plugin is designed to be as simple as possible, and include only the push a
 3. Enters the created token along with other relevant github information on the Fit settings tab.
 
 # Acknowledgements
-This plugin is built using Obsidian Sample Plugin as a template.
-This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
+ - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
+ - This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
 
 <!--- 
 ## Releasing new releases
