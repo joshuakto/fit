@@ -15,6 +15,7 @@ This plugin is designed to be as simple as possible, and include only the push a
 
 # Acknowledgements
 This plugin is built using Obsidian Sample Plugin as a template.
+This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
 
 <!--- 
 ## Releasing new releases
