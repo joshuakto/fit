@@ -12,6 +12,8 @@ This plugin is designed to be as simple as possible, and include only the push a
 1. Create a repo on github
 2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
 3. Enters the created token along with other relevant github information on the Fit settings tab.
+<img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
+4. Click pull to fetch from the repo / Click push to upload local vault to the remote repository.
 
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
