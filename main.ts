@@ -42,6 +42,8 @@ export default class FitPlugin extends Plugin {
 	vaultOps: VaultOperations;
 	fitPull: FitPull
 	fitPush: FitPush
+	fitPullRibbonIconEl: HTMLElement
+	fitPushRibbonIconEl: HTMLElement
 	
 	
 
@@ -79,33 +81,52 @@ export default class FitPlugin extends Plugin {
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
 
 		// Pull remote to local
-		this.addRibbonIcon('github', 'Fit pull', async (evt: MouseEvent) => {
-			if (!this.checkSettingsConfigured()) { return }
+		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
+			this.fitPullRibbonIconEl.addClass('animate-icon')
+			if (!this.checkSettingsConfigured()) { 
+				this.fitPullRibbonIconEl.removeClass('animate-icon')
+				return
+			}
 			await this.loadLocalStore()
 			const checkResult = await this.fitPull.performPrePullChecks()
-			if (!checkResult) {return }// early return to abort pull
+			if (!checkResult) {
+				this.fitPullRibbonIconEl.removeClass('animate-icon')
+				return
+			}// early return to abort pull
 			await this.fitPull.pullRemoteToLocal(...[...checkResult, this.saveLocalStoreCallback])
+			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 
+		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
+		
+
 		// Push local to remote
-		const ribbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
-			if (!this.checkSettingsConfigured()) { return }
+		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
+			this.fitPushRibbonIconEl.addClass('animate-icon')
+			if (!this.checkSettingsConfigured()) { 
+				this.fitPushRibbonIconEl.removeClass('animate-icon')
+				return
+			}
 			await this.loadLocalStore()
 			const checksResult = await this.fitPush.performPrePushChecks()
-			if (!checksResult) {return} // early return if prepush checks not passed
+			if (!checksResult) {
+				this.fitPushRibbonIconEl.removeClass('animate-icon')
+				return
+			} // early return if prepush checks not passed
 			const [changedFiles, latestRemoteCommitSha] = checksResult
 			await this.fitPush.pushChangedFilesToRemote(
 				changedFiles, latestRemoteCommitSha, this.saveLocalStoreCallback)
+			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
 		
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+		// add class to ribbon element to afford styling, refer to styles.css
+		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		const statusBarItemEl = this.addStatusBarItem();
 		statusBarItemEl.setText('Status Bar Text');
 
-		// This adds a simple command that can be triggered anywhere
+		// Command for computing an inputed file path's local sha for debugging purposes
 		this.addCommand({
 			id: 'compute-file-local-sha',
 			name: 'Compute local sha for file (Debug)',
@@ -120,14 +141,22 @@ export default class FitPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		// Check remote every 5 minutes to see if there are new commits
+		this.registerInterval(window.setInterval(async () => {
+			if (this.checkSettingsConfigured()) {
+				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
+				if (updatedRemoteCommitSha) {
+					console.log(`Remote updated, latest remote commit sha: ${updatedRemoteCommitSha}.`)
+				} else {
+					console.log(`Local copy up to date.`)
+				}
+			}
+		}, 5 * 60 * 1000));
 
 		// for debugging
 		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
 			await this.loadLocalStore()
 			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			// Since remote changes are detected, get the latest remote tree
 			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
 			this.localStore.localSha = await this.fit.computeLocalSha()
 			this.localStore.lastFetchedRemoteSha = remoteSha

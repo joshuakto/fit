@@ -55,11 +55,20 @@ export class FitPull implements IFitPull {
         return {clashedFiles, remoteOnly}
     }
 
+    // return null if remote doesn't have updates otherwise, return the latestRemoteCommitSha
+    async remoteHasUpdates(): Promise<string | null> {
+        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
+            return null
+        }
+        return latestRemoteCommitSha
+    }
+
     async performPrePullChecks(): Promise<null | [
         RemoteChange[], {[k:string]: string}, string
     ]> {
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
+        const latestRemoteCommitSha = await this.remoteHasUpdates()
+        if (!latestRemoteCommitSha) {
             new Notice("Local copy already up to date")
             return null
         }
