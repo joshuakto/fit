@@ -6,8 +6,6 @@ import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { VaultOperations } from 'src/vaultOps';
 
-// Remember to rename these classes and interfaces!
-
 export interface FitSettings {
 	pat: string;
 	owner: string;
@@ -62,6 +60,13 @@ export default class FitPlugin extends Plugin {
 		this.fit.loadSettings(this.settings)
 		return true
 	}
+
+	// use of arrow functions to ensure this refers to the FitPlugin class
+	saveLocalStoreCallback = async (localStore: Partial<LocalStores>): Promise<void> => {
+		await this.loadLocalStore()
+		this.localStore = {...this.localStore, ...localStore}
+		await this.saveLocalStore()
+	}
 	
 
 
@@ -73,89 +78,24 @@ export default class FitPlugin extends Plugin {
 		this.fitPull = new FitPull(this.fit, this.vaultOps)
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
 
-		// pull remote to local
+		// Pull remote to local
 		this.addRibbonIcon('github', 'Fit pull', async (evt: MouseEvent) => {
-			if (!this.checkSettingsConfigured()) {
-				return
-			}
+			if (!this.checkSettingsConfigured()) { return }
 			await this.loadLocalStore()
-			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			const checkResult = await this.fitPull.performPrePullChecks(latestRemoteCommitSha)
-			if (!checkResult) {
-				return // early return to abort pull
-			}
-			const [remoteChanges, remoteSha] = checkResult
-
-			const deleteFromLocal = remoteChanges.filter(c=>c.status=="removed").map(c=>c.path)
-			const changesToProcess = remoteChanges.filter(c=>c.status!="removed").reduce(
-				(acc, change) => {
-					acc[change.path] = change.currentSha;
-					return acc;
-				}, {} as Record<string, string>);
-
-			const addToLocal = await this.fitPull.getRemoteNonDeletionChangesContent(changesToProcess)
-			
-			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
-			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
-			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
-			this.localStore.lastFetchedRemoteSha = remoteSha
-			this.localStore.localSha = await this.fit.computeLocalSha()
-			await this.saveLocalStore()
-			new Notice("Pull complete, local copy up to date.")
+			const checkResult = await this.fitPull.performPrePullChecks()
+			if (!checkResult) {return }// early return to abort pull
+			await this.fitPull.pullRemoteToLocal(...[...checkResult, this.saveLocalStoreCallback])
 		});
 
-		// for debugging
-		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
+		// Push local to remote
+		const ribbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
+			if (!this.checkSettingsConfigured()) { return }
 			await this.loadLocalStore()
-			// const {data: latestRemoteCommit} = await this.fit.getRef(`heads/${this.settings.branch}`)
-			// const latestRemoteCommitSha = latestRemoteCommit.object.sha;
-			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			// Since remote changes are detected, get the latest remote tree
-			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-			this.localStore.localSha = await this.fit.computeLocalSha()
-			this.localStore.lastFetchedRemoteSha = remoteSha
-			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
-			await this.saveLocalStore()
-		})
-
-		// push local to remote
-		const ribbonIconEl = this.addRibbonIcon('github', 'Fit', async (evt: MouseEvent) => {
-			if (!this.checkSettingsConfigured()) {
-				return
-			}
-			await this.loadLocalStore()
-			// https://dev.to/lucis/how-to-push-files-programatically-to-a-repository-using-octokit-with-typescript-1nj0
-			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			if (!await this.fitPush.performPrePushChecks()) {
-				// TODO incoporate more checks into the above func
-				return
-			}
-			const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
-			const localSha = await this.fit.computeLocalSha()
-			const changedFiles = await this.fitPush.getLocalChanges(localSha)
-
-			if (changedFiles.length == 0) {
-				new Notice("No local changes detected.")
-				return
-			}
-
-			const treeNodes = await Promise.all(changedFiles.map((f) => {
-				return this.fit.createTreeNodeFromFile(f)
-			}))
-
-			const {data: newTree} = await this.fit.createTree(treeNodes, latestCommit.tree.sha)
-			const {data: newCommit} = await this.fit.createCommit(newTree.sha, latestRemoteCommitSha)
-			const {data: updatedRef} = await this.fit.updateRef(`heads/${this.settings.branch}`, newCommit.sha)
-			const updatedRemoteSha = await this.fit.getRemoteTreeSha(updatedRef.object.sha)
-			this.localStore.localSha = localSha
-			this.localStore.lastFetchedCommitSha = newCommit.sha
-			this.localStore.lastFetchedRemoteSha = updatedRemoteSha
-			this.saveLocalStore()
-			changedFiles.map(({path, type}): void=>{
-				const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
-				new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)
-			})
-			new Notice(`Successful pushed to ${this.settings.repo}`)
+			const checksResult = await this.fitPush.performPrePushChecks()
+			if (!checksResult) {return} // early return if prepush checks not passed
+			const [changedFiles, latestRemoteCommitSha] = checksResult
+			await this.fitPush.pushChangedFilesToRemote(
+				changedFiles, latestRemoteCommitSha, this.saveLocalStoreCallback)
 		});
 		
 		// Perform additional things with the ribbon
@@ -184,18 +124,19 @@ export default class FitPlugin extends Plugin {
 		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 
 		// for debugging
-		this.addRibbonIcon('combine', 'Debug', async (evt: MouseEvent) => {
-			this.loadLocalStore()
-			console.log("localSha")
-			console.log(this.localStore.localSha)
-			console.log("computedLocalSha")
-			console.log(await this.fit.computeLocalSha())
+		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
+			await this.loadLocalStore()
+			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+			// Since remote changes are detected, get the latest remote tree
+			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+			this.localStore.localSha = await this.fit.computeLocalSha()
+			this.localStore.lastFetchedRemoteSha = remoteSha
+			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
+			await this.saveLocalStore()
 		})
 	}
 
-	onunload() {
-
-	}
+	onunload() {}
 
 	async loadSettings() {
 		const settings = await this.loadData();
