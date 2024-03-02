@@ -7,6 +7,15 @@ Currently, this plugin have two major function (Pulling from and Pushing to Gith
 This plugin is designed to be as simple as possible, and include only the push and pull function of git. It is written with Octokit-js with the goal of supporting devices universally. There are other community plugins with more advanced git features, e.g. [Git](https://github.com/denolehov/obsidian-git).
 
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
+
+# How to use
+1. Create a repo on github
+2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
+3. Enters the created token along with other relevant github information on the Fit settings tab.
+
+# Acknowledgements
+This plugin is built using Obsidian Sample Plugin as a template.
+
 <!--- 
 ## Releasing new releases
 
