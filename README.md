@@ -1,4 +1,4 @@
-# Fit
+# FIT
 
 A barebone File gIT system for syncing files across devices utilizing Git.
 
