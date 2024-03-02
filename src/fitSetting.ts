@@ -18,7 +18,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Github Personal Access Token')
 			.setDesc('Remember to give it the appropriate access for reading and writing to the storage repo.')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
+				.setPlaceholder('Enter your token')
 				.setValue(this.plugin.settings.pat)
 				.onChange(async (value) => {
 					this.plugin.settings.pat = value;
