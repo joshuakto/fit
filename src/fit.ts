@@ -3,6 +3,7 @@ import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "octokit"
 
+
 export interface IFit {
     owner: string
     repo: string
@@ -35,7 +36,7 @@ export class Fit implements IFit {
         this.loadLocalStore(localStores)
         this.vault = vault
     }
-
+    
     loadSettings(setting: FitSettings) {
         this.owner = setting.owner
         this.repo = setting.repo
@@ -43,13 +44,13 @@ export class Fit implements IFit {
         this.deviceName = setting.deviceName
         this.octokit = new Octokit({auth: setting.pat})
     }
-
+    
     loadLocalStore(localStore: LocalStores) {
         this.localSha = localStore.localSha
         this.lastFetchedCommitSha = localStore.lastFetchedCommitSha
         this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha
     }
-
+    
     async fileSha1(fileContent: string): Promise<string> {
         const enc = new TextEncoder();
         const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent))

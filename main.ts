@@ -152,17 +152,6 @@ export default class FitPlugin extends Plugin {
 				}
 			}
 		}, 5 * 60 * 1000));
-
-		// for debugging
-		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
-			await this.loadLocalStore()
-			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-			this.localStore.localSha = await this.fit.computeLocalSha()
-			this.localStore.lastFetchedRemoteSha = remoteSha
-			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
-			await this.saveLocalStore()
-		})
 	}
 
 	onunload() {}
