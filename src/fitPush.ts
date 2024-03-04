@@ -1,6 +1,6 @@
 import { VaultOperations } from "./vaultOps";
 import { Fit } from "./fit";
-import { Notice } from "obsidian";
+import { Notice, TFile } from "obsidian";
 import { compareSha } from "./utils";
 import { warn } from "console";
 import { LocalStores } from "main";
@@ -58,7 +58,9 @@ export class FitPush implements IFitPush {
                 if (change.status == "removed") {
                     return {path: change.path, type: 'deleted'}
                 } else {
-                    const file = this.vaultOps.vault.getFileByPath(change.path)
+                    // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+                    const file = this.vaultOps.vault.getAbstractFileByPath(change.path) as TFile
+                    // const file = this.vaultOps.vault.getFileByPath(change.path)
                     if (!file) {
                         warn(`${file} included in local changes (added/modified) but not found`)
                         return []

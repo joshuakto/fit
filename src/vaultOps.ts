@@ -1,5 +1,5 @@
 import { warn } from "console";
-import { Notice, Vault, base64ToArrayBuffer } from "obsidian";
+import { Notice, TFile, Vault, base64ToArrayBuffer } from "obsidian";
 import { getFileEncoding } from "./utils";
 
 export interface IVaultOperations {
@@ -19,7 +19,9 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async deleteFromLocal(path: string): Promise<void> {
-        const file = this.vault.getFileByPath(path);
+        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+        const file = this.vault.getAbstractFileByPath(path)
+        // const file = this.vault.getFileByPath(path);
         if (file) {
             await this.vault.delete(file);
             new Notice(`${path} deleted from local drive.`, this.noticeDuration);
@@ -37,7 +39,10 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async writeToLocal(path: string, content: string): Promise<void> {
-        const file = this.vault.getFileByPath(path);
+        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+        // temporary fix that works temporarily since path are garanteed to be for files not folders
+        const file = this.vault.getAbstractFileByPath(path) as TFile
+        // const file = this.vault.getFileByPath(path);
         const encoding = getFileEncoding(path)
         const isBinary = encoding === "base64"
         if (file) {
