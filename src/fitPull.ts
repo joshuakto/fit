@@ -1,5 +1,5 @@
 import { VaultOperations } from "./vaultOps";
-import { ChangeType, compareSha, getFileEncoding } from "./utils";
+import { ChangeType, compareSha } from "./utils";
 import { Fit } from "./fit";
 import { Notice } from "obsidian";
 import { LocalStores } from "main";
@@ -89,11 +89,8 @@ export class FitPull implements IFitPull {
     // Get changes from remote, pathShaMap is coupled to the Fit plugin design
     async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
         const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
-            const encoding = getFileEncoding(path)
             const content = await this.fit.getBlob(file_sha);
-            const isBinary = encoding == "base64"
-            const decodedContent = isBinary ? content : atob(content);
-            return {path, content: decodedContent, encoding};
+            return {path, content};
         })
         return await Promise.all(remoteChanges)
     }
