@@ -157,7 +157,7 @@ export default class FitPlugin extends Plugin {
 	onunload() {}
 
 	async loadSettings() {
-		const settings = await this.loadData();
+		const settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		const  settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof FitSettings) => {
 			if (settings.hasOwnProperty(key)) {
 				obj[key] = settings[key];
@@ -168,7 +168,7 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async loadLocalStore() {
-		const localStore = await this.loadData()
+		const localStore = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
 		const localStoreObj: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce((obj, key: keyof LocalStores) => {
 			if (localStore.hasOwnProperty(key)) {
 				obj[key] = localStore[key];
@@ -180,14 +180,14 @@ export default class FitPlugin extends Plugin {
 
 	// allow saving of local stores property, passed in properties will override existing stored value
 	async saveLocalStore() {
-		const data = await this.loadData()
+		const data = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
 		await this.saveData({...data, ...this.localStore})
 		// sync local store to Fit class as well upon saving
 		this.fit.loadLocalStore(this.localStore)
 	}
 
 	async saveSettings() {
-		const data = await this.loadData()
+		const data = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		await this.saveData({...data, ...this.settings});
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings)
