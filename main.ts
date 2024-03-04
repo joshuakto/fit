@@ -151,6 +151,17 @@ export default class FitPlugin extends Plugin {
 			}
 		});
 
+		// Command for computing an inputed file path's local sha for debugging purposes
+		this.addCommand({
+			id: 'recompute-local-sha',
+			name: 'Update local store with new local sha, essentially ignoring local changes when pulling/pushing (Debug)',
+			callback: async () => {
+				this.localStore.localSha = await this.fit.computeLocalSha()
+				this.saveLocalStore()
+				new Notice("Local sha recomputed and stored, they will not be considered in future push/pull.")
+			}
+		});
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
 
