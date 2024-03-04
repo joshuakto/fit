@@ -133,7 +133,7 @@ export default class FitPlugin extends Plugin {
 			callback: () => {
 				new ComputeFileLocalShaModal(
 					this.app, 
-					async (queryFile) => console.log(await this.vaultOps.ensureFolderExists(queryFile))
+					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
 				).open();
 			}
 		});
@@ -146,9 +146,19 @@ export default class FitPlugin extends Plugin {
 				new DebugModal(
 					this.app, 
 					async (i) => {
-						
-						console.log(await this.fit.getRef(i))
-						console.log(await this.fit.getCommitTreeSha(i))
+						console.log(`displaying info for ref: ${i}`)
+						// const latestRemoteCommitSha = await this.fit.getRef(i)
+						const latestCommitTreeSha = await this.fit.getCommitTreeSha(i)
+						// TEST PULL
+						console.log(await this.fit.getTree(latestCommitTreeSha))
+
+						// TEST PUSH
+						// const treeNode1 = await this.fit.createTreeNodeFromFile({path: "Testing.md", type: "deleted"})
+						// const treeNode2 = await this.fit.createTreeNodeFromFile({path: "mountFuji.jpeg", type: "created", extension: "jpeg"})
+						// const treeSha = await this.fit.createTree([treeNode1, treeNode2], latestCommitTreeSha)
+						// console.log("create commit")
+						// console.log(await this.fit.createCommit(treeSha, latestRemoteCommitSha))
+
 					}
 				).open();
 			}

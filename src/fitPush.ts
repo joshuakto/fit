@@ -81,6 +81,7 @@ export class FitPush implements IFitPush {
         latestRemoteCommitSha: string, 
         saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>):
         Promise<void> {
+            // OLD VERSION:
             // const treeNodes = await Promise.all(changedFiles.map((f) => {
             //     return this.fit.createTreeNodeFromFile(f)
             // }))
@@ -90,10 +91,22 @@ export class FitPush implements IFitPush {
             // const {data: updatedRef} = await this.fit.updateRef(`heads/${this.fit.branch}`, newCommit.sha)
             // const updatedRemoteSha = await this.fit.getRemoteTreeSha(updatedRef.object.sha)
             // await saveLocalStoreCallback({
-            //     lastFetchedRemoteSha: updatedRemoteSha, 
-            //     lastFetchedCommitSha: newCommit.sha,
-            //     localSha: await this.fit.computeLocalSha()
-            // })
+                //     lastFetchedRemoteSha: updatedRemoteSha, 
+                //     lastFetchedCommitSha: newCommit.sha,
+                //     localSha: await this.fit.computeLocalSha()
+                // })
+            
+                
+            // NEW VERSION:
+            // const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+            const treeNodes = await Promise.all(changedFiles.map((f) => {
+                return this.fit.createTreeNodeFromFile(f)
+            }))
+            const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(latestRemoteCommitSha)
+            const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
+            const createdCommitSha = await this.fit.createCommit(createdTreeSha, latestRemoteCommitSha)
+            await this.fit.updateRef(createdCommitSha)
+
             await saveLocalStoreCallback({
                 lastFetchedRemoteSha: {"updatedRemoteSha": ""}, 
                 lastFetchedCommitSha: "newCommit.sha",

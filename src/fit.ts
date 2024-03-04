@@ -4,7 +4,7 @@ import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
 import {restEndpointMethods} from "@octokit/plugin-rest-endpoint-methods"
 
-
+type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
 export interface IFit {
     owner: string
@@ -88,169 +88,166 @@ export class Fit implements IFit {
                 owner: this.owner,
                 repo: this.repo,
                 ref: ref,
-                headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-                }
+                headers: {'X-GitHub-Api-Version': '2022-11-28'}
         })
         return response.data.object.sha
     }
 
-
-    // async getRef(ref: string): Promise<RestEndpointMethodTypes["git"]["getRef"]["response"]> {
-    //     return this.octokit.rest.git.getRef({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         ref,
-    //         // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-    //         headers: {
-    //             "If-None-Match": ''
-    //         }
-    //     })
-    // }
-
     // Get the sha of the latest commit in the default branch (set by user in setting)
-    async getLatestRemoteCommitSha(): Promise<string> {
-        return await this.getRef(`heads/${this.branch}`)
-        // return latestRef.object.sha
-        // const {data: latestRef} = await this.getRef(`heads/${this.branch}`)
-        // return latestRef.object.sha
+    async getLatestRemoteCommitSha(ref = `heads/${this.branch}`): Promise<string> {
+        return await this.getRef(ref)
     }
 
+    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME), refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
     async getCommitTreeSha(ref: string): Promise<string> {
-        const {data: commit} =  await this.octokit.request( `GET /repos/${this.owner}/${this.repo}/commits/${ref}`,
-            {
-                owner: this.owner,
-                repo: this.repo,
-                ref,
-                // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-                headers: {
-                    "If-None-Match": ''
-                }
+        const {data: commit} =  await this.octokit.request( `GET /repos/${this.owner}/${this.repo}/commits/${ref}`, {
+            owner: this.owner,
+            repo: this.repo,
+            ref,
+            // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
+            headers: {
+                "If-None-Match": '',
+                'X-GitHub-Api-Version': '2022-11-28'
+            },
         })
         return commit.commit.tree.sha
     }
 
-    // async getCommit(commit_sha: string): Promise<RestEndpointMethodTypes["git"]["getCommit"]["response"]> {
-    //     return this.octokit.rest.git.getCommit({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         commit_sha,
-    //         // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-    //         headers: {
-    //             "If-None-Match": ''
-    //         }
-    //     })
-    // }
+    async getTree(tree_sha: string): Promise<TreeNode[]> {
+        const { data: tree } =  await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/trees/${tree_sha}`, {
+            owner: this.owner,
+            repo: this.repo,
+            tree_sha,
+            recursive: 'true',
+            headers: {'X-GitHub-Api-Version': '2022-11-28'}
+        })
+        return tree.tree
+    }
 
-    // async getTree(tree_sha: string): Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]> {
-    //     const tree =  await this.octokit.rest.git.getTree({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         tree_sha,
-    //         recursive: 'true'
-    //     })
-    //     return tree
-    // }
+    // get the remote tree sha in the format compatible with local store
+    async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
+        const remoteTree = await this.getTree(tree_sha)
+        const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
+            // currently ignoreing directory changes
+            if (node.type=="blob") {
+                if (!node.path || !node.sha) {
+                    throw new Error("Path or sha not found for blob node in remote");
+                }
+                return [node.path, node.sha]
+            }
+            return null
+        }).filter(Boolean) as [string, string][])
+        return remoteSha
+    }
 
-    // // get the remote tree sha in the format compatible with local store
-    // async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
-    //     const {data: remoteTree} = await this.getTree(tree_sha)
-    //     const remoteSha = Object.fromEntries(remoteTree.tree.map((node) : [string, string] | null=>{
-    //         // currently ignoreing directory changes
-    //         if (node.type=="blob") {
-    //             if (!node.path || !node.sha) {
-    //                 throw new Error("Path and sha not found for blob node in remote");
-    //             }
-    //             return [node.path, node.sha]
-    //         }
-    //         return null
-    //     }).filter(Boolean) as [string, string][])
-    //     return remoteSha
-    // }
+    async createBlob(content: string, encoding: string): Promise<string> {
+        const {data: blob} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/blobs`, {
+            owner: this.owner,
+            repo: this.repo,
+            content, 
+            encoding,
+            headers: {
+                'X-GitHub-Api-Version': '2022-11-28'
+              }            
+        })
+        return blob.sha
+    }
 
-    // async createBlob(content: string, encoding: string): Promise<RestEndpointMethodTypes["git"]["createBlob"]["response"]> {
-    //     const blob = await this.octokit.rest.git.createBlob({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         content, encoding
-    //     })
-    //     return blob
-    // }
 
-    // async createTreeNodeFromFile(
-	// 	{path, type, extension}: {path: string, type: string, extension?: string}): 
-	// 	Promise<RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"][number]> {
-	// 	if (type === "deleted") {
-	// 		return {
-	// 			path,
-	// 			mode: '100644',
-	// 			type: 'blob',
-	// 			sha: null
-	// 		}
-	// 	}
-	// 	if (!this.vault.adapter.exists(path)) {
-	// 		throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
-	// 	}
-	// 	let encoding: string;
-	// 	let content: string 
-	// 	if (extension && ["pdf", "png", "jpeg"].includes(extension)) {
-	// 		encoding = "base64"
-	// 		const fileArrayBuf = await this.vault.adapter.readBinary(path)
-	// 		const uint8Array = new Uint8Array(fileArrayBuf);
-	// 		let binaryString = '';
-	// 		for (let i = 0; i < uint8Array.length; i++) {
-	// 			binaryString += String.fromCharCode(uint8Array[i]);
-	// 		}
-	// 		content = btoa(binaryString);
-	// 	} else {
-	// 		encoding = 'utf-8'
-	// 		content = await this.vault.adapter.read(path)
-	// 	}
-	// 	const blob = await this.createBlob(content, encoding)
-	// 	return {
-	// 		path: path,
-	// 		mode: '100644',
-	// 		type: 'blob',
-	// 		sha: blob.data.sha
-	// 	}
-	// }
+    async createTreeNodeFromFile({path, type, extension}: {path: string, type: string, extension?: string}): Promise<TreeNode> {
+		if (type === "deleted") {
+			return {
+				path,
+				mode: '100644',
+				type: 'blob',
+				sha: null
+			}
+		}
+		if (!this.vault.adapter.exists(path)) {
+			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
+		}
+		let encoding: string;
+		let content: string 
+		if (extension && ["pdf", "png", "jpeg"].includes(extension)) {
+			encoding = "base64"
+			const fileArrayBuf = await this.vault.adapter.readBinary(path)
+			const uint8Array = new Uint8Array(fileArrayBuf);
+			let binaryString = '';
+			for (let i = 0; i < uint8Array.length; i++) {
+				binaryString += String.fromCharCode(uint8Array[i]);
+			}
+			content = btoa(binaryString);
+		} else {
+			encoding = 'utf-8'
+			content = await this.vault.adapter.read(path)
+		}
+		const blobSha = await this.createBlob(content, encoding)
+		return {
+			path: path,
+			mode: '100644',
+			type: 'blob',
+			sha: blobSha,
+		}
+	}
 
-    // async createTree(
-    //     treeNode: RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"], base_tree_sha: string): 
-    //     Promise<RestEndpointMethodTypes["git"]["createTree"]["response"]> {
-    //     return await this.octokit.rest.git.createTree({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         tree: treeNode,
-    //         base_tree: base_tree_sha
-    //     })
-    // }
+    async createTree(
+        treeNodes: Array<TreeNode>,
+        base_tree_sha: string): 
+        Promise<string> {
+        const {data: newTree} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/trees`, {
+            owner: this.owner,
+            repo: this.repo,
+            tree: treeNodes,
+            base_tree: base_tree_sha,
+            headers: {
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+        })
+        return newTree.sha
+    }
 
-    // async createCommit(treeSha: string, parentSha: string): Promise<RestEndpointMethodTypes["git"]["createCommit"]["response"]> {
-    //     const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
-    //     return await this.octokit.rest.git.createCommit({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         message,
-    //         tree: treeSha,
-    //         parents: [parentSha]
-    //     })
-    // }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createCommit(treeSha: string, parentSha: string): Promise<string> {
+        const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
+        const { data: createdCommit } = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/commits` ,{
+            owner: this.owner,
+            repo: this.repo,
+            message,
+            tree: treeSha,
+            parents: [parentSha],
+            headers: {
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+        })
+        return createdCommit.sha
+    }
 
-    // async updateRef(ref: string, sha: string): Promise<RestEndpointMethodTypes["git"]["updateRef"]["response"]> {
-    //     return await this.octokit.rest.git.updateRef({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         ref,
-    //         sha
-    //     })
-    // }
+    async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<void> {
+        await this.octokit.request(`PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
+            owner: this.owner,
+            repo: this.repo,
+            ref,
+            sha,
+            headers: {
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+        })
+    }
 
-    // async getBlob(file_sha:string): Promise<RestEndpointMethodTypes["git"]["getBlob"]["response"]> {
-    //     return await this.octokit.rest.git.getBlob({
-    //         owner: this.owner,
-    //         repo: this.repo,
-    //         file_sha
-    //     })
-    // }
+    async getBlob(file_sha:string): Promise<string> {
+        const { data: blob } = await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/blobs/${file_sha}`, {
+            owner: this.owner,
+            repo: this.repo,
+            file_sha,
+            headers: {
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+        })
+        return blob.content
+        // await this.octokit.rest.git.getBlob({
+        //     owner: this.owner,
+        //     repo: this.repo,
+        //     file_sha
+        // })
+    }
 }
