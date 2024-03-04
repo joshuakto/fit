@@ -1,5 +1,4 @@
 import { Notice, Platform, Plugin } from 'obsidian';
-import { ComputeFileLocalShaModal } from 'src/pluginModal';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
@@ -134,22 +133,6 @@ export default class FitPlugin extends Plugin {
 		
 		// add class to ribbon element to afford styling, refer to styles.css
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// Command for computing an inputed file path's local sha for debugging purposes
-		this.addCommand({
-			id: 'compute-file-local-sha',
-			name: 'Compute local sha for file (Debug)',
-			callback: () => {
-				new ComputeFileLocalShaModal(
-					this.app, 
-					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
-				).open();
-			}
-		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));

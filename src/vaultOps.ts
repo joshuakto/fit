@@ -1,6 +1,5 @@
 import { warn } from "console";
 import { Notice, TFile, Vault, base64ToArrayBuffer } from "obsidian";
-import { getFileEncoding } from "./utils";
 
 export interface IVaultOperations {
     vault: Vault
@@ -30,8 +29,8 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async ensureFolderExists(path: string): Promise<void> {
-        // extract folder path, return empty string is no folder path is matched
-        const folderPath = path.match(/^(.*\/)/)?.[1] || '';
+        // extract folder path, return empty string is no folder path is matched (exclude the last /)
+        const folderPath = path.match(/^(.*)\//)?.[1] || '';
         if (folderPath != "" && !(this.vault.getFolderByPath(folderPath))) {
             await this.vault.createFolder(folderPath)
         }
@@ -41,28 +40,18 @@ export class VaultOperations implements IVaultOperations {
         // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
         // temporary fix that works temporarily since path are garanteed to be for files not folders
         const file = this.vault.getAbstractFileByPath(path) as TFile
-        const encoding = getFileEncoding(path)
-        const isBinary = encoding === "base64"
         if (file) {
-            if (isBinary) {
-                await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
-            } else {
-                await this.vault.modify(file, content)
-            }
+            await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
         } else {
             this.ensureFolderExists(path)
-            if (isBinary) {
-                await this.vault.createBinary(path, base64ToArrayBuffer(content))
-            } else {
-                await this.vault.create(path, content)
-            }
+            await this.vault.createBinary(path, base64ToArrayBuffer(content))
         }
         new Notice(`${path} ${file ? 'updated' : 'copied'} to local drive.`, this.noticeDuration);
         return
     }
 
     async updateLocalFiles(
-        addToLocal: {path: string, content: string, encoding: string}[], 
+        addToLocal: {path: string, content: string}[], 
         deleteFromLocal: Array<string>) {
             // Process file additions or updates
             const writeOperations = addToLocal.map(async ({path, content}) => {
