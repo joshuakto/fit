@@ -26,7 +26,7 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
- - This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
+ - This plugin uses [Octokit](https://github.com/octokit/core.js/) to interface with github rest api across devices.
 
 <!--- 
 ## Releasing new releases
