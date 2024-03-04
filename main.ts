@@ -1,5 +1,5 @@
 import { Notice, Plugin } from 'obsidian';
-import { ComputeFileLocalShaModal } from 'pluginModal';
+import { ComputeFileLocalShaModal, DebugModal } from 'pluginModal';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
@@ -137,6 +137,24 @@ export default class FitPlugin extends Plugin {
 				).open();
 			}
 		});
+
+		// debugging
+		this.addCommand({
+			id: 'debug',
+			name: 'get ref',
+			callback: () => {
+				new DebugModal(
+					this.app, 
+					async (i) => {
+						
+						console.log(await this.fit.getRef(i))
+						console.log(await this.fit.getCommitTreeSha(i))
+					}
+				).open();
+			}
+		});
+
+		
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));

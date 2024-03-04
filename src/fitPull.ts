@@ -39,14 +39,15 @@ export class FitPull implements IFitPull {
     async getRemoteChanges(
         latestRemoteCommitSha: string): 
         Promise<[{path: string, status: ChangeType, currentSha: string}[], {[k: string]: string}]> {
-            const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-            if (!this.fit.lastFetchedRemoteSha) {
-                Object.keys(remoteTreeSha).map(path=>{
-                    return {path, status: "added" as ChangeType}
-                })
-            }
-            const remoteChanges = compareSha(remoteTreeSha, this.fit.lastFetchedRemoteSha)
-            return [remoteChanges, remoteTreeSha]
+            // const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+            // if (!this.fit.lastFetchedRemoteSha) {
+            //     Object.keys(remoteTreeSha).map(path=>{
+            //         return {path, status: "added" as ChangeType}
+            //     })
+            // }
+            // const remoteChanges = compareSha(remoteTreeSha, this.fit.lastFetchedRemoteSha)
+            // return [remoteChanges, remoteTreeSha]
+            return [[], {}]
     }
 
     getClashedChanges(localChangePaths: Array<string>, remoteChangePaths: Array<string>) {
@@ -57,11 +58,12 @@ export class FitPull implements IFitPull {
 
     // return null if remote doesn't have updates otherwise, return the latestRemoteCommitSha
     async remoteHasUpdates(): Promise<string | null> {
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
-            return null
-        }
-        return latestRemoteCommitSha
+        // const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+        // if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
+        //     return null
+        // }
+        // return latestRemoteCommitSha
+        return ""
     }
 
     async performPrePullChecks(): Promise<null | [
@@ -90,10 +92,11 @@ export class FitPull implements IFitPull {
     async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
         const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
             const encoding = getFileEncoding(path)
-            const {data} = await this.fit.getBlob(file_sha);
-            const isBinary = encoding == "base64"
-            const content = isBinary ? data.content : atob(data.content);
-            return {path, content, encoding};
+            // const {data} = await this.fit.getBlob(file_sha);
+            // const isBinary = encoding == "base64"
+            // const content = isBinary ? data.content : atob(data.content);
+            // return {path, content, encoding};
+            return {path, content: "content", encoding};
         })
         return await Promise.all(remoteChanges)
     }
