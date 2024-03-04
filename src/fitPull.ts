@@ -94,7 +94,6 @@ export class FitPull implements IFitPull {
             const isBinary = encoding == "base64"
             const decodedContent = isBinary ? content : atob(content);
             return {path, content: decodedContent, encoding};
-            // return {path, content: "content", encoding};
         })
         return await Promise.all(remoteChanges)
     }

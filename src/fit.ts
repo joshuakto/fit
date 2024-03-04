@@ -17,7 +17,15 @@ export interface IFit {
     octokit: Octokit
     vault: Vault
     fileSha1: (path: string) => Promise<string>
-    // getTree: (tree_sha: string) => Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]>
+    getTree: (tree_sha: string) => Promise<TreeNode[]>
+    getRef: (ref: string) => Promise<string>
+    getCommitTreeSha: (ref: string) => Promise<string>
+    getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
+    createBlob: (content: string, encoding: string) =>Promise<string>
+    createTreeNodeFromFile: ({path, type, extension}: {path: string, type: string, extension?: string}) => Promise<TreeNode>
+    createCommit: (treeSha: string, parentSha: string) =>Promise<string>
+    updateRef: (sha: string, ref: string) => Promise<void>
+    getBlob: (file_sha:string) =>Promise<string>
 }
 
 export class Fit implements IFit {
@@ -244,10 +252,5 @@ export class Fit implements IFit {
             }
         })
         return blob.content
-        // await this.octokit.rest.git.getBlob({
-        //     owner: this.owner,
-        //     repo: this.repo,
-        //     file_sha
-        // })
     }
 }

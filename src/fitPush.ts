@@ -30,15 +30,13 @@ export class FitPush implements IFitPush {
     }
 
     async performPrePushChecks(): Promise<null|[LocalChange[], string]> {
-        // const {data: latestRef} = await this.fit.getRef(`heads/${this.fit.branch}`)
         const localSha = await this.fit.computeLocalSha()
         const changedFiles = await this.getLocalChanges(localSha)
         if (changedFiles.length == 0) {
             new Notice("No local changes detected.")
             return null
         }
-        // const latestRemoteCommitSha = latestRef.object.sha;
-        const latestRemoteCommitSha = "latestRef.object.sha";
+        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha();
         if (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) {
             new Notice("Remote changed after last pull/write, please pull again.")
 				return null
@@ -81,24 +79,6 @@ export class FitPush implements IFitPush {
         latestRemoteCommitSha: string, 
         saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>):
         Promise<void> {
-            // OLD VERSION:
-            // const treeNodes = await Promise.all(changedFiles.map((f) => {
-            //     return this.fit.createTreeNodeFromFile(f)
-            // }))
-            // const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
-            // const {data: newTree} = await this.fit.createTree(treeNodes, latestCommit.tree.sha)
-            // const {data: newCommit} = await this.fit.createCommit(newTree.sha, latestRemoteCommitSha)
-            // const {data: updatedRef} = await this.fit.updateRef(`heads/${this.fit.branch}`, newCommit.sha)
-            // const updatedRemoteSha = await this.fit.getRemoteTreeSha(updatedRef.object.sha)
-            // await saveLocalStoreCallback({
-                //     lastFetchedRemoteSha: updatedRemoteSha, 
-                //     lastFetchedCommitSha: newCommit.sha,
-                //     localSha: await this.fit.computeLocalSha()
-                // })
-            
-                
-            // NEW VERSION:
-            // const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
             const treeNodes = await Promise.all(changedFiles.map((f) => {
                 return this.fit.createTreeNodeFromFile(f)
             }))
