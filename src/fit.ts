@@ -1,4 +1,3 @@
-// import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods"
 import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
