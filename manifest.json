@@ -1,7 +1,7 @@
 {
 	"id": "fit",
 	"name": "Fit",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"minAppVersion": "0.15.0",
 	"description": "File gIT - a barebone git system for files in obsidian",
 	"author": "joshuakto",
