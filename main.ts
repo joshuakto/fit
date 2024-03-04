@@ -133,7 +133,7 @@ export default class FitPlugin extends Plugin {
 			callback: () => {
 				new ComputeFileLocalShaModal(
 					this.app, 
-					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
+					async (queryFile) => console.log(await this.vaultOps.ensureFolderExists(queryFile))
 				).open();
 			}
 		});
@@ -155,13 +155,14 @@ export default class FitPlugin extends Plugin {
 
 		// for debugging
 		this.addRibbonIcon('github', 'Update Local Store (Debug)', async (evt: MouseEvent) => {
-			await this.loadLocalStore()
-			const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-			const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-			this.localStore.localSha = await this.fit.computeLocalSha()
-			this.localStore.lastFetchedRemoteSha = remoteSha
-			this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
-			await this.saveLocalStore()
+			// await this.loadLocalStore()
+			// const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
+			// const remoteSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+			// this.localStore.localSha = await this.fit.computeLocalSha()
+			// this.localStore.lastFetchedRemoteSha = remoteSha
+			// this.localStore.lastFetchedCommitSha = latestRemoteCommitSha
+			// await this.saveLocalStore()
+			await this.app.vault.createFolder('a/b/c/d/e/f/g')
 		})
 	}
 

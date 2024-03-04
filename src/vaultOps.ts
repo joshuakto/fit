@@ -28,6 +28,14 @@ export class VaultOperations implements IVaultOperations {
         warn(`Attempting to delete ${path} from local but not found.`)
     }
 
+    async ensureFolderExists(path: string): Promise<void> {
+        // extract folder path, return empty string is no folder path is matched
+        const folderPath = path.match(/^(.*\/)/)?.[1] || '';
+        if (folderPath != "" && !(this.vault.getFolderByPath(folderPath))) {
+            await this.vault.createFolder(folderPath)
+        }
+    }
+
     async writeToLocal(path: string, content: string): Promise<void> {
         const file = this.vault.getFileByPath(path);
         const encoding = getFileEncoding(path)
@@ -39,6 +47,7 @@ export class VaultOperations implements IVaultOperations {
                 await this.vault.modify(file, content)
             }
         } else {
+            this.ensureFolderExists(path)
             if (isBinary) {
                 await this.vault.createBinary(path, base64ToArrayBuffer(content))
             } else {
