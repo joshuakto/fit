@@ -60,7 +60,6 @@ export class FitPush implements IFitPush {
                 } else {
                     // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
                     const file = this.vaultOps.vault.getAbstractFileByPath(change.path) as TFile
-                    // const file = this.vaultOps.vault.getFileByPath(change.path)
                     if (!file) {
                         warn(`${file} included in local changes (added/modified) but not found`)
                         return []

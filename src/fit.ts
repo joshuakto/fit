@@ -135,7 +135,7 @@ export class Fit implements IFit {
     async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
         const remoteTree = await this.getTree(tree_sha)
         const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
-            // currently ignoreing directory changes
+            // currently ignoring directory changes, if you'd like to upload a new directory, a quick hack would be creating an empty file inside
             if (node.type=="blob") {
                 if (!node.path || !node.sha) {
                     throw new Error("Path or sha not found for blob node in remote");
