@@ -85,13 +85,15 @@ export class FitPush implements IFitPush {
             const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(latestRemoteCommitSha)
             const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
             const createdCommitSha = await this.fit.createCommit(createdTreeSha, latestRemoteCommitSha)
-            await this.fit.updateRef(createdCommitSha)
+            const updatedRefSha = await this.fit.updateRef(createdCommitSha)
+            const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 
             await saveLocalStoreCallback({
-                lastFetchedRemoteSha: {"updatedRemoteSha": ""}, 
-                lastFetchedCommitSha: "newCommit.sha",
+                lastFetchedRemoteSha: updatedRemoteTreeSha, 
+                lastFetchedCommitSha: createdCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
+
             changedFiles.map(({path, type}): void=>{
                 const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
                 new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)

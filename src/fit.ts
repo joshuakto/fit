@@ -2,7 +2,6 @@
 import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
-import {restEndpointMethods} from "@octokit/plugin-rest-endpoint-methods"
 
 type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
@@ -10,6 +9,7 @@ export interface IFit {
     owner: string
     repo: string
     branch: string
+    headers: {[k: string]: string}
     deviceName: string
     localSha: Record<string, string>
 	lastFetchedCommitSha: string | null
@@ -24,7 +24,7 @@ export interface IFit {
     createBlob: (content: string, encoding: string) =>Promise<string>
     createTreeNodeFromFile: ({path, type, extension}: {path: string, type: string, extension?: string}) => Promise<TreeNode>
     createCommit: (treeSha: string, parentSha: string) =>Promise<string>
-    updateRef: (sha: string, ref: string) => Promise<void>
+    updateRef: (sha: string, ref: string) => Promise<string>
     getBlob: (file_sha:string) =>Promise<string>
 }
 
@@ -33,6 +33,7 @@ export class Fit implements IFit {
     repo: string
     auth: string | undefined
     branch: string
+    headers: {[k: string]: string}
     deviceName: string
     localSha: Record<string, string>
 	lastFetchedCommitSha: string | null
@@ -45,7 +46,10 @@ export class Fit implements IFit {
         this.loadSettings(setting)
         this.loadLocalStore(localStores)
         this.vault = vault
-        restEndpointMethods
+        this.headers = {
+            "If-None-Match": '', // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
+            'X-GitHub-Api-Version': '2022-11-28'
+        }
     }
     
     loadSettings(setting: FitSettings) {
@@ -96,7 +100,7 @@ export class Fit implements IFit {
                 owner: this.owner,
                 repo: this.repo,
                 ref: ref,
-                headers: {'X-GitHub-Api-Version': '2022-11-28'}
+                headers: this.headers
         })
         return response.data.object.sha
     }
@@ -112,11 +116,7 @@ export class Fit implements IFit {
             owner: this.owner,
             repo: this.repo,
             ref,
-            // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-            headers: {
-                "If-None-Match": '',
-                'X-GitHub-Api-Version': '2022-11-28'
-            },
+            headers: this.headers
         })
         return commit.commit.tree.sha
     }
@@ -127,7 +127,7 @@ export class Fit implements IFit {
             repo: this.repo,
             tree_sha,
             recursive: 'true',
-            headers: {'X-GitHub-Api-Version': '2022-11-28'}
+            headers: this.headers
         })
         return tree.tree
     }
@@ -154,9 +154,7 @@ export class Fit implements IFit {
             repo: this.repo,
             content, 
             encoding,
-            headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-              }            
+            headers: this.headers     
         })
         return blob.sha
     }
@@ -207,9 +205,7 @@ export class Fit implements IFit {
             repo: this.repo,
             tree: treeNodes,
             base_tree: base_tree_sha,
-            headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-            }
+            headers: this.headers
         })
         return newTree.sha
     }
@@ -223,23 +219,20 @@ export class Fit implements IFit {
             message,
             tree: treeSha,
             parents: [parentSha],
-            headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-            }
+            headers: this.headers
         })
         return createdCommit.sha
     }
 
-    async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<void> {
-        await this.octokit.request(`PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
+    async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<string> {
+        const { data:updatedRef } = await this.octokit.request(`PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
             sha,
-            headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-            }
+            headers: this.headers
         })
+        return updatedRef.object.sha
     }
 
     async getBlob(file_sha:string): Promise<string> {
@@ -247,9 +240,7 @@ export class Fit implements IFit {
             owner: this.owner,
             repo: this.repo,
             file_sha,
-            headers: {
-                'X-GitHub-Api-Version': '2022-11-28'
-            }
+            headers: this.headers
         })
         return blob.content
     }
