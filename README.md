@@ -22,7 +22,7 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 # Roadmap
 1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
-2. Inject verbose notice for mobile usage (to display pull/push progress).
+2. Enable verbose notice for mobile users (to indicate pull/push progress).
 
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
