@@ -1,10 +1,11 @@
-import { Notice, Plugin } from 'obsidian';
-import { ComputeFileLocalShaModal } from 'pluginModal';
+import { Notice, Platform, Plugin } from 'obsidian';
+import { ComputeFileLocalShaModal, DebugModal } from 'pluginModal';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { VaultOperations } from 'src/vaultOps';
+
 
 export interface FitSettings {
 	pat: string;
@@ -12,6 +13,7 @@ export interface FitSettings {
 	repo: string;
 	branch: string;
 	deviceName: string;
+	verbose: boolean;
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -20,6 +22,16 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
+	verbose: false
+}
+
+const DEFAULT_MOBILE_SETTINGS: FitSettings = {
+	pat: "<Personal-Access-Token>",
+	owner: "<Github-Username>",
+	repo: "<Repository-Name>",
+	branch: "main",
+	deviceName: "",
+	verbose: true
 }
 
 export interface LocalStores {
@@ -37,6 +49,7 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
+
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
@@ -73,7 +86,7 @@ export default class FitPlugin extends Plugin {
 
 
 	async onload() {
-		await this.loadSettings();
+		await this.loadSettings(Platform.isMobile);
 		await this.loadLocalStore();
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
 		this.vaultOps = new VaultOperations(this.app.vault)
@@ -133,10 +146,30 @@ export default class FitPlugin extends Plugin {
 			callback: () => {
 				new ComputeFileLocalShaModal(
 					this.app, 
-					async (queryFile) => console.log(await this.vaultOps.ensureFolderExists(queryFile))
+					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
 				).open();
 			}
 		});
+
+		// debugging
+		this.addCommand({
+			id: 'debug',
+			name: 'debug',
+			callback: () => {
+				new DebugModal(
+					this.app, 
+					async (i) => {
+						console.log("DEBUGGING")
+						console.log(this.settings)
+						console.log(Platform.isMobile)
+						console.log(this.fit.lastFetchedCommitSha)
+						console.log(await this.fit.getLatestRemoteCommitSha())
+					}
+				).open();
+			}
+		});
+
+		
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
@@ -156,11 +189,19 @@ export default class FitPlugin extends Plugin {
 
 	onunload() {}
 
-	async loadSettings() {
-		const settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		const  settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof FitSettings) => {
+	async loadSettings(isMobile?: boolean) {
+		const userSetting = await this.loadData()
+		let settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
+		if (isMobile && !userSetting) {
+			settings = Object.assign({}, DEFAULT_MOBILE_SETTINGS);
+		}
+		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof FitSettings) => {
 			if (settings.hasOwnProperty(key)) {
-				obj[key] = settings[key];
+				if (key == "verbose") {
+					obj[key] = Boolean(settings["verbose"]);
+				} else {
+					obj[key] = settings[key];
+				}
 			}
 			return obj;
 		}, {} as FitSettings);

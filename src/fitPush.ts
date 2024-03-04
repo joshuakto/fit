@@ -1,6 +1,6 @@
 import { VaultOperations } from "./vaultOps";
 import { Fit } from "./fit";
-import { Notice } from "obsidian";
+import { Notice, TFile } from "obsidian";
 import { compareSha } from "./utils";
 import { warn } from "console";
 import { LocalStores } from "main";
@@ -30,14 +30,13 @@ export class FitPush implements IFitPush {
     }
 
     async performPrePushChecks(): Promise<null|[LocalChange[], string]> {
-        const {data: latestRef} = await this.fit.getRef(`heads/${this.fit.branch}`)
         const localSha = await this.fit.computeLocalSha()
         const changedFiles = await this.getLocalChanges(localSha)
         if (changedFiles.length == 0) {
             new Notice("No local changes detected.")
             return null
         }
-        const latestRemoteCommitSha = latestRef.object.sha;
+        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha();
         if (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) {
             new Notice("Remote changed after last pull/write, please pull again.")
 				return null
@@ -59,7 +58,8 @@ export class FitPush implements IFitPush {
                 if (change.status == "removed") {
                     return {path: change.path, type: 'deleted'}
                 } else {
-                    const file = this.vaultOps.vault.getFileByPath(change.path)
+                    // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+                    const file = this.vaultOps.vault.getAbstractFileByPath(change.path) as TFile
                     if (!file) {
                         warn(`${file} included in local changes (added/modified) but not found`)
                         return []
@@ -83,16 +83,18 @@ export class FitPush implements IFitPush {
             const treeNodes = await Promise.all(changedFiles.map((f) => {
                 return this.fit.createTreeNodeFromFile(f)
             }))
-            const {data: latestCommit} = await this.fit.getCommit(latestRemoteCommitSha)
-            const {data: newTree} = await this.fit.createTree(treeNodes, latestCommit.tree.sha)
-            const {data: newCommit} = await this.fit.createCommit(newTree.sha, latestRemoteCommitSha)
-            const {data: updatedRef} = await this.fit.updateRef(`heads/${this.fit.branch}`, newCommit.sha)
-            const updatedRemoteSha = await this.fit.getRemoteTreeSha(updatedRef.object.sha)
+            const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(latestRemoteCommitSha)
+            const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
+            const createdCommitSha = await this.fit.createCommit(createdTreeSha, latestRemoteCommitSha)
+            const updatedRefSha = await this.fit.updateRef(createdCommitSha)
+            const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
+
             await saveLocalStoreCallback({
-                lastFetchedRemoteSha: updatedRemoteSha, 
-                lastFetchedCommitSha: newCommit.sha,
+                lastFetchedRemoteSha: updatedRemoteTreeSha, 
+                lastFetchedCommitSha: createdCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
+
             changedFiles.map(({path, type}): void=>{
                 const typeToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
                 new Notice(`${path} ${typeToAction[type as keyof typeof typeToAction]} remote.`, 10000)

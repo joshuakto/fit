@@ -1,13 +1,14 @@
-import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods"
 import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
-import { Octokit } from "octokit"
+import { Octokit } from "@octokit/core"
 
+type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
 export interface IFit {
     owner: string
     repo: string
     branch: string
+    headers: {[k: string]: string}
     deviceName: string
     localSha: Record<string, string>
 	lastFetchedCommitSha: string | null
@@ -15,7 +16,15 @@ export interface IFit {
     octokit: Octokit
     vault: Vault
     fileSha1: (path: string) => Promise<string>
-    getTree: (tree_sha: string) => Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]>
+    getTree: (tree_sha: string) => Promise<TreeNode[]>
+    getRef: (ref: string) => Promise<string>
+    getCommitTreeSha: (ref: string) => Promise<string>
+    getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
+    createBlob: (content: string, encoding: string) =>Promise<string>
+    createTreeNodeFromFile: ({path, type, extension}: {path: string, type: string, extension?: string}) => Promise<TreeNode>
+    createCommit: (treeSha: string, parentSha: string) =>Promise<string>
+    updateRef: (sha: string, ref: string) => Promise<string>
+    getBlob: (file_sha:string) =>Promise<string>
 }
 
 export class Fit implements IFit {
@@ -23,6 +32,7 @@ export class Fit implements IFit {
     repo: string
     auth: string | undefined
     branch: string
+    headers: {[k: string]: string}
     deviceName: string
     localSha: Record<string, string>
 	lastFetchedCommitSha: string | null
@@ -35,6 +45,10 @@ export class Fit implements IFit {
         this.loadSettings(setting)
         this.loadLocalStore(localStores)
         this.vault = vault
+        this.headers = {
+            "If-None-Match": '', // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
+            'X-GitHub-Api-Version': '2022-11-28'
+        }
     }
     
     loadSettings(setting: FitSettings) {
@@ -79,56 +93,52 @@ export class Fit implements IFit {
 		)
 	}
 
-
-
-    async getRef(ref: string): Promise<RestEndpointMethodTypes["git"]["getRef"]["response"]> {
-        return this.octokit.rest.git.getRef({
-            owner: this.owner,
-            repo: this.repo,
-            ref,
-            // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-            headers: {
-                "If-None-Match": ''
-            }
+    async getRef(ref: string): Promise<string> {
+        const response = await this.octokit.request(
+            `GET /repos/${this.owner}/${this.repo}/git/ref/${ref}`, {
+                owner: this.owner,
+                repo: this.repo,
+                ref: ref,
+                headers: this.headers
         })
+        return response.data.object.sha
     }
 
     // Get the sha of the latest commit in the default branch (set by user in setting)
-    async getLatestRemoteCommitSha(): Promise<string> {
-        const {data: latestRef} = await this.getRef(`heads/${this.branch}`)
-        return latestRef.object.sha
+    async getLatestRemoteCommitSha(ref = `heads/${this.branch}`): Promise<string> {
+        return await this.getRef(ref)
     }
 
-    async getCommit(commit_sha: string): Promise<RestEndpointMethodTypes["git"]["getCommit"]["response"]> {
-        return this.octokit.rest.git.getCommit({
+    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME), refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
+    async getCommitTreeSha(ref: string): Promise<string> {
+        const {data: commit} =  await this.octokit.request( `GET /repos/${this.owner}/${this.repo}/commits/${ref}`, {
             owner: this.owner,
             repo: this.repo,
-            commit_sha,
-            // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
-            headers: {
-                "If-None-Match": ''
-            }
+            ref,
+            headers: this.headers
         })
+        return commit.commit.tree.sha
     }
 
-    async getTree(tree_sha: string): Promise<RestEndpointMethodTypes["git"]["getTree"]["response"]> {
-        const tree =  await this.octokit.rest.git.getTree({
+    async getTree(tree_sha: string): Promise<TreeNode[]> {
+        const { data: tree } =  await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/trees/${tree_sha}`, {
             owner: this.owner,
             repo: this.repo,
             tree_sha,
-            recursive: 'true'
+            recursive: 'true',
+            headers: this.headers
         })
-        return tree
+        return tree.tree
     }
 
     // get the remote tree sha in the format compatible with local store
     async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
-        const {data: remoteTree} = await this.getTree(tree_sha)
-        const remoteSha = Object.fromEntries(remoteTree.tree.map((node) : [string, string] | null=>{
-            // currently ignoreing directory changes
+        const remoteTree = await this.getTree(tree_sha)
+        const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
+            // currently ignoring directory changes, if you'd like to upload a new directory, a quick hack would be creating an empty file inside
             if (node.type=="blob") {
                 if (!node.path || !node.sha) {
-                    throw new Error("Path and sha not found for blob node in remote");
+                    throw new Error("Path or sha not found for blob node in remote");
                 }
                 return [node.path, node.sha]
             }
@@ -137,18 +147,19 @@ export class Fit implements IFit {
         return remoteSha
     }
 
-    async createBlob(content: string, encoding: string): Promise<RestEndpointMethodTypes["git"]["createBlob"]["response"]> {
-        const blob = await this.octokit.rest.git.createBlob({
+    async createBlob(content: string, encoding: string): Promise<string> {
+        const {data: blob} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/blobs`, {
             owner: this.owner,
             repo: this.repo,
-            content, encoding
+            content, 
+            encoding,
+            headers: this.headers     
         })
-        return blob
+        return blob.sha
     }
 
-    async createTreeNodeFromFile(
-		{path, type, extension}: {path: string, type: string, extension?: string}): 
-		Promise<RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"][number]> {
+
+    async createTreeNodeFromFile({path, type, extension}: {path: string, type: string, extension?: string}): Promise<TreeNode> {
 		if (type === "deleted") {
 			return {
 				path,
@@ -175,51 +186,61 @@ export class Fit implements IFit {
 			encoding = 'utf-8'
 			content = await this.vault.adapter.read(path)
 		}
-		const blob = await this.createBlob(content, encoding)
+		const blobSha = await this.createBlob(content, encoding)
 		return {
 			path: path,
 			mode: '100644',
 			type: 'blob',
-			sha: blob.data.sha
+			sha: blobSha,
 		}
 	}
 
     async createTree(
-        treeNode: RestEndpointMethodTypes["git"]["createTree"]["parameters"]["tree"], base_tree_sha: string): 
-        Promise<RestEndpointMethodTypes["git"]["createTree"]["response"]> {
-        return await this.octokit.rest.git.createTree({
+        treeNodes: Array<TreeNode>,
+        base_tree_sha: string): 
+        Promise<string> {
+        const {data: newTree} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/trees`, {
             owner: this.owner,
             repo: this.repo,
-            tree: treeNode,
-            base_tree: base_tree_sha
+            tree: treeNodes,
+            base_tree: base_tree_sha,
+            headers: this.headers
         })
+        return newTree.sha
     }
 
-    async createCommit(treeSha: string, parentSha: string): Promise<RestEndpointMethodTypes["git"]["createCommit"]["response"]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createCommit(treeSha: string, parentSha: string): Promise<string> {
         const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
-        return await this.octokit.rest.git.createCommit({
+        const { data: createdCommit } = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/commits` ,{
             owner: this.owner,
             repo: this.repo,
             message,
             tree: treeSha,
-            parents: [parentSha]
+            parents: [parentSha],
+            headers: this.headers
         })
+        return createdCommit.sha
     }
 
-    async updateRef(ref: string, sha: string): Promise<RestEndpointMethodTypes["git"]["updateRef"]["response"]> {
-        return await this.octokit.rest.git.updateRef({
+    async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<string> {
+        const { data:updatedRef } = await this.octokit.request(`PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
-            sha
+            sha,
+            headers: this.headers
         })
+        return updatedRef.object.sha
     }
 
-    async getBlob(file_sha:string): Promise<RestEndpointMethodTypes["git"]["getBlob"]["response"]> {
-        return await this.octokit.rest.git.getBlob({
+    async getBlob(file_sha:string): Promise<string> {
+        const { data: blob } = await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/blobs/${file_sha}`, {
             owner: this.owner,
             repo: this.repo,
-            file_sha
+            file_sha,
+            headers: this.headers
         })
+        return blob.content
     }
 }

@@ -90,10 +90,10 @@ export class FitPull implements IFitPull {
     async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
         const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
             const encoding = getFileEncoding(path)
-            const {data} = await this.fit.getBlob(file_sha);
+            const content = await this.fit.getBlob(file_sha);
             const isBinary = encoding == "base64"
-            const content = isBinary ? data.content : atob(data.content);
-            return {path, content, encoding};
+            const decodedContent = isBinary ? content : atob(content);
+            return {path, content: decodedContent, encoding};
         })
         return await Promise.all(remoteChanges)
     }
