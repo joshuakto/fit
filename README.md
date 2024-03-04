@@ -15,6 +15,11 @@ This plugin is designed to be as simple as possible, and include only the push a
 <img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
 4. Click pull to fetch from the repo / Click push to upload local vault to the remote repository.
 
+
+
+https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519cdc11
+
+
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
  - This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
