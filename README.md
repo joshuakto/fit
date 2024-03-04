@@ -20,6 +20,10 @@ This plugin is designed to be as simple as possible, and include only the push a
 https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519cdc11
 
 
+# Roadmap
+1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
+2. Inject verbose notice for mobile usage (to display pull/push progress).
+
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
  - This plugin uses [Octokit](https://github.com/octokit/octokit.js) to interface with github rest api across devices.
