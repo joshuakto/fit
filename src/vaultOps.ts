@@ -18,7 +18,8 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async deleteFromLocal(path: string): Promise<void> {
-        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+        // adopted getAbstractFileByPath for mobile compatiability
+        // TODO: check whether additional checks needed to validate instance of TFile
         const file = this.vault.getAbstractFileByPath(path)
         if (file) {
             await this.vault.delete(file);
@@ -37,8 +38,9 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async writeToLocal(path: string, content: string): Promise<void> {
-        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+        // adopted getAbstractFileByPath for mobile compatiability
         // temporary fix that works temporarily since path are garanteed to be for files not folders
+        // TODO: check whether additional checks needed to validate instance of TFile
         const file = this.vault.getAbstractFileByPath(path) as TFile
         if (file) {
             await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
