@@ -46,8 +46,7 @@ export class VaultOperations implements IVaultOperations {
             this.ensureFolderExists(path)
             await this.vault.createBinary(path, base64ToArrayBuffer(content))
         } else {
-            throw new Error(`${path} writeToLocal operation unsuccessful, 
-            vault abstractFile on ${path} is of type ${typeof file}`);
+            warn(`${path} writeToLocal operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
         }
         new Notice(`${path} ${file ? 'updated' : 'copied'} to local drive.`, this.noticeDuration);
         return
