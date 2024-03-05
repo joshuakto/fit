@@ -1,5 +1,4 @@
-import { Notice, Platform, Plugin, base64ToArrayBuffer } from 'obsidian';
-import { ComputeFileLocalShaModal, DebugModal } from 'src/pluginModal';
+import { Notice, Platform, Plugin } from 'obsidian';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
@@ -49,7 +48,6 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
-
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
@@ -57,8 +55,6 @@ export default class FitPlugin extends Plugin {
 	fitPush: FitPush
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
-	
-	
 
 	checkSettingsConfigured(): boolean {
 		if (["<Personal-Access-Token> ", ""].includes(this.settings.pat)) {
@@ -83,8 +79,6 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore()
 	}
 	
-
-
 	async onload() {
 		await this.loadSettings(Platform.isMobile);
 		await this.loadLocalStore();
@@ -132,56 +126,6 @@ export default class FitPlugin extends Plugin {
 		
 		// add class to ribbon element to afford styling, refer to styles.css
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// Command for computing an inputed file path's local sha for debugging purposes
-		this.addCommand({
-			id: 'compute-file-local-sha',
-			name: 'Compute local sha for file (Debug)',
-			callback: () => {
-				new ComputeFileLocalShaModal(
-					this.app, 
-					async (queryFile) => console.log(await this.fit.computeFileLocalSha(queryFile))
-				).open();
-			}
-		});
-
-		// Command for computing an inputed file path's local sha for debugging purposes
-		this.addCommand({
-			id: 'recompute-local-sha',
-			name: `Update local store with new local sha, essentially
-			 ignoring local changes when pulling/pushing (Debug)`,
-			callback: async () => {
-				this.localStore.localSha = await this.fit.computeLocalSha()
-				this.saveLocalStore()
-				new Notice(`Local sha recomputed and stored, they will
-				 not be considered in future push/pull.`)
-			}
-		});
-
-
-		// Command for computing an inputed file path's local sha for debugging purposes
-		this.addCommand({
-			id: 'pull-file',
-			name: 'Pull a file from remote for debugging purpose (Debug)',
-			callback: async () => {
-				new DebugModal(
-					this.app, 
-					async (debugInput) => {
-						console.log(debugInput)
-						console.log("Getting blob for ")
-						const fileSha = this.localStore.lastFetchedRemoteSha[debugInput]
-						const content = await this.fit.getBlob(fileSha)
-						this.vaultOps.vault.createBinary('testing123.md', base64ToArrayBuffer(content))
-						console.log(content)
-					}
-				).open();
-			}
-		});
-
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
