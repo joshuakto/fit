@@ -111,7 +111,6 @@ export default class FitPlugin extends Plugin {
 			const checkResult = await this.fitPull.performPrePullChecks()
 			if (!checkResult) {
 				this.fitPullRibbonIconEl.removeClass('animate-icon')
-				this.verboseNotice("Pre pull checks failed, aborting.")
 				return
 			}// early return to abort pull
 			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
@@ -135,7 +134,6 @@ export default class FitPlugin extends Plugin {
 			const checksResult = await this.fitPush.performPrePushChecks()
 			if (!checksResult) {
 				this.fitPushRibbonIconEl.removeClass('animate-icon')
-				this.verboseNotice("Pre push checks failed, aborting.")
 				return
 			} // early return if prepush checks not passed
 			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
