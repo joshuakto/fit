@@ -82,6 +82,12 @@ export default class FitPlugin extends Plugin {
 		this.localStore = {...this.localStore, ...localStore}
 		await this.saveLocalStore()
 	}
+
+	verboseNotice(message: string): void {
+		if (this.settings.verbose) {
+			new Notice(message)
+		}
+	}
 	
 
 
@@ -95,6 +101,7 @@ export default class FitPlugin extends Plugin {
 
 		// Pull remote to local
 		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
+			this.verboseNotice("Performing pre pull checks.")
 			this.fitPullRibbonIconEl.addClass('animate-icon')
 			if (!this.checkSettingsConfigured()) { 
 				this.fitPullRibbonIconEl.removeClass('animate-icon')
@@ -104,9 +111,12 @@ export default class FitPlugin extends Plugin {
 			const checkResult = await this.fitPull.performPrePullChecks()
 			if (!checkResult) {
 				this.fitPullRibbonIconEl.removeClass('animate-icon')
+				this.verboseNotice("Pre pull checks failed, aborting.")
 				return
 			}// early return to abort pull
+			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
 			await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
+			new Notice("Pull complete, local copy up to date.")
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 
@@ -115,6 +125,7 @@ export default class FitPlugin extends Plugin {
 
 		// Push local to remote
 		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
+			this.verboseNotice("Performing pre push checks.")
 			this.fitPushRibbonIconEl.addClass('animate-icon')
 			if (!this.checkSettingsConfigured()) { 
 				this.fitPushRibbonIconEl.removeClass('animate-icon')
@@ -124,10 +135,13 @@ export default class FitPlugin extends Plugin {
 			const checksResult = await this.fitPush.performPrePushChecks()
 			if (!checksResult) {
 				this.fitPushRibbonIconEl.removeClass('animate-icon')
+				this.verboseNotice("Pre push checks failed, aborting.")
 				return
 			} // early return if prepush checks not passed
+			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
 			await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
+			new Notice(`Successful pushed to ${this.fit.repo}`)
 		});
 		
 		// add class to ribbon element to afford styling, refer to styles.css
@@ -153,7 +167,8 @@ export default class FitPlugin extends Plugin {
 		this.addCommand({
 			id: 'recompute-local-sha',
 			name: `Update local store with new local sha, essentially
-			 ignoring local changes when pulling/pushing (Debug)`,
+			ignoring local changes when pulling/pushing (Dangerous:
+				running pull after this command will discard local changes)`,
 			callback: async () => {
 				this.localStore.localSha = await this.fit.computeLocalSha()
 				this.saveLocalStore()

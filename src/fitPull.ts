@@ -130,6 +130,5 @@ export class FitPull implements IFitPull {
                 lastFetchedCommitSha: latestRemoteCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
-			new Notice("Pull complete, local copy up to date.")
     }
 }

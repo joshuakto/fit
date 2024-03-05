@@ -106,6 +106,5 @@ export class FitPush implements IFitPush {
                 const statusToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
                 new Notice(`${path} ${statusToAction[status]} remote.`, 10000)
             })
-            new Notice(`Successful pushed to ${this.fit.repo}`)
     }
 }
