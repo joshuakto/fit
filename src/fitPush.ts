@@ -67,13 +67,15 @@ export class FitPush implements IFitPush {
                     return {path: change.path, status: change.status}
                 } else {
                     // adopted getAbstractFileByPath for mobile compatiability
-                    // TODO: check whether additional checks needed to validate instance of TFile
-                    const file = this.vaultOps.vault.getAbstractFileByPath(change.path) as TFile
+                    const file = this.vaultOps.vault.getAbstractFileByPath(change.path)
                     if (!file) {
                         warn(`${file} included in local changes (added/modified) but not found`)
                         return []
                     }
-                    return {path: change.path, status: change.status, extension: file.extension}
+                    if (file instanceof TFile) {
+                        return {path: change.path, status: change.status, extension: file.extension}
+                    }
+                    throw new Error(`Expected ${file.path} to be of type TFile but got type ${typeof file}`);
                 }
             })
         }
