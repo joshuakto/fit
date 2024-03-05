@@ -18,14 +18,14 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async deleteFromLocal(path: string): Promise<void> {
-        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
+        // adopted getAbstractFileByPath for mobile compatiability
         const file = this.vault.getAbstractFileByPath(path)
-        if (file) {
+        if (file && file instanceof TFile) {
             await this.vault.delete(file);
             new Notice(`${path} deleted from local drive.`, this.noticeDuration);
             return
-        }
-        warn(`Attempting to delete ${path} from local but not found.`)
+        } 
+        warn(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`)
     }
 
     async ensureFolderExists(path: string): Promise<void> {
@@ -37,14 +37,17 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async writeToLocal(path: string, content: string): Promise<void> {
-        // adopted getAbstractFileByPath for mobile compatiability, TODO: check whether additional checks needed to validate instance of TFile
-        // temporary fix that works temporarily since path are garanteed to be for files not folders
-        const file = this.vault.getAbstractFileByPath(path) as TFile
-        if (file) {
+        // adopted getAbstractFileByPath for mobile compatiability
+        // TODO: add capability for creating folder from remote
+        const file = this.vault.getAbstractFileByPath(path)
+        if (file && file instanceof TFile) {
             await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
-        } else {
+        } else if (!file) {
             this.ensureFolderExists(path)
             await this.vault.createBinary(path, base64ToArrayBuffer(content))
+        } else {
+            throw new Error(`${path} writeToLocal operation unsuccessful, 
+            vault abstractFile on ${path} is of type ${typeof file}`);
         }
         new Notice(`${path} ${file ? 'updated' : 'copied'} to local drive.`, this.noticeDuration);
         return

@@ -1,6 +1,8 @@
 import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
+import { LocalChange } from "./fitPush"
+import { RECOGNIZED_BINARY_EXT } from "./utils"
 
 type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
@@ -21,7 +23,7 @@ export interface IFit {
     getCommitTreeSha: (ref: string) => Promise<string>
     getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
     createBlob: (content: string, encoding: string) =>Promise<string>
-    createTreeNodeFromFile: ({path, type, extension}: {path: string, type: string, extension?: string}) => Promise<TreeNode>
+    createTreeNodeFromFile: ({path, status, extension}: LocalChange) => Promise<TreeNode>
     createCommit: (treeSha: string, parentSha: string) =>Promise<string>
     updateRef: (sha: string, ref: string) => Promise<string>
     getBlob: (file_sha:string) =>Promise<string>
@@ -46,7 +48,9 @@ export class Fit implements IFit {
         this.loadLocalStore(localStores)
         this.vault = vault
         this.headers = {
-            "If-None-Match": '', // Hack to disable caching which leads to inconsistency for read after write https://github.com/octokit/octokit.js/issues/890
+            // Hack to disable caching which leads to inconsistency for
+            // read after write https://github.com/octokit/octokit.js/issues/890
+            "If-None-Match": '', 
             'X-GitHub-Api-Version': '2022-11-28'
         }
     }
@@ -109,9 +113,11 @@ export class Fit implements IFit {
         return await this.getRef(ref)
     }
 
-    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME), refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
+    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME), 
+    // refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
     async getCommitTreeSha(ref: string): Promise<string> {
-        const {data: commit} =  await this.octokit.request( `GET /repos/${this.owner}/${this.repo}/commits/${ref}`, {
+        const {data: commit} =  await this.octokit.request( 
+            `GET /repos/${this.owner}/${this.repo}/commits/${ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
@@ -121,7 +127,8 @@ export class Fit implements IFit {
     }
 
     async getTree(tree_sha: string): Promise<TreeNode[]> {
-        const { data: tree } =  await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/trees/${tree_sha}`, {
+        const { data: tree } =  await this.octokit.request(
+            `GET /repos/${this.owner}/${this.repo}/git/trees/${tree_sha}`, {
             owner: this.owner,
             repo: this.repo,
             tree_sha,
@@ -135,7 +142,8 @@ export class Fit implements IFit {
     async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
         const remoteTree = await this.getTree(tree_sha)
         const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
-            // currently ignoring directory changes, if you'd like to upload a new directory, a quick hack would be creating an empty file inside
+            // currently ignoring directory changes, if you'd like to upload a new directory, 
+            // a quick hack would be creating an empty file inside
             if (node.type=="blob") {
                 if (!node.path || !node.sha) {
                     throw new Error("Path or sha not found for blob node in remote");
@@ -148,7 +156,8 @@ export class Fit implements IFit {
     }
 
     async createBlob(content: string, encoding: string): Promise<string> {
-        const {data: blob} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/blobs`, {
+        const {data: blob} = await this.octokit.request(
+            `POST /repos/${this.owner}/${this.repo}/git/blobs`, {
             owner: this.owner,
             repo: this.repo,
             content, 
@@ -159,8 +168,8 @@ export class Fit implements IFit {
     }
 
 
-    async createTreeNodeFromFile({path, type, extension}: {path: string, type: string, extension?: string}): Promise<TreeNode> {
-		if (type === "deleted") {
+    async createTreeNodeFromFile({path, status, extension}: LocalChange): Promise<TreeNode> {
+		if (status === "deleted") {
 			return {
 				path,
 				mode: '100644',
@@ -169,11 +178,13 @@ export class Fit implements IFit {
 			}
 		}
 		if (!this.vault.adapter.exists(path)) {
-			throw new Error("Unexpected error: attempting to createBlob for non-existent file, please file an issue on github with info to reproduce the issue.");
+			throw new Error(
+                `Unexpected error: attempting to createBlob for non-existent file, 
+                please file an issue on github with info to reproduce the issue.`);
 		}
 		let encoding: string;
 		let content: string 
-		if (extension && ["pdf", "png", "jpeg"].includes(extension)) {
+		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
 			const fileArrayBuf = await this.vault.adapter.readBinary(path)
 			const uint8Array = new Uint8Array(fileArrayBuf);
@@ -199,7 +210,8 @@ export class Fit implements IFit {
         treeNodes: Array<TreeNode>,
         base_tree_sha: string): 
         Promise<string> {
-        const {data: newTree} = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/trees`, {
+        const {data: newTree} = await this.octokit.request(
+            `POST /repos/${this.owner}/${this.repo}/git/trees`, {
             owner: this.owner,
             repo: this.repo,
             tree: treeNodes,
@@ -209,10 +221,10 @@ export class Fit implements IFit {
         return newTree.sha
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async createCommit(treeSha: string, parentSha: string): Promise<string> {
         const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
-        const { data: createdCommit } = await this.octokit.request(`POST /repos/${this.owner}/${this.repo}/git/commits` ,{
+        const { data: createdCommit } = await this.octokit.request(
+            `POST /repos/${this.owner}/${this.repo}/git/commits` , {
             owner: this.owner,
             repo: this.repo,
             message,
@@ -224,7 +236,8 @@ export class Fit implements IFit {
     }
 
     async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<string> {
-        const { data:updatedRef } = await this.octokit.request(`PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
+        const { data:updatedRef } = await this.octokit.request(
+            `PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
@@ -235,7 +248,8 @@ export class Fit implements IFit {
     }
 
     async getBlob(file_sha:string): Promise<string> {
-        const { data: blob } = await this.octokit.request(`GET /repos/${this.owner}/${this.repo}/git/blobs/${file_sha}`, {
+        const { data: blob } = await this.octokit.request(
+            `GET /repos/${this.owner}/${this.repo}/git/blobs/${file_sha}`, {
             owner: this.owner,
             repo: this.repo,
             file_sha,

@@ -1,31 +1,60 @@
-export type ChangeType = "added" | "changed" | "removed"
+import { LocalFileStatus } from "./fitPush";
 
-// compare currentSha with storedSha and check for differences, files only in currentSha are considerd added, while files only in storedSha are considered removed
-export function compareSha(
-    currentSha: {[k:string]:string}, storedSha: {[k:string]:string}): 
-    Array<{path: string, status: ChangeType, currentSha: string}> {
-        const allPaths = Array.from(new Set([...Object.keys(currentSha), ...Object.keys(storedSha)]));
+export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED"
 
-        return allPaths.reduce<{path: string, status: ChangeType, currentSha: string}[]>((changes, path) => {
-            const inCurrent = path in currentSha;
-            const inStored = path in storedSha;
+type Status = RemoteChangeType | LocalFileStatus
 
-            if (inCurrent && !inStored) {
-                changes.push({ path, status: 'added', currentSha: currentSha[path] });
-            } else if (!inCurrent && inStored) {
-                changes.push({ path, status: 'removed', currentSha: currentSha[path] });
-            } else if (inCurrent && inStored && currentSha[path] !== storedSha[path]) {
-                changes.push({ path, status: 'changed', currentSha: currentSha[path]});
-            }
-            // Unchanged files are implicitly handled by not adding them to the changes array
-            return changes;
-        }, []);
+type FileLocation = "remote" | "local"
+
+type ComparisonResult<Env extends FileLocation> = {
+    path: string, 
+    status: Env extends "local" ? LocalFileStatus: RemoteChangeType
+    currentSha?: string
 }
+
+function getValueOrNull(obj: Record<string, string>, key: string): string | null {
+    return obj.hasOwnProperty(key) ? obj[key] : null;
+}
+
+
+// compare currentSha with storedSha and check for differences, files only in currentSha
+//  are considerd added, while files only in storedSha are considered removed
+export function compareSha<Env extends "remote" | "local">(
+    currentShaMap: Record<string, string>, 
+    storedShaMap: Record<string, string>,
+    env: Env): ComparisonResult<Env>[] {
+        const determineStatus = (currentSha: string | null, storedSha: string | null): Status | null  => 
+        {
+            if (currentSha && storedSha && currentSha !== storedSha) {
+                return env === "local" ? "changed" : "MODIFIED";
+            } else if (currentSha && !storedSha) {
+                return env === "local" ? "created" : "ADDED";
+            } else if (!currentSha && storedSha) {
+                return env === "local" ? "deleted" : "REMOVED";
+            }
+            return null
+        }
+
+        return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
+            const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
+            const status = determineStatus(currentSha, storedSha);
+            if (status) {
+                return [{
+                    path,
+                    status: status as Env extends "local" ? LocalFileStatus : RemoteChangeType,
+                    currentSha: currentSha ?? undefined,
+                }];
+            }
+            return [];
+        });
+}
+
+export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"]
 
 // Using file extension to determine encoding of files (works in most cases)
 export function getFileEncoding(path: string): string {
     const extension = path.match(/[^.]+$/)?.[0];
-    const isBinary = extension && ["png", "jpg", "jpeg", "pdf"].includes(extension);
+    const isBinary = extension && RECOGNIZED_BINARY_EXT.includes(extension);
     if (isBinary) {
         return "base64"
     } 

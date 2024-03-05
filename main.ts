@@ -48,7 +48,6 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
-
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
@@ -56,8 +55,6 @@ export default class FitPlugin extends Plugin {
 	fitPush: FitPush
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
-	
-	
 
 	checkSettingsConfigured(): boolean {
 		if (["<Personal-Access-Token> ", ""].includes(this.settings.pat)) {
@@ -82,8 +79,6 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore()
 	}
 	
-
-
 	async onload() {
 		await this.loadSettings(Platform.isMobile);
 		await this.loadLocalStore();
@@ -105,7 +100,7 @@ export default class FitPlugin extends Plugin {
 				this.fitPullRibbonIconEl.removeClass('animate-icon')
 				return
 			}// early return to abort pull
-			await this.fitPull.pullRemoteToLocal(...[...checkResult, this.saveLocalStoreCallback])
+			await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 
@@ -125,9 +120,7 @@ export default class FitPlugin extends Plugin {
 				this.fitPushRibbonIconEl.removeClass('animate-icon')
 				return
 			} // early return if prepush checks not passed
-			const [changedFiles, latestRemoteCommitSha] = checksResult
-			await this.fitPush.pushChangedFilesToRemote(
-				changedFiles, latestRemoteCommitSha, this.saveLocalStoreCallback)
+			await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
 		
@@ -158,27 +151,29 @@ export default class FitPlugin extends Plugin {
 		if (isMobile && !userSetting) {
 			settings = Object.assign({}, DEFAULT_MOBILE_SETTINGS);
 		}
-		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce((obj, key: keyof FitSettings) => {
-			if (settings.hasOwnProperty(key)) {
-				if (key == "verbose") {
-					obj[key] = Boolean(settings["verbose"]);
-				} else {
-					obj[key] = settings[key];
+		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
+			(obj, key: keyof FitSettings) => {
+				if (settings.hasOwnProperty(key)) {
+					if (key == "verbose") {
+						obj[key] = Boolean(settings["verbose"]);
+					} else {
+						obj[key] = settings[key];
+					}
 				}
-			}
-			return obj;
-		}, {} as FitSettings);
+				return obj;
+			}, {} as FitSettings);
 		this.settings = settingsObj
 	}
 
 	async loadLocalStore() {
 		const localStore = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
-		const localStoreObj: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce((obj, key: keyof LocalStores) => {
-			if (localStore.hasOwnProperty(key)) {
-				obj[key] = localStore[key];
-			}
-			return obj;
-		}, {} as LocalStores);
+		const localStoreObj: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce(
+			(obj, key: keyof LocalStores) => {
+				if (localStore.hasOwnProperty(key)) {
+					obj[key] = localStore[key];
+				}
+				return obj;
+			}, {} as LocalStores);
 		this.localStore = localStoreObj
 	}
 
