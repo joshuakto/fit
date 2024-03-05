@@ -91,6 +91,12 @@ export class FitPush implements IFitPush {
                 return this.fit.createTreeNodeFromFile(f)
             }))
             const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha)
+            // Keep these console.log for debugging until finding out what is causing this bug casused by this.fit.createTree api call: 
+            // Uncaught (in promise) HttpError: GitRPC::BadObjectState - https://docs.github.com/rest/git/trees#create-a-tree
+            console.log("created treeNodes:")
+            console.log(treeNodes)
+            console.log(`latest remote commit sha: ${parentCommitSha}`)
+            console.log(`base tree sha: ${latestRemoteCommitTreeSha}`)
             const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
             const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha)
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)

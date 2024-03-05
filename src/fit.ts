@@ -184,6 +184,7 @@ export class Fit implements IFit {
 		}
 		let encoding: string;
 		let content: string 
+        // TODO check whether every files including md can be read using readBinary to reduce code complexity
 		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
 			const fileArrayBuf = await this.vault.adapter.readBinary(path)
@@ -210,15 +211,15 @@ export class Fit implements IFit {
         treeNodes: Array<TreeNode>,
         base_tree_sha: string): 
         Promise<string> {
-        const {data: newTree} = await this.octokit.request(
-            `POST /repos/${this.owner}/${this.repo}/git/trees`, {
-            owner: this.owner,
-            repo: this.repo,
-            tree: treeNodes,
-            base_tree: base_tree_sha,
-            headers: this.headers
-        })
-        return newTree.sha
+            const {data: newTree} = await this.octokit.request(
+                `POST /repos/${this.owner}/${this.repo}/git/trees`, {
+                owner: this.owner,
+                repo: this.repo,
+                tree: treeNodes,
+                base_tree: base_tree_sha,
+                headers: this.headers
+            })
+            return newTree.sha
     }
 
     async createCommit(treeSha: string, parentSha: string): Promise<string> {
