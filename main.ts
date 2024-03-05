@@ -1,5 +1,4 @@
 import { Notice, Platform, Plugin } from 'obsidian';
-import { Notice, Platform, Plugin } from 'obsidian';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
