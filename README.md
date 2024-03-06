@@ -22,9 +22,9 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 # Roadmap
 1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
-3. Improve user notification
-   - let users know when attempting to push deletion of a file to Github that does not exist on the remote
-4. Implement single button pull and push (and allow users to resolve conflicting file changes)
+2. Improve user notification
+   - allow user to opt in to get list of file changes in Notice
+3. Allow users to resolve conflicting file changes
 
 # Acknowledgements
  - This plugin is built using [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
