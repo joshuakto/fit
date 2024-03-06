@@ -5,6 +5,11 @@
     overflow: hidden;
 }
 
+.fit-sync-ribbon-el.hide {
+    /* hide the sync button */
+    display: none;
+}
+
 .fit-sync-ribbon-el.animate-icon {
     /* Add your custom styles here */
     position: relative; /* Set position to relative */
@@ -43,6 +48,11 @@
     overflow: hidden;
 }
 
+.fit-push-ribbon-el.hide {
+    /* hide the push button */
+    display: none;
+}
+
 .fit-push-ribbon-el.animate-icon::before {
     content: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NDk0OTQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1naXRodWIiPjxwYXRoIGQ9Ik0xNSAyMnYtNGE0LjggNC44IDAgMCAwLTEtMy41YzMgMCA2LTIgNi01LjUuMDgtMS4yNS0uMjctMi40OC0xLTMuNS4yOC0xLjE1LjI4LTIuMzUgMC0zLjUgMCAwLTEgMC0zIDEuNS0yLjY0LS41LTUuMzYtLjUtOCAwQzYgMiA1IDIgNSAyYy0uMyAxLjE1LS4zIDIuMzUgMCAzLjVBNS40MDMgNS40MDMgMCAwIDAgNCA5YzAgMy41IDMgNS41IDYgNS41LS4zOS40OS0uNjggMS4wNS0uODUgMS42NS0uMTcuNi0uMjIgMS4yMy0uMTUgMS44NXY0Ii8+PHBhdGggZD0iTTkgMThjLTQuNTEgMi01LTItNy0yIi8+PC9zdmc+"); /* Add content to pseudo-element */
     position: absolute; /* Set position to absolute */
@@ -73,6 +83,11 @@
     position: relative;
     font-size: 16px; /* Font size 16 pixels */
     overflow: hidden;
+}
+
+.fit-pull-ribbon-el.hide {
+    /* hide the pull button */
+    display: none;
 }
 
 .fit-pull-ribbon-el.animate-icon::before {

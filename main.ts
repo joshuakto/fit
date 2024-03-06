@@ -14,6 +14,7 @@ export interface FitSettings {
 	branch: string;
 	deviceName: string;
 	verbose: boolean;
+	singleButtonMode: boolean
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -22,7 +23,8 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
-	verbose: false
+	verbose: false,
+	singleButtonMode: false
 }
 
 const DEFAULT_MOBILE_SETTINGS: FitSettings = {
@@ -31,7 +33,8 @@ const DEFAULT_MOBILE_SETTINGS: FitSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
-	verbose: true
+	verbose: true,
+	singleButtonMode: false
 }
 
 export interface LocalStores {
@@ -123,6 +126,18 @@ export default class FitPlugin extends Plugin {
 		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 		new Notice(`Successful pushed to ${this.fit.repo}`)
 	}
+
+	updateRibbonIcons() {
+		if (this.settings.singleButtonMode) {
+			this.fitSyncRibbonIconEl.removeClass("hide");
+			this.fitPullRibbonIconEl.addClass("hide");
+			this.fitPushRibbonIconEl.addClass("hide");
+		} else {
+			this.fitSyncRibbonIconEl.addClass("hide");
+			this.fitPullRibbonIconEl.removeClass("hide");
+			this.fitPushRibbonIconEl.removeClass("hide");
+		}
+	}
 	
 
 
@@ -134,14 +149,12 @@ export default class FitPlugin extends Plugin {
 		this.fitPull = new FitPull(this.fit, this.vaultOps)
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
 
-		
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
 			await new Promise(resolve => setTimeout(resolve, 3000));
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
-		})
-		// add class to ribbon element to afford styling, refer to styles.css
+		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 		
 		// Pull remote to local
@@ -150,18 +163,21 @@ export default class FitPlugin extends Plugin {
 			await this.pull();
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
-
 		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
-
+		
 		// Push local to remote
 		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
 			this.fitPushRibbonIconEl.addClass('animate-icon')
 			await this.push();
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
-		
-		// add class to ribbon element to afford styling, refer to styles.css
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
+
+		if (this.settings.singleButtonMode) {
+			this.fitSyncRibbonIconEl.removeClass("hide");
+		} else {
+			this.fitSyncRibbonIconEl.addClass("hide");
+		}
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		const statusBarItemEl = this.addStatusBarItem();
@@ -239,8 +255,8 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					if (key == "verbose") {
-						obj[key] = Boolean(settings["verbose"]);
+					if (key == "verbose" || key == "singleButtonMode") {
+						obj[key] = Boolean(settings[key]);
 					} else {
 						obj[key] = settings[key];
 					}
@@ -275,5 +291,6 @@ export default class FitPlugin extends Plugin {
 		await this.saveData({...data, ...this.settings});
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings)
+		this.updateRibbonIcons();
 	}
 }

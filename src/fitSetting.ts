@@ -15,7 +15,7 @@ export default class FitSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Github Personal Access Token')
+			.setName('Github personal access token')
 			.setDesc('Remember to give it the appropriate access for reading and writing to the storage repo.')
 			.addText(text => text
 				.setPlaceholder('Enter your token')
@@ -25,8 +25,8 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 		new Setting(containerEl)
-			.setName('Github Username')
-			.setDesc('Your Github handle.')
+			.setName('Github username')
+			.setDesc('Your github handle.')
 			.addText(text => text
 				.setPlaceholder('Enter your username')
 				.setValue(this.plugin.settings.owner)
@@ -35,7 +35,7 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 		new Setting(containerEl)
-			.setName('Github Repository Name')
+			.setName('Github repository name')
 			.setDesc('The repo you dedicate to tracking this vault.')
 			.addText(text => text
 				.setPlaceholder('Enter your repository name')
@@ -45,7 +45,7 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 		new Setting(containerEl)
-			.setName('Branch Name')
+			.setName('Branch name')
 			.setDesc('The branch name you set to push to (default to main)')
 			.addText(text => text
 				.setPlaceholder('Enter the branch name')
@@ -56,7 +56,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Device Name')
+			.setName('Device name')
 			.setDesc('The name of this device, used to decorate commit message')
 			.addText(text => text
 				.setPlaceholder('Enter device name')
@@ -73,6 +73,17 @@ export default class FitSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.verbose)
 				.onChange(async (selected) => {
 					this.plugin.settings.verbose = selected;
+					await this.plugin.saveSettings();
+				})
+			)
+
+		new Setting(containerEl)
+			.setName('Single button mode')
+			.setDesc('Work in progress.')
+			.addToggle(selected=>selected
+				.setValue(this.plugin.settings.singleButtonMode)
+				.onChange(async (selected) => {
+					this.plugin.settings.singleButtonMode = selected;
 					await this.plugin.saveSettings();
 				})
 			)
