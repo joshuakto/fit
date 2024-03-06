@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, base64ToArrayBuffer } from 'obsidian';
 import { ComputeFileLocalShaModal, DebugModal } from 'src/pluginModal';
 import { Fit } from 'src/fit';
-import { FitPull } from 'src/fitPull';
+import { FitPull, RemoteUpdate } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { VaultOperations } from 'src/vaultOps';
@@ -52,12 +52,13 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
-
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
 	fitPull: FitPull
 	fitPush: FitPush
+	pulling: boolean
+	pushing: boolean
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
@@ -93,54 +94,65 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-	async pull(): Promise<boolean> {
-		this.verboseNotice("Performing pre pull checks.")
+	async fetch(): Promise<RemoteUpdate | null> {
 		if (!this.checkSettingsConfigured()) { 
-			this.fitPullRibbonIconEl.removeClass('animate-icon')
-			return false
+			return null
 		}
 		await this.loadLocalStore()
-		const checkResult = await this.fitPull.performPrePullChecks()
-		if (!checkResult) {
-			this.fitPullRibbonIconEl.removeClass('animate-icon')
-			return false
-		}// early return to abort pull
+		return await this.fitPull.performPrePullChecks()
+	}
+
+	async pull(): Promise<void> {
+		if (this.pulling) {
+			return
+		}
+		this.pulling = true
+		this.verboseNotice("Performing pre pull checks.")
+		const remoteUpdate = await this.fetch()
+		if (!remoteUpdate) {
+			this.pulling = false
+			return
+		}
+		// early return to abort pull
 		this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
-		await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
+		await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
 		new Notice("Pull complete, local copy up to date.")
-		return true
+		this.pulling = false
 	}
 
 	async push(): Promise<void> {
+		if (this.pushing) {
+			return
+		}
+		this.pushing = true
 		this.verboseNotice("Performing pre push checks.")
 		if (!this.checkSettingsConfigured()) { 
-			this.fitPushRibbonIconEl.removeClass('animate-icon')
+			this.pushing = false
 			return
 		}
 		await this.loadLocalStore()
 		const checksResult = await this.fitPush.performPrePushChecks()
 		if (!checksResult) {
-			this.fitPushRibbonIconEl.removeClass('animate-icon')
+			this.pushing = false
 			return
 		} // early return if prepush checks not passed
 		this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
 		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 		new Notice(`Successful pushed to ${this.fit.repo}`)
+		this.pushing = false
 	}
 
 	async sync(): Promise<void> {
-		// Note: this is a placeholder only, it is not a ready feature
-		// TODO: sync requires a different order of running checks, to minimize the possibilities of aborting after changes
-		// Ideally, sync should undo changes if it needs to abort
-		// Current implementation will only ever pull since pulling will update localSha and local changes will not be detected during push
-		// This feature will be developed as push and pull separately becomes mature
-		const pullSuccessful = await this.pull()
-		if (!pullSuccessful) {
-			new Notice("Pull failed, aborting sync.")
-			return
-		}
-		await this.push()
-		new Notice("Sync complete.")
+		// // Note: this is a placeholder only, it is not a ready feature
+		// // TODO: sync requires a different order of running checks, to minimize the possibilities of aborting after changes
+		// // Ideally, sync should undo changes if it needs to abort
+		// // Current implementation will only ever pull since pulling will update localSha and local changes will not be detected during push
+		// // This feature will be developed as push and pull separately becomes mature
+		// const fetchedRemoteChanges = await this.fetch()
+		// // TODO get more info from fetched remote changes and process them before pushing
+		// console.log(fetchedRemoteChanges)
+		// await this.push()
+		// new Notice("Sync complete.")
 	}
 
 	updateRibbonIcons() {
@@ -164,6 +176,8 @@ export default class FitPlugin extends Plugin {
 		this.vaultOps = new VaultOperations(this.app.vault)
 		this.fitPull = new FitPull(this.fit, this.vaultOps)
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
+		this.pulling = false
+		this.pushing = false
 
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {

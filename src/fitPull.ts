@@ -11,7 +11,7 @@ export type RemoteChange = {
     currentSha?: string
 }
 
-type RemoteUpdate = {
+export type RemoteUpdate = {
     remoteChanges: RemoteChange[],
     remoteTreeSha: Record<string, string>, 
     latestRemoteCommitSha: string,
@@ -71,6 +71,10 @@ export class FitPull implements IFitPull {
         return latestRemoteCommitSha
     }
 
+    // TODO instead of returning null when no need to pull or cannot pull,
+    // return information about the pre pull checks, e.g.:
+    // - local copy up to date, push can proceed
+    // - local changes clashed with remote changes, need to resolve conflicts before proceeding to push
     async performPrePullChecks(): Promise<null | RemoteUpdate> {
         const latestRemoteCommitSha = await this.remoteHasUpdates()
         if (!latestRemoteCommitSha) {
