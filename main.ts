@@ -57,6 +57,7 @@ export default class FitPlugin extends Plugin {
 	fitPush: FitPush
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
+	fitSyncRibbonIconEl: HTMLElement
 	
 	
 
@@ -88,6 +89,40 @@ export default class FitPlugin extends Plugin {
 			new Notice(message)
 		}
 	}
+
+	async pull(): Promise<void> {
+		this.verboseNotice("Performing pre pull checks.")
+		if (!this.checkSettingsConfigured()) { 
+			this.fitPullRibbonIconEl.removeClass('animate-icon')
+			return
+		}
+		await this.loadLocalStore()
+		const checkResult = await this.fitPull.performPrePullChecks()
+		if (!checkResult) {
+			this.fitPullRibbonIconEl.removeClass('animate-icon')
+			return
+		}// early return to abort pull
+		this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
+		await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
+		new Notice("Pull complete, local copy up to date.")
+	}
+
+	async push(): Promise<void> {
+		this.verboseNotice("Performing pre push checks.")
+		if (!this.checkSettingsConfigured()) { 
+			this.fitPushRibbonIconEl.removeClass('animate-icon')
+			return
+		}
+		await this.loadLocalStore()
+		const checksResult = await this.fitPush.performPrePushChecks()
+		if (!checksResult) {
+			this.fitPushRibbonIconEl.removeClass('animate-icon')
+			return
+		} // early return if prepush checks not passed
+		this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
+		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
+		new Notice(`Successful pushed to ${this.fit.repo}`)
+	}
 	
 
 
@@ -99,47 +134,30 @@ export default class FitPlugin extends Plugin {
 		this.fitPull = new FitPull(this.fit, this.vaultOps)
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
 
+		
+		// Pull from remote then Push to remote if no clashing changes detected during pull
+		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
+			this.fitSyncRibbonIconEl.addClass('animate-icon');
+			await new Promise(resolve => setTimeout(resolve, 3000));
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		})
+		// add class to ribbon element to afford styling, refer to styles.css
+		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
+		
 		// Pull remote to local
 		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
-			this.verboseNotice("Performing pre pull checks.")
 			this.fitPullRibbonIconEl.addClass('animate-icon')
-			if (!this.checkSettingsConfigured()) { 
-				this.fitPullRibbonIconEl.removeClass('animate-icon')
-				return
-			}
-			await this.loadLocalStore()
-			const checkResult = await this.fitPull.performPrePullChecks()
-			if (!checkResult) {
-				this.fitPullRibbonIconEl.removeClass('animate-icon')
-				return
-			}// early return to abort pull
-			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
-			await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
-			new Notice("Pull complete, local copy up to date.")
+			await this.pull();
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 
 		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
-		
 
 		// Push local to remote
 		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
-			this.verboseNotice("Performing pre push checks.")
 			this.fitPushRibbonIconEl.addClass('animate-icon')
-			if (!this.checkSettingsConfigured()) { 
-				this.fitPushRibbonIconEl.removeClass('animate-icon')
-				return
-			}
-			await this.loadLocalStore()
-			const checksResult = await this.fitPush.performPrePushChecks()
-			if (!checksResult) {
-				this.fitPushRibbonIconEl.removeClass('animate-icon')
-				return
-			} // early return if prepush checks not passed
-			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
-			await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
+			await this.push();
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
-			new Notice(`Successful pushed to ${this.fit.repo}`)
 		});
 		
 		// add class to ribbon element to afford styling, refer to styles.css
