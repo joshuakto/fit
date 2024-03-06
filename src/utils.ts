@@ -39,10 +39,6 @@ export function compareSha<Env extends "remote" | "local">(
         return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
             const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
             const status = determineStatus(currentSha, storedSha);
-            console.log("hihere")
-            console.log("hihere")
-            console.log(path)
-            console.log(extractExtension(path))
             if (status) {
                 return [{
                     path,

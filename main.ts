@@ -94,13 +94,74 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-	// async sync(): Promise<void> {
-	// 	if (!this.checkSettingsConfigured()) { return }
-	// 	await this.loadLocalStore()
-	// 	this.verboseNotice("Performing pre sync checks.")
-	// 	const preSyncChecks = await this.fitPull.performPrePullChecks()
-
-	// }
+	async sync(): Promise<void> {
+		if (!this.checkSettingsConfigured()) { return }
+		await this.loadLocalStore()
+		this.verboseNotice("Performing pre sync checks.")
+		const localChanges = await this.fit.getLocalChanges()
+		const preSyncChecks = await this.fitPull.performPrePullChecks(localChanges)
+		if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length === 0) {
+			new Notice("Local and remote in sync, no file operations performed.")
+		} 
+		else if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length > 0) {
+			// push local changes to remote
+			const localUpdate = {
+				localChanges,
+				localTreeSha: await this.fit.computeLocalSha(),
+				// localStore must have value for localCopyUpToDate status to be returned
+				parentCommitSha: this.localStore.lastFetchedCommitSha as string
+			}
+			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+			new Notice("Local copy up to date, pushed detected changes to remote.")
+		} 
+		else if (preSyncChecks.status === "noRemoteChangesDetected" && localChanges.length === 0) {
+			const { latestRemoteCommitSha } = preSyncChecks.remoteUpdate
+			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
+			new Notice("Local and remote in sync, tracking latest remote commit.")
+		} 
+		else if (preSyncChecks.status === "noRemoteChangesDetected" && localChanges.length > 0) {
+			const { latestRemoteCommitSha } = preSyncChecks.remoteUpdate
+			const localUpdate = {
+				localChanges,
+				localTreeSha: await this.fit.computeLocalSha(),
+				parentCommitSha: latestRemoteCommitSha
+			}
+			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+			new Notice("No remote changes detected, pushed local changes to remote.")
+		}
+		else if (preSyncChecks.status === "localChangesClashWithRemoteChanges") {
+			new Notice("Local changes clash with remote changes, aborting sync, files are unmodified.")
+		}
+		else if (preSyncChecks.status === "remoteChangesCanBeMerged" && localChanges.length === 0) {
+			await this.fitPull.pullRemoteToLocal(preSyncChecks.remoteUpdate, this.saveLocalStoreCallback)
+			new Notice("Sync complete, remote changes pulled to local copy.")
+		}
+		else if (preSyncChecks.status === "remoteChangesCanBeMerged" && localChanges.length > 0) {
+			// do both pull and push
+			// (orders of execution different from pullRemoteToLocal and pushChangedFilesToRemote to 
+			// make this more transaction like, i.e. maintain original state if the transaction failed)
+			// If you have an idea on how to make this more transaction-like, please open an issue on 
+			// the fit repo
+			const {remoteUpdate} = preSyncChecks
+			const localUpdate = {
+				localChanges,
+				localTreeSha: await this.fit.computeLocalSha(),
+				parentCommitSha: remoteUpdate.latestRemoteCommitSha
+			}
+			const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
+				remoteUpdate.remoteChanges)
+			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate)
+			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
+            const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
+			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
+			await this.saveLocalStoreCallback({
+				lastFetchedRemoteSha: updatedRemoteTreeSha, 
+				lastFetchedCommitSha: createdCommitSha,
+				localSha: await this.fit.computeLocalSha()
+			})
+		}
+		console.log("bye")
+	}
 
 	async pull(): Promise<void> {
 		if (this.pulling) { return }
@@ -139,15 +200,19 @@ export default class FitPlugin extends Plugin {
 			return
 		}
 		await this.loadLocalStore()
-		const checksResult = await this.fitPush.performPrePushChecks()
-		if (!checksResult) {
-			this.pushing = false
-			return
-		} // early return if prepush checks not passed
-		this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
-		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
-		new Notice(`Successful pushed to ${this.fit.repo}`)
+		const prePushCheckResult = await this.fitPush.performPrePushChecks()
+		if (prePushCheckResult.status === "noLocalChangesDetected") {
+			new Notice("No local changes detected.")
+		} else if (prePushCheckResult.status === "remoteChanged") {
+			new Notice("Remote changed after last pull/write, please pull again.")
+		} else if (prePushCheckResult.status === "localChangesCanBePushed") {
+			const localUpdate = prePushCheckResult.localUpdate
+			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
+			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+			new Notice(`Successful pushed to ${this.fit.repo}`)
+		}
 		this.pushing = false
+		return
 	}
 
 	updateRibbonIcons() {
@@ -163,21 +228,11 @@ export default class FitPlugin extends Plugin {
 	}
 	
 
-
-	async onload() {
-		await this.loadSettings(Platform.isMobile);
-		await this.loadLocalStore();
-		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
-		this.vaultOps = new VaultOperations(this.app.vault)
-		this.fitPull = new FitPull(this.fit, this.vaultOps)
-		this.fitPush = new FitPush(this.fit, this.vaultOps)
-		this.pulling = false
-		this.pushing = false
-
+	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			await new Promise(resolve => setTimeout(resolve, 3000));
+			await this.sync();
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
@@ -197,12 +252,20 @@ export default class FitPlugin extends Plugin {
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
+		this.updateRibbonIcons();
+	}
 
-		if (this.settings.singleButtonMode) {
-			this.fitSyncRibbonIconEl.removeClass("hide");
-		} else {
-			this.fitSyncRibbonIconEl.addClass("hide");
-		}
+
+	async onload() {
+		await this.loadSettings(Platform.isMobile);
+		await this.loadLocalStore();
+		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
+		this.vaultOps = new VaultOperations(this.app.vault)
+		this.fitPull = new FitPull(this.fit, this.vaultOps)
+		this.fitPush = new FitPush(this.fit, this.vaultOps)
+		this.pulling = false
+		this.pushing = false
+		this.loadRibbonIcons();
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		const statusBarItemEl = this.addStatusBarItem();

@@ -72,12 +72,14 @@ export class FitPull implements IFitPull {
         return latestRemoteCommitSha
     }
 
-    async performPrePullChecks(): Promise<PrePullCheckResult> {
+    async performPrePullChecks(localChanges?: LocalChange[]): Promise<PrePullCheckResult> {
         const latestRemoteCommitSha = await this.remoteHasUpdates()
         if (!latestRemoteCommitSha) {
             return {status: "localCopyUpToDate", remoteUpdate: null}
         }
-        const localChanges = await this.fit.getLocalChanges()
+        if (!localChanges) {
+            localChanges = await this.fit.getLocalChanges()
+        }
         const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
         const remoteChanges = await this.getRemoteChanges(remoteTreeSha)
         const clashedFiles = this.getClashedChanges(localChanges, remoteChanges)
