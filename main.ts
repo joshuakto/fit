@@ -129,8 +129,10 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async sync(): Promise<void> {
+		// Note: this is a placeholder only, it is not a ready feature
 		// TODO: sync requires a different order of running checks, to minimize the possibilities of aborting after changes
 		// Ideally, sync should undo changes if it needs to abort
+		// Current implementation will only ever pull since pulling will update localSha and local changes will not be detected during push
 		// This feature will be developed as push and pull separately becomes mature
 		const pullSuccessful = await this.pull()
 		if (!pullSuccessful) {
