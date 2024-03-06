@@ -22,7 +22,6 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 # Roadmap
 1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
-2. Enable verbose notice for mobile users (to indicate pull/push progress).
 3. Improve user notification
    - let users know when attempting to push deletion of a file to Github that does not exist on the remote
 4. Implement single button pull and push (and allow users to resolve conflicting file changes)

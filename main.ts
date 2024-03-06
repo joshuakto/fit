@@ -11,7 +11,6 @@ export interface FitSettings {
 	repo: string;
 	branch: string;
 	deviceName: string;
-	verbose: boolean;
 	singleButtonMode: boolean
 }
 
@@ -21,7 +20,6 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
-	verbose: false,
 	singleButtonMode: false
 }
 
@@ -31,7 +29,6 @@ const DEFAULT_MOBILE_SETTINGS: FitSettings = {
 	repo: "<Repository-Name>",
 	branch: "main",
 	deviceName: "",
-	verbose: true,
 	singleButtonMode: false
 }
 
@@ -83,12 +80,6 @@ export default class FitPlugin extends Plugin {
 		await this.loadLocalStore()
 		this.localStore = {...this.localStore, ...localStore}
 		await this.saveLocalStore()
-	}
-
-	verboseNotice(message: string): void {
-		if (this.settings.verbose) {
-			new Notice(message)
-		}
 	}
 
 	async sync(syncNotice: Notice): Promise<void> {
@@ -176,7 +167,7 @@ export default class FitPlugin extends Plugin {
 			// TODO provide a way for users to resolve clashes
 			pullNotice.setMessage("Local changes clashed with remote changes, please resolve and try again.")
 		} else if (prePullCheckResult.status === "remoteChangesCanBeMerged") {
-			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
+			pullNotice.setMessage("Pre pull checks successful, pulling changes from remote.")
 			const remoteUpdate = prePullCheckResult.remoteUpdate
 			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
 			pullNotice.setMessage("Pull complete, local copy up to date.")
@@ -191,7 +182,7 @@ export default class FitPlugin extends Plugin {
 
 	async push(pushNotice: Notice): Promise<void> {
 		this.pushing = true
-		this.verboseNotice("Performing pre push checks.")
+		pushNotice.setMessage("Performing pre push checks.")
 		if (!this.checkSettingsConfigured()) { 
 			this.pushing = false
 			return
@@ -204,7 +195,7 @@ export default class FitPlugin extends Plugin {
 			pushNotice.setMessage("Remote changed after last pull/write, please pull again.")
 		} else if (prePushCheckResult.status === "localChangesCanBePushed") {
 			const localUpdate = prePushCheckResult.localUpdate
-			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
+			pushNotice.setMessage("Pre push checks successful, pushing local changes to remote.")
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
 			pushNotice.setMessage(`Successful pushed to ${this.fit.repo}`)
 		}
@@ -332,7 +323,7 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					if (key == "verbose" || key == "singleButtonMode") {
+					if (key == "singleButtonMode") {
 						obj[key] = Boolean(settings[key]);
 					} else {
 						obj[key] = settings[key];

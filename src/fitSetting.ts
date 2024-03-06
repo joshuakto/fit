@@ -67,17 +67,6 @@ export default class FitSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Verbose')
-			.setDesc('Recommended for mobile, to indicate progress on pull/push.')
-			.addToggle(selected=>selected
-				.setValue(this.plugin.settings.verbose)
-				.onChange(async (selected) => {
-					this.plugin.settings.verbose = selected;
-					await this.plugin.saveSettings();
-				})
-			)
-
-		new Setting(containerEl)
 			.setName('Single button mode')
 			.setDesc('Single button mode is in early alpha, (recommended to turn off and push and pull separately).')
 			.addToggle(selected=>selected
