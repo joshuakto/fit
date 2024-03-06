@@ -5,7 +5,6 @@ import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { VaultOperations } from 'src/vaultOps';
 
-
 export interface FitSettings {
 	pat: string;
 	owner: string;
@@ -92,18 +91,15 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-	async sync(): Promise<void> {
-		if (this.syncing) {
-			return
-		}
+	async sync(syncNotice: Notice): Promise<void> {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
-		this.verboseNotice("Performing pre sync checks.")
+		syncNotice.setMessage("Performing pre sync checks.")
 		this.syncing = true
 		const localChanges = await this.fit.getLocalChanges()
 		const preSyncChecks = await this.fitPull.performPrePullChecks(localChanges)
 		if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length === 0) {
-			new Notice("Local and remote in sync, no file operations performed.")
+			syncNotice.setMessage("Local and remote in sync, no file operations performed.")
 		} 
 		else if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length > 0) {
 			// push local changes to remote
@@ -114,12 +110,12 @@ export default class FitPlugin extends Plugin {
 				parentCommitSha: this.localStore.lastFetchedCommitSha as string
 			}
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			new Notice("Local copy up to date, pushed detected changes to remote.")
+			syncNotice.setMessage("Local copy up to date, pushed detected changes to remote.")
 		} 
 		else if (preSyncChecks.status === "noRemoteChangesDetected" && localChanges.length === 0) {
 			const { latestRemoteCommitSha } = preSyncChecks.remoteUpdate
 			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
-			new Notice("Local and remote in sync, tracking latest remote commit.")
+			syncNotice.setMessage("Local and remote in sync, tracking latest remote commit.")
 		} 
 		else if (preSyncChecks.status === "noRemoteChangesDetected" && localChanges.length > 0) {
 			const { latestRemoteCommitSha } = preSyncChecks.remoteUpdate
@@ -129,14 +125,14 @@ export default class FitPlugin extends Plugin {
 				parentCommitSha: latestRemoteCommitSha
 			}
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			new Notice("No remote changes detected, pushed local changes to remote.")
+			syncNotice.setMessage("No remote changes detected, pushed local changes to remote.")
 		}
 		else if (preSyncChecks.status === "localChangesClashWithRemoteChanges") {
-			new Notice("Local changes clash with remote changes, aborting sync, files are unmodified.")
+			syncNotice.setMessage("Local changes clash with remote changes, aborting sync, files are unmodified.")
 		}
 		else if (preSyncChecks.status === "remoteChangesCanBeMerged" && localChanges.length === 0) {
 			await this.fitPull.pullRemoteToLocal(preSyncChecks.remoteUpdate, this.saveLocalStoreCallback)
-			new Notice("Sync complete, remote changes pulled to local copy.")
+			syncNotice.setMessage("Sync complete, remote changes pulled to local copy.")
 		}
 		else if (preSyncChecks.status === "remoteChangesCanBeMerged" && localChanges.length > 0) {
 			// do both pull and push
@@ -154,50 +150,46 @@ export default class FitPlugin extends Plugin {
 				remoteUpdate.remoteChanges)
 			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate)
 			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
-			new Notice("Local changes pushed to remote.")
+			syncNotice.setMessage("Local changes pushed to remote.")
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
-			new Notice("Remote changes written to local drive.")
+			syncNotice.setMessage("Remote changes written to local drive.")
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha: updatedRemoteTreeSha, 
 				lastFetchedCommitSha: createdCommitSha,
 				localSha: await this.fit.computeLocalSha()
 			})
-			new Notice("Local and remote now in sync.")
+			syncNotice.setMessage("Local and remote now in sync.")
 		}
 		this.syncing = false
 	}
 
-	async pull(): Promise<void> {
-		if (this.pulling) { return }
+	async pull(pullNotice: Notice): Promise<void> {
 		if (!this.checkSettingsConfigured()) { return }
 		this.pulling = true
 		await this.loadLocalStore()
-		this.verboseNotice("Performing pre pull checks.")
+		pullNotice.setMessage("Performing pre pull checks.")
 		const prePullCheckResult = await this.fitPull.performPrePullChecks()
 		if (prePullCheckResult.status === "localCopyUpToDate") {
-			new Notice("Local copy already up to date")
+			pullNotice.setMessage("Local copy already up to date")
 		} else if (prePullCheckResult.status === "localChangesClashWithRemoteChanges") {
 			// TODO provide a way for users to resolve clashes
-			new Notice("Local changes clashed with remote changes, please resolve and try again.")
+			pullNotice.setMessage("Local changes clashed with remote changes, please resolve and try again.")
 		} else if (prePullCheckResult.status === "remoteChangesCanBeMerged") {
 			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
 			const remoteUpdate = prePullCheckResult.remoteUpdate
 			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-			new Notice("Pull complete, local copy up to date.")
+			pullNotice.setMessage("Pull complete, local copy up to date.")
 		} else if (prePullCheckResult.status === "noRemoteChangesDetected") {
 			const {latestRemoteCommitSha: lastFetchedCommitSha} = prePullCheckResult.remoteUpdate
 			this.saveLocalStoreCallback({lastFetchedCommitSha})
-			new Notice("No remote changes detected, local copy set to track latest commit.")
+			pullNotice.setMessage("No remote changes detected, local copy set to track latest commit.")
 		}
 		this.pulling = false
 		return
 	}
 
-	async push(): Promise<void> {
-		if (this.pushing) {
-			return
-		}
+	async push(pushNotice: Notice): Promise<void> {
 		this.pushing = true
 		this.verboseNotice("Performing pre push checks.")
 		if (!this.checkSettingsConfigured()) { 
@@ -207,17 +199,30 @@ export default class FitPlugin extends Plugin {
 		await this.loadLocalStore()
 		const prePushCheckResult = await this.fitPush.performPrePushChecks()
 		if (prePushCheckResult.status === "noLocalChangesDetected") {
-			new Notice("No local changes detected.")
+			pushNotice.setMessage("No local changes detected.")
 		} else if (prePushCheckResult.status === "remoteChanged") {
-			new Notice("Remote changed after last pull/write, please pull again.")
+			pushNotice.setMessage("Remote changed after last pull/write, please pull again.")
 		} else if (prePushCheckResult.status === "localChangesCanBePushed") {
 			const localUpdate = prePushCheckResult.localUpdate
 			this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			new Notice(`Successful pushed to ${this.fit.repo}`)
+			pushNotice.setMessage(`Successful pushed to ${this.fit.repo}`)
 		}
 		this.pushing = false
 		return
+	}
+
+	initializeFitNotice(): Notice {
+		const notice = new Notice(" ", 0) // keep at least one empty space to make the height consistent
+		notice.noticeEl.addClass("fit-notice")
+		notice.noticeEl.addClass("loading")
+		return notice
+	}
+
+	removeFitNotice(notice: Notice): void {
+		notice.noticeEl.removeClass("loading")
+		notice.noticeEl.addClass("done")
+		setTimeout(() => notice.hide(), 4000)
 	}
 
 	updateRibbonIcons() {
@@ -236,30 +241,39 @@ export default class FitPlugin extends Plugin {
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
+			if (this.syncing || this.pulling || this.pushing) { return }
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
+			const syncNotice = this.initializeFitNotice();
 			try {
-				await this.sync();
+				await this.sync(syncNotice);
 			} catch (error) {
-				this.syncing = false
-				new Notice("Encountered unknown error during sync, view console log for details")
+				syncNotice.setMessage("Encountered unknown error during sync, view console log for details")
 				console.error("Error caught in sync: ", error);
+				this.syncing = false
 			}
+			this.removeFitNotice(syncNotice)
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 		
 		// Pull remote to local
 		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
+			if (this.syncing || this.pulling || this.pushing) { return }
 			this.fitPullRibbonIconEl.addClass('animate-icon')
-			await this.pull();
+			const pullNotice = this.initializeFitNotice();
+			await this.pull(pullNotice);
+			this.removeFitNotice(pullNotice)
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
 		
 		// Push local to remote
 		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
+			if (this.syncing || this.pulling || this.pushing) { return }
 			this.fitPushRibbonIconEl.addClass('animate-icon')
-			await this.push();
+			const pushNotice = this.initializeFitNotice();
+			await this.push(pushNotice);
+			this.removeFitNotice(pushNotice)
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
