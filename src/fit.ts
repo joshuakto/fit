@@ -198,8 +198,6 @@ export class Fit implements IFit {
 		let encoding: string;
 		let content: string 
         // TODO check whether every files including md can be read using readBinary to reduce code complexity
-        console.log(path)
-        console.log(extension)
 		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
 			const fileArrayBuf = await this.vault.adapter.readBinary(path)

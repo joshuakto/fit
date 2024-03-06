@@ -59,6 +59,7 @@ export default class FitPlugin extends Plugin {
 	fitPush: FitPush
 	pulling: boolean
 	pushing: boolean
+	syncing: boolean
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
@@ -95,9 +96,13 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async sync(): Promise<void> {
+		if (this.syncing) {
+			return
+		}
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
 		this.verboseNotice("Performing pre sync checks.")
+		this.syncing = true
 		const localChanges = await this.fit.getLocalChanges()
 		const preSyncChecks = await this.fitPull.performPrePullChecks(localChanges)
 		if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length === 0) {
@@ -152,15 +157,18 @@ export default class FitPlugin extends Plugin {
 				remoteUpdate.remoteChanges)
 			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate)
 			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
+			new Notice("Local changes pushed to remote.")
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
+			new Notice("Remote changes written to local drive.")
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha: updatedRemoteTreeSha, 
 				lastFetchedCommitSha: createdCommitSha,
 				localSha: await this.fit.computeLocalSha()
 			})
+			new Notice("Local and remote now in sync.")
 		}
-		console.log("bye")
+		this.syncing = false
 	}
 
 	async pull(): Promise<void> {
@@ -232,7 +240,13 @@ export default class FitPlugin extends Plugin {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			await this.sync();
+			try {
+				await this.sync();
+			} catch (error) {
+				this.syncing = false
+				new Notice("Encountered unknown error during sync, view console log for details")
+				console.error("Error caught in sync: ", error);
+			}
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
@@ -265,6 +279,7 @@ export default class FitPlugin extends Plugin {
 		this.fitPush = new FitPush(this.fit, this.vaultOps)
 		this.pulling = false
 		this.pushing = false
+		this.syncing = false
 		this.loadRibbonIcons();
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
