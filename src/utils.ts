@@ -10,6 +10,7 @@ type ComparisonResult<Env extends FileLocation> = {
     path: string, 
     status: Env extends "local" ? LocalFileStatus: RemoteChangeType
     currentSha?: string
+    extension?: string
 }
 
 function getValueOrNull(obj: Record<string, string>, key: string): string | null {
@@ -38,11 +39,16 @@ export function compareSha<Env extends "remote" | "local">(
         return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
             const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
             const status = determineStatus(currentSha, storedSha);
+            console.log("hihere")
+            console.log("hihere")
+            console.log(path)
+            console.log(extractExtension(path))
             if (status) {
                 return [{
                     path,
                     status: status as Env extends "local" ? LocalFileStatus : RemoteChangeType,
                     currentSha: currentSha ?? undefined,
+                    extension: extractExtension(path)
                 }];
             }
             return [];
@@ -50,6 +56,10 @@ export function compareSha<Env extends "remote" | "local">(
 }
 
 export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"]
+
+function extractExtension(path: string): string | undefined {
+    return path.match(/[^.]+$/)?.[0];
+}
 
 // Using file extension to determine encoding of files (works in most cases)
 export function getFileEncoding(path: string): string {

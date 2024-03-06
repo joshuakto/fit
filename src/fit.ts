@@ -2,7 +2,7 @@ import { LocalStores, FitSettings } from "main"
 import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
 import { LocalChange } from "./fitPush"
-import { RECOGNIZED_BINARY_EXT } from "./utils"
+import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
 
 type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
@@ -97,6 +97,19 @@ export class Fit implements IFit {
 		)
 	}
 
+    async getLocalChanges(currentLocalSha?: Record<string, string>): Promise<LocalChange[]> {
+        if (!this.localSha) {
+            // assumes every local files are created if no localSha is found
+            return this.vault.getFiles().map(f => {
+                return {path: f.path, status: "created"}})
+        }
+        if (!currentLocalSha) {
+            currentLocalSha = await this.computeLocalSha()
+        }
+        const localChanges = compareSha(currentLocalSha, this.localSha, "local")
+        return localChanges
+    }
+
     async getRef(ref: string): Promise<string> {
         const response = await this.octokit.request(
             `GET /repos/${this.owner}/${this.repo}/git/ref/${ref}`, {
@@ -185,6 +198,8 @@ export class Fit implements IFit {
 		let encoding: string;
 		let content: string 
         // TODO check whether every files including md can be read using readBinary to reduce code complexity
+        console.log(path)
+        console.log(extension)
 		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
 			const fileArrayBuf = await this.vault.adapter.readBinary(path)

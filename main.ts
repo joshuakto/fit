@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, base64ToArrayBuffer } from 'obsidian';
 import { ComputeFileLocalShaModal, DebugModal } from 'src/pluginModal';
 import { Fit } from 'src/fit';
-import { FitPull, RemoteUpdate } from 'src/fitPull';
+import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { VaultOperations } from 'src/vaultOps';
@@ -94,30 +94,38 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-	async fetch(): Promise<RemoteUpdate | null> {
-		if (!this.checkSettingsConfigured()) { 
-			return null
-		}
-		await this.loadLocalStore()
-		return await this.fitPull.performPrePullChecks()
-	}
+	// async sync(): Promise<void> {
+	// 	if (!this.checkSettingsConfigured()) { return }
+	// 	await this.loadLocalStore()
+	// 	this.verboseNotice("Performing pre sync checks.")
+	// 	const preSyncChecks = await this.fitPull.performPrePullChecks()
+
+	// }
 
 	async pull(): Promise<void> {
-		if (this.pulling) {
-			return
-		}
+		if (this.pulling) { return }
+		if (!this.checkSettingsConfigured()) { return }
 		this.pulling = true
+		await this.loadLocalStore()
 		this.verboseNotice("Performing pre pull checks.")
-		const remoteUpdate = await this.fetch()
-		if (!remoteUpdate) {
-			this.pulling = false
-			return
+		const prePullCheckResult = await this.fitPull.performPrePullChecks()
+		if (prePullCheckResult.status === "localCopyUpToDate") {
+			new Notice("Local copy already up to date")
+		} else if (prePullCheckResult.status === "localChangesClashWithRemoteChanges") {
+			// TODO provide a way for users to resolve clashes
+			new Notice("Local changes clashed with remote changes, please resolve and try again.")
+		} else if (prePullCheckResult.status === "remoteChangesCanBeMerged") {
+			this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
+			const remoteUpdate = prePullCheckResult.remoteUpdate
+			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+			new Notice("Pull complete, local copy up to date.")
+		} else if (prePullCheckResult.status === "noRemoteChangesDetected") {
+			const {latestRemoteCommitSha: lastFetchedCommitSha} = prePullCheckResult.remoteUpdate
+			this.saveLocalStoreCallback({lastFetchedCommitSha})
+			new Notice("No remote changes detected, local copy set to track latest commit.")
 		}
-		// early return to abort pull
-		this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
-		await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-		new Notice("Pull complete, local copy up to date.")
 		this.pulling = false
+		return
 	}
 
 	async push(): Promise<void> {
@@ -140,19 +148,6 @@ export default class FitPlugin extends Plugin {
 		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 		new Notice(`Successful pushed to ${this.fit.repo}`)
 		this.pushing = false
-	}
-
-	async sync(): Promise<void> {
-		// // Note: this is a placeholder only, it is not a ready feature
-		// // TODO: sync requires a different order of running checks, to minimize the possibilities of aborting after changes
-		// // Ideally, sync should undo changes if it needs to abort
-		// // Current implementation will only ever pull since pulling will update localSha and local changes will not be detected during push
-		// // This feature will be developed as push and pull separately becomes mature
-		// const fetchedRemoteChanges = await this.fetch()
-		// // TODO get more info from fetched remote changes and process them before pushing
-		// console.log(fetchedRemoteChanges)
-		// await this.push()
-		// new Notice("Sync complete.")
 	}
 
 	updateRibbonIcons() {
