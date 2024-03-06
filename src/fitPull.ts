@@ -1,9 +1,20 @@
 import { VaultOperations } from "./vaultOps";
 import { RemoteChangeType, compareSha } from "./utils";
 import { Fit } from "./fit";
-import { Notice } from "obsidian";
 import { LocalStores } from "main";
 import { LocalChange } from "./fitPush";
+
+type PrePullCheckResultType = (
+    "localCopyUpToDate" | 
+    "localChangesClashWithRemoteChanges" | 
+    "remoteChangesCanBeMerged" | 
+    "noRemoteChangesDetected"
+)
+
+type PrePullCheckResult = (
+    { status: "localCopyUpToDate", remoteUpdate: null } | 
+    { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
+);
 
 export type RemoteChange = {
     path: string,
@@ -11,10 +22,11 @@ export type RemoteChange = {
     currentSha?: string
 }
 
-type RemoteUpdate = {
+export type RemoteUpdate = {
     remoteChanges: RemoteChange[],
     remoteTreeSha: Record<string, string>, 
     latestRemoteCommitSha: string,
+    clashedFiles: Array<string>
 }
 
 export interface IFitPull {
@@ -30,17 +42,6 @@ export class FitPull implements IFitPull {
     constructor(fit: Fit, vaultOps: VaultOperations) {
         this.vaultOps = vaultOps
         this.fit = fit
-    }
-
-    async getLocalChanges(): Promise<LocalChange[]> {
-        if (!this.fit.localSha) {
-            // assumes every local files are created if no localSha is found
-            return this.vaultOps.vault.getFiles().map(f => {
-                return {path: f.path, status: "created"}})
-        }
-        const currentLocalSha = await this.fit.computeLocalSha()
-        const localChanges = compareSha(currentLocalSha, this.fit.localSha, "local")
-        return localChanges
     }
 
     async getRemoteChanges(remoteTreeSha: {[k: string]: string}): Promise<RemoteChange[]> {
@@ -71,28 +72,29 @@ export class FitPull implements IFitPull {
         return latestRemoteCommitSha
     }
 
-    async performPrePullChecks(): Promise<null | RemoteUpdate> {
+    async performPrePullChecks(localChanges?: LocalChange[]): Promise<PrePullCheckResult> {
         const latestRemoteCommitSha = await this.remoteHasUpdates()
         if (!latestRemoteCommitSha) {
-            new Notice("Local copy already up to date")
-            return null
+            return {status: "localCopyUpToDate", remoteUpdate: null}
         }
-        const localChanges = await this.getLocalChanges()
+        if (!localChanges) {
+            localChanges = await this.fit.getLocalChanges()
+        }
         const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
         const remoteChanges = await this.getRemoteChanges(remoteTreeSha)
         const clashedFiles = this.getClashedChanges(localChanges, remoteChanges)
         // TODO handle clashes without completely blocking pull
-        if (clashedFiles.length > 0) {
-            new Notice("Unsaved local changes clash with remote changes, aborting.");
-            console.log("clashed files:")
-            console.log(clashedFiles)
-            return null
-        } else {
-            console.log(`No clash detected between local and remote changes,
-             writing the following changes to local:`)
-            console.log(remoteChanges)
+        const prePullCheckStatus = (
+            (remoteChanges.length > 0) ? (
+                (clashedFiles.length > 0) ? "localChangesClashWithRemoteChanges" : "remoteChangesCanBeMerged"):
+                "noRemoteChangesDetected")
+        
+        return {
+            status: prePullCheckStatus, 
+            remoteUpdate: {
+                remoteChanges, remoteTreeSha, latestRemoteCommitSha, clashedFiles
+            }
         }
-        return {remoteChanges, remoteTreeSha, latestRemoteCommitSha}
     }
 
     // Get changes from remote, pathShaMap is coupled to the Fit plugin design

@@ -1,12 +1,20 @@
 import { VaultOperations } from "./vaultOps";
 import { Fit } from "./fit";
-import { Notice, TFile } from "obsidian";
-import { compareSha } from "./utils";
-import { warn } from "console";
+import { Notice } from "obsidian";
 import { LocalStores } from "main";
 
-
 export type LocalFileStatus = "deleted" | "created" | "changed"
+
+type PrePushCheckResultType = (
+    "noLocalChangesDetected" | 
+    "remoteChanged" | 
+    "localChangesCanBePushed"
+)
+
+type PrePushCheckResult = (
+    { status: "noLocalChangesDetected", localUpdate: null } | 
+    { status: Exclude<PrePushCheckResultType, "noLocalChangesDetected">, localUpdate: LocalUpdate }
+);
 
 export type LocalChange = {
     path: string,
@@ -37,62 +45,49 @@ export class FitPush implements IFitPush {
         this.fit = fit
     }
 
-    async performPrePushChecks(): Promise<null|LocalUpdate> {
+
+    async performPrePushChecks(): Promise<PrePushCheckResult> {
         const localTreeSha = await this.fit.computeLocalSha()
-        const localChanges = await this.getLocalChanges(localTreeSha)
+        const localChanges = await this.fit.getLocalChanges(localTreeSha)
         if (localChanges.length == 0) {
-            new Notice("No local changes detected.")
-            return null
+            return {status: "noLocalChangesDetected", localUpdate: null}
         }
         const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha();
-        if (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) {
-            new Notice("Remote changed after last pull/write, please pull again.")
-				return null
+        const status = (
+            (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) ? 
+            "remoteChanged" : "localChangesCanBePushed"
+        )
+        return {
+            status,
+            localUpdate: {localChanges, localTreeSha, parentCommitSha: latestRemoteCommitSha}
         }
-        return {localChanges, localTreeSha, parentCommitSha: latestRemoteCommitSha}
     }
 
-    async getLocalChanges(currentLocalSha: Record<string, string>): Promise<LocalChange[]> {
-        let changedFiles: LocalChange[];
-        // const localSha = await this.fit.computeLocalSha()
-        const files = this.vaultOps.vault.getFiles()
-		// mark all files as changed if local sha for previous commit is not found
-        if (!this.fit.localSha) {
-            changedFiles = files.map(f=> {return {
-                path: f.path, status: 'changed', extension: f.extension}})
-        } else {
-            const localChanges = compareSha(currentLocalSha, this.fit.localSha, "local")
-            changedFiles = localChanges.flatMap(change=>{
-                if (change.status == "deleted") {
-                    return {path: change.path, status: change.status}
-                } else {
-                    // adopted getAbstractFileByPath for mobile compatiability
-                    const file = this.vaultOps.vault.getAbstractFileByPath(change.path)
-                    if (!file) {
-                        warn(`${file} included in local changes (added/modified) but not found`)
-                        return []
-                    }
-                    if (file instanceof TFile) {
-                        return {path: change.path, status: change.status, extension: file.extension}
-                    }
-                    throw new Error(`Expected ${file.path} to be of type TFile but got type ${typeof file}`);
-                }
-            })
-        }
-        return changedFiles
+    async createCommitFromLocalUpdate(localUpdate: LocalUpdate): Promise<string> {
+        const {localChanges, parentCommitSha} = localUpdate
+        const treeNodes = await Promise.all(localChanges.map((f) => {
+            return this.fit.createTreeNodeFromFile(f)
+        }))
+        const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha)
+        // Keep these console.log for debugging until finding out what is causing this bug casused by this.fit.createTree api call: 
+        // Uncaught (in promise) HttpError: GitRPC::BadObjectState - https://docs.github.com/rest/git/trees#create-a-tree
+        console.log("created treeNodes:")
+        console.log(treeNodes)
+        console.log(`latest remote commit sha: ${parentCommitSha}`)
+        console.log(`base tree sha: ${latestRemoteCommitTreeSha}`)
+        const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
+        const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha)
+        return createdCommitSha
     }
+
+
 
     async pushChangedFilesToRemote(
         localUpdate: LocalUpdate,
         saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>):
         Promise<void> {
-            const {localChanges, localTreeSha, parentCommitSha} = localUpdate;
-            const treeNodes = await Promise.all(localChanges.map((f) => {
-                return this.fit.createTreeNodeFromFile(f)
-            }))
-            const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha)
-            const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
-            const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha)
+            const {localChanges, localTreeSha} = localUpdate;
+            const createdCommitSha = await this.createCommitFromLocalUpdate(localUpdate)
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 
