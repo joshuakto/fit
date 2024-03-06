@@ -2,18 +2,18 @@
 
 A barebone File gIT system for syncing files across devices utilizing Git.
 
-Currently, this plugin have two major function (Pulling from and Pushing to Github). The end goal of this plugin is to give user one single button to sync their vault to streamline the user experience.
+Currently, this plugin has two major functions (Pulling from and Pushing to Github). The end goal of this plugin is to give users one single button to sync their vault to streamline the user experience.
 
-This plugin is designed to be as simple as possible, and include only the push and pull function of git. It is written with Octokit-js with the goal of supporting devices universally. There are other community plugins with more advanced git features, e.g. [Git](https://github.com/denolehov/obsidian-git).
+This plugin is designed to be as simple as possible, and include only the push and pull function of git. It is written with Octokit-js to support devices universally. There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out. This plugin focuses on making the core git feature (push and pull) available across devices (mobile and desktop). To achieve this, this repo implements a simple git system with pure typescript and utilizes [Octokit/core.js](https://github.com/octokit/core.js/) which supports all modern browsers to interface with GitHub REST API.
 
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
 
 # How to use
-1. Create a repo on github
+1. Create a repo on GitHub
 2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
-3. Enters the created token along with other relevant github information on the Fit settings tab.
+3. Enters the created token along with other relevant GitHub information on the Fit settings tab.
 <img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
-4. Click pull to fetch from the repo / Click push to upload local vault to the remote repository.
+4. Click pull to fetch from the repo / Click push to upload the local vault to the remote repository.
 
 
 
