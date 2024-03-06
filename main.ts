@@ -93,21 +93,22 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-	async pull(): Promise<void> {
+	async pull(): Promise<boolean> {
 		this.verboseNotice("Performing pre pull checks.")
 		if (!this.checkSettingsConfigured()) { 
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
-			return
+			return false
 		}
 		await this.loadLocalStore()
 		const checkResult = await this.fitPull.performPrePullChecks()
 		if (!checkResult) {
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
-			return
+			return false
 		}// early return to abort pull
 		this.verboseNotice("Pre pull checks successful, pulling changes from remote.")
 		await this.fitPull.pullRemoteToLocal(checkResult, this.saveLocalStoreCallback)
 		new Notice("Pull complete, local copy up to date.")
+		return true
 	}
 
 	async push(): Promise<void> {
@@ -125,6 +126,19 @@ export default class FitPlugin extends Plugin {
 		this.verboseNotice("Pre push checks successful, pushing local changes to remote.")
 		await this.fitPush.pushChangedFilesToRemote(checksResult, this.saveLocalStoreCallback)
 		new Notice(`Successful pushed to ${this.fit.repo}`)
+	}
+
+	async sync(): Promise<void> {
+		// TODO: sync requires a different order of running checks, to minimize the possibilities of aborting after changes
+		// Ideally, sync should undo changes if it needs to abort
+		// This feature will be developed as push and pull separately becomes mature
+		const pullSuccessful = await this.pull()
+		if (!pullSuccessful) {
+			new Notice("Pull failed, aborting sync.")
+			return
+		}
+		await this.push()
+		new Notice("Sync complete.")
 	}
 
 	updateRibbonIcons() {

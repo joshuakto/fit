@@ -79,7 +79,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Single button mode')
-			.setDesc('Work in progress.')
+			.setDesc('Single button mode is in early alpha, (recommended to turn off and push and pull separately).')
 			.addToggle(selected=>selected
 				.setValue(this.plugin.settings.singleButtonMode)
 				.onChange(async (selected) => {
