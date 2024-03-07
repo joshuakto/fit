@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, base64ToArrayBuffer } from 'obsidian';
+import { Notice, Plugin, base64ToArrayBuffer } from 'obsidian';
 import { ComputeFileLocalShaModal, DebugModal } from 'src/pluginModal';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
@@ -16,22 +16,14 @@ export interface FitSettings {
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
-	pat: "<Personal-Access-Token>",
-	owner: "<Github-Username>",
-	repo: "<Repository-Name>",
-	branch: "main",
+	pat: "",
+	owner: "",
+	repo: "",
+	branch: "",
 	deviceName: "",
-	singleButtonMode: false
+	singleButtonMode: true
 }
 
-const DEFAULT_MOBILE_SETTINGS: FitSettings = {
-	pat: "<Personal-Access-Token>",
-	owner: "<Github-Username>",
-	repo: "<Repository-Name>",
-	branch: "main",
-	deviceName: "",
-	singleButtonMode: false
-}
 
 export interface LocalStores {
 	localSha: Record<string, string>
@@ -63,15 +55,15 @@ export default class FitPlugin extends Plugin {
 	
 
 	checkSettingsConfigured(): boolean {
-		if (["<Personal-Access-Token> ", ""].includes(this.settings.pat)) {
+		if (this.settings.pat === "") {
 			new Notice("Please provide git personal access tokens in Fit settings and try again.")
 			return false
 		}
-		if (["<Github-Username>", ""].includes(this.settings.owner)) {
+		if (this.settings.owner === "") {
 			new Notice("Please provide git repo owner in Fit settings and try again.")
 			return false
 		}
-		if (["<Repository-Name>", ""].includes(this.settings.repo)) {
+		if (this.settings.repo === "") {
 			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
 		}
 		this.fit.loadSettings(this.settings)
@@ -276,7 +268,7 @@ export default class FitPlugin extends Plugin {
 
 
 	async onload() {
-		await this.loadSettings(Platform.isMobile);
+		await this.loadSettings();
 		await this.loadLocalStore();
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
 		this.vaultOps = new VaultOperations(this.app.vault)
@@ -358,12 +350,9 @@ export default class FitPlugin extends Plugin {
 
 	onunload() {}
 
-	async loadSettings(isMobile?: boolean) {
+	async loadSettings() {
 		const userSetting = await this.loadData()
-		let settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
-		if (isMobile && !userSetting) {
-			settings = Object.assign({}, DEFAULT_MOBILE_SETTINGS);
-		}
+		const settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {

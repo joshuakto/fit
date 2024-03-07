@@ -18,7 +18,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Github personal access token')
 			.setDesc('Remember to give it the appropriate access for reading and writing to the storage repo.')
 			.addText(text => text
-				.setPlaceholder('Enter your token')
+				.setPlaceholder('GitHub personal access token')
 				.setValue(this.plugin.settings.pat)
 				.onChange(async (value) => {
 					this.plugin.settings.pat = value;
@@ -28,7 +28,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Github username')
 			.setDesc('Your github handle.')
 			.addText(text => text
-				.setPlaceholder('Enter your username')
+				.setPlaceholder('GitHub username')
 				.setValue(this.plugin.settings.owner)
 				.onChange(async (value) => {
 					this.plugin.settings.owner = value;
@@ -38,7 +38,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Github repository name')
 			.setDesc('The repo you dedicate to tracking this vault.')
 			.addText(text => text
-				.setPlaceholder('Enter your repository name')
+				.setPlaceholder('Repository')
 				.setValue(this.plugin.settings.repo)
 				.onChange(async (value) => {
 					this.plugin.settings.repo = value;
@@ -48,7 +48,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Branch name')
 			.setDesc('The branch name you set to push to (default to main)')
 			.addText(text => text
-				.setPlaceholder('Enter the branch name')
+				.setPlaceholder('Branch name')
 				.setValue(this.plugin.settings.branch)
 				.onChange(async (value) => {
 					this.plugin.settings.branch = value;
@@ -59,7 +59,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName('Device name')
 			.setDesc('The name of this device, used to decorate commit message')
 			.addText(text => text
-				.setPlaceholder('Enter device name')
+				.setPlaceholder('Device name')
 				.setValue(this.plugin.settings.deviceName)
 				.onChange(async (value) => {
 					this.plugin.settings.deviceName = value;
@@ -68,7 +68,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Single button mode')
-			.setDesc('Single button mode is in early alpha, (recommended to turn off and push and pull separately).')
+			.setDesc('Single button to sync your repo to github (In early alpha, please file an issue if you encounter error with steps to reproduce).')
 			.addToggle(selected=>selected
 				.setValue(this.plugin.settings.singleButtonMode)
 				.onChange(async (selected) => {
