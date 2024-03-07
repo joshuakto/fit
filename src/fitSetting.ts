@@ -76,5 +76,19 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
 			)
+
+		const checkIntervalSlider = new Setting(containerEl)
+			.setName('Remote check interval')
+			.setDesc(`Automatically check for remote changes in the background every ${this.plugin.settings.checkEveryXMinutes} minutes.`)
+			.addSlider(slider => slider
+				.setLimits(1, 60, 1)
+				.setValue(this.plugin.settings.checkEveryXMinutes)
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					this.plugin.settings.checkEveryXMinutes = value;
+					await this.plugin.saveSettings();
+					checkIntervalSlider.setDesc(`Automatically check for remote changes in the background every ${value} minutes.`)
+				})
+			)
 	}
 }

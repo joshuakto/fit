@@ -13,6 +13,7 @@ export interface FitSettings {
 	branch: string;
 	deviceName: string;
 	singleButtonMode: boolean
+	checkEveryXMinutes: number
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -21,7 +22,8 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "",
 	branch: "",
 	deviceName: "",
-	singleButtonMode: true
+	singleButtonMode: true,
+	checkEveryXMinutes: 5
 }
 
 
@@ -348,7 +350,7 @@ export default class FitPlugin extends Plugin {
 					console.log(`Local copy up to date.`)
 				}
 			}
-		}, 10 *  1000));
+		}, this.settings.checkEveryXMinutes * 60 * 1000));
 	}
 
 	onunload() {}
@@ -361,6 +363,8 @@ export default class FitPlugin extends Plugin {
 				if (settings.hasOwnProperty(key)) {
 					if (key == "singleButtonMode") {
 						obj[key] = Boolean(settings[key]);
+					} else if (key == "checkEveryXMinutes") {
+						obj[key] = Number(settings[key]);
 					} else {
 						obj[key] = settings[key];
 					}
