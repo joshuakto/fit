@@ -198,10 +198,10 @@ export default class FitPlugin extends Plugin {
 		return
 	}
 
-	initializeFitNotice(): Notice {
+	initializeFitNotice(addClasses = ["loading"]): Notice {
 		const notice = new Notice(" ", 0) // keep at least one empty space to make the height consistent
-		notice.noticeEl.addClass("fit-notice")
-		notice.noticeEl.addClass("loading")
+		notice.noticeEl.addClass("fit-notice")	
+		addClasses.map(cls => notice.noticeEl.addClass(cls))
 		return notice
 	}
 
@@ -340,12 +340,15 @@ export default class FitPlugin extends Plugin {
 			if (this.checkSettingsConfigured()) {
 				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
 				if (updatedRemoteCommitSha) {
+					const intervalNotice = this.initializeFitNotice(["static"]);
+					intervalNotice.setMessage("Remote update detected, please pull the latest changes.")
+					// new Notice("Remote update detected, please pull the latest changes.")
 					console.log(`Remote updated, latest remote commit sha: ${updatedRemoteCommitSha}.`)
 				} else {
 					console.log(`Local copy up to date.`)
 				}
 			}
-		}, 5 * 60 * 1000));
+		}, 10 *  1000));
 	}
 
 	onunload() {}
