@@ -4,7 +4,10 @@ A barebone File gIT system for syncing files across devices utilizing Git.
 
 Currently, this plugin has two major functions (Pulling from and Pushing to Github). The end goal of this plugin is to give users one single button to sync their vault to streamline the user experience.
 
-This plugin is designed to be as simple as possible, and include only the push and pull function of git. There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out. This plugin focuses on making the core git feature (push and pull) available across devices (mobile and desktop). To achieve this, this repo implements a simple git system with pure typescript and utilizes [Octokit/core.js](https://github.com/octokit/core.js/) which supports all modern browsers to interface with GitHub REST API.
+This plugin is designed to be as simple as possible, enabling one-click sync that works universally across mobile and desktop.
+
+### Relevant plugins
+There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out. This plugin focuses on making the core git feature (push and pull) available across devices (mobile and desktop). To achieve this, this repo implements a simple git system with pure typescript and utilizes [Octokit/core.js](https://github.com/octokit/core.js/) which supports all modern browsers to interface with GitHub REST API.
 
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
 
