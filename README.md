@@ -22,7 +22,7 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 
 # Setup
-1. Create a repo on GitHub
+1. Create a repo on GitHub (Important: remember to select create a **README** so the repository is not empty, this required for Fit to work.)
 2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
 3. Enters the created token along with other relevant GitHub information on the Fit settings tab.
 <img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
