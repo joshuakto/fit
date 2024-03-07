@@ -12,6 +12,10 @@ There are other community plugins with more advanced git features, if you need f
 
 ### One click sync
 
+
+https://github.com/joshuakto/fit/assets/34743132/4060695d-1e9f-4475-8187-519cbba40cab
+
+
 ### Pull and push separately
 
 
@@ -25,7 +29,8 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 1. Create a repo on GitHub (Important: remember to select create a **README** so the repository is not empty, this required for Fit to work.)
 2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
 3. Enters the created token along with other relevant GitHub information on the Fit settings tab.
-<img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
+   <img width="1106" alt="Screenshot 2024-03-07 at 11 39 57 AM" src="https://github.com/joshuakto/fit/assets/34743132/31af0b20-1963-40a9-a847-32531beb8fc8">
+
 
 # Roadmap
 1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
