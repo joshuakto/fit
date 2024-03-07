@@ -6,7 +6,19 @@ import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
 
 type TreeNode = {path: string, mode: string, type: string, sha: string | null}
 
-export interface IFit {
+type OctokitCallMethods = {
+    getTree: (tree_sha: string) => Promise<TreeNode[]>
+    getRef: (ref: string) => Promise<string>
+    getCommitTreeSha: (ref: string) => Promise<string>
+    getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
+    createBlob: (content: string, encoding: string) =>Promise<string>
+    createTreeNodeFromFile: ({path, status, extension}: LocalChange) => Promise<TreeNode>
+    createCommit: (treeSha: string, parentSha: string) =>Promise<string>
+    updateRef: (sha: string, ref: string) => Promise<string>
+    getBlob: (file_sha:string) =>Promise<string>
+}
+
+export interface IFit extends OctokitCallMethods{
     owner: string
     repo: string
     branch: string
@@ -18,15 +30,19 @@ export interface IFit {
     octokit: Octokit
     vault: Vault
     fileSha1: (path: string) => Promise<string>
-    getTree: (tree_sha: string) => Promise<TreeNode[]>
-    getRef: (ref: string) => Promise<string>
-    getCommitTreeSha: (ref: string) => Promise<string>
-    getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
-    createBlob: (content: string, encoding: string) =>Promise<string>
-    createTreeNodeFromFile: ({path, status, extension}: LocalChange) => Promise<TreeNode>
-    createCommit: (treeSha: string, parentSha: string) =>Promise<string>
-    updateRef: (sha: string, ref: string) => Promise<string>
-    getBlob: (file_sha:string) =>Promise<string>
+}
+
+// Define a custom HttpError class that extends Error
+export class OctokitHttpError extends Error {
+    status: number;
+    source: keyof OctokitCallMethods
+
+    constructor(message: string, status: number, source: keyof OctokitCallMethods) {
+        super(message);
+        this.name = 'HttpError';
+        this.status = status;
+        this.source = source
+    }
 }
 
 export class Fit implements IFit {
@@ -111,14 +127,18 @@ export class Fit implements IFit {
     }
 
     async getRef(ref: string): Promise<string> {
-        const response = await this.octokit.request(
-            `GET /repos/${this.owner}/${this.repo}/git/ref/${ref}`, {
-                owner: this.owner,
-                repo: this.repo,
-                ref: ref,
-                headers: this.headers
-        })
-        return response.data.object.sha
+        try {
+            const {data: response} = await this.octokit.request(
+                `GET /repos/${this.owner}/${this.repo}/git/ref/${ref}`, {
+                    owner: this.owner,
+                    repo: this.repo,
+                    ref: ref,
+                    headers: this.headers
+            })
+            return response.object.sha
+        } catch (error) {
+            throw new OctokitHttpError(error.message, error.status, "getRef");
+        }
     }
 
     // Get the sha of the latest commit in the default branch (set by user in setting)
