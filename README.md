@@ -3,8 +3,12 @@
 A minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.
 This plugin is designed to be as simple as possible, enabling one-click sync that works universally across mobile and desktop.
 
+This plugin focuses on making the core git feature (push and pull) available across devices (mobile and desktop). To achieve this, I implemented a simple git system with pure typescript and utilizes [Octokit/core.js](https://github.com/octokit/core.js/), which supports all modern browsers, to interface with GitHub REST API. 
+
 ### Relevant plugins
-There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out. This plugin focuses on making the core git feature (push and pull) available across devices (mobile and desktop). To achieve this, this repo implements a simple git system with pure typescript and utilizes [Octokit/core.js](https://github.com/octokit/core.js/) which supports all modern browsers to interface with GitHub REST API.
+There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out.
+
+There are also other minimalist plugins for synchronizing changes such as [Git integration](https://github.com/noradroid/obsidian-git-integration), [GitHub sync](https://github.com/kevinmkchin/Obsidian-GitHub-Sync), and [YAOS](https://github.com/mahyarmirrashed/yaos). However, they do not support mobile yet as of writing this plugin.
 
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
 
