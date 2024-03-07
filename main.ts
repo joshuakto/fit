@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin } from 'obsidian';
+import { Notice, Plugin } from 'obsidian';
 import { Fit } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
@@ -15,22 +15,14 @@ export interface FitSettings {
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
-	pat: "<Personal-Access-Token>",
-	owner: "<Github-Username>",
-	repo: "<Repository-Name>",
-	branch: "main",
+	pat: "",
+	owner: "",
+	repo: "",
+	branch: "",
 	deviceName: "",
-	singleButtonMode: false
+	singleButtonMode: true
 }
 
-const DEFAULT_MOBILE_SETTINGS: FitSettings = {
-	pat: "<Personal-Access-Token>",
-	owner: "<Github-Username>",
-	repo: "<Repository-Name>",
-	branch: "main",
-	deviceName: "",
-	singleButtonMode: false
-}
 
 export interface LocalStores {
 	localSha: Record<string, string>
@@ -60,15 +52,15 @@ export default class FitPlugin extends Plugin {
 	fitSyncRibbonIconEl: HTMLElement
 
 	checkSettingsConfigured(): boolean {
-		if (["<Personal-Access-Token> ", ""].includes(this.settings.pat)) {
+		if (this.settings.pat === "") {
 			new Notice("Please provide git personal access tokens in Fit settings and try again.")
 			return false
 		}
-		if (["<Github-Username>", ""].includes(this.settings.owner)) {
+		if (this.settings.owner === "") {
 			new Notice("Please provide git repo owner in Fit settings and try again.")
 			return false
 		}
-		if (["<Repository-Name>", ""].includes(this.settings.repo)) {
+		if (this.settings.repo === "") {
 			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
 		}
 		this.fit.loadSettings(this.settings)
@@ -203,10 +195,10 @@ export default class FitPlugin extends Plugin {
 		return
 	}
 
-	initializeFitNotice(): Notice {
+	initializeFitNotice(addClasses = ["loading"]): Notice {
 		const notice = new Notice(" ", 0) // keep at least one empty space to make the height consistent
-		notice.noticeEl.addClass("fit-notice")
-		notice.noticeEl.addClass("loading")
+		notice.noticeEl.addClass("fit-notice")	
+		addClasses.map(cls => notice.noticeEl.addClass(cls))
 		return notice
 	}
 
@@ -273,7 +265,7 @@ export default class FitPlugin extends Plugin {
 
 
 	async onload() {
-		await this.loadSettings(Platform.isMobile);
+		await this.loadSettings();
 		await this.loadLocalStore();
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault)
 		this.vaultOps = new VaultOperations(this.app.vault)
@@ -304,22 +296,18 @@ export default class FitPlugin extends Plugin {
 			if (this.checkSettingsConfigured()) {
 				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
 				if (updatedRemoteCommitSha) {
-					console.log(`Remote updated, latest remote commit sha: ${updatedRemoteCommitSha}.`)
-				} else {
-					console.log(`Local copy up to date.`)
-				}
+					const intervalNotice = this.initializeFitNotice(["static"]);
+					intervalNotice.setMessage("Remote update detected, please pull the latest changes.")
+				} 
 			}
-		}, 5 * 60 * 1000));
+		}, 10 *  1000));
 	}
 
 	onunload() {}
 
-	async loadSettings(isMobile?: boolean) {
+	async loadSettings() {
 		const userSetting = await this.loadData()
-		let settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
-		if (isMobile && !userSetting) {
-			settings = Object.assign({}, DEFAULT_MOBILE_SETTINGS);
-		}
+		const settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
