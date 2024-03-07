@@ -1,9 +1,6 @@
 # FIT
 
-A barebone File gIT system for syncing files across devices utilizing Git.
-
-Currently, this plugin has two major functions (Pulling from and Pushing to Github). The end goal of this plugin is to give users one single button to sync their vault to streamline the user experience.
-
+A minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.
 This plugin is designed to be as simple as possible, enabling one-click sync that works universally across mobile and desktop.
 
 ### Relevant plugins
@@ -12,16 +9,23 @@ There are other community plugins with more advanced git features, if you need f
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
 
 # How to use
-1. Create a repo on GitHub
-2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
-3. Enters the created token along with other relevant GitHub information on the Fit settings tab.
-<img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
-4. Click pull to fetch from the repo / Click push to upload the local vault to the remote repository.
+
+### One click sync
+
+### Pull and push separately
 
 
 
 https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519cdc11
 
+
+
+
+# Setup
+1. Create a repo on GitHub
+2. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
+3. Enters the created token along with other relevant GitHub information on the Fit settings tab.
+<img width="1113" alt="Screenshot 2024-03-02 at 6 17 24 PM" src="https://github.com/joshuakto/fit/assets/34743132/c6679d4e-fd7f-476a-a9cc-43dfd732b534">
 
 # Roadmap
 1. Enable integration with existing vault (current setup only works for empty vault synced with empty repo from the start)
