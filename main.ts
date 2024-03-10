@@ -1,5 +1,5 @@
-import { Notice, Plugin } from 'obsidian';
-import { Fit } from 'src/fit';
+import { Notice, Plugin, SettingTab } from 'obsidian';
+import { Fit, OctokitHttpError } from 'src/fit';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
@@ -8,6 +8,7 @@ import { VaultOperations } from 'src/vaultOps';
 export interface FitSettings {
 	pat: string;
 	owner: string;
+	avatarUrl: string;
 	repo: string;
 	branch: string;
 	deviceName: string;
@@ -18,6 +19,7 @@ export interface FitSettings {
 const DEFAULT_SETTINGS: FitSettings = {
 	pat: "",
 	owner: "",
+	avatarUrl: "",
 	repo: "",
 	branch: "",
 	deviceName: "",
@@ -41,6 +43,7 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
+	settingTab: FitSettingTab
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
@@ -53,18 +56,42 @@ export default class FitPlugin extends Plugin {
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
 
+	// if settings not configured, open settings to let user quickly setup
+	// Note: this is not a stable feature and might be disabled at any point in the future
+	openPluginSettings() {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const appWithSetting = this.app as any as {
+			setting: {
+				open(): void;
+				openTabById(id: string): SettingTab | null;
+			}
+		}
+		appWithSetting.setting.open()
+		appWithSetting.setting.openTabById("fit")
+	}
+
 	checkSettingsConfigured(): boolean {
 		if (this.settings.pat === "") {
 			new Notice("Please provide git personal access tokens in Fit settings and try again.")
+			this.openPluginSettings()
 			return false
 		}
 		if (this.settings.owner === "") {
 			new Notice("Please provide git repo owner in Fit settings and try again.")
+			this.openPluginSettings()
 			return false
 		}
 		if (this.settings.repo === "") {
-			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
+			new Notice("Please provide git repo in Fit settings and try again.")
+			this.openPluginSettings()
+			return false
 		}
+		if (this.settings.branch === "") {
+			new Notice("Please provide git repo branch in Fit settings and try again.")
+			this.openPluginSettings()
+			return false
+		}
+
 		this.fit.loadSettings(this.settings)
 		return true
 	}
@@ -76,11 +103,10 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore()
 	}
 
-	async sync(syncNotice: Notice): Promise<void> {
+	sync = async (syncNotice: Notice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
 		syncNotice.setMessage("Performing pre sync checks.")
-		this.syncing = true
 		const localChanges = await this.fit.getLocalChanges()
 		const preSyncChecks = await this.fitPull.performPrePullChecks(localChanges)
 		if (preSyncChecks.status === "localCopyUpToDate" && localChanges.length === 0) {
@@ -146,12 +172,10 @@ export default class FitPlugin extends Plugin {
 			})
 			syncNotice.setMessage("Local and remote now in sync.")
 		}
-		this.syncing = false
 	}
 
-	async pull(pullNotice: Notice): Promise<void> {
+	pull = async (pullNotice: Notice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
-		this.pulling = true
 		await this.loadLocalStore()
 		pullNotice.setMessage("Performing pre pull checks.")
 		const prePullCheckResult = await this.fitPull.performPrePullChecks()
@@ -170,12 +194,10 @@ export default class FitPlugin extends Plugin {
 			this.saveLocalStoreCallback({lastFetchedCommitSha})
 			pullNotice.setMessage("No remote changes detected, local copy set to track latest commit.")
 		}
-		this.pulling = false
 		return
 	}
 
-	async push(pushNotice: Notice): Promise<void> {
-		this.pushing = true
+	push = async (pushNotice: Notice): Promise<void> => {
 		pushNotice.setMessage("Performing pre push checks.")
 		if (!this.checkSettingsConfigured()) { 
 			this.pushing = false
@@ -193,8 +215,39 @@ export default class FitPlugin extends Plugin {
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
 			pushNotice.setMessage(`Successful pushed to ${this.fit.repo}`)
 		}
-		this.pushing = false
 		return
+	}
+
+	// wrapper to convert error to notice, return true if error is caught
+	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: Notice, ...args: P) => Promise<R>, notice: Notice, ...args: P): Promise<R|true> => {
+		try {
+			const result = await func(notice, ...args)
+			return result
+		} catch (error) {
+			if (error instanceof OctokitHttpError) {
+				switch (error.source) {
+					case 'getTree':
+					case 'getRef':
+						console.error("Caught error from getRef: ", error.message)
+						if (error.status === 404) {
+							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.")
+							return true
+						}
+						notice.setMessage("Unknown error in getting ref, refers to console for details.")
+						return true
+					case 'getCommitTreeSha':
+					case 'getRemoteTreeSha':
+					case 'createBlob':
+					case 'createTreeNodeFromFile':
+					case 'createCommit':
+					case 'updateRef':
+					case 'getBlob':
+				}
+				return true
+			}
+			notice.setMessage("Encountered unknown error during sync, view console log for details")
+			return true
+		}
 	}
 
 	initializeFitNotice(addClasses = ["loading"]): Notice {
@@ -204,9 +257,13 @@ export default class FitPlugin extends Plugin {
 		return notice
 	}
 
-	removeFitNotice(notice: Notice): void {
+	removeFitNotice(notice: Notice, finalClass?: string): void {
 		notice.noticeEl.removeClass("loading")
-		notice.noticeEl.addClass("done")
+		if (finalClass) {
+			notice.noticeEl.addClass(finalClass)
+		} else {
+			notice.noticeEl.addClass("done")
+		}
 		setTimeout(() => notice.hide(), 4000)
 	}
 
@@ -227,27 +284,36 @@ export default class FitPlugin extends Plugin {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
 			if (this.syncing || this.pulling || this.pushing) { return }
+			this.syncing = true
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
 			const syncNotice = this.initializeFitNotice();
-			try {
-				await this.sync(syncNotice);
-			} catch (error) {
-				syncNotice.setMessage("Encountered unknown error during sync, view console log for details")
-				console.error("Error caught in sync: ", error);
+			const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+			if (errorCaught === true) {
+				this.removeFitNotice(syncNotice, "error")
 				this.syncing = false
+				return
 			}
 			this.removeFitNotice(syncNotice)
-			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+			this.syncing = false
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 		
 		// Pull remote to local
 		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
 			if (this.syncing || this.pulling || this.pushing) { return }
+			this.pulling = true
 			this.fitPullRibbonIconEl.addClass('animate-icon')
 			const pullNotice = this.initializeFitNotice();
-			await this.pull(pullNotice);
+			const errorCaught = await this.catchErrorAndNotify(this.pull, pullNotice);
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+			if (errorCaught === true) {
+				this.removeFitNotice(pullNotice, "error")
+				this.pulling = false
+				return
+			}
 			this.removeFitNotice(pullNotice)
+			this.pulling = false
 			this.fitPullRibbonIconEl.removeClass('animate-icon')
 		});
 		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
@@ -256,9 +322,17 @@ export default class FitPlugin extends Plugin {
 		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
 			if (this.syncing || this.pulling || this.pushing) { return }
 			this.fitPushRibbonIconEl.addClass('animate-icon')
+			this.pushing = true
 			const pushNotice = this.initializeFitNotice();
-			await this.push(pushNotice);
+			const errorCaught = await this.catchErrorAndNotify(this.push, pushNotice);
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+			if (errorCaught === true) {
+				this.removeFitNotice(pushNotice, "error")
+				this.pushing = false
+				return
+			}
 			this.removeFitNotice(pushNotice)
+			this.pushing = false
 			this.fitPushRibbonIconEl.removeClass('animate-icon')
 		});
 		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
@@ -276,7 +350,9 @@ export default class FitPlugin extends Plugin {
 		this.pulling = false
 		this.pushing = false
 		this.syncing = false
+		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
+
 
 		// recompute local sha to unblock pulling
 		this.addCommand({
