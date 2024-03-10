@@ -4,11 +4,17 @@ import { Octokit } from "@octokit/core"
 import { LocalChange } from "./fitPush"
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
 
-type TreeNode = {path: string, mode: string, type: string, sha: string | null}
+type TreeNode = {
+    path: string, 
+    mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined, 
+    type: "commit" | "blob" | "tree" | undefined, 
+    sha: string | null}
 
 type OctokitCallMethods = {
-    getTree: (tree_sha: string) => Promise<TreeNode[]>
+    getUser: () => Promise<{owner: string, avatarUrl: string}>
+    getRepos: () => Promise<string[]>
     getRef: (ref: string) => Promise<string>
+    getTree: (tree_sha: string) => Promise<TreeNode[]>
     getCommitTreeSha: (ref: string) => Promise<string>
     getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
     createBlob: (content: string, encoding: string) =>Promise<string>
@@ -126,10 +132,50 @@ export class Fit implements IFit {
         return localChanges
     }
 
+    async getUser(): Promise<{owner: string, avatarUrl: string}> {
+        try {
+            const {data: response} = await this.octokit.request(
+                `GET /user`, {
+                    headers: this.headers
+            })
+            return {owner: response.login, avatarUrl:response.avatar_url}
+        } catch (error) {
+            throw new OctokitHttpError(error.message, error.status, "getUser");
+        }
+    }
+
+    async getRepos(): Promise<string[]> {
+        try {
+            const {data: response} = await this.octokit.request(
+                `GET /user/repos`, {
+                    affiliation: "owner",
+                    headers: this.headers
+            })
+            return response.map(r => r.name)
+        } catch (error) {
+            throw new OctokitHttpError(error.message, error.status, "getRepos");
+        }
+    }
+
+    async getBranches(): Promise<string[]> {
+        try {
+            const {data: response} = await this.octokit.request(
+                `GET /repos/{owner}/{repo}/branches`, 
+                {
+                    owner: this.owner,
+                    repo: this.repo,
+                    headers: this.headers
+            })
+            return response.map(r => r.name)
+        } catch (error) {
+            throw new OctokitHttpError(error.message, error.status, "getRepos");
+        }
+    }
+
     async getRef(ref: string): Promise<string> {
         try {
             const {data: response} = await this.octokit.request(
-                `GET /repos/${this.owner}/${this.repo}/git/ref/${ref}`, {
+                `GET /repos/{owner}/{repo}/git/ref/{ref}`, {
                     owner: this.owner,
                     repo: this.repo,
                     ref: ref,
@@ -150,7 +196,7 @@ export class Fit implements IFit {
     // refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
     async getCommitTreeSha(ref: string): Promise<string> {
         const {data: commit} =  await this.octokit.request( 
-            `GET /repos/${this.owner}/${this.repo}/commits/${ref}`, {
+            `GET /repos/{owner}/{repo}/commits/{ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
@@ -190,7 +236,7 @@ export class Fit implements IFit {
 
     async createBlob(content: string, encoding: string): Promise<string> {
         const {data: blob} = await this.octokit.request(
-            `POST /repos/${this.owner}/${this.repo}/git/blobs`, {
+            `POST /repos/{owner}/{repo}/git/blobs`, {
             owner: this.owner,
             repo: this.repo,
             content, 
@@ -245,20 +291,22 @@ export class Fit implements IFit {
         base_tree_sha: string): 
         Promise<string> {
             const {data: newTree} = await this.octokit.request(
-                `POST /repos/${this.owner}/${this.repo}/git/trees`, {
-                owner: this.owner,
-                repo: this.repo,
-                tree: treeNodes,
-                base_tree: base_tree_sha,
-                headers: this.headers
-            })
+                `POST /repos/{owner}/{repo}/git/trees`, 
+                {
+                    owner: this.owner,
+                    repo: this.repo,
+                    tree: treeNodes,
+                    base_tree: base_tree_sha,
+                    headers: this.headers
+                }
+            )
             return newTree.sha
     }
 
     async createCommit(treeSha: string, parentSha: string): Promise<string> {
-        const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
+        const message = `Commit from {deviceName} on ${new Date().toLocaleString()}`
         const { data: createdCommit } = await this.octokit.request(
-            `POST /repos/${this.owner}/${this.repo}/git/commits` , {
+            `POST /repos/{owner}/{repo}/git/commits` , {
             owner: this.owner,
             repo: this.repo,
             message,
@@ -271,7 +319,7 @@ export class Fit implements IFit {
 
     async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<string> {
         const { data:updatedRef } = await this.octokit.request(
-            `PATCH /repos/${this.owner}/${this.repo}/git/refs/${ref}`, {
+            `PATCH /repos/{owner}/{repo}/git/refs/{ref}`, {
             owner: this.owner,
             repo: this.repo,
             ref,
@@ -283,7 +331,7 @@ export class Fit implements IFit {
 
     async getBlob(file_sha:string): Promise<string> {
         const { data: blob } = await this.octokit.request(
-            `GET /repos/${this.owner}/${this.repo}/git/blobs/${file_sha}`, {
+            `GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
             owner: this.owner,
             repo: this.repo,
             file_sha,

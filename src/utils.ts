@@ -66,3 +66,10 @@ export function getFileEncoding(path: string): string {
     } 
     return "utf-8"
 }
+
+export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
+    const set1 = new Set(arr1);
+    const set2 = new Set(arr2);
+    const isEqual = set1.size === set2.size && [...set1].every(value => set2.has(value));
+    return isEqual
+}

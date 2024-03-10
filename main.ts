@@ -1,4 +1,4 @@
-import { Notice, Plugin, base64ToArrayBuffer } from 'obsidian';
+import { Notice, Plugin, SettingTab, base64ToArrayBuffer } from 'obsidian';
 import { ComputeFileLocalShaModal, DebugModal } from 'src/pluginModal';
 import { Fit, OctokitHttpError } from 'src/fit';
 import { FitPull } from 'src/fitPull';
@@ -9,6 +9,7 @@ import { VaultOperations } from 'src/vaultOps';
 export interface FitSettings {
 	pat: string;
 	owner: string;
+	avatarUrl: string;
 	repo: string;
 	branch: string;
 	deviceName: string;
@@ -19,6 +20,7 @@ export interface FitSettings {
 const DEFAULT_SETTINGS: FitSettings = {
 	pat: "",
 	owner: "",
+	avatarUrl: "",
 	repo: "",
 	branch: "",
 	deviceName: "",
@@ -42,6 +44,7 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
+	settingTab: FitSettingTab
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
@@ -54,18 +57,42 @@ export default class FitPlugin extends Plugin {
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
 
+	// if settings not configured, open settings to let user quickly setup
+	// Note: this is not a stable feature and might be disabled at any point in the future
+	openPluginSettings() {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const appWithSetting = this.app as any as {
+			setting: {
+				open(): void;
+				openTabById(id: string): SettingTab | null;
+			}
+		}
+		appWithSetting.setting.open()
+		appWithSetting.setting.openTabById("fit")
+	}
+
 	checkSettingsConfigured(): boolean {
 		if (this.settings.pat === "") {
 			new Notice("Please provide git personal access tokens in Fit settings and try again.")
+			this.openPluginSettings()
 			return false
 		}
 		if (this.settings.owner === "") {
 			new Notice("Please provide git repo owner in Fit settings and try again.")
+			this.openPluginSettings()
 			return false
 		}
 		if (this.settings.repo === "") {
-			this.settings.repo = `obsidian-${this.app.vault.getName()}-storage`
+			new Notice("Please provide git repo in Fit settings and try again.")
+			this.openPluginSettings()
+			return false
 		}
+		if (this.settings.branch === "") {
+			new Notice("Please provide git repo branch in Fit settings and try again.")
+			this.openPluginSettings()
+			return false
+		}
+
 		this.fit.loadSettings(this.settings)
 		return true
 	}
@@ -324,7 +351,12 @@ export default class FitPlugin extends Plugin {
 		this.pulling = false
 		this.pushing = false
 		this.syncing = false
+		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
+		
+		// This adds a settings tab so the user can configure their connection to github
+		this.addSettingTab(this.settingTab);
+
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		const statusBarItemEl = this.addStatusBarItem();
@@ -378,9 +410,6 @@ export default class FitPlugin extends Plugin {
 				).open();
 			}
 		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new FitSettingTab(this.app, this));
 
 		// Check remote every 5 minutes to see if there are new commits
 		this.registerInterval(window.setInterval(async () => {

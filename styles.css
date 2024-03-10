@@ -1,3 +1,73 @@
+.fit-github-handle {
+    align-items: center;
+    margin-inline: 20px;
+}
+
+.fit-avatar-container {
+    display: flex;
+    align-items: center;
+    padding-inline: 5px;
+}
+
+.fit-avatar-container.error {
+    width: 16px;
+    height: 16px;
+    content: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLXgtY2lyY2xlIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIvPjxwYXRoIGQ9Im0xNSA5LTYgNiIvPjxwYXRoIGQ9Im05IDkgNiA2Ii8+PC9zdmc+");
+    transform: scale(1.5);
+    aspect-ratio: 1;
+    padding: 1px;
+    margin-right: 4px;
+    margin: 4px;
+}
+
+.fit-avatar-container.empty {
+    width: 16px;
+    height: 16px;
+    content: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NDk0OTQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1jaXJjbGUtZGFzaGVkIj48cGF0aCBkPSJNMTAuMSAyLjE4MmExMCAxMCAwIDAgMSAzLjggMCIvPjxwYXRoIGQ9Ik0xMy45IDIxLjgxOGExMCAxMCAwIDAgMS0zLjggMCIvPjxwYXRoIGQ9Ik0xNy42MDkgMy43MjFhMTAgMTAgMCAwIDEgMi42OSAyLjciLz48cGF0aCBkPSJNMi4xODIgMTMuOWExMCAxMCAwIDAgMSAwLTMuOCIvPjxwYXRoIGQ9Ik0yMC4yNzkgMTcuNjA5YTEwIDEwIDAgMCAxLTIuNyAyLjY5Ii8+PHBhdGggZD0iTTIxLjgxOCAxMC4xYTEwIDEwIDAgMCAxIDAgMy44Ii8+PHBhdGggZD0iTTMuNzIxIDYuMzkxYTEwIDEwIDAgMCAxIDIuNy0yLjY5Ii8+PHBhdGggZD0iTTYuMzkxIDIwLjI3OWExMCAxMCAwIDAgMS0yLjY5LTIuNyIvPjwvc3ZnPg==");
+    transform: scale(1.5);
+    aspect-ratio: 1;
+    padding: 1px;
+    margin-right: 4px;
+    margin: 4px;
+}
+
+.fit-avatar-container.cat {
+    width: 24px;
+    height: 24px;
+    margin-right: 4px;
+}
+
+.fit-avatar-container.cat::after {
+    content: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NDk0OTQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1naXRodWIiPjxwYXRoIGQ9Ik0xNSAyMnYtNGE0LjggNC44IDAgMCAwLTEtMy41YzMgMCA2LTIgNi01LjUuMDgtMS4yNS0uMjctMi40OC0xLTMuNS4yOC0xLjE1LjI4LTIuMzUgMC0zLjUgMCAwLTEgMC0zIDEuNS0yLjY0LS41LTUuMzYtLjUtOCAwQzYgMiA1IDIgNSAyYy0uMyAxLjE1LS4zIDIuMzUgMCAzLjVBNS40MDMgNS40MDMgMCAwIDAgNCA5YzAgMy41IDMgNS41IDYgNS41LS4zOS40OS0uNjggMS4wNS0uODUgMS42NS0uMTcuNi0uMjIgMS4yMy0uMTUgMS44NXY0Ii8+PHBhdGggZD0iTTkgMThjLTQuNTEgMi01LTItNy0yIi8+PC9zdmc+");
+    width: 24px;
+    height: 24px;
+    animation: spin-auth 2s linear infinite;
+}
+
+@keyframes spin-auth {
+    from {
+        transform: rotate(0deg) scale(0.75);
+    }
+    to {
+        transform: rotate(360deg) scale(0.75);
+    }
+}
+
+.fit-avatar-container i {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.fit-avatar-container img {
+    width: 20px;
+    height: 20px;
+    overflow: hidden;
+    margin: 2px;
+    border-radius: 50%; /* Make the image circular */
+}
+
 .fit-notice {
     padding-left: 32px;
     position: relative; /* Set position to relative */
@@ -100,7 +170,7 @@
 
 .fit-sync-ribbon-el.animate-icon::after {
     /* Steps to change color of icon stoke
-    1. decode the base64 svg (the string following 'base64, '
+    1. decode the base64 svg (the string following 'base64, ')
     2. modify the svg then reencode the modified svg back to base64
     3. replace the original base64 svg with the updated one */
     content: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NDk0OTQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1naXRodWIiPjxwYXRoIGQ9Ik0xNSAyMnYtNGE0LjggNC44IDAgMCAwLTEtMy41YzMgMCA2LTIgNi01LjUuMDgtMS4yNS0uMjctMi40OC0xLTMuNS4yOC0xLjE1LjI4LTIuMzUgMC0zLjUgMCAwLTEgMC0zIDEuNS0yLjY0LS41LTUuMzYtLjUtOCAwQzYgMiA1IDIgNSAyYy0uMyAxLjE1LS4zIDIuMzUgMCAzLjVBNS40MDMgNS40MDMgMCAwIDAgNCA5YzAgMy41IDMgNS41IDYgNS41LS4zOS40OS0uNjggMS4wNS0uODUgMS42NS0uMTcuNi0uMjIgMS4yMy0uMTUgMS44NXY0Ii8+PHBhdGggZD0iTTkgMThjLTQuNTEgMi01LTItNy0yIi8+PC9zdmc+"); /* Add content to pseudo-element */
