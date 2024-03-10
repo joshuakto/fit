@@ -195,12 +195,6 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName("View your vault on GitHub")
 			.setDesc(this.repoLink)
 			.addExtraButton(button => button
-				.setIcon('refresh-cw')
-				.onClick(async () => {
-					console.log(this.getLatestLink())
-					await this.refreshFields('link(2)');
-				}))
-			.addExtraButton(button => button
 				.setDisabled(this.repoLink.length === 0)
 				.setTooltip("Open on GitHub")
 				.setIcon('external-link')
