@@ -71,25 +71,27 @@ export default class FitPlugin extends Plugin {
 	}
 
 	checkSettingsConfigured(): boolean {
+		const actionItems: Array<string> = []
 		if (this.settings.pat === "") {
-			new Notice("Please provide git personal access tokens in Fit settings and try again.")
-			this.openPluginSettings()
-			return false
+			actionItems.push("provide GitHub personal access token")
 		}
 		if (this.settings.owner === "") {
-			new Notice("Please provide git repo owner in Fit settings and try again.")
-			this.openPluginSettings()
-			return false
+			actionItems.push("authenticate with personal access token")
 		}
 		if (this.settings.repo === "") {
-			new Notice("Please provide git repo in Fit settings and try again.")
-			this.openPluginSettings()
-			return false
+			actionItems.push("select a repository to sync to")
 		}
 		if (this.settings.branch === "") {
-			new Notice("Please provide git repo branch in Fit settings and try again.")
+			actionItems.push("select a branch to sync to")	
+		}
+
+		if (actionItems.length > 0) {
+			const settingsNotice = this.initializeFitNotice(["static"])
+			settingsNotice.setMessage("Settings not configured, please complete the following action items:\n" + actionItems.join("\n"))
 			this.openPluginSettings()
+			this.removeFitNotice(settingsNotice, "static")
 			return false
+
 		}
 
 		this.fit.loadSettings(this.settings)
@@ -136,7 +138,7 @@ export default class FitPlugin extends Plugin {
 				parentCommitSha: latestRemoteCommitSha
 			}
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			syncNotice.setMessage("No remote changes detected, pushed local changes to remote.")
+			syncNotice.setMessage("No remote changes detected, local changes pushed to remote.")
 		}
 		else if (preSyncChecks.status === "localChangesClashWithRemoteChanges") {
 			syncNotice.setMessage("Local changes clash with remote changes, aborting sync, files are unmodified.")

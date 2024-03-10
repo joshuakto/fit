@@ -1,4 +1,4 @@
-import FitPlugin, { FitSettings } from "main";
+import FitPlugin from "main";
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { setEqual } from "./utils";
 import { warn } from "console";
@@ -362,23 +362,6 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.repoInfoBlock()
 		this.viewLinkBlock()
 		this.localConfigBlock()
-
-		new Setting(containerEl)
-			.addButton((btn) =>
-				btn
-					.setButtonText('Debug')
-					.setCta()
-					.onClick(async () => {
-						["repo", "owner", "branch"].map(k=>{
-							// eslint-disable-next-line @typescript-eslint/no-explicit-any
-							console.log(`${k}: ${this.plugin.settings[k as keyof FitSettings]}`)
-						})
-						console.log("Existing repos")
-						console.log(this.existingRepos)
-						console.log("Existing Branches")
-						console.log(this.existingBranches)
-					})
-			)
 		this.refreshFields("withCache")
 	}
 }
