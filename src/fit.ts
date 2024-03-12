@@ -1,8 +1,10 @@
 import { LocalStores, FitSettings } from "main"
-import { Vault } from "obsidian"
 import { Octokit } from "@octokit/core"
-import { LocalChange } from "./fitPush"
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
+import { VaultOperations } from "./vaultOps"
+import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
+
+
 
 type TreeNode = {
     path: string, 
@@ -34,7 +36,7 @@ export interface IFit extends OctokitCallMethods{
 	lastFetchedCommitSha: string | null
 	lastFetchedRemoteSha: Record<string, string>
     octokit: Octokit
-    vault: Vault
+    vaultOps: VaultOperations
     fileSha1: (path: string) => Promise<string>
 }
 
@@ -62,13 +64,13 @@ export class Fit implements IFit {
 	lastFetchedCommitSha: string | null
 	lastFetchedRemoteSha: Record<string, string>
     octokit: Octokit
-    vault: Vault
+    vaultOps: VaultOperations
 
 
-    constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
+    constructor(setting: FitSettings, localStores: LocalStores, vaultOps: VaultOperations) {
         this.loadSettings(setting)
         this.loadLocalStore(localStores)
-        this.vault = vault
+        this.vaultOps = vaultOps
         this.headers = {
             // Hack to disable caching which leads to inconsistency for
             // read after write https://github.com/octokit/octokit.js/issues/890
@@ -100,16 +102,18 @@ export class Fit implements IFit {
     }
 
     async computeFileLocalSha(path: string): Promise<string> {
-		if (!await this.vault.adapter.exists(path)) {
-			throw new Error(`Attempting to compute local sha for ${path}, but file not found.`);
-		}
+        // Note: only support TFile now, investigate need for supporting TFolder later on
+        const file = await this.vaultOps.getTFile(path) 
 		// compute sha1 based on path and file content
-		const localFile = await this.vault.adapter.read(path)
+		const localFile = await this.vaultOps.vault.read(file)
 		return await this.fileSha1(path + localFile)
 	}
 
 	async computeLocalSha(): Promise<{[k:string]:string}> {
-		const paths = this.vault.getFiles().map(f=>f.path)
+		const paths = this.vaultOps.vault.getFiles().map(f=>{
+            // ignore local files in the _fit/ directory
+            return f.path.startsWith("_fit/") ? null : f.path
+        }).filter(Boolean)
 		return Object.fromEntries(
 			await Promise.all(
 				paths.map(async (p: string): Promise<[string, string]> =>{
@@ -120,16 +124,37 @@ export class Fit implements IFit {
 	}
 
     async getLocalChanges(currentLocalSha?: Record<string, string>): Promise<LocalChange[]> {
-        if (!this.localSha) {
-            // assumes every local files are created if no localSha is found
-            return this.vault.getFiles().map(f => {
-                return {path: f.path, status: "created"}})
-        }
         if (!currentLocalSha) {
             currentLocalSha = await this.computeLocalSha()
         }
         const localChanges = compareSha(currentLocalSha, this.localSha, "local")
         return localChanges
+    }
+
+    async getRemoteChanges(remoteTreeSha: {[k: string]: string}): Promise<RemoteChange[]> {
+        const remoteChanges = compareSha(remoteTreeSha, this.lastFetchedRemoteSha, "remote")
+        return remoteChanges
+    }
+
+    getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {
+        const localChangePaths = localChanges.map(c=>c.path)
+        const remoteChangePaths = remoteChanges.map(c=>c.path)
+        const clashedFiles = localChangePaths.map(
+            (path, localIndex) => {
+                const remoteIndex = remoteChangePaths.indexOf(path)
+                if (remoteIndex !== -1) {
+                    return {path, localIndex, remoteIndex}
+                }
+                return null
+            }).filter(Boolean) as Array<{path: string, localIndex: number, remoteIndex:number}>
+        return clashedFiles.map(
+            ({path, localIndex, remoteIndex}) => {
+                return {
+                    path,
+                    localStatus: localChanges[localIndex].status,
+                    remoteStatus: remoteChanges[remoteIndex].status
+                }
+            })
     }
 
     async getUser(): Promise<{owner: string, avatarUrl: string}> {
@@ -227,6 +252,8 @@ export class Fit implements IFit {
                 if (!node.path || !node.sha) {
                     throw new Error("Path or sha not found for blob node in remote");
                 }
+                // ignore changes in the _fit/ directory
+                if (node.path.startsWith("_fit/")) {return null}
                 return [node.path, node.sha]
             }
             return null
@@ -256,17 +283,14 @@ export class Fit implements IFit {
 				sha: null
 			}
 		}
-		if (!this.vault.adapter.exists(path)) {
-			throw new Error(
-                `Unexpected error: attempting to createBlob for non-existent file, 
-                please file an issue on github with info to reproduce the issue.`);
-		}
+        const file = await this.vaultOps.getTFile(path)
 		let encoding: string;
 		let content: string 
         // TODO check whether every files including md can be read using readBinary to reduce code complexity
 		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
-			const fileArrayBuf = await this.vault.adapter.readBinary(path)
+
+			const fileArrayBuf = await this.vaultOps.vault.readBinary(file)
 			const uint8Array = new Uint8Array(fileArrayBuf);
 			let binaryString = '';
 			for (let i = 0; i < uint8Array.length; i++) {
@@ -275,7 +299,7 @@ export class Fit implements IFit {
 			content = btoa(binaryString);
 		} else {
 			encoding = 'utf-8'
-			content = await this.vault.adapter.read(path)
+			content = await this.vaultOps.vault.read(file)
 		}
 		const blobSha = await this.createBlob(content, encoding)
 		return {
@@ -304,7 +328,7 @@ export class Fit implements IFit {
     }
 
     async createCommit(treeSha: string, parentSha: string): Promise<string> {
-        const message = `Commit from {deviceName} on ${new Date().toLocaleString()}`
+        const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`
         const { data: createdCommit } = await this.octokit.request(
             `POST /repos/{owner}/{repo}/git/commits` , {
             owner: this.owner,

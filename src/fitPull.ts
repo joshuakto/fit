@@ -1,8 +1,7 @@
-import { VaultOperations } from "./vaultOps";
-import { RemoteChangeType, compareSha } from "./utils";
+import { showFileOpsRecord } from "./utils";
 import { Fit } from "./fit";
 import { LocalStores } from "main";
-import { LocalChange } from "./fitPush";
+import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
 
 type PrePullCheckResultType = (
     "localCopyUpToDate" | 
@@ -16,51 +15,16 @@ type PrePullCheckResult = (
     { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
 );
 
-export type RemoteChange = {
-    path: string,
-    status: RemoteChangeType,
-    currentSha?: string
-}
-
-export type RemoteUpdate = {
-    remoteChanges: RemoteChange[],
-    remoteTreeSha: Record<string, string>, 
-    latestRemoteCommitSha: string,
-    clashedFiles: Array<string>
-}
-
 export interface IFitPull {
-    vaultOps: VaultOperations
     fit: Fit
 }
 
 export class FitPull implements IFitPull {
-    vaultOps: VaultOperations;
     fit: Fit
     
 
-    constructor(fit: Fit, vaultOps: VaultOperations) {
-        this.vaultOps = vaultOps
+    constructor(fit: Fit) {
         this.fit = fit
-    }
-
-    async getRemoteChanges(remoteTreeSha: {[k: string]: string}): Promise<RemoteChange[]> {
-            if (!this.fit.lastFetchedRemoteSha) {
-                Object.keys(remoteTreeSha).map(path=>{
-                    return {path, status: "ADDED" as RemoteChangeType}
-                })
-            }
-            const remoteChanges = compareSha(
-                remoteTreeSha, this.fit.lastFetchedRemoteSha, "remote")
-            return remoteChanges
-    }
-
-    getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): string[] {
-        const localChangePaths = localChanges.map(c=>c.path)
-        const remoteChangePaths = remoteChanges.map(c=>c.path)
-        const clashedFiles: string[] = localChangePaths.filter(
-            path => remoteChangePaths.includes(path))
-        return clashedFiles
     }
 
     // return null if remote doesn't have updates otherwise, return the latestRemoteCommitSha
@@ -81,8 +45,8 @@ export class FitPull implements IFitPull {
             localChanges = await this.fit.getLocalChanges()
         }
         const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
-        const remoteChanges = await this.getRemoteChanges(remoteTreeSha)
-        const clashedFiles = this.getClashedChanges(localChanges, remoteChanges)
+        const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha)
+        const clashedFiles = this.fit.getClashedChanges(localChanges, remoteChanges)
         // TODO handle clashes without completely blocking pull
         const prePullCheckStatus = (
             (remoteChanges.length > 0) ? (
@@ -120,17 +84,17 @@ export class FitPull implements IFitPull {
 
     async pullRemoteToLocal(
         remoteUpdate: RemoteUpdate,
-        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): 
-        Promise<void> {
+        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): Promise<FileOpRecord[]> {
             const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate
             const {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges)
 			
-			// TODO: when there are clashing local changes, prompt user for confirmation before proceeding
-			await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+			const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
 			await saveLocalStoreCallback({
                 lastFetchedRemoteSha: remoteTreeSha, 
                 lastFetchedCommitSha: latestRemoteCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
+            showFileOpsRecord(fileOpsRecord, "Local file updates:")
+            return fileOpsRecord
     }
 }

@@ -296,3 +296,62 @@
         transform: translateY(0) scale(0.75);
     }
 }
+
+.file-created {
+    background-color: rgba(144, 238, 144, 0.4); /* Light green with transparency for success status */
+    list-style-type: "📄  ";
+    padding-left: 5px;
+    padding-top: 2px;
+}
+
+.file-changed {
+    background-color: rgba(249, 180, 52, 0.4); /* Yellow-orange with transparency for line changes */
+    list-style-type: "✍︎  ";
+    padding-left: 5px;
+    padding-top: 2px;
+}
+
+.file-deleted {
+    background-color: rgba(255, 99, 71, 0.3); /* Light red with transparency for error status */
+    list-style-type: "🗑️  ";
+    padding-left: 5px;
+    padding-top: 2px;
+}
+
+.file-changes-heading {
+    font-weight: bold;
+    font-size: medium;
+    line-height: 25px;
+}
+.file-changes-subheading {
+    font-weight: bold;
+    font-size: small;
+    line-height: 25px;
+}
+
+.file-conflict-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px;
+}
+
+.file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after {
+    padding: 4px;
+    border-radius: 20%;
+}
+.file-conflict-delete::after {
+    content: "🗑️";
+    background-color: rgba(255, 99, 71, 0.3); 
+}
+.file-conflict-create::after {
+    content: "📄";
+    background-color: rgba(144, 238, 144, 0.4); 
+}
+.file-conflict-change::after {
+    content: "✍︎";
+    background-color: rgba(249, 180, 52, 0.4); 
+}
+.file-conflict-note {
+    padding-left: 5px;
+}
