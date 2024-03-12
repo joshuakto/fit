@@ -1,6 +1,5 @@
-import { LocalFileStatus } from "./fitPush";
-
-export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED"
+import { Notice } from "obsidian";
+import { ClashStatus, FileOpRecord, LocalFileStatus, RemoteChangeType } from "./fitTypes";
 
 type Status = RemoteChangeType | LocalFileStatus
 
@@ -53,7 +52,7 @@ export function compareSha<Env extends "remote" | "local">(
 
 export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"]
 
-function extractExtension(path: string): string | undefined {
+export function extractExtension(path: string): string | undefined {
     return path.match(/[^.]+$/)?.[0];
 }
 
@@ -72,4 +71,82 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
     const set2 = new Set(arr2);
     const isEqual = set1.size === set2.size && [...set1].every(value => set2.has(value));
     return isEqual
+}
+
+export function removeLineEndingsFromBase64String(content: string): string {
+    return content.replace(/\r?\n|\r|\n/g, '');
+}
+
+export function showFileOpsRecord(fileOps: FileOpRecord[], heading: string): void {
+    if (fileOps.length === 0) {return}
+    const fileOpsNotice = new Notice("", 0)
+    
+    const fileChanges = {
+        created: [] as Array<string>, 
+        changed: [] as Array<string>, 
+        deleted: [] as Array<string>
+    }
+
+    for (const op of fileOps) {
+        fileChanges[op.status].push(op.path)
+    }
+
+    fileOpsNotice.noticeEl.createEl("span")
+        .setText(`${heading}\n`)
+    for (const [changeType, paths] of Object.entries(fileChanges)) {
+        if (paths.length === 0) {continue}
+        const heading = fileOpsNotice.noticeEl.createEl("span")
+        heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1)}\n`)
+        heading.addClass(`file-changes-subheading`)
+        for (const path of paths) {
+            const listItem = fileOpsNotice.noticeEl.createEl("li");
+            listItem.setText(`${path}`);
+            listItem.addClass(`file-${changeType}`);
+        }
+    }
+
+}
+
+export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
+    const localStatusMap = {
+        created: "create",
+        changed: "change",
+        deleted: "delete"
+    }
+    const remoteStatusMap = {
+        ADDED:  "create",
+        MODIFIED: "change",
+        REMOVED: "delete"
+    }
+    const conflictNotice = new Notice("", 0)
+    const heading = conflictNotice.noticeEl.createEl("span")
+    heading.setText(`Change conflicts:\n`)
+    heading.addClass(`file-changes-subheading`)
+    const conflictStatus = conflictNotice.noticeEl.createDiv({
+        cls: "file-conflict-row"
+    });
+    conflictStatus.createDiv().setText("Local")
+	conflictStatus.createDiv().setText("Remote")
+    for (const clash of clashedFiles) {
+        const conflictItem = conflictNotice.noticeEl.createDiv({
+            cls: "file-conflict-row"
+        });
+        conflictItem.createDiv({
+            cls: `file-conflict-${localStatusMap[clash.localStatus]}`
+        });
+        conflictItem.createDiv("div")
+            .setText(clash.path);
+        conflictItem.createDiv({
+            cls: `file-conflict-${remoteStatusMap[clash.remoteStatus]}`
+        });
+    }
+    const footer = conflictNotice.noticeEl.createDiv({
+        cls: "file-conflict-row"
+    })
+    footer.setText("Note:")
+    footer.style.fontWeight = "bold";
+    conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+        .setText("Remote changes in _fit")
+    conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+        .setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.")
 }

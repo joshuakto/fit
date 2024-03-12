@@ -222,7 +222,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Single button mode')
-			.setDesc('Single button to sync your repo to github (In early alpha, please file an issue if you encounter error with steps to reproduce).')
+			.setDesc('Sync with single Fit sync button.')
 			.addToggle(selected=>selected
 				.setValue(this.plugin.settings.singleButtonMode)
 				.onChange(async (selected) => {

@@ -1,9 +1,7 @@
-import { VaultOperations } from "./vaultOps";
 import { Fit } from "./fit";
-import { Notice } from "obsidian";
 import { LocalStores } from "main";
-
-export type LocalFileStatus = "deleted" | "created" | "changed"
+import { showFileOpsRecord } from "./utils";
+import { LocalUpdate } from "./fitTypes";
 
 type PrePushCheckResultType = (
     "noLocalChangesDetected" | 
@@ -11,37 +9,23 @@ type PrePushCheckResultType = (
     "localChangesCanBePushed"
 )
 
-type PrePushCheckResult = (
+export type PrePushCheckResult = (
     { status: "noLocalChangesDetected", localUpdate: null } | 
     { status: Exclude<PrePushCheckResultType, "noLocalChangesDetected">, localUpdate: LocalUpdate }
 );
 
-export type LocalChange = {
-    path: string,
-    status: LocalFileStatus,
-    extension? : string
-}
-
-type LocalUpdate = {
-    localChanges: LocalChange[],
-    localTreeSha: Record<string, string>,
-    parentCommitSha: string
-}
 
 export interface IFitPush {
     localSha: Record<string, string>
-    vaultOps: VaultOperations
     fit: Fit
 }
 
 export class FitPush implements IFitPush {
     localSha: Record<string, string>;
-    vaultOps: VaultOperations;
     fit: Fit
     
 
-    constructor(fit: Fit, vaultOps: VaultOperations) {
-        this.vaultOps = vaultOps
+    constructor(fit: Fit) {
         this.fit = fit
     }
 
@@ -78,8 +62,8 @@ export class FitPush implements IFitPush {
 
     async pushChangedFilesToRemote(
         localUpdate: LocalUpdate,
-        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>):
-        Promise<void> {
+        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>,
+        disableOpsNotif?: true): Promise<void> {
             const {localChanges, localTreeSha} = localUpdate;
             const createdCommitSha = await this.createCommitFromLocalUpdate(localUpdate)
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
@@ -90,10 +74,8 @@ export class FitPush implements IFitPush {
                 lastFetchedCommitSha: createdCommitSha,
                 localSha: localTreeSha
             })
-
-            localChanges.map(({path, status}): void=>{
-                const statusToAction = {deleted: "deleted from", created: "added to", changed: "modified on"}
-                new Notice(`${path} ${statusToAction[status]} remote.`, 10000)
-            })
+            if (!disableOpsNotif) {
+                showFileOpsRecord(localChanges, "Remote file updates:")
+            }
     }
 }
