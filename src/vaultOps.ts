@@ -43,8 +43,11 @@ export class VaultOperations implements IVaultOperations {
     async ensureFolderExists(path: string): Promise<void> {
         // extract folder path, return empty string is no folder path is matched (exclude the last /)
         const folderPath = path.match(/^(.*)\//)?.[1] || '';
-        if (folderPath != "" && !(this.vault.getFolderByPath(folderPath))) {
-            await this.vault.createFolder(folderPath)
+        if (folderPath != "") {
+            const folder = this.vault.getAbstractFileByPath(folderPath)
+            if (!folder) {
+                await this.vault.createFolder(folderPath)
+            }
         }
     }
 
