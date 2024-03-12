@@ -114,7 +114,6 @@ export default class FitPlugin extends Plugin {
 
 		const preSyncCheckResult = await this.fitSync.performPreSyncChecks();
 		if (preSyncCheckResult.status === "inSync") {
-			// syncNotice.setMessage("Local and remote in sync, no file operations performed.")
 			syncNotice.setMessage("Sync successful")
 			return
 		}
@@ -122,7 +121,6 @@ export default class FitPlugin extends Plugin {
 		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
 			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
 			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
-			// syncNotice.setMessage("Local and remote in sync, tracking latest remote commit.")
 			syncNotice.setMessage("Sync successful")
 			return
 		}
@@ -130,7 +128,6 @@ export default class FitPlugin extends Plugin {
 		const remoteUpdate = preSyncCheckResult.remoteUpdate
 		if (preSyncCheckResult.status === "onlyRemoteChanged") {
 			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-			// syncNotice.setMessage("Sync complete, remote changes pulled to local copy.")
 			syncNotice.setMessage("Sync successful")
 			return
 		}
@@ -142,10 +139,8 @@ export default class FitPlugin extends Plugin {
 			parentCommitSha: remoteUpdate.latestRemoteCommitSha
 		}
 		if (preSyncCheckResult.status === "onlyLocalChanged") {
-			// syncNotice.setMessage("Only local changes detected, pushing to remote.")
 			syncNotice.setMessage("Uploading local changes")
 			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			// syncNotice.setMessage("No remote changes detected, local changes pushed to remote.")
 			syncNotice.setMessage("Sync successful")
 			return
 		}
@@ -162,7 +157,6 @@ export default class FitPlugin extends Plugin {
 			
 			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
 
-			// syncNotice.setMessage("Local changes pushed to remote.")
 			syncNotice.setMessage("Downloading remote changes")
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
@@ -171,7 +165,6 @@ export default class FitPlugin extends Plugin {
 				lastFetchedCommitSha: createdCommitSha,
 				localSha: await this.fit.computeLocalSha()
 			})
-			// syncNotice.setMessage("Local and remote now in sync.")
 			syncNotice.setMessage("Sync successful")
 			showFileOpsRecord(localChanges, "Remote file updates:")
 			showFileOpsRecord(localFileOpsRecord, "Local file updates:")
@@ -186,12 +179,9 @@ export default class FitPlugin extends Plugin {
 					lastFetchedRemoteSha: latestRemoteTreeSha, 
 					lastFetchedCommitSha: latestRemoteCommitSha,
 				})
-				// syncNotice.setMessage("Local changes compatiable with remote changes, updated to track latest remote commit.")
 				syncNotice.setMessage("Sync successful")
 			} else {
 				// TODO allow users to select displacement upon conflict (displace local changes or remote changes to _fit folder)
-				// const displaceChangesUponConflict = "remote"
-				// if (displaceChangesUponConflict === "remote") {
 				syncNotice.setMessage(`Change conflict detected`)
 				const syncLocalUpdate = {
 					localChanges,
@@ -200,13 +190,6 @@ export default class FitPlugin extends Plugin {
 				}
 				await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback, true)
 				syncNotice.setMessage(`Local changes uploaded, conflicting remote changes written in _fit`)
-				// } else {
-				// 	syncNotice.setMessage(`Local changes clashes with remote changes, moving clashed local files to _fit.`)
-				// 	await Promise.all(localChanges.map(c => this.vaultOps.createCopyInDir(c.path, "_fit")))
-				// 	syncNotice.setMessage(`Conflicting local changes moved to _fit folder:\n${noticeMsg}`)
-				// 	await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-				// 	syncNotice.setMessage(`Pulled remote changes to local, conflicting local changes moved to _fit folder.`)
-				// }
 				showUnappliedConflicts(clashedFiles)
 
 			}
@@ -304,82 +287,6 @@ export default class FitPlugin extends Plugin {
 		this.syncing = false
 		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
-
-
-		this.addCommand({
-			id: 'debug',
-			name: 'debug',
-			callback: async () => {
-				const abc = new Notice("", 0)
-				const heading = abc.noticeEl.createEl("span")
-				heading.setText("File changes\n")
-				heading.addClass("file-changes-heading")
-				const createdH = abc.noticeEl.createEl("span")
-				createdH.setText("Created\n")
-				createdH.addClass("file-changes-subheading")
-				const abcde = ['a','b', 'c', 'd', 'e']
-				abcde.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-created");
-				});
-				const changeH = abc.noticeEl.createEl("span")
-				changeH.setText("Changed\n")
-				changeH.addClass("file-changes-subheading")
-				const hij = ['j','h', 'i']
-				hij.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-changed");
-				});
-				const deleteH = abc.noticeEl.createEl("span")
-				deleteH.setText("Deleted\n")
-				deleteH.addClass("file-changes-subheading")
-				const ijk = ['j','k', 'i']
-				ijk.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-deleted");
-				});
-				ijk.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-deleted");
-				});
-				
-				const conflictHeading = abc.noticeEl.createEl("span")
-				conflictHeading.setText("Conflict to be resolved:\n")
-				conflictHeading.addClass("file-changes-heading")
-				const conflictStatus = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				});
-				conflictStatus.createDiv().setText("Local")
-				conflictStatus.createDiv().setText("Remote")
-				const conflictItem = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				});
-				conflictItem.createDiv({
-					cls: "file-conflict-delete"
-				});
-				conflictItem.createDiv("div")
-					.setText("File Path");
-				conflictItem.createDiv({
-					cls: "file-conflict-create"
-				});
-				const footer = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				})
-				footer.setText("Note:")
-				footer.style.fontWeight = "bold";
-				abc.noticeEl.createEl("li", {cls: "file-conflict-note"})
-					.setText("Remote changes in _fit")
-				abc.noticeEl.createEl("li", {cls: "file-conflict-note"})
-					.setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.")
-
-				console.log(abc.noticeEl)
-			}
-		});
-
 
 		// recompute local sha to unblock pulling
 		this.addCommand({
