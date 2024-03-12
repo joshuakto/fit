@@ -36,10 +36,9 @@ https://github.com/joshuakto/fit/assets/34743132/863d0241-a528-495a-b6f8-717a519
 
 
 # Roadmap
-1. Enable integration with existing vault (current setup only works for vault synced with initialized repo from the start)
-2. Improve user notification
+1. Improve user notification
    - allow user to opt in to get list of file changes in Notice
-3. Allow users to resolve conflicting file changes
+2. Enable integration of other git tools (e.g. gitlab, gitea)
 
 # Acknowledgements
  - This plugin used [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
