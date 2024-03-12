@@ -148,8 +148,6 @@ export default class FitSettingTab extends PluginSettingTab {
 					window.open(`https://github.com/new`, '_blank');
 				}))
 				
-		// this.existingBranches = await this.plugin.fit.getBranches();
-		// this.existingRepos = await this.plugin.fit.getRepos();
 		this.repoSetting = new Setting(containerEl)
 			.setName('Github repository name')
 			.setDesc("Select a repo to sync your vault.")
@@ -219,17 +217,6 @@ export default class FitSettingTab extends PluginSettingTab {
 					this.plugin.settings.deviceName = value;
 					await this.plugin.saveSettings();
 				}));
-
-		// new Setting(containerEl)
-		// 	.setName('Single button mode')
-		// 	.setDesc('Sync with single Fit sync button.')
-		// 	.addToggle(selected=>selected
-		// 		.setValue(this.plugin.settings.singleButtonMode)
-		// 		.onChange(async (selected) => {
-		// 			this.plugin.settings.singleButtonMode = selected;
-		// 			await this.plugin.saveSettings();
-		// 		})
-		// 	)
 
 		const checkIntervalSlider = new Setting(containerEl)
 			.setName('Remote check interval')
