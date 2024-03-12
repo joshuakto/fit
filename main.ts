@@ -14,7 +14,7 @@ export interface FitSettings {
 	repo: string;
 	branch: string;
 	deviceName: string;
-	singleButtonMode: boolean
+	// singleButtonMode: boolean
 	checkEveryXMinutes: number
 }
 
@@ -25,7 +25,7 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "",
 	branch: "",
 	deviceName: "",
-	singleButtonMode: true,
+	// singleButtonMode: true,
 	checkEveryXMinutes: 5
 }
 
@@ -219,57 +219,57 @@ export default class FitPlugin extends Plugin {
 
 	}
 
-	pull = async (pullNotice: Notice): Promise<void> => {
-		if (!this.checkSettingsConfigured()) { return }
-		await this.loadLocalStore()
-		pullNotice.setMessage("Performing pre pull checks.")
-		const prePullCheckResult = await this.fitPull.performPrePullChecks()
+	// pull = async (pullNotice: Notice): Promise<void> => {
+	// 	if (!this.checkSettingsConfigured()) { return }
+	// 	await this.loadLocalStore()
+	// 	pullNotice.setMessage("Performing pre pull checks.")
+	// 	const prePullCheckResult = await this.fitPull.performPrePullChecks()
 
-		if (prePullCheckResult.status === "localCopyUpToDate") {
-			pullNotice.setMessage("Local copy already up to date");
-			return;
-		}
-		const remoteUpdate = prePullCheckResult.remoteUpdate;
-		switch (prePullCheckResult.status) {
-			case "localChangesClashWithRemoteChanges":
-				pullNotice.setMessage("Local changes clashed with remote changes, please resolve and try again.");
-				break;
-			case "remoteChangesCanBeMerged":
-				pullNotice.setMessage("Pre pull checks successful, pulling changes from remote.");
-				await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
-				pullNotice.setMessage("Pull complete, local copy up to date.");
-				break;
-			case "noRemoteChangesDetected":
-				this.saveLocalStoreCallback({lastFetchedCommitSha: remoteUpdate.latestRemoteCommitSha});
-				pullNotice.setMessage("No remote changes detected, local copy set to track latest commit.");
-				break;
-		}
-		return
-	}
+	// 	if (prePullCheckResult.status === "localCopyUpToDate") {
+	// 		pullNotice.setMessage("Local copy already up to date");
+	// 		return;
+	// 	}
+	// 	const remoteUpdate = prePullCheckResult.remoteUpdate;
+	// 	switch (prePullCheckResult.status) {
+	// 		case "localChangesClashWithRemoteChanges":
+	// 			pullNotice.setMessage("Local changes clashed with remote changes, please resolve and try again.");
+	// 			break;
+	// 		case "remoteChangesCanBeMerged":
+	// 			pullNotice.setMessage("Pre pull checks successful, pulling changes from remote.");
+	// 			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
+	// 			pullNotice.setMessage("Pull complete, local copy up to date.");
+	// 			break;
+	// 		case "noRemoteChangesDetected":
+	// 			this.saveLocalStoreCallback({lastFetchedCommitSha: remoteUpdate.latestRemoteCommitSha});
+	// 			pullNotice.setMessage("No remote changes detected, local copy set to track latest commit.");
+	// 			break;
+	// 	}
+	// 	return
+	// }
 
-	push = async (pushNotice: Notice): Promise<void> => {
-		pushNotice.setMessage("Performing pre push checks.")
-		if (!this.checkSettingsConfigured()) { 
-			this.pushing = false
-			return
-		}
-		await this.loadLocalStore()
-		const prePushCheckResult = await this.fitPush.performPrePushChecks()
-		if (prePushCheckResult.status === "remoteChanged") {
-			pushNotice.setMessage("Remote changes detected, please pull first and try again.")
-			return
-		}
-		if (prePushCheckResult.status === "noLocalChangesDetected") {
-			pushNotice.setMessage("No local changes detected since last push.")
-			return
-		}
-		if (prePushCheckResult.status === "localChangesCanBePushed") {
-			pushNotice.setMessage("Pre push checks successful, pushing local changes to remote.")
-			await this.fitPush.pushChangedFilesToRemote(
-				prePushCheckResult.localUpdate, this.saveLocalStoreCallback)
-			pushNotice.setMessage(`Successful pushed to ${this.fit.repo}`)
-		}
-	}
+	// push = async (pushNotice: Notice): Promise<void> => {
+	// 	pushNotice.setMessage("Performing pre push checks.")
+	// 	if (!this.checkSettingsConfigured()) { 
+	// 		this.pushing = false
+	// 		return
+	// 	}
+	// 	await this.loadLocalStore()
+	// 	const prePushCheckResult = await this.fitPush.performPrePushChecks()
+	// 	if (prePushCheckResult.status === "remoteChanged") {
+	// 		pushNotice.setMessage("Remote changes detected, please pull first and try again.")
+	// 		return
+	// 	}
+	// 	if (prePushCheckResult.status === "noLocalChangesDetected") {
+	// 		pushNotice.setMessage("No local changes detected since last push.")
+	// 		return
+	// 	}
+	// 	if (prePushCheckResult.status === "localChangesCanBePushed") {
+	// 		pushNotice.setMessage("Pre push checks successful, pushing local changes to remote.")
+	// 		await this.fitPush.pushChangedFilesToRemote(
+	// 			prePushCheckResult.localUpdate, this.saveLocalStoreCallback)
+	// 		pushNotice.setMessage(`Successful pushed to ${this.fit.repo}`)
+	// 	}
+	// }
 
 	// wrapper to convert error to notice, return true if error is caught
 	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: Notice, ...args: P) => Promise<R>, notice: Notice, ...args: P): Promise<R|true> => {
@@ -324,17 +324,17 @@ export default class FitPlugin extends Plugin {
 		setTimeout(() => notice.hide(), 4000)
 	}
 
-	updateRibbonIcons() {
-		if (this.settings.singleButtonMode) {
-			this.fitSyncRibbonIconEl.removeClass("hide");
-			this.fitPullRibbonIconEl.addClass("hide");
-			this.fitPushRibbonIconEl.addClass("hide");
-		} else {
-			this.fitSyncRibbonIconEl.addClass("hide");
-			this.fitPullRibbonIconEl.removeClass("hide");
-			this.fitPushRibbonIconEl.removeClass("hide");
-		}
-	}
+	// updateRibbonIcons() {
+	// 	if (this.settings.singleButtonMode) {
+	// 		this.fitSyncRibbonIconEl.removeClass("hide");
+	// 		this.fitPullRibbonIconEl.addClass("hide");
+	// 		this.fitPushRibbonIconEl.addClass("hide");
+	// 	} else {
+	// 		this.fitSyncRibbonIconEl.addClass("hide");
+	// 		this.fitPullRibbonIconEl.removeClass("hide");
+	// 		this.fitPushRibbonIconEl.removeClass("hide");
+	// 	}
+	// }
 	
 
 	loadRibbonIcons() {
@@ -356,44 +356,44 @@ export default class FitPlugin extends Plugin {
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 		
-		// Pull remote to local
-		this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
-			if (this.syncing || this.pulling || this.pushing) { return }
-			this.pulling = true
-			this.fitPullRibbonIconEl.addClass('animate-icon')
-			const pullNotice = this.initializeFitNotice();
-			const errorCaught = await this.catchErrorAndNotify(this.pull, pullNotice);
-			this.fitSyncRibbonIconEl.removeClass('animate-icon');
-			if (errorCaught === true) {
-				this.removeFitNotice(pullNotice, "error")
-				this.pulling = false
-				return
-			}
-			this.removeFitNotice(pullNotice)
-			this.pulling = false
-			this.fitPullRibbonIconEl.removeClass('animate-icon')
-		});
-		this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
+		// // Pull remote to local
+		// this.fitPullRibbonIconEl = this.addRibbonIcon("github", 'Fit pull', async (evt: MouseEvent) => {
+		// 	if (this.syncing || this.pulling || this.pushing) { return }
+		// 	this.pulling = true
+		// 	this.fitPullRibbonIconEl.addClass('animate-icon')
+		// 	const pullNotice = this.initializeFitNotice();
+		// 	const errorCaught = await this.catchErrorAndNotify(this.pull, pullNotice);
+		// 	this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		// 	if (errorCaught === true) {
+		// 		this.removeFitNotice(pullNotice, "error")
+		// 		this.pulling = false
+		// 		return
+		// 	}
+		// 	this.removeFitNotice(pullNotice)
+		// 	this.pulling = false
+		// 	this.fitPullRibbonIconEl.removeClass('animate-icon')
+		// });
+		// this.fitPullRibbonIconEl.addClass("fit-pull-ribbon-el")
 		
-		// Push local to remote
-		this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
-			if (this.syncing || this.pulling || this.pushing) { return }
-			this.fitPushRibbonIconEl.addClass('animate-icon')
-			this.pushing = true
-			const pushNotice = this.initializeFitNotice();
-			const errorCaught = await this.catchErrorAndNotify(this.push, pushNotice);
-			this.fitSyncRibbonIconEl.removeClass('animate-icon');
-			if (errorCaught === true) {
-				this.removeFitNotice(pushNotice, "error")
-				this.pushing = false
-				return
-			}
-			this.removeFitNotice(pushNotice)
-			this.pushing = false
-			this.fitPushRibbonIconEl.removeClass('animate-icon')
-		});
-		this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
-		this.updateRibbonIcons();
+		// // Push local to remote
+		// this.fitPushRibbonIconEl = this.addRibbonIcon('github', 'Fit push', async (evt: MouseEvent) => {
+		// 	if (this.syncing || this.pulling || this.pushing) { return }
+		// 	this.fitPushRibbonIconEl.addClass('animate-icon')
+		// 	this.pushing = true
+		// 	const pushNotice = this.initializeFitNotice();
+		// 	const errorCaught = await this.catchErrorAndNotify(this.push, pushNotice);
+		// 	this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		// 	if (errorCaught === true) {
+		// 		this.removeFitNotice(pushNotice, "error")
+		// 		this.pushing = false
+		// 		return
+		// 	}
+		// 	this.removeFitNotice(pushNotice)
+		// 	this.pushing = false
+		// 	this.fitPushRibbonIconEl.removeClass('animate-icon')
+		// });
+		// this.fitPushRibbonIconEl.addClass('fit-push-ribbon-el');
+		// this.updateRibbonIcons();
 	}
 
 
@@ -523,9 +523,10 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					if (key == "singleButtonMode") {
-						obj[key] = Boolean(settings[key]);
-					} else if (key == "checkEveryXMinutes") {
+					// if (key == "singleButtonMode") {
+						// obj[key] = Boolean(settings[key]);
+					// } else 
+					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
 					} else {
 						obj[key] = settings[key];
@@ -561,6 +562,6 @@ export default class FitPlugin extends Plugin {
 		await this.saveData({...data, ...this.settings});
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings)
-		this.updateRibbonIcons();
+		// this.updateRibbonIcons();
 	}
 }

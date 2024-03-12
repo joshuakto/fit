@@ -220,16 +220,16 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
-			.setName('Single button mode')
-			.setDesc('Sync with single Fit sync button.')
-			.addToggle(selected=>selected
-				.setValue(this.plugin.settings.singleButtonMode)
-				.onChange(async (selected) => {
-					this.plugin.settings.singleButtonMode = selected;
-					await this.plugin.saveSettings();
-				})
-			)
+		// new Setting(containerEl)
+		// 	.setName('Single button mode')
+		// 	.setDesc('Sync with single Fit sync button.')
+		// 	.addToggle(selected=>selected
+		// 		.setValue(this.plugin.settings.singleButtonMode)
+		// 		.onChange(async (selected) => {
+		// 			this.plugin.settings.singleButtonMode = selected;
+		// 			await this.plugin.saveSettings();
+		// 		})
+		// 	)
 
 		const checkIntervalSlider = new Setting(containerEl)
 			.setName('Remote check interval')
