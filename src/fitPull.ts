@@ -94,7 +94,7 @@ export class FitPull implements IFitPull {
                 lastFetchedCommitSha: latestRemoteCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
-            showFileOpsRecord(fileOpsRecord, "Local file updates:")
+            showFileOpsRecord([{heading: "Local file updates:", ops: fileOpsRecord}])
             return fileOpsRecord
     }
 }

@@ -166,8 +166,10 @@ export default class FitPlugin extends Plugin {
 				localSha: await this.fit.computeLocalSha()
 			})
 			syncNotice.setMessage("Sync successful")
-			showFileOpsRecord(localChanges, "Remote file updates:")
-			showFileOpsRecord(localFileOpsRecord, "Local file updates:")
+			showFileOpsRecord([
+				{heading: "Local file updates:", ops: localFileOpsRecord},
+				{heading: "Remote file updates:", ops: localChanges}
+			])
 		}
 
 		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
@@ -193,8 +195,10 @@ export default class FitPlugin extends Plugin {
 				showUnappliedConflicts(clashedFiles)
 
 			}
-			showFileOpsRecord(localChanges, "Remote file updates:")
-			showFileOpsRecord(fileOpsRecord, "Local file updates:")
+			showFileOpsRecord([
+				{heading: "Local file updates:", ops: fileOpsRecord},
+				{heading: "Remote file updates:", ops: localChanges}
+			])
 		}
 
 
@@ -234,7 +238,7 @@ export default class FitPlugin extends Plugin {
 	}
 
 	initializeFitNotice(addClasses = ["loading"], initialMessage?: string): Notice {
-		// keep at least one empty space to make the height consistent
+		// keep at least one empty space to align the height
 		const notice = new Notice((initialMessage && initialMessage.length > 0)? initialMessage : " ", 0)
 		notice.noticeEl.addClass("fit-notice")	
 		addClasses.map(cls => notice.noticeEl.addClass(cls))
@@ -243,14 +247,14 @@ export default class FitPlugin extends Plugin {
 
 
 
-	removeFitNotice(notice: Notice, finalClass?: string): void {
+	removeFitNotice(notice: Notice, finalClass?: string, duration = 5000): void {
 		notice.noticeEl.removeClass("loading")
 		if (finalClass) {
 			notice.noticeEl.addClass(finalClass)
 		} else {
 			notice.noticeEl.addClass("done")
 		}
-		setTimeout(() => notice.hide(), 4000)
+		setTimeout(() => notice.hide(), duration)
 	}
 
 	loadRibbonIcons() {
@@ -288,18 +292,6 @@ export default class FitPlugin extends Plugin {
 		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
 
-		// recompute local sha to unblock pulling
-		this.addCommand({
-			id: 'recompute-local-sha',
-			name: `Update local store with new local sha, to unblock pulling when local clashes are detected (Dangerous!
-				Running pull after this command will discard local changes, please backup vault before running this.)`,
-				callback: async () => {
-					this.localStore.localSha = await this.fit.computeLocalSha()
-					this.saveLocalStore()
-					new Notice(`Stored local sha recomputation, recent local changes will not be considered in future push/pull.`)
-				}
-			});
-
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
 
@@ -324,9 +316,6 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					// if (key == "singleButtonMode") {
-						// obj[key] = Boolean(settings[key]);
-					// } else 
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
 					} else {

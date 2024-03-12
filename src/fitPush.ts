@@ -75,7 +75,7 @@ export class FitPush implements IFitPush {
                 localSha: localTreeSha
             })
             if (!disableOpsNotif) {
-                showFileOpsRecord(localChanges, "Remote file updates:")
+                showFileOpsRecord([{heading: "Remote file updates:", ops: localChanges}] )
             }
     }
 }

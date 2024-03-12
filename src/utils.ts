@@ -77,34 +77,37 @@ export function removeLineEndingsFromBase64String(content: string): string {
     return content.replace(/\r?\n|\r|\n/g, '');
 }
 
-export function showFileOpsRecord(fileOps: FileOpRecord[], heading: string): void {
-    if (fileOps.length === 0) {return}
+export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRecord[]}>): void {
+    if (records.length === 0 || records.every(r=>r.ops.length===0)) {return}
     const fileOpsNotice = new Notice("", 0)
-    
-    const fileChanges = {
-        created: [] as Array<string>, 
-        changed: [] as Array<string>, 
-        deleted: [] as Array<string>
-    }
-
-    for (const op of fileOps) {
-        fileChanges[op.status].push(op.path)
-    }
-
-    fileOpsNotice.noticeEl.createEl("span")
-        .setText(`${heading}\n`)
-    for (const [changeType, paths] of Object.entries(fileChanges)) {
-        if (paths.length === 0) {continue}
-        const heading = fileOpsNotice.noticeEl.createEl("span")
-        heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1)}\n`)
-        heading.addClass(`file-changes-subheading`)
-        for (const path of paths) {
-            const listItem = fileOpsNotice.noticeEl.createEl("li");
-            listItem.setText(`${path}`);
-            listItem.addClass(`file-${changeType}`);
+    records.map(recordSet => {
+        if (recordSet.ops.length === 0) {return}
+        const heading = fileOpsNotice.noticeEl.createEl("span", {
+            cls: "file-changes-heading"
+        })
+        heading.setText(`${recordSet.heading}\n`)
+        const fileChanges = {
+            created: [] as Array<string>, 
+            changed: [] as Array<string>, 
+            deleted: [] as Array<string>
         }
-    }
-
+        for (const op of recordSet.ops) {
+            fileChanges[op.status].push(op.path)
+        }
+        for (const [changeType, paths] of Object.entries(fileChanges)) {
+            if (paths.length === 0) {continue}
+            const heading = fileOpsNotice.noticeEl.createEl("span")
+            heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1)}\n`)
+            heading.addClass(`file-changes-subheading`)
+            for (const path of paths) {
+                const listItem = fileOpsNotice.noticeEl.createEl("li", {
+                    cls: "file-update-row"
+                });
+                listItem.setText(`${path}`);
+                listItem.addClass(`file-${changeType}`);
+            }
+        }
+    })
 }
 
 export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
