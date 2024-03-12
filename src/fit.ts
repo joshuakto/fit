@@ -3,6 +3,7 @@ import { Octokit } from "@octokit/core"
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
 import { VaultOperations } from "./vaultOps"
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
+import { arrayBufferToBase64 } from "obsidian"
 
 
 
@@ -105,8 +106,13 @@ export class Fit implements IFit {
         // Note: only support TFile now, investigate need for supporting TFolder later on
         const file = await this.vaultOps.getTFile(path) 
 		// compute sha1 based on path and file content
-		const localFile = await this.vaultOps.vault.read(file)
-		return await this.fileSha1(path + localFile)
+        let content: string;
+        if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
+            content = arrayBufferToBase64(await this.vaultOps.vault.readBinary(file))
+        } else {
+            content = await this.vaultOps.vault.read(file)
+        }
+		return await this.fileSha1(path + content)
 	}
 
 	async computeLocalSha(): Promise<{[k:string]:string}> {
