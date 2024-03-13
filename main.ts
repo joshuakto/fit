@@ -153,12 +153,17 @@ export default class FitPlugin extends Plugin {
 			const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
 				remoteUpdate.remoteChanges)
 			syncNotice.setMessage("Uploading local changes")
-			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate)
+			const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
+			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree)
+			let updatedRemoteTreeSha: Record<string, string>;
+			if (createdCommitSha) {
+				const latestRefSha = await this.fit.updateRef(createdCommitSha)
+				updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha)
+			} else {
+				updatedRemoteTreeSha = remoteUpdate.remoteTreeSha
+			}
 			
-			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
-
-			syncNotice.setMessage("Downloading remote changes")
-            const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
+			syncNotice.setMessage("Writing remote changes to local")
 			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha: updatedRemoteTreeSha, 

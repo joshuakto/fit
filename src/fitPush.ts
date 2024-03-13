@@ -1,4 +1,4 @@
-import { Fit } from "./fit";
+import { Fit, TreeNode } from "./fit";
 import { LocalStores } from "main";
 import { showFileOpsRecord } from "./utils";
 import { LocalUpdate } from "./fitTypes";
@@ -47,11 +47,14 @@ export class FitPush implements IFitPush {
         }
     }
 
-    async createCommitFromLocalUpdate(localUpdate: LocalUpdate): Promise<string> {
+    async createCommitFromLocalUpdate(localUpdate: LocalUpdate, remoteTree: Array<TreeNode>): Promise<string | null> {
         const {localChanges, parentCommitSha} = localUpdate
-        const treeNodes = await Promise.all(localChanges.map((f) => {
-            return this.fit.createTreeNodeFromFile(f)
-        }))
+        const treeNodes = (await Promise.all(localChanges.map((f) => {
+            return this.fit.createTreeNodeFromFile(f, remoteTree)
+        }))).filter(Boolean) as Array<TreeNode>
+        if (treeNodes.length === 0) {
+            return null
+        }
         const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha)
         const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
         const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha)
@@ -65,7 +68,9 @@ export class FitPush implements IFitPush {
         saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>,
         disableOpsNotif?: true): Promise<void> {
             const {localChanges, localTreeSha} = localUpdate;
-            const createdCommitSha = await this.createCommitFromLocalUpdate(localUpdate)
+            const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
+            const createdCommitSha = await this.createCommitFromLocalUpdate(localUpdate, remoteTree)
+            if (!createdCommitSha) {return}
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
 
