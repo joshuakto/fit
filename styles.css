@@ -309,6 +309,8 @@
     background-repeat: no-repeat;
     list-style-type: none;
     padding-left: 25px;
+    border-radius: 5px;
+    margin-bottom: 2px;
 }
 
 .file-created {
