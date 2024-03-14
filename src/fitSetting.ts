@@ -183,12 +183,8 @@ export default class FitSettingTab extends PluginSettingTab {
 					}
 				})
 			})
-	}
 
-	viewLinkBlock = () => {
-		const {containerEl} = this;
 		this.repoLink = this.getLatestLink()
-		new Setting(containerEl).setHeading().setName("Link");
 		const linkDisplay = new Setting(containerEl)
 			.setName("View your vault on GitHub")
 			.setDesc(this.repoLink)
@@ -218,8 +214,27 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+				
+		new Setting(containerEl)
+		.setName("Auto sync")
+		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync without displaying file changes)`)
+		.addDropdown(dropdown => {
+			dropdown
+			.addOption('off', 'Off')
+			.addOption('muted', 'Muted')
+			.addOption('remind', 'Remind only')
+			.addOption('on', 'On')
+			.setValue(this.plugin.settings.autoSync ? this.plugin.settings.autoSync : 'off')
+			.onChange(async (value) => {
+				this.plugin.settings.autoSync = value as "off" | "muted" | "remind" | "on";
+				checkIntervalSlider.settingEl.addClass(value === "off" ? "clear" : "restore");
+				checkIntervalSlider.settingEl.removeClass(value === "off" ? "restore" : "clear");
+				await this.plugin.saveSettings();
+			})
+		})
+		
 		const checkIntervalSlider = new Setting(containerEl)
-			.setName('Remote check interval')
+			.setName('Auto check interval')
 			.setDesc(`Automatically check for remote changes in the background every ${this.plugin.settings.checkEveryXMinutes} minutes.`)
 			.addSlider(slider => slider
 				.setLimits(1, 60, 1)
@@ -231,6 +246,67 @@ export default class FitSettingTab extends PluginSettingTab {
 					checkIntervalSlider.setDesc(`Automatically check for remote changes in the background every ${value} minutes.`)
 				})
 			)
+
+		if (this.plugin.settings.autoSync === "off") {
+			checkIntervalSlider.settingEl.addClass("clear")
+		}
+	}
+
+	noticeConfigBlock = () => {
+		const {containerEl} = this
+		const selectedCol = "var(--interactive-accent)"
+		const selectedTxtCol = "var(--text-on-accent)"
+		const unselectedColor = "var(--interactive-normal)"
+		const unselectedTxtCol = "var(--text-normal)"
+		const stateTextMap = (notifyConflicts: boolean, notifyChanges: boolean) => {
+			if (notifyConflicts && notifyChanges) {
+				return "Displaying file changes and conflicts "
+			} else if (!notifyConflicts && notifyChanges) {
+				return "Displaying file changes "
+			} else if (notifyConflicts && !notifyChanges) {
+				return "Displaying change conflicts "
+			} else {
+				return "No notice displayed "
+			}
+		}
+		const noticeDisplay = new Setting(containerEl)
+			.setName("Notice display")
+			.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`)
+
+		noticeDisplay.addButton(button => {
+			button.setButtonText("Change Conflicts")
+			button.onClick(async () => {
+				const notifyConflicts = !this.plugin.settings.notifyConflicts;
+				this.plugin.settings.notifyConflicts = notifyConflicts
+				await this.plugin.saveSettings();
+				button.buttonEl.setCssStyles({
+					"background": notifyConflicts ? selectedCol : unselectedColor,
+					"color": notifyConflicts ? selectedTxtCol : unselectedTxtCol,
+				})
+				noticeDisplay.setDesc(`${stateTextMap(notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`)
+			})
+			button.buttonEl.setCssStyles({
+				"background": this.plugin.settings.notifyConflicts ? selectedCol : unselectedColor,
+				"color": this.plugin.settings.notifyConflicts ? selectedTxtCol : unselectedTxtCol,
+			})
+		})
+		noticeDisplay.addButton(button => {
+			button.setButtonText("File changes")
+			button.onClick(async () => {
+				const notifyChanges = !this.plugin.settings.notifyChanges;
+				this.plugin.settings.notifyChanges = notifyChanges
+				await this.plugin.saveSettings();
+				button.buttonEl.setCssStyles({
+					"background": notifyChanges ? selectedCol : unselectedColor,
+					"color": notifyChanges ? selectedTxtCol : unselectedTxtCol,
+				})
+				noticeDisplay.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, notifyChanges)} after sync.`)
+			})
+			button.buttonEl.setCssStyles({
+				"background": this.plugin.settings.notifyChanges ? selectedCol : unselectedColor,
+				"color": this.plugin.settings.notifyChanges ? selectedTxtCol : unselectedTxtCol,
+			})
+		})
 	}
 
 	refreshFields = async (refreshFrom: RefreshCheckPoint) => {
@@ -341,8 +417,8 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		this.githubUserInfoBlock()
 		this.repoInfoBlock()
-		this.viewLinkBlock()
 		this.localConfigBlock()
+		this.noticeConfigBlock()
 		this.refreshFields("withCache")
 	}
 }

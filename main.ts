@@ -1,9 +1,11 @@
-import { Notice, Plugin, SettingTab } from 'obsidian';
+import { Plugin, SettingTab } from 'obsidian';
 import { Fit, OctokitHttpError } from 'src/fit';
+import FitNotice from 'src/fitNotice';
 import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
+import { LocalChange } from 'src/fitTypes';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
 import { VaultOperations } from 'src/vaultOps';
 
@@ -15,6 +17,9 @@ export interface FitSettings {
 	branch: string;
 	deviceName: string;
 	checkEveryXMinutes: number
+	autoSync: "on" | "off" | "muted" | "remind"
+	notifyChanges: boolean
+	notifyConflicts: boolean
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -24,7 +29,10 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "",
 	branch: "",
 	deviceName: "",
-	checkEveryXMinutes: 5
+	checkEveryXMinutes: 5,
+	autoSync: "off",
+	notifyChanges: true,
+	notifyConflicts: true	
 }
 
 
@@ -50,8 +58,7 @@ export default class FitPlugin extends Plugin {
 	fitPull: FitPull
 	fitPush: FitPush
 	fitSync: FitSync
-	pulling: boolean
-	pushing: boolean
+	autoSyncing: boolean
 	syncing: boolean
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
@@ -87,10 +94,12 @@ export default class FitPlugin extends Plugin {
 		}
 
 		if (actionItems.length > 0) {
-			const settingsNotice = this.initializeFitNotice(["static"])
-			settingsNotice.setMessage("Settings not configured, please complete the following action items:\n" + actionItems.join("\n"))
+			const initialMessage = "Settings not configured, please complete the following action items:\n" + actionItems.join("\n")
+			const settingsNotice = new FitNotice(this.fit, ["static"], initialMessage)
+			// settingsNotice.setMessage("Settings not configured, please complete the following action items:\n" + actionItems.join("\n"))
 			this.openPluginSettings()
-			this.removeFitNotice(settingsNotice, "static")
+			settingsNotice.remove("static")
+			// this.removeFitNotice(settingsNotice, "static")
 			return false
 
 		}
@@ -106,7 +115,7 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore()
 	}
 	
-	sync = async (syncNotice: Notice): Promise<void> => {
+	sync = async (syncNotice: FitNotice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
 		syncNotice.setMessage("Performing pre sync checks.")
@@ -127,7 +136,10 @@ export default class FitPlugin extends Plugin {
 
 		const remoteUpdate = preSyncCheckResult.remoteUpdate
 		if (preSyncCheckResult.status === "onlyRemoteChanged") {
-			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+			const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+			if (this.settings.notifyChanges) {
+                showFileOpsRecord([{heading: "Local file updates:", ops: fileOpsRecord}])
+            }
 			syncNotice.setMessage("Sync successful")
 			return
 		}
@@ -154,27 +166,36 @@ export default class FitPlugin extends Plugin {
 				remoteUpdate.remoteChanges)
 			syncNotice.setMessage("Uploading local changes")
 			const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
-			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree)
-			let updatedRemoteTreeSha: Record<string, string>;
-			if (createdCommitSha) {
+			const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree)
+			let latestRemoteTreeSha: Record<string, string>;
+			let latestCommitSha: string;
+			let pushedChanges: Array<LocalChange>;
+			if (createCommitResult) {
+				const {createdCommitSha} = createCommitResult
 				const latestRefSha = await this.fit.updateRef(createdCommitSha)
-				updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha)
+				latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha)
+				latestCommitSha = createdCommitSha
+				pushedChanges = createCommitResult.pushedChanges
 			} else {
-				updatedRemoteTreeSha = remoteUpdate.remoteTreeSha
+				latestRemoteTreeSha = remoteUpdate.remoteTreeSha
+				latestCommitSha = remoteUpdate.latestRemoteCommitSha
+				pushedChanges = []
 			}
 			
 			syncNotice.setMessage("Writing remote changes to local")
 			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
 			await this.saveLocalStoreCallback({
-				lastFetchedRemoteSha: updatedRemoteTreeSha, 
-				lastFetchedCommitSha: createdCommitSha,
+				lastFetchedRemoteSha: latestRemoteTreeSha, 
+				lastFetchedCommitSha: latestCommitSha,
 				localSha: await this.fit.computeLocalSha()
 			})
 			syncNotice.setMessage("Sync successful")
-			showFileOpsRecord([
-				{heading: "Local file updates:", ops: localFileOpsRecord},
-				{heading: "Remote file updates:", ops: localChanges}
-			])
+			if (this.settings.notifyChanges) {
+				showFileOpsRecord([
+					{heading: "Local file updates:", ops: localFileOpsRecord},
+					{heading: "Remote file updates:", ops: pushedChanges},
+				])
+			}
 		}
 
 		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
@@ -197,15 +218,18 @@ export default class FitPlugin extends Plugin {
 					localTreeSha: await this.fit.computeLocalSha(),
 					parentCommitSha: latestRemoteCommitSha
 				}
-				await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback, true)
-				syncNotice.setMessage(`Local changes uploaded, conflicting remote changes written in _fit`)
+				const pushedChange = await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback)
 				const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
-				showUnappliedConflicts(clashedFiles)
 				const ops = localFileOpsRecord.concat(fileOpsRecord)
-				showFileOpsRecord([
-					{heading: "Local file updates:", ops},
-					{heading: "Remote file updates:", ops: localChanges}
-				])
+				if (this.settings.notifyConflicts) {
+					showUnappliedConflicts(clashedFiles)
+				}
+				if (this.settings.notifyChanges) {
+					showFileOpsRecord([
+						{heading: "Local file updates:", ops},
+						{heading: "Remote file updates:", ops: pushedChange ?? []},
+					])
+				}
 			}
 		}
 
@@ -213,7 +237,7 @@ export default class FitPlugin extends Plugin {
 	}
 
 	// wrapper to convert error to notice, return true if error is caught
-	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: Notice, ...args: P) => Promise<R>, notice: Notice, ...args: P): Promise<R|true> => {
+	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: FitNotice, ...args: P) => Promise<R>, notice: FitNotice, ...args: P): Promise<R|true> => {
 		try {
 			const result = await func(notice, ...args)
 			return result
@@ -224,10 +248,10 @@ export default class FitPlugin extends Plugin {
 					case 'getRef':
 						console.error("Caught error from getRef: ", error.message)
 						if (error.status === 404) {
-							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.")
+							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true)
 							return true
 						}
-						notice.setMessage("Unknown error in getting ref, refers to console for details.")
+						notice.setMessage("Unknown error in getting ref, refers to console for details.", true)
 						return true
 					case 'getCommitTreeSha':
 					case 'getRemoteTreeSha':
@@ -240,49 +264,48 @@ export default class FitPlugin extends Plugin {
 				return true
 			}
 			console.error("Caught unknown error: ", error)
-			notice.setMessage("Encountered unknown error during sync, view console log for details")
+			notice.setMessage("Encountered unknown error during sync, view console log for details", true)
 			return true
 		}
-	}
-
-	initializeFitNotice(addClasses = ["loading"], initialMessage?: string): Notice {
-		// keep at least one empty space to align the height
-		const notice = new Notice((initialMessage && initialMessage.length > 0)? initialMessage : " ", 0)
-		notice.noticeEl.addClass("fit-notice")	
-		addClasses.map(cls => notice.noticeEl.addClass(cls))
-		return notice
-	}
-
-
-
-	removeFitNotice(notice: Notice, finalClass?: string, duration = 5000): void {
-		notice.noticeEl.removeClass("loading")
-		if (finalClass) {
-			notice.noticeEl.addClass(finalClass)
-		} else {
-			notice.noticeEl.addClass("done")
-		}
-		setTimeout(() => notice.hide(), duration)
 	}
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
-			if (this.syncing || this.pulling || this.pushing) { return }
+			if ( this.syncing || this.autoSyncing ) { return }
 			this.syncing = true
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			const syncNotice = this.initializeFitNotice();
+			const syncNotice = new FitNotice(this.fit, ["static"], "Initiating sync");
 			const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 			if (errorCaught === true) {
-				this.removeFitNotice(syncNotice, "error")
+				syncNotice.remove("error")
 				this.syncing = false
 				return
 			}
-			this.removeFitNotice(syncNotice)
+			syncNotice.remove()
 			this.syncing = false
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
+	}
+
+	async autoUpdate() {
+		if ( this.syncing || this.autoSyncing ) { return }
+		this.autoSyncing = true
+		const syncNotice = new FitNotice(
+			this.fit, 
+			["static"], 
+			"Auto syncing", 
+			0, 
+			this.settings.autoSync === "muted"
+		);
+		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+		if (errorCaught === true) {
+			syncNotice.remove("error")
+		} else {
+			syncNotice.remove()
+		}
+		this.autoSyncing = false
 	}
 
 
@@ -294,24 +317,27 @@ export default class FitPlugin extends Plugin {
 		this.fitPull = new FitPull(this.fit)
 		this.fitPush = new FitPush(this.fit)
 		this.fitSync = new FitSync(this.fit)
-		this.pulling = false
-		this.pushing = false
 		this.syncing = false
+		this.autoSyncing = false
 		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
 
-		// Check remote every 5 minutes to see if there are new commits
+		// Check remote every X minutes to see if there are new commits
 		this.registerInterval(window.setInterval(async () => {
-			if (this.checkSettingsConfigured()) {
-				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
-				if (updatedRemoteCommitSha) {
-					const intervalNotice = this.initializeFitNotice(["static"]);
-					intervalNotice.setMessage("Remote update detected, please pull the latest changes.")
-					this.removeFitNotice(intervalNotice)
-				} 
+			if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
+				if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
+					this.autoUpdate()
+				} else if (this.settings.autoSync === "remind") {
+					const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
+					if (updatedRemoteCommitSha) {
+						const initialMessage = "Remote update detected, please pull the latest changes."
+						const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage,);
+						intervalNotice.remove("static")
+					} 
+				}
 			}
 		}, this.settings.checkEveryXMinutes * 60 * 1000));
 	}
@@ -326,7 +352,11 @@ export default class FitPlugin extends Plugin {
 				if (settings.hasOwnProperty(key)) {
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
-					} else {
+					} 
+					else if (key === "notifyChanges" || key === "notifyConflicts") {
+						obj[key] = Boolean(settings[key]);
+					}
+					else {
 						obj[key] = settings[key];
 					}
 				}

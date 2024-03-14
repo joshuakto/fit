@@ -360,7 +360,7 @@
 }
 .file-conflict-create::after {
     background-image: var(--file-create);
-    background-color: rgba(144, 238, 144, 0.4); 
+    background-color: rgba(144, 238, 144, 0.4);  
 }
 .file-conflict-change::after {
     background-image: var(--file-change);
@@ -368,4 +368,12 @@
 }
 .file-conflict-note {
     padding-left: 5px;
+}
+
+.clear {
+    display: none;
+}
+
+.restore {
+    display: visible;
 }

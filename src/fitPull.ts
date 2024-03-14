@@ -1,4 +1,3 @@
-import { showFileOpsRecord } from "./utils";
 import { Fit } from "./fit";
 import { LocalStores } from "main";
 import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
@@ -94,7 +93,6 @@ export class FitPull implements IFitPull {
                 lastFetchedCommitSha: latestRemoteCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })
-            showFileOpsRecord([{heading: "Local file updates:", ops: fileOpsRecord}])
             return fileOpsRecord
     }
 }

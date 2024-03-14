@@ -95,8 +95,8 @@ export class FitSync implements IFitSync {
 
     async handleBinaryConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
         const conflictResolutionFolder = "_fit"
-        await this.fit.vaultOps.ensureFolderExists(conflictResolutionFolder)
         const conflictResolutionPath = `${conflictResolutionFolder}/${path}`
+        await this.fit.vaultOps.ensureFolderExists(conflictResolutionPath)
         await this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent)
         return {
             path: conflictResolutionPath,
@@ -107,14 +107,8 @@ export class FitSync implements IFitSync {
 
     async handleUTF8Conflict(path: string, localContent: string, remoteConent: string): Promise<FileOpRecord> {
         const conflictResolutionFolder = "_fit"
-        const localLines = atob(localContent).split('\n')
-        const remotelines = atob(remoteConent).split('\n')
-        this.fit.vaultOps.ensureFolderExists(conflictResolutionFolder)
         const conflictResolutionPath = `${conflictResolutionFolder}/${path}`
-        console.log("local")
-        console.log(localLines)
-        console.log("remote")
-        console.log(remotelines)
+        this.fit.vaultOps.ensureFolderExists(conflictResolutionPath)
         this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteConent)
         return {
             path: conflictResolutionPath,
@@ -134,8 +128,6 @@ export class FitSync implements IFitSync {
     }
 
     async resolveFileConflict(clash: ClashStatus, latestRemoteFileSha: string): Promise<ConflictResolutionResult> {
-        console.log("clash")
-        console.log(clash)
         if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
             return {path: clash.path, noDiff: true}
         } else if (clash.localStatus === "deleted") {
@@ -159,7 +151,7 @@ export class FitSync implements IFitSync {
                 }
                 return {path: clash.path, noDiff: false, fileOp: fileOp}
             }
-            return { path: clash.path, noDiff: false }
+            return { path: clash.path, noDiff: true }
         } else {
             // assumes remote file is deleted if sha not found in latestRemoteTreeSha.
             return { path: clash.path, noDiff: false }
