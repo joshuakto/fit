@@ -60,6 +60,7 @@ export default class FitPlugin extends Plugin {
 	fitSync: FitSync
 	autoSyncing: boolean
 	syncing: boolean
+	autoSyncIntervalId: number | null
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
@@ -152,8 +153,14 @@ export default class FitPlugin extends Plugin {
 		}
 		if (preSyncCheckResult.status === "onlyLocalChanged") {
 			syncNotice.setMessage("Uploading local changes")
-			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+			const pushedChanges = await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+			console.log("Hello")
+			if (this.settings.notifyChanges && pushedChanges) {
+				console.log("Bye")
+				showFileOpsRecord([{heading: "Local file updates:", ops: pushedChanges}])
+            }
 			syncNotice.setMessage("Sync successful")
+
 			return
 		}
 		
@@ -275,7 +282,7 @@ export default class FitPlugin extends Plugin {
 			if ( this.syncing || this.autoSyncing ) { return }
 			this.syncing = true
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			const syncNotice = new FitNotice(this.fit, ["static"], "Initiating sync");
+			const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 			const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 			if (errorCaught === true) {
@@ -283,18 +290,18 @@ export default class FitPlugin extends Plugin {
 				this.syncing = false
 				return
 			}
-			syncNotice.remove()
+			syncNotice.remove("done")
 			this.syncing = false
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 	}
 
-	async autoUpdate() {
+	async autoSync() {
 		if ( this.syncing || this.autoSyncing ) { return }
 		this.autoSyncing = true
 		const syncNotice = new FitNotice(
 			this.fit, 
-			["static"], 
+			["loading"], 
 			"Auto syncing", 
 			0, 
 			this.settings.autoSync === "muted"
@@ -308,6 +315,34 @@ export default class FitPlugin extends Plugin {
 		this.autoSyncing = false
 	}
 
+	async autoUpdate() {
+		if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
+			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
+				this.autoSync();
+			} else if (this.settings.autoSync === "remind") {
+				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates();
+				if (updatedRemoteCommitSha) {
+					const initialMessage = "Remote update detected, please pull the latest changes.";
+					const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
+					intervalNotice.remove("static");
+				}
+			}
+		}
+	}
+	
+
+	startOrUpdateAutoSyncInterval() {
+        // Clear existing interval if it exists
+        if (this.autoSyncIntervalId !== null) {
+            window.clearInterval(this.autoSyncIntervalId);
+            this.autoSyncIntervalId = null;
+        }
+
+        // Check remote every X minutes (set in settings)
+        this.autoSyncIntervalId = window.setInterval(async () => {
+			this.autoUpdate();
+        }, this.settings.checkEveryXMinutes * 60 * 1000);
+    }
 
 	async onload() {
 		await this.loadSettings();
@@ -324,22 +359,10 @@ export default class FitPlugin extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
-
-		// Check remote every X minutes to see if there are new commits
-		this.registerInterval(window.setInterval(async () => {
-			if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
-				if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
-					this.autoUpdate()
-				} else if (this.settings.autoSync === "remind") {
-					const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
-					if (updatedRemoteCommitSha) {
-						const initialMessage = "Remote update detected, please pull the latest changes."
-						const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage,);
-						intervalNotice.remove("static")
-					} 
-				}
-			}
-		}, this.settings.checkEveryXMinutes * 60 * 1000));
+		// check remote on load
+		this.autoUpdate();
+		// register interval to repeat auto check
+		this.startOrUpdateAutoSyncInterval();
 	}
 
 	onunload() {}
@@ -388,6 +411,8 @@ export default class FitPlugin extends Plugin {
 	async saveSettings() {
 		const data = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		await this.saveData({...data, ...this.settings});
+		// update auto sync interval with new setting
+		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings)
 	}

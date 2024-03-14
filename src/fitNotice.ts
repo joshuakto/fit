@@ -65,7 +65,7 @@ export default class FitNotice {
 
     remove(finalClass?: string, duration = 5000): void {
         if (this.muted) {return}
-		this.notice?.noticeEl.removeClasses(this.classes.filter(c => c !== "loading"))
+		this.notice?.noticeEl.removeClasses(this.classes.filter(c => c !== "fit-notice"))
         if (finalClass) {
             this.notice?.noticeEl.addClass(finalClass)
         } else {

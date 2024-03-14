@@ -217,7 +217,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				
 		new Setting(containerEl)
 		.setName("Auto sync")
-		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync without displaying file changes)`)
+		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices)`)
 		.addDropdown(dropdown => {
 			dropdown
 			.addOption('off', 'Off')
@@ -274,7 +274,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`)
 
 		noticeDisplay.addButton(button => {
-			button.setButtonText("Change Conflicts")
+			button.setButtonText("Change conflicts")
 			button.onClick(async () => {
 				const notifyConflicts = !this.plugin.settings.notifyConflicts;
 				this.plugin.settings.notifyConflicts = notifyConflicts
