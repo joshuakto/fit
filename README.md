@@ -14,10 +14,11 @@ Sync your files across mobile and desktop devices with one click.
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
 
 
-## One click sync
+# Quick demo
 
 
-https://github.com/joshuakto/fit/assets/34743132/4060695d-1e9f-4475-8187-519cbba40cab
+![Kapture 2024-03-15 at 17 37 07](https://github.com/joshuakto/fit/assets/34743132/27ea39b7-f54d-4c95-bf40-41972a29c26d)
+
 
 
 ## Setup
