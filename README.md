@@ -5,10 +5,10 @@ Sync your files across mobile and desktop devices with one click.
 
 ## Features
 - **Universally supported**: sync your vault across multiple devices, support both mobile and desktop
+- Auto sync is now available 🎉 
 - One-click to sync your vault.
 - Conflict resolution: Stores conflicting changes from remote in the local _fit folder so you can resolve conflicts after sync
-- Automatically checks for updates.
-- Guided setup: The interactive settings help you set up sync even if you are new to GitHub
+- Guided setup: **Intuitive** settings, easy to configure even if you are new to GitHub
 - Works with existing vaults or repos
 
 **Note:** This plugin is still in alpha, please backup your vault before using this plugin.
