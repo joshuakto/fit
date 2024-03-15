@@ -129,6 +129,11 @@ export class Fit implements IFit {
 		)
 	}
 
+    async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
+        const remoteCommitSha = await this.getLatestRemoteCommitSha()
+        return {remoteCommitSha, updated: remoteCommitSha !== this.lastFetchedCommitSha}
+    }
+
     async getLocalChanges(currentLocalSha?: Record<string, string>): Promise<LocalChange[]> {
         if (!currentLocalSha) {
             currentLocalSha = await this.computeLocalSha()

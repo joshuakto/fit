@@ -217,7 +217,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				
 		new Setting(containerEl)
 		.setName("Auto sync")
-		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices)`)
+		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices, except for file changes and conflicts notice)`)
 		.addDropdown(dropdown => {
 			dropdown
 			.addOption('off', 'Off')

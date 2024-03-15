@@ -49,12 +49,12 @@ export class FitPush implements IFitPush {
     async createCommitFromLocalUpdate(localUpdate: LocalUpdate, remoteTree: Array<TreeNode>): Promise<{createdCommitSha: string, pushedChanges: LocalChange[]} | null> {
         const {localChanges, parentCommitSha} = localUpdate
         const pushedChanges: LocalChange[] = [];
-        const treeNodes = (await Promise.all(localChanges.map((f, i) => {
-            const node =  this.fit.createTreeNodeFromFile(f, remoteTree)
-            if (!node) {
+        const treeNodes = (await Promise.all(localChanges.map(async (f, i) => {
+            const node =  await this.fit.createTreeNodeFromFile(f, remoteTree)
+            if (node) {
                 pushedChanges.push(localChanges[i])
+                return node
             }
-            return node
         }))).filter(Boolean) as Array<TreeNode>
         if (treeNodes.length === 0) {
             return null

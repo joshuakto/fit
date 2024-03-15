@@ -26,24 +26,15 @@ export class FitPull implements IFitPull {
         this.fit = fit
     }
 
-    // return null if remote doesn't have updates otherwise, return the latestRemoteCommitSha
-    async remoteHasUpdates(): Promise<string | null> {
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-        if (latestRemoteCommitSha == this.fit.lastFetchedCommitSha) {
-            return null
-        }
-        return latestRemoteCommitSha
-    }
-
     async performPrePullChecks(localChanges?: LocalChange[]): Promise<PrePullCheckResult> {
-        const latestRemoteCommitSha = await this.remoteHasUpdates()
-        if (!latestRemoteCommitSha) {
+        const {remoteCommitSha, updated} = await this.fit.remoteUpdated()
+        if (!updated) {
             return {status: "localCopyUpToDate", remoteUpdate: null}
         }
         if (!localChanges) {
             localChanges = await this.fit.getLocalChanges()
         }
-        const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+        const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha)
         const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha)
         const clashedFiles = this.fit.getClashedChanges(localChanges, remoteChanges)
         // TODO handle clashes without completely blocking pull
@@ -55,7 +46,7 @@ export class FitPull implements IFitPull {
         return {
             status: prePullCheckStatus, 
             remoteUpdate: {
-                remoteChanges, remoteTreeSha, latestRemoteCommitSha, clashedFiles
+                remoteChanges, remoteTreeSha, latestRemoteCommitSha: remoteCommitSha, clashedFiles
             }
         }
     }

@@ -111,6 +111,7 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
 }
 
 export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
+    if (clashedFiles.length === 0) {return}
     const localStatusMap = {
         created: "create",
         changed: "change",

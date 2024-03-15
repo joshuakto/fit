@@ -1,7 +1,12 @@
 import { arrayBufferToBase64 } from "obsidian"
 import { Fit } from "./fit"
-import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, RemoteUpdate } from "./fitTypes"
+import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteUpdate } from "./fitTypes"
 import { RECOGNIZED_BINARY_EXT, extractExtension, removeLineEndingsFromBase64String } from "./utils"
+import { FitPull } from "./fitPull"
+import { FitPush } from "./fitPush"
+import { VaultOperations } from "./vaultOps"
+import { LocalStores } from "main"
+import FitNotice from "./fitNotice"
 
 export interface IFitSync {
     fit: Fit
@@ -27,35 +32,39 @@ type PreSyncCheckResultType = (
 
 export class FitSync implements IFitSync {
     fit: Fit
+    fitPull: FitPull
+    fitPush: FitPush
+    vaultOps: VaultOperations
+    saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>
     
 
-    constructor(fit: Fit) {
+    constructor(fit: Fit, vaultOps: VaultOperations, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
         this.fit = fit
+        this.fitPull = new FitPull(fit)
+        this.fitPush = new FitPush(fit)
+        this.vaultOps = vaultOps
+        this.saveLocalStoreCallback = saveLocalStoreCallback
     }
 
     async performPreSyncChecks(): Promise<PreSyncCheckResult> {
         const currentLocalSha = await this.fit.computeLocalSha()
         const localChanges = await this.fit.getLocalChanges(currentLocalSha)
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha()
-        const remoteChanged = latestRemoteCommitSha !== this.fit.lastFetchedCommitSha
-        if (localChanges.length === 0 && !remoteChanged) {
+        const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
+        if (localChanges.length === 0 && !remoteUpdated) {
             return {status: "inSync"}
         }
-        const remoteTreeSha = await this.fit.getRemoteTreeSha(latestRemoteCommitSha)
+        const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha)
         const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha)
-        let clashes: ClashStatus[] | null = null;
+        let clashes: ClashStatus[] = [];
         let status: PreSyncCheckResultType
-        if (localChanges.length > 0 && !remoteChanged) {
+        if (localChanges.length > 0 && !remoteUpdated) {
             status = "onlyLocalChanged"
-        } else if (remoteChanged && localChanges.length === 0 && remoteChanges.length === 0) {
+        } else if (remoteUpdated && localChanges.length === 0 && remoteChanges.length === 0) {
             status = "onlyRemoteCommitShaChanged"
-        } else if (localChanges.length === 0 && remoteChanged) {
+        } else if (localChanges.length === 0 && remoteUpdated) {
             status = "onlyRemoteChanged"
         } else {
             clashes = this.fit.getClashedChanges(localChanges, remoteChanges)
-            console.log(clashes)
-            console.log(localChanges)
-            console.log(remoteChanges)
             if (clashes.length === 0) {
                 status = "localAndRemoteChangesCompatible"
             } else {
@@ -67,8 +76,8 @@ export class FitSync implements IFitSync {
             remoteUpdate: {
                 remoteChanges, 
                 remoteTreeSha, 
-                latestRemoteCommitSha, 
-                clashedFiles: clashes ? clashes : []
+                latestRemoteCommitSha: remoteCommitSha, 
+                clashedFiles: clashes
             }, 
             localChanges, 
             localTreeSha: currentLocalSha
@@ -160,14 +169,156 @@ export class FitSync implements IFitSync {
 
     async resolveConflicts(
         clashedFiles: Array<ClashStatus>, latestRemoteTreeSha: Record<string, string>)
-        : Promise<{noConflict: boolean, fileOpsRecord: FileOpRecord[]}> {    
-            console.log("clashedFiles")
-            console.log(clashedFiles)
+        : Promise<{noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[]}> {    
             const fileResolutions = await Promise.all(
                 clashedFiles.map(clash=>{return this.resolveFileConflict(clash, latestRemoteTreeSha[clash.path])}))
+            const unresolvedFiles = fileResolutions.map((res, i)=> {
+                if (!res.noDiff) {
+                    return clashedFiles[i]
+                }
+                return null
+            }).filter(Boolean) as Array<ClashStatus>
             return {
                 noConflict: fileResolutions.every(res=>res.noDiff), 
+                unresolvedFiles,
                 fileOpsRecord: fileResolutions.map(r => r.fileOp).filter(Boolean) as FileOpRecord[]
             }
+    }
+
+    async syncCompatibleChanges(
+        localUpdate: LocalUpdate, 
+        remoteUpdate: RemoteUpdate, 
+        syncNotice: FitNotice): Promise<{localOps: LocalChange[], remoteOps: FileOpRecord[]}> {
+			const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
+				remoteUpdate.remoteChanges)
+			syncNotice.setMessage("Uploading local changes")
+			const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
+			const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree)
+			let latestRemoteTreeSha: Record<string, string>;
+			let latestCommitSha: string;
+			let pushedChanges: Array<LocalChange>;
+			if (createCommitResult) {
+				const {createdCommitSha} = createCommitResult
+				const latestRefSha = await this.fit.updateRef(createdCommitSha)
+				latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha)
+				latestCommitSha = createdCommitSha
+				pushedChanges = createCommitResult.pushedChanges
+			} else {
+				latestRemoteTreeSha = remoteUpdate.remoteTreeSha
+				latestCommitSha = remoteUpdate.latestRemoteCommitSha
+				pushedChanges = []
+			}
+			
+			syncNotice.setMessage("Writing remote changes to local")
+			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
+			await this.saveLocalStoreCallback({
+				lastFetchedRemoteSha: latestRemoteTreeSha, 
+				lastFetchedCommitSha: latestCommitSha,
+				localSha: await this.fit.computeLocalSha()
+			})
+			syncNotice.setMessage("Sync successful")
+            return {localOps: localFileOpsRecord, remoteOps: pushedChanges}
+    }
+
+
+    async syncWithConflicts(
+        localChanges: LocalChange[],
+        remoteUpdate: RemoteUpdate, 
+        syncNotice: FitNotice) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[]} | null> {
+        const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate
+			const {noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha)
+			if (noConflict) {
+				// local changes is the same as remote changes, update localStore to track latest remote commit
+				await this.saveLocalStoreCallback({
+					lastFetchedRemoteSha: latestRemoteTreeSha, 
+					lastFetchedCommitSha: latestRemoteCommitSha,
+				})
+				syncNotice.setMessage("Sync successful")
+                return null
+			} else {
+				syncNotice.setMessage(`Change conflicts detected`)
+				let {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
+					remoteUpdate.remoteChanges)
+                // do not modify unresolved files locally
+                deleteFromLocal = deleteFromLocal.filter(f => !unresolvedFiles.some(c => c.path === f))
+                addToLocal = addToLocal.filter(f => !unresolvedFiles.some(c => c.path === f.path))
+				const syncLocalUpdate = {
+					localChanges,
+					localTreeSha: await this.fit.computeLocalSha(),
+					parentCommitSha: latestRemoteCommitSha
+				}
+				const pushedChange = await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback)
+				const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
+                syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`)
+				const ops = localFileOpsRecord.concat(fileOpsRecord)
+                return {unresolvedFiles, localOps: ops, remoteOps: pushedChange ?? []}
+            }
+    }
+
+    async sync(syncNotice: FitNotice): Promise<{ops: Array<{heading: string, ops: FileOpRecord[]}>, clash: ClashStatus[]} | void> {
+        syncNotice.setMessage("Performing pre sync checks.")
+		const preSyncCheckResult = await this.performPreSyncChecks();
+		if (preSyncCheckResult.status === "inSync") {
+			syncNotice.setMessage("Sync successful")
+			return
+		}
+
+		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
+			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
+			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
+			syncNotice.setMessage("Sync successful")
+			return
+		}
+
+		const remoteUpdate = preSyncCheckResult.remoteUpdate
+		if (preSyncCheckResult.status === "onlyRemoteChanged") {
+			const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+            syncNotice.setMessage("Sync successful")
+            return {ops: [{heading: "Local file updates:", ops: fileOpsRecord}], clash: []}
+		}
+
+		const {localChanges, localTreeSha} = preSyncCheckResult
+		const localUpdate = {
+			localChanges,
+			localTreeSha,
+			parentCommitSha: remoteUpdate.latestRemoteCommitSha
+		}
+		if (preSyncCheckResult.status === "onlyLocalChanged") {
+			syncNotice.setMessage("Uploading local changes")
+			const pushedChanges = await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
+            syncNotice.setMessage("Sync successful")
+            return {ops: [{heading: "Local file updates:", ops: pushedChanges as FileOpRecord[]}], clash: []}
+		}
+		
+		// do both pull and push (orders of execution different from pullRemoteToLocal and 
+		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original 
+		// state if the transaction failed) If you have ideas on how to make this more transaction-like,
+		//  please open an issue on the fit repo
+		if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
+			const {localOps, remoteOps} = await this.syncCompatibleChanges(
+				localUpdate, remoteUpdate, syncNotice)
+                return ({
+                    ops: [
+                        {heading: "Local file updates:", ops: localOps},
+                        {heading: "Remote file updates:", ops: remoteOps},
+                    ], 
+                    clash: []
+                })
+		}
+
+		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
+			const conflictResolutionResult = await this.syncWithConflicts(
+				localUpdate.localChanges, remoteUpdate, syncNotice)
+			if (conflictResolutionResult) {
+				const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult
+                    return ({
+                        ops:[
+                            {heading: "Local file updates:", ops: localOps},
+                            {heading: "Remote file updates:", ops: remoteOps},
+                        ],
+                        clash: unresolvedFiles
+                    })
+			}
+		}
     }
 }

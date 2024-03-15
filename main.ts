@@ -5,7 +5,6 @@ import { FitPull } from 'src/fitPull';
 import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
-import { LocalChange } from 'src/fitTypes';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
 import { VaultOperations } from 'src/vaultOps';
 
@@ -97,10 +96,8 @@ export default class FitPlugin extends Plugin {
 		if (actionItems.length > 0) {
 			const initialMessage = "Settings not configured, please complete the following action items:\n" + actionItems.join("\n")
 			const settingsNotice = new FitNotice(this.fit, ["static"], initialMessage)
-			// settingsNotice.setMessage("Settings not configured, please complete the following action items:\n" + actionItems.join("\n"))
 			this.openPluginSettings()
 			settingsNotice.remove("static")
-			// this.removeFitNotice(settingsNotice, "static")
 			return false
 
 		}
@@ -119,128 +116,16 @@ export default class FitPlugin extends Plugin {
 	sync = async (syncNotice: FitNotice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
-		syncNotice.setMessage("Performing pre sync checks.")
-
-
-		const preSyncCheckResult = await this.fitSync.performPreSyncChecks();
-		if (preSyncCheckResult.status === "inSync") {
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
-			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
-			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		const remoteUpdate = preSyncCheckResult.remoteUpdate
-		if (preSyncCheckResult.status === "onlyRemoteChanged") {
-			const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+		const syncRecords = await this.fitSync.sync(syncNotice)
+		if (syncRecords) {
+			const {ops, clash} = syncRecords
+			if (this.settings.notifyConflicts) {
+				showUnappliedConflicts(clash)
+			}
 			if (this.settings.notifyChanges) {
-                showFileOpsRecord([{heading: "Local file updates:", ops: fileOpsRecord}])
-            }
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		const {localChanges, localTreeSha} = preSyncCheckResult
-		const localUpdate = {
-			localChanges,
-			localTreeSha,
-			parentCommitSha: remoteUpdate.latestRemoteCommitSha
-		}
-		if (preSyncCheckResult.status === "onlyLocalChanged") {
-			syncNotice.setMessage("Uploading local changes")
-			const pushedChanges = await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			console.log("Hello")
-			if (this.settings.notifyChanges && pushedChanges) {
-				console.log("Bye")
-				showFileOpsRecord([{heading: "Local file updates:", ops: pushedChanges}])
-            }
-			syncNotice.setMessage("Sync successful")
-
-			return
-		}
-		
-		// do both pull and push (orders of execution different from pullRemoteToLocal and 
-		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original 
-		// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-		//  please open an issue on the fit repo
-		if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-			const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
-				remoteUpdate.remoteChanges)
-			syncNotice.setMessage("Uploading local changes")
-			const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
-			const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree)
-			let latestRemoteTreeSha: Record<string, string>;
-			let latestCommitSha: string;
-			let pushedChanges: Array<LocalChange>;
-			if (createCommitResult) {
-				const {createdCommitSha} = createCommitResult
-				const latestRefSha = await this.fit.updateRef(createdCommitSha)
-				latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha)
-				latestCommitSha = createdCommitSha
-				pushedChanges = createCommitResult.pushedChanges
-			} else {
-				latestRemoteTreeSha = remoteUpdate.remoteTreeSha
-				latestCommitSha = remoteUpdate.latestRemoteCommitSha
-				pushedChanges = []
-			}
-			
-			syncNotice.setMessage("Writing remote changes to local")
-			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
-			await this.saveLocalStoreCallback({
-				lastFetchedRemoteSha: latestRemoteTreeSha, 
-				lastFetchedCommitSha: latestCommitSha,
-				localSha: await this.fit.computeLocalSha()
-			})
-			syncNotice.setMessage("Sync successful")
-			if (this.settings.notifyChanges) {
-				showFileOpsRecord([
-					{heading: "Local file updates:", ops: localFileOpsRecord},
-					{heading: "Remote file updates:", ops: pushedChanges},
-				])
+				showFileOpsRecord(ops)
 			}
 		}
-
-		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
-			const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate
-			const {noConflict, fileOpsRecord} = await this.fitSync.resolveConflicts(clashedFiles, latestRemoteTreeSha)
-			if (noConflict) {
-				// local changes is the same as remote changes, update localStore to track latest remote commit
-				await this.saveLocalStoreCallback({
-					lastFetchedRemoteSha: latestRemoteTreeSha, 
-					lastFetchedCommitSha: latestRemoteCommitSha,
-				})
-				syncNotice.setMessage("Sync successful")
-			} else {
-				// TODO allow users to select displacement upon conflict (displace local changes or remote changes to _fit folder)
-				syncNotice.setMessage(`Change conflicts detected`)
-				const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
-					remoteUpdate.remoteChanges)
-				const syncLocalUpdate = {
-					localChanges,
-					localTreeSha: await this.fit.computeLocalSha(),
-					parentCommitSha: latestRemoteCommitSha
-				}
-				const pushedChange = await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback)
-				const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
-				const ops = localFileOpsRecord.concat(fileOpsRecord)
-				if (this.settings.notifyConflicts) {
-					showUnappliedConflicts(clashedFiles)
-				}
-				if (this.settings.notifyChanges) {
-					showFileOpsRecord([
-						{heading: "Local file updates:", ops},
-						{heading: "Remote file updates:", ops: pushedChange ?? []},
-					])
-				}
-			}
-		}
-
-
 	}
 
 	// wrapper to convert error to notice, return true if error is caught
@@ -250,6 +135,8 @@ export default class FitPlugin extends Plugin {
 			return result
 		} catch (error) {
 			if (error instanceof OctokitHttpError) {
+				console.log("error.status")
+				console.log(error.status)
 				switch (error.source) {
 					case 'getTree':
 					case 'getRef':
@@ -271,7 +158,7 @@ export default class FitPlugin extends Plugin {
 				return true
 			}
 			console.error("Caught unknown error: ", error)
-			notice.setMessage("Encountered unknown error during sync, view console log for details", true)
+			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
 			return true
 		}
 	}
@@ -318,10 +205,10 @@ export default class FitPlugin extends Plugin {
 	async autoUpdate() {
 		if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
 			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
-				this.autoSync();
+				await this.autoSync();
 			} else if (this.settings.autoSync === "remind") {
-				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates();
-				if (updatedRemoteCommitSha) {
+				const { updated } = await this.fit.remoteUpdated();
+				if (updated) {
 					const initialMessage = "Remote update detected, please pull the latest changes.";
 					const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
 					intervalNotice.remove("static");
@@ -331,7 +218,7 @@ export default class FitPlugin extends Plugin {
 	}
 	
 
-	startOrUpdateAutoSyncInterval() {
+	async startOrUpdateAutoSyncInterval() {
         // Clear existing interval if it exists
         if (this.autoSyncIntervalId !== null) {
             window.clearInterval(this.autoSyncIntervalId);
@@ -340,7 +227,7 @@ export default class FitPlugin extends Plugin {
 
         // Check remote every X minutes (set in settings)
         this.autoSyncIntervalId = window.setInterval(async () => {
-			this.autoUpdate();
+			await this.autoUpdate();
         }, this.settings.checkEveryXMinutes * 60 * 1000);
     }
 
@@ -351,7 +238,7 @@ export default class FitPlugin extends Plugin {
 		this.fit = new Fit(this.settings, this.localStore, this.vaultOps)
 		this.fitPull = new FitPull(this.fit)
 		this.fitPush = new FitPush(this.fit)
-		this.fitSync = new FitSync(this.fit)
+		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback)
 		this.syncing = false
 		this.autoSyncing = false
 		this.settingTab = new FitSettingTab(this.app, this)
@@ -359,13 +246,17 @@ export default class FitPlugin extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
-		// check remote on load
-		this.autoUpdate();
+		
 		// register interval to repeat auto check
-		this.startOrUpdateAutoSyncInterval();
+		await this.startOrUpdateAutoSyncInterval();
 	}
 
-	onunload() {}
+	onunload() {
+		if (this.autoSyncIntervalId !== null) {
+            window.clearInterval(this.autoSyncIntervalId);
+            this.autoSyncIntervalId = null;
+        }
+	}
 
 	async loadSettings() {
 		const userSetting = await this.loadData()
