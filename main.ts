@@ -1,8 +1,6 @@
 import { Plugin, SettingTab } from 'obsidian';
 import { Fit, OctokitHttpError } from 'src/fit';
 import FitNotice from 'src/fitNotice';
-import { FitPull } from 'src/fitPull';
-import { FitPush } from 'src/fitPush';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
@@ -54,8 +52,6 @@ export default class FitPlugin extends Plugin {
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
-	fitPull: FitPull
-	fitPush: FitPush
 	fitSync: FitSync
 	autoSyncing: boolean
 	syncing: boolean
@@ -236,8 +232,6 @@ export default class FitPlugin extends Plugin {
 		await this.loadLocalStore();
 		this.vaultOps = new VaultOperations(this.app.vault)
 		this.fit = new Fit(this.settings, this.localStore, this.vaultOps)
-		this.fitPull = new FitPull(this.fit)
-		this.fitPush = new FitPush(this.fit)
 		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback)
 		this.syncing = false
 		this.autoSyncing = false

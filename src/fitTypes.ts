@@ -9,7 +9,7 @@ export type LocalChange = {
 
 export type LocalUpdate = {
     localChanges: LocalChange[],
-    localTreeSha: Record<string, string>,
+    // localTreeSha: Record<string, string>,
     parentCommitSha: string
 }
 

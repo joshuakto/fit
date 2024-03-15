@@ -78,6 +78,7 @@ export function removeLineEndingsFromBase64String(content: string): string {
 }
 
 export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRecord[]}>): void {
+    console.log(records)
     if (records.length === 0 || records.every(r=>r.ops.length===0)) {return}
     const fileOpsNotice = new Notice("", 0)
     records.map(recordSet => {

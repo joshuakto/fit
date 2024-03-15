@@ -1,17 +1,5 @@
 import { Fit, TreeNode } from "./fit";
-import { LocalStores } from "main";
 import { LocalChange, LocalUpdate } from "./fitTypes";
-
-type PrePushCheckResultType = (
-    "noLocalChangesDetected" | 
-    "remoteChanged" | 
-    "localChangesCanBePushed"
-)
-
-export type PrePushCheckResult = (
-    { status: "noLocalChangesDetected", localUpdate: null } | 
-    { status: Exclude<PrePushCheckResultType, "noLocalChangesDetected">, localUpdate: LocalUpdate }
-);
 
 
 export interface IFitPush {
@@ -28,24 +16,6 @@ export class FitPush implements IFitPush {
         this.fit = fit
     }
 
-
-    async performPrePushChecks(): Promise<PrePushCheckResult> {
-        const localTreeSha = await this.fit.computeLocalSha()
-        const localChanges = await this.fit.getLocalChanges(localTreeSha)
-        if (localChanges.length == 0) {
-            return {status: "noLocalChangesDetected", localUpdate: null}
-        }
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha();
-        const status = (
-            (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) ? 
-            "remoteChanged" : "localChangesCanBePushed"
-        )
-        return {
-            status,
-            localUpdate: {localChanges, localTreeSha, parentCommitSha: latestRemoteCommitSha}
-        }
-    }
-
     async createCommitFromLocalUpdate(localUpdate: LocalUpdate, remoteTree: Array<TreeNode>): Promise<{createdCommitSha: string, pushedChanges: LocalChange[]} | null> {
         const {localChanges, parentCommitSha} = localUpdate
         const pushedChanges: LocalChange[] = [];
@@ -56,6 +26,7 @@ export class FitPush implements IFitPush {
                 return node
             }
         }))).filter(Boolean) as Array<TreeNode>
+        console.log(treeNodes)
         if (treeNodes.length === 0) {
             return null
         }
@@ -69,20 +40,25 @@ export class FitPush implements IFitPush {
 
     async pushChangedFilesToRemote(
         localUpdate: LocalUpdate,
-        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): Promise<LocalChange[]|null> {
-            const {localTreeSha} = localUpdate;
+        ): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, string>, lastFetchedCommitSha: string}|null> {
+            if (localUpdate.localChanges.length == 0) {
+                // did not update ref
+                return null
+            }
+            // const {localTreeSha} = localUpdate;
             const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
             const createCommitResult = await this.createCommitFromLocalUpdate(localUpdate, remoteTree)
-            if (!createCommitResult) {return null}
+            if (!createCommitResult) {
+                // did not update ref
+                return null
+            }
             const {createdCommitSha, pushedChanges} = createCommitResult
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
-
-            await saveLocalStoreCallback({
+            return {
+                pushedChanges, 
                 lastFetchedRemoteSha: updatedRemoteTreeSha, 
                 lastFetchedCommitSha: createdCommitSha,
-                localSha: localTreeSha
-            })
-            return pushedChanges
+            }
     }
 }
