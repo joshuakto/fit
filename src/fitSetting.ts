@@ -150,7 +150,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				
 		this.repoSetting = new Setting(containerEl)
 			.setName('Github repository name')
-			.setDesc("Select a repo to sync your vault.")
+			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
 			.addDropdown(dropdown => {
 				dropdown.selectEl.addClass('repo-dropdown');
 				this.existingRepos.map(repo=>dropdown.addOption(repo, repo))
