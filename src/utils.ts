@@ -6,7 +6,7 @@ type Status = RemoteChangeType | LocalFileStatus
 type FileLocation = "remote" | "local"
 
 type ComparisonResult<Env extends FileLocation> = {
-    path: string, 
+    path: string,
     status: Env extends "local" ? LocalFileStatus: RemoteChangeType
     currentSha?: string
     extension?: string
@@ -20,10 +20,10 @@ function getValueOrNull(obj: Record<string, string>, key: string): string | null
 // compare currentSha with storedSha and check for differences, files only in currentSha
 //  are considerd added, while files only in storedSha are considered removed
 export function compareSha<Env extends "remote" | "local">(
-    currentShaMap: Record<string, string>, 
+    currentShaMap: Record<string, string>,
     storedShaMap: Record<string, string>,
     env: Env): ComparisonResult<Env>[] {
-        const determineStatus = (currentSha: string | null, storedSha: string | null): Status | null  => 
+        const determineStatus = (currentSha: string | null, storedSha: string | null): Status | null  =>
         {
             if (currentSha && storedSha && currentSha !== storedSha) {
                 return env === "local" ? "changed" : "MODIFIED";
@@ -62,7 +62,7 @@ export function getFileEncoding(path: string): string {
     const isBinary = extension && RECOGNIZED_BINARY_EXT.includes(extension);
     if (isBinary) {
         return "base64"
-    } 
+    }
     return "utf-8"
 }
 
@@ -88,8 +88,8 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
         })
         heading.setText(`${recordSet.heading}\n`)
         const fileChanges = {
-            created: [] as Array<string>, 
-            changed: [] as Array<string>, 
+            created: [] as Array<string>,
+            changed: [] as Array<string>,
             deleted: [] as Array<string>
         }
         for (const op of recordSet.ops) {

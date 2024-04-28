@@ -7,7 +7,7 @@ export interface IVaultOperations {
     deleteFromLocal: (path: string) => Promise<FileOpRecord>
     writeToLocal: (path: string, content: string) => Promise<FileOpRecord>
     updateLocalFiles: (
-        addToLocal: {path: string, content: string}[], deleteFromLocal: Array<string>) 
+        addToLocal: {path: string, content: string}[], deleteFromLocal: Array<string>)
         => Promise<FileOpRecord[]>
     createCopyInDir: (path: string, copyDir: string) => Promise<void>
 }
@@ -35,7 +35,7 @@ export class VaultOperations implements IVaultOperations {
         if (file && file instanceof TFile) {
             await this.vault.delete(file);
             return {path, status: "deleted"}
-        } 
+        }
         throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
     }
 
@@ -62,18 +62,18 @@ export class VaultOperations implements IVaultOperations {
             this.ensureFolderExists(path)
             await this.vault.createBinary(path, base64ToArrayBuffer(content))
             return {path, status: "created"}
-        } 
+        }
             throw new Error(`${path} writeToLocal operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
     }
 
     async updateLocalFiles(
-        addToLocal: {path: string, content: string}[], 
+        addToLocal: {path: string, content: string}[],
         deleteFromLocal: Array<string>): Promise<FileOpRecord[]> {
             // Process file additions or updates
             const writeOperations = addToLocal.map(async ({path, content}) => {
                 return await this.writeToLocal(path, content)
             });
-        
+
             // Process file deletions
             const deletionOperations = deleteFromLocal.map(async (path) => {
                 return await this.deleteFromLocal(path)

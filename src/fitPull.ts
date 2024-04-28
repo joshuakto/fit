@@ -3,14 +3,14 @@ import { LocalStores } from "main";
 import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
 
 type PrePullCheckResultType = (
-    "localCopyUpToDate" | 
-    "localChangesClashWithRemoteChanges" | 
-    "remoteChangesCanBeMerged" | 
+    "localCopyUpToDate" |
+    "localChangesClashWithRemoteChanges" |
+    "remoteChangesCanBeMerged" |
     "noRemoteChangesDetected"
 )
 
 type PrePullCheckResult = (
-    { status: "localCopyUpToDate", remoteUpdate: null } | 
+    { status: "localCopyUpToDate", remoteUpdate: null } |
     { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
 );
 
@@ -20,7 +20,7 @@ export interface IFitPull {
 
 export class FitPull implements IFitPull {
     fit: Fit
-    
+
 
     constructor(fit: Fit) {
         this.fit = fit
@@ -42,9 +42,9 @@ export class FitPull implements IFitPull {
             (remoteChanges.length > 0) ? (
                 (clashedFiles.length > 0) ? "localChangesClashWithRemoteChanges" : "remoteChangesCanBeMerged"):
                 "noRemoteChangesDetected")
-        
+
         return {
-            status: prePullCheckStatus, 
+            status: prePullCheckStatus,
             remoteUpdate: {
                 remoteChanges, remoteTreeSha, latestRemoteCommitSha: remoteCommitSha, clashedFiles
             }
@@ -77,10 +77,10 @@ export class FitPull implements IFitPull {
         saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): Promise<FileOpRecord[]> {
             const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate
             const {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges)
-			
+
 			const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
 			await saveLocalStoreCallback({
-                lastFetchedRemoteSha: remoteTreeSha, 
+                lastFetchedRemoteSha: remoteTreeSha,
                 lastFetchedCommitSha: latestRemoteCommitSha,
                 localSha: await this.fit.computeLocalSha()
             })

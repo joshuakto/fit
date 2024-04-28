@@ -8,9 +8,9 @@ import { arrayBufferToBase64 } from "obsidian"
 
 
 export type TreeNode = {
-    path: string, 
-    mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined, 
-    type: "commit" | "blob" | "tree" | undefined, 
+    path: string,
+    mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined,
+    type: "commit" | "blob" | "tree" | undefined,
     sha: string | null}
 
 type OctokitCallMethods = {
@@ -75,11 +75,11 @@ export class Fit implements IFit {
         this.headers = {
             // Hack to disable caching which leads to inconsistency for
             // read after write https://github.com/octokit/octokit.js/issues/890
-            "If-None-Match": '', 
+            "If-None-Match": '',
             'X-GitHub-Api-Version': '2022-11-28'
         }
     }
-    
+
     loadSettings(setting: FitSettings) {
         this.owner = setting.owner
         this.repo = setting.repo
@@ -87,13 +87,13 @@ export class Fit implements IFit {
         this.deviceName = setting.deviceName
         this.octokit = new Octokit({auth: setting.pat})
     }
-    
+
     loadLocalStore(localStore: LocalStores) {
         this.localSha = localStore.localSha
         this.lastFetchedCommitSha = localStore.lastFetchedCommitSha
         this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha
     }
-    
+
     async fileSha1(fileContent: string): Promise<string> {
         const enc = new TextEncoder();
         const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent))
@@ -104,7 +104,7 @@ export class Fit implements IFit {
 
     async computeFileLocalSha(path: string): Promise<string> {
         // Note: only support TFile now, investigate need for supporting TFolder later on
-        const file = await this.vaultOps.getTFile(path) 
+        const file = await this.vaultOps.getTFile(path)
 		// compute sha1 based on path and file content
         let content: string;
         if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
@@ -196,7 +196,7 @@ export class Fit implements IFit {
     async getBranches(): Promise<string[]> {
         try {
             const {data: response} = await this.octokit.request(
-                `GET /repos/{owner}/{repo}/branches`, 
+                `GET /repos/{owner}/{repo}/branches`,
                 {
                     owner: this.owner,
                     repo: this.repo,
@@ -228,10 +228,10 @@ export class Fit implements IFit {
         return await this.getRef(ref)
     }
 
-    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME), 
+    // ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME),
     // refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
     async getCommitTreeSha(ref: string): Promise<string> {
-        const {data: commit} =  await this.octokit.request( 
+        const {data: commit} =  await this.octokit.request(
             `GET /repos/{owner}/{repo}/commits/{ref}`, {
             owner: this.owner,
             repo: this.repo,
@@ -257,7 +257,7 @@ export class Fit implements IFit {
     async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
         const remoteTree = await this.getTree(tree_sha)
         const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
-            // currently ignoring directory changes, if you'd like to upload a new directory, 
+            // currently ignoring directory changes, if you'd like to upload a new directory,
             // a quick hack would be creating an empty file inside
             if (node.type=="blob") {
                 if (!node.path || !node.sha) {
@@ -277,9 +277,9 @@ export class Fit implements IFit {
             `POST /repos/{owner}/{repo}/git/blobs`, {
             owner: this.owner,
             repo: this.repo,
-            content, 
+            content,
             encoding,
-            headers: this.headers     
+            headers: this.headers
         })
         return blob.sha
     }
@@ -300,7 +300,7 @@ export class Fit implements IFit {
 		}
         const file = await this.vaultOps.getTFile(path)
 		let encoding: string;
-		let content: string 
+		let content: string
         // TODO check whether every files including md can be read using readBinary to reduce code complexity
 		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
 			encoding = "base64"
@@ -331,10 +331,10 @@ export class Fit implements IFit {
 
     async createTree(
         treeNodes: Array<TreeNode>,
-        base_tree_sha: string): 
+        base_tree_sha: string):
         Promise<string> {
             const {data: newTree} = await this.octokit.request(
-                `POST /repos/{owner}/{repo}/git/trees`, 
+                `POST /repos/{owner}/{repo}/git/trees`,
                 {
                     owner: this.owner,
                     repo: this.repo,
