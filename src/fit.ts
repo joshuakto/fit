@@ -181,13 +181,32 @@ export class Fit implements IFit {
     }
 
     async getRepos(): Promise<string[]> {
+        const allRepos: string[] = [];
+        let page = 1;
+        const perPage = 100; // Set to the maximum value of 100
+
         try {
-            const {data: response} = await this.octokit.request(
-                `GET /user/repos`, {
+            let hasMorePages = true;
+            while (hasMorePages) {
+                const { data: response } = await this.octokit.request(
+                    `GET /user/repos`, {
                     affiliation: "owner",
-                    headers: this.headers
-            })
-            return response.map(r => r.name)
+                    headers: this.headers,
+                    per_page: perPage, // Number of repositories to import per page (up to 100)
+                    page: page
+                }
+                );
+                allRepos.push(...response.map(r => r.name));
+
+                // Make sure you have the following pages
+                if (response.length < perPage) {
+                    hasMorePages = false; // Exit when there are no more repositories
+                }
+
+                page++; // Go to the next page
+            }
+
+            return allRepos;
         } catch (error) {
             throw new OctokitHttpError(error.message, error.status, "getRepos");
         }
