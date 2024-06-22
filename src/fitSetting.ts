@@ -138,7 +138,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.onClick(async () => {
 				await this.refreshFields('repo(0)');
 			}))
-			
+
 		new Setting(containerEl)
 			.setDesc("Select 'Add a README file' if creating a new repo. Make sure you are logged in to github on your browser.")
 			.addExtraButton(button => button
@@ -147,7 +147,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				.onClick(() => {
 					window.open(`https://github.com/new`, '_blank');
 				}))
-				
+
 		this.repoSetting = new Setting(containerEl)
 			.setName('Github repository name')
 			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
@@ -202,7 +202,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 	localConfigBlock = () => {
 		const {containerEl} = this
-		new Setting(containerEl).setHeading().setName("Local configurations");		
+		new Setting(containerEl).setHeading().setName("Local configurations");
 		new Setting(containerEl)
 			.setName('Device name')
 			.setDesc('Sign commit message with this device name.')
@@ -214,7 +214,7 @@ export default class FitSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-				
+
 		new Setting(containerEl)
 		.setName("Auto sync")
 		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices, except for file changes and conflicts notice)`)
@@ -232,7 +232,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 			})
 		})
-		
+
 		const checkIntervalSlider = new Setting(containerEl)
 			.setName('Auto check interval')
 			.setDesc(`Automatically check for remote changes in the background every ${this.plugin.settings.checkEveryXMinutes} minutes.`)
@@ -327,7 +327,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				// if original repo not in the updated existing repo, -1 will be returned
 				const selectedRepoIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
 				// setting selectedIndex to -1 to indicate no options selected
-				repo_dropdown.selectedIndex = selectedRepoIndex 
+				repo_dropdown.selectedIndex = selectedRepoIndex
 				if (selectedRepoIndex===-1){
 					this.plugin.settings.repo = ""
 				}
@@ -355,11 +355,11 @@ export default class FitSettingTab extends PluginSettingTab {
 				}
 			}
 			branch_dropdown.disabled = false
-		} 
+		}
 		if (refreshFrom === "link(2)" || refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
 			this.repoLink = this.getLatestLink();
 			link_el.innerText = this.repoLink
-		} 
+		}
 		if (refreshFrom === "initialize") {
 			const {repo, branch} = this.plugin.settings
 			repo_dropdown.empty()

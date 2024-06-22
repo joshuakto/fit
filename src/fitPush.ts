@@ -10,7 +10,7 @@ export interface IFitPush {
 export class FitPush implements IFitPush {
     localSha: Record<string, string>;
     fit: Fit
-    
+
 
     constructor(fit: Fit) {
         this.fit = fit
@@ -56,8 +56,8 @@ export class FitPush implements IFitPush {
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
             return {
-                pushedChanges, 
-                lastFetchedRemoteSha: updatedRemoteTreeSha, 
+                pushedChanges,
+                lastFetchedRemoteSha: updatedRemoteTreeSha,
                 lastFetchedCommitSha: createdCommitSha,
             }
     }

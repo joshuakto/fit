@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS: FitSettings = {
 	checkEveryXMinutes: 5,
 	autoSync: "off",
 	notifyChanges: true,
-	notifyConflicts: true	
+	notifyConflicts: true
 }
 
 
@@ -86,7 +86,7 @@ export default class FitPlugin extends Plugin {
 			actionItems.push("select a repository to sync to")
 		}
 		if (this.settings.branch === "") {
-			actionItems.push("select a branch to sync to")	
+			actionItems.push("select a branch to sync to")
 		}
 
 		if (actionItems.length > 0) {
@@ -108,7 +108,7 @@ export default class FitPlugin extends Plugin {
 		this.localStore = {...this.localStore, ...localStore}
 		await this.saveLocalStore()
 	}
-	
+
 	sync = async (syncNotice: FitNotice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
@@ -183,10 +183,10 @@ export default class FitPlugin extends Plugin {
 		if ( this.syncing || this.autoSyncing ) { return }
 		this.autoSyncing = true
 		const syncNotice = new FitNotice(
-			this.fit, 
-			["loading"], 
-			"Auto syncing", 
-			0, 
+			this.fit,
+			["loading"],
+			"Auto syncing",
+			0,
 			this.settings.autoSync === "muted"
 		);
 		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
@@ -212,7 +212,7 @@ export default class FitPlugin extends Plugin {
 			}
 		}
 	}
-	
+
 
 	async startOrUpdateAutoSyncInterval() {
         // Clear existing interval if it exists
@@ -240,7 +240,7 @@ export default class FitPlugin extends Plugin {
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
-		
+
 		// register interval to repeat auto check
 		await this.startOrUpdateAutoSyncInterval();
 	}
@@ -260,7 +260,7 @@ export default class FitPlugin extends Plugin {
 				if (settings.hasOwnProperty(key)) {
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
-					} 
+					}
 					else if (key === "notifyChanges" || key === "notifyConflicts") {
 						obj[key] = Boolean(settings[key]);
 					}

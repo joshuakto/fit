@@ -21,7 +21,7 @@ export type RemoteChange = {
 
 export type RemoteUpdate = {
     remoteChanges: RemoteChange[],
-    remoteTreeSha: Record<string, string>, 
+    remoteTreeSha: Record<string, string>,
     latestRemoteCommitSha: string,
     clashedFiles: Array<ClashStatus>
 }
@@ -37,10 +37,10 @@ export type ConflictReport = {
     resolutionStrategy: "utf-8"
     localContent: string
     remoteContent: string
-} | { 
-    resolutionStrategy: "binary", 
-    path: string, 
-    remoteContent: string 
+} | {
+    resolutionStrategy: "binary",
+    path: string,
+    remoteContent: string
 }
 
 export type ConflictResolutionResult = {
