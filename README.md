@@ -31,6 +31,7 @@ Sync your files across mobile and desktop devices with one click.
 - Repo cannot be empty (Select 'Add a README file' if you are creating a new repo)
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
+- If you have more than 30 repositories on GitHub, choose a name that starts with "a..." for your vault repo. This is because the Obsidian mobile app displays only the first 30 repositories in ascending order.
 
 ## Roadmap
 1. Improve user notification
