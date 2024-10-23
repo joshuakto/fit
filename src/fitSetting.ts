@@ -1,5 +1,5 @@
 import FitPlugin from "main";
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, Modal, TextComponent, ButtonComponent } from "obsidian";
 import { setEqual } from "./utils";
 import { warn } from "console";
 
@@ -323,6 +323,34 @@ export default class FitSettingTab extends PluginSettingTab {
 				repo_dropdown.empty()
 				this.existingRepos.map(repo => {
 					repo_dropdown.add(new Option(repo, repo))
+				});
+				// adding "." at the beginning since the valid repo name cannot begin with "."
+				repo_dropdown.add(new Option("Input manually", ".manual_repo_input"));
+				repo_dropdown.addEventListener('change', async (event) => {
+				const target = event.target as HTMLSelectElement;
+				if (target && target.value === ".manual_repo_input") {
+					const modal = new Modal(this.app);
+					modal.titleEl.setText("Repository name");
+					const input = new TextComponent(modal.contentEl);
+					input.setPlaceholder("Enter repository name, exampe: obsidian-notes");
+					const okButton = new ButtonComponent(modal.contentEl);
+					okButton.setButtonText("OK");
+					okButton.onClick(async () => {
+						const repoName = input.getValue();
+						if (repoName) {
+							this.plugin.settings.repo = repoName;
+							// add as the penultimate option to avoid conflict with the manual input option
+							repo_dropdown.add(new Option(repoName, repoName), repo_dropdown.options.length - 1);
+							// select the manual input option 
+							repo_dropdown.selectedIndex = repo_dropdown.options.length - 2;
+							await this.plugin.saveSettings();
+							// pick the first branch in the new repo
+							await this.refreshFields('branch(1)');
+							modal.close();
+						}
+					});
+					modal.open();
+				}
 				});
 				// if original repo not in the updated existing repo, -1 will be returned
 				const selectedRepoIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
