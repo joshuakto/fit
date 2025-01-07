@@ -3,6 +3,8 @@
 
 Sync your files across mobile and desktop devices with one click.
 
+Note about status of the project: https://github.com/joshuakto/fit/issues/39
+
 ## Features
 - **Universally supported**: sync your vault across multiple devices, support both mobile and desktop
 - Auto sync is now available 🎉 
