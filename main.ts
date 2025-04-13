@@ -153,8 +153,13 @@ export default class FitPlugin extends Plugin {
 				}
 				return true
 			}
-			console.error("Caught unknown error: ", error)
-			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
+      console.error("Caught unknown error: ", error)
+      
+      try {
+          notice.setMessage(`Unable to sync, if you are not connected to the internet, turn off auto sync. Error: ${error.message}`, true)
+      } catch (e) {
+          notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
+      }
 			return true
 		}
 	}
