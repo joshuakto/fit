@@ -52,18 +52,22 @@ export class VaultOperations implements IVaultOperations {
     }
 
     async writeToLocal(path: string, content: string): Promise<FileOpRecord> {
-        // adopted getAbstractFileByPath for mobile compatiability
-        // TODO: add capability for creating folder from remote
-        const file = this.vault.getAbstractFileByPath(path)
-        if (file && file instanceof TFile) {
-            await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
-            return {path, status: "changed"}
-        } else if (!file) {
-            this.ensureFolderExists(path)
-            await this.vault.createBinary(path, base64ToArrayBuffer(content))
-            return {path, status: "created"}
-        } 
-            throw new Error(`${path} writeToLocal operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
+        try {
+            // adopted getAbstractFileByPath for mobile compatiability
+            // TODO: add capability for creating folder from remote
+            const file = this.vault.getAbstractFileByPath(path)
+            if (file && file instanceof TFile) {
+                await this.vault.modifyBinary(file, base64ToArrayBuffer(content))
+                return {path, status: "changed"}
+            } else if (!file) {
+                this.ensureFolderExists(path)
+                await this.vault.createBinary(path, base64ToArrayBuffer(content))
+                return {path, status: "created"}
+            } 
+                throw new Error(`${path} writeToLocal operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
+        } catch (e) {
+            throw new Error(`Failed to write file: ${path}. Error: ${e}`);
+        }
     }
 
     async updateLocalFiles(
