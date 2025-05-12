@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
-	"version": "1.1.1",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"name": "fit",
+	"version": "1.2.0",
+	"description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
