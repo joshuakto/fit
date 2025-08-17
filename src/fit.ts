@@ -3,10 +3,11 @@ import { Octokit } from "@octokit/core"
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
 import { VaultOperations } from "./vaultOps"
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
+import { arrayBufferToBase64 } from "obsidian"
 
 
 
-type TreeNode = {
+export type TreeNode = {
     path: string, 
     mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined, 
     type: "commit" | "blob" | "tree" | undefined, 
@@ -20,7 +21,7 @@ type OctokitCallMethods = {
     getCommitTreeSha: (ref: string) => Promise<string>
     getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
     createBlob: (content: string, encoding: string) =>Promise<string>
-    createTreeNodeFromFile: ({path, status, extension}: LocalChange) => Promise<TreeNode>
+    createTreeNodeFromFile: ({path, status, extension}: LocalChange, remoteTree: TreeNode[]) => Promise<TreeNode|null>
     createCommit: (treeSha: string, parentSha: string) =>Promise<string>
     updateRef: (sha: string, ref: string) => Promise<string>
     getBlob: (file_sha:string) =>Promise<string>
@@ -105,8 +106,13 @@ export class Fit implements IFit {
         // Note: only support TFile now, investigate need for supporting TFolder later on
         const file = await this.vaultOps.getTFile(path) 
 		// compute sha1 based on path and file content
-		const localFile = await this.vaultOps.vault.read(file)
-		return await this.fileSha1(path + localFile)
+        let content: string;
+        if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
+            content = arrayBufferToBase64(await this.vaultOps.vault.readBinary(file))
+        } else {
+            content = await this.vaultOps.vault.read(file)
+        }
+		return await this.fileSha1(path + content)
 	}
 
 	async computeLocalSha(): Promise<{[k:string]:string}> {
@@ -122,6 +128,11 @@ export class Fit implements IFit {
 			)
 		)
 	}
+
+    async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
+        const remoteCommitSha = await this.getLatestRemoteCommitSha()
+        return {remoteCommitSha, updated: remoteCommitSha !== this.lastFetchedCommitSha}
+    }
 
     async getLocalChanges(currentLocalSha?: Record<string, string>): Promise<LocalChange[]> {
         if (!currentLocalSha) {
@@ -170,13 +181,32 @@ export class Fit implements IFit {
     }
 
     async getRepos(): Promise<string[]> {
+        const allRepos: string[] = [];
+        let page = 1;
+        const perPage = 100; // Set to the maximum value of 100
+
         try {
-            const {data: response} = await this.octokit.request(
-                `GET /user/repos`, {
+            let hasMorePages = true;
+            while (hasMorePages) {
+                const { data: response } = await this.octokit.request(
+                    `GET /user/repos`, {
                     affiliation: "owner",
-                    headers: this.headers
-            })
-            return response.map(r => r.name)
+                    headers: this.headers,
+                    per_page: perPage, // Number of repositories to import per page (up to 100)
+                    page: page
+                }
+                );
+                allRepos.push(...response.map(r => r.name));
+
+                // Make sure you have the following pages
+                if (response.length < perPage) {
+                    hasMorePages = false; // Exit when there are no more repositories
+                }
+
+                page++; // Go to the next page
+            }
+
+            return allRepos;
         } catch (error) {
             throw new OctokitHttpError(error.message, error.status, "getRepos");
         }
@@ -232,14 +262,14 @@ export class Fit implements IFit {
 
     async getTree(tree_sha: string): Promise<TreeNode[]> {
         const { data: tree } =  await this.octokit.request(
-            `GET /repos/${this.owner}/${this.repo}/git/trees/${tree_sha}`, {
+            `GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
             owner: this.owner,
             repo: this.repo,
             tree_sha,
             recursive: 'true',
             headers: this.headers
         })
-        return tree.tree
+        return tree.tree as TreeNode[]
     }
 
     // get the remote tree sha in the format compatible with local store
@@ -274,8 +304,12 @@ export class Fit implements IFit {
     }
 
 
-    async createTreeNodeFromFile({path, status, extension}: LocalChange): Promise<TreeNode> {
+    async createTreeNodeFromFile({path, status, extension}: LocalChange, remoteTree: Array<TreeNode>): Promise<TreeNode|null> {
 		if (status === "deleted") {
+            // skip creating deletion node if file not found on remote
+            if (remoteTree.every(node => node.path !== path)) {
+                return null
+            }
 			return {
 				path,
 				mode: '100644',
@@ -302,6 +336,10 @@ export class Fit implements IFit {
 			content = await this.vaultOps.vault.read(file)
 		}
 		const blobSha = await this.createBlob(content, encoding)
+        // skip creating node if file found on remote is the same as the created blob
+        if (remoteTree.some(node => node.path === path && node.sha === blobSha)) {
+            return null
+        }
 		return {
 			path: path,
 			mode: '100644',

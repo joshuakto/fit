@@ -1,18 +1,5 @@
-import { Fit } from "./fit";
-import { LocalStores } from "main";
-import { showFileOpsRecord } from "./utils";
-import { LocalUpdate } from "./fitTypes";
-
-type PrePushCheckResultType = (
-    "noLocalChangesDetected" | 
-    "remoteChanged" | 
-    "localChangesCanBePushed"
-)
-
-export type PrePushCheckResult = (
-    { status: "noLocalChangesDetected", localUpdate: null } | 
-    { status: Exclude<PrePushCheckResultType, "noLocalChangesDetected">, localUpdate: LocalUpdate }
-);
+import { Fit, TreeNode } from "./fit";
+import { LocalChange, LocalUpdate } from "./fitTypes";
 
 
 export interface IFitPush {
@@ -29,53 +16,49 @@ export class FitPush implements IFitPush {
         this.fit = fit
     }
 
-
-    async performPrePushChecks(): Promise<PrePushCheckResult> {
-        const localTreeSha = await this.fit.computeLocalSha()
-        const localChanges = await this.fit.getLocalChanges(localTreeSha)
-        if (localChanges.length == 0) {
-            return {status: "noLocalChangesDetected", localUpdate: null}
-        }
-        const latestRemoteCommitSha = await this.fit.getLatestRemoteCommitSha();
-        const status = (
-            (latestRemoteCommitSha != this.fit.lastFetchedCommitSha) ? 
-            "remoteChanged" : "localChangesCanBePushed"
-        )
-        return {
-            status,
-            localUpdate: {localChanges, localTreeSha, parentCommitSha: latestRemoteCommitSha}
-        }
-    }
-
-    async createCommitFromLocalUpdate(localUpdate: LocalUpdate): Promise<string> {
+    async createCommitFromLocalUpdate(localUpdate: LocalUpdate, remoteTree: Array<TreeNode>): Promise<{createdCommitSha: string, pushedChanges: LocalChange[]} | null> {
         const {localChanges, parentCommitSha} = localUpdate
-        const treeNodes = await Promise.all(localChanges.map((f) => {
-            return this.fit.createTreeNodeFromFile(f)
-        }))
+        const pushedChanges: LocalChange[] = [];
+        const treeNodes = (await Promise.all(localChanges.map(async (f, i) => {
+            const node =  await this.fit.createTreeNodeFromFile(f, remoteTree)
+            if (node) {
+                pushedChanges.push(localChanges[i])
+                return node
+            }
+        }))).filter(Boolean) as Array<TreeNode>
+        console.log(treeNodes)
+        if (treeNodes.length === 0) {
+            return null
+        }
         const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha)
         const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha)
         const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha)
-        return createdCommitSha
+        return {createdCommitSha, pushedChanges}
     }
 
 
 
     async pushChangedFilesToRemote(
         localUpdate: LocalUpdate,
-        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>,
-        disableOpsNotif?: true): Promise<void> {
-            const {localChanges, localTreeSha} = localUpdate;
-            const createdCommitSha = await this.createCommitFromLocalUpdate(localUpdate)
+        ): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, string>, lastFetchedCommitSha: string}|null> {
+            if (localUpdate.localChanges.length == 0) {
+                // did not update ref
+                return null
+            }
+            // const {localTreeSha} = localUpdate;
+            const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha)
+            const createCommitResult = await this.createCommitFromLocalUpdate(localUpdate, remoteTree)
+            if (!createCommitResult) {
+                // did not update ref
+                return null
+            }
+            const {createdCommitSha, pushedChanges} = createCommitResult
             const updatedRefSha = await this.fit.updateRef(createdCommitSha)
             const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
-
-            await saveLocalStoreCallback({
+            return {
+                pushedChanges, 
                 lastFetchedRemoteSha: updatedRemoteTreeSha, 
                 lastFetchedCommitSha: createdCommitSha,
-                localSha: localTreeSha
-            })
-            if (!disableOpsNotif) {
-                showFileOpsRecord(localChanges, "Remote file updates:")
             }
     }
 }

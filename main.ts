@@ -1,7 +1,6 @@
-import { Notice, Plugin, SettingTab } from 'obsidian';
+import { Plugin, SettingTab } from 'obsidian';
 import { Fit, OctokitHttpError } from 'src/fit';
-import { FitPull } from 'src/fitPull';
-import { FitPush } from 'src/fitPush';
+import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
@@ -15,6 +14,9 @@ export interface FitSettings {
 	branch: string;
 	deviceName: string;
 	checkEveryXMinutes: number
+	autoSync: "on" | "off" | "muted" | "remind"
+	notifyChanges: boolean
+	notifyConflicts: boolean
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -24,7 +26,10 @@ const DEFAULT_SETTINGS: FitSettings = {
 	repo: "",
 	branch: "",
 	deviceName: "",
-	checkEveryXMinutes: 5
+	checkEveryXMinutes: 5,
+	autoSync: "off",
+	notifyChanges: true,
+	notifyConflicts: true	
 }
 
 
@@ -47,12 +52,10 @@ export default class FitPlugin extends Plugin {
 	localStore: LocalStores
 	fit: Fit;
 	vaultOps: VaultOperations;
-	fitPull: FitPull
-	fitPush: FitPush
 	fitSync: FitSync
-	pulling: boolean
-	pushing: boolean
+	autoSyncing: boolean
 	syncing: boolean
+	autoSyncIntervalId: number | null
 	fitPullRibbonIconEl: HTMLElement
 	fitPushRibbonIconEl: HTMLElement
 	fitSyncRibbonIconEl: HTMLElement
@@ -87,10 +90,10 @@ export default class FitPlugin extends Plugin {
 		}
 
 		if (actionItems.length > 0) {
-			const settingsNotice = this.initializeFitNotice(["static"])
-			settingsNotice.setMessage("Settings not configured, please complete the following action items:\n" + actionItems.join("\n"))
+			const initialMessage = "Settings not configured, please complete the following action items:\n" + actionItems.join("\n")
+			const settingsNotice = new FitNotice(this.fit, ["static"], initialMessage)
 			this.openPluginSettings()
-			this.removeFitNotice(settingsNotice, "static")
+			settingsNotice.remove("static")
 			return false
 
 		}
@@ -106,133 +109,39 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore()
 	}
 	
-	sync = async (syncNotice: Notice): Promise<void> => {
+	sync = async (syncNotice: FitNotice): Promise<void> => {
 		if (!this.checkSettingsConfigured()) { return }
 		await this.loadLocalStore()
-		syncNotice.setMessage("Performing pre sync checks.")
-
-
-		const preSyncCheckResult = await this.fitSync.performPreSyncChecks();
-		if (preSyncCheckResult.status === "inSync") {
-			// syncNotice.setMessage("Local and remote in sync, no file operations performed.")
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
-			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
-			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
-			// syncNotice.setMessage("Local and remote in sync, tracking latest remote commit.")
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		const remoteUpdate = preSyncCheckResult.remoteUpdate
-		if (preSyncCheckResult.status === "onlyRemoteChanged") {
-			await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-			// syncNotice.setMessage("Sync complete, remote changes pulled to local copy.")
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-
-		const {localChanges, localTreeSha} = preSyncCheckResult
-		const localUpdate = {
-			localChanges,
-			localTreeSha,
-			parentCommitSha: remoteUpdate.latestRemoteCommitSha
-		}
-		if (preSyncCheckResult.status === "onlyLocalChanged") {
-			// syncNotice.setMessage("Only local changes detected, pushing to remote.")
-			syncNotice.setMessage("Uploading local changes")
-			await this.fitPush.pushChangedFilesToRemote(localUpdate, this.saveLocalStoreCallback)
-			// syncNotice.setMessage("No remote changes detected, local changes pushed to remote.")
-			syncNotice.setMessage("Sync successful")
-			return
-		}
-		
-		// do both pull and push (orders of execution different from pullRemoteToLocal and 
-		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original 
-		// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-		//  please open an issue on the fit repo
-		if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-			const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
-				remoteUpdate.remoteChanges)
-			syncNotice.setMessage("Uploading local changes")
-			const createdCommitSha = await this.fitPush.createCommitFromLocalUpdate(localUpdate)
-			
-			const updatedRefSha = await this.fit.updateRef(createdCommitSha)
-
-			// syncNotice.setMessage("Local changes pushed to remote.")
-			syncNotice.setMessage("Downloading remote changes")
-            const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha)
-			const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
-			await this.saveLocalStoreCallback({
-				lastFetchedRemoteSha: updatedRemoteTreeSha, 
-				lastFetchedCommitSha: createdCommitSha,
-				localSha: await this.fit.computeLocalSha()
-			})
-			// syncNotice.setMessage("Local and remote now in sync.")
-			syncNotice.setMessage("Sync successful")
-			showFileOpsRecord(localChanges, "Remote file updates:")
-			showFileOpsRecord(localFileOpsRecord, "Local file updates:")
-		}
-
-		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
-			const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate
-			const {noConflict, fileOpsRecord} = await this.fitSync.resolveConflicts(clashedFiles, latestRemoteTreeSha)
-			if (noConflict) {
-				// local changes is the same as remote changes, update localStore to track latest remote commit
-				await this.saveLocalStoreCallback({
-					lastFetchedRemoteSha: latestRemoteTreeSha, 
-					lastFetchedCommitSha: latestRemoteCommitSha,
-				})
-				// syncNotice.setMessage("Local changes compatiable with remote changes, updated to track latest remote commit.")
-				syncNotice.setMessage("Sync successful")
-			} else {
-				// TODO allow users to select displacement upon conflict (displace local changes or remote changes to _fit folder)
-				// const displaceChangesUponConflict = "remote"
-				// if (displaceChangesUponConflict === "remote") {
-				syncNotice.setMessage(`Change conflict detected`)
-				const syncLocalUpdate = {
-					localChanges,
-					localTreeSha: await this.fit.computeLocalSha(),
-					parentCommitSha: latestRemoteCommitSha
-				}
-				await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate, this.saveLocalStoreCallback, true)
-				syncNotice.setMessage(`Local changes uploaded, conflicting remote changes written in _fit`)
-				// } else {
-				// 	syncNotice.setMessage(`Local changes clashes with remote changes, moving clashed local files to _fit.`)
-				// 	await Promise.all(localChanges.map(c => this.vaultOps.createCopyInDir(c.path, "_fit")))
-				// 	syncNotice.setMessage(`Conflicting local changes moved to _fit folder:\n${noticeMsg}`)
-				// 	await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-				// 	syncNotice.setMessage(`Pulled remote changes to local, conflicting local changes moved to _fit folder.`)
-				// }
-				showUnappliedConflicts(clashedFiles)
-
+		const syncRecords = await this.fitSync.sync(syncNotice)
+		if (syncRecords) {
+			const {ops, clash} = syncRecords
+			if (this.settings.notifyConflicts) {
+				showUnappliedConflicts(clash)
 			}
-			showFileOpsRecord(localChanges, "Remote file updates:")
-			showFileOpsRecord(fileOpsRecord, "Local file updates:")
+			if (this.settings.notifyChanges) {
+				showFileOpsRecord(ops)
+			}
 		}
-
-
 	}
 
 	// wrapper to convert error to notice, return true if error is caught
-	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: Notice, ...args: P) => Promise<R>, notice: Notice, ...args: P): Promise<R|true> => {
+	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: FitNotice, ...args: P) => Promise<R>, notice: FitNotice, ...args: P): Promise<R|true> => {
 		try {
 			const result = await func(notice, ...args)
 			return result
 		} catch (error) {
 			if (error instanceof OctokitHttpError) {
+				console.log("error.status")
+				console.log(error.status)
 				switch (error.source) {
 					case 'getTree':
 					case 'getRef':
 						console.error("Caught error from getRef: ", error.message)
 						if (error.status === 404) {
-							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.")
+							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true)
 							return true
 						}
-						notice.setMessage("Unknown error in getting ref, refers to console for details.")
+						notice.setMessage("Unknown error in getting ref, refers to console for details.", true)
 						return true
 					case 'getCommitTreeSha':
 					case 'getRemoteTreeSha':
@@ -245,171 +154,103 @@ export default class FitPlugin extends Plugin {
 				return true
 			}
 			console.error("Caught unknown error: ", error)
-			notice.setMessage("Encountered unknown error during sync, view console log for details")
+			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
 			return true
 		}
-	}
-
-	initializeFitNotice(addClasses = ["loading"], initialMessage?: string): Notice {
-		// keep at least one empty space to make the height consistent
-		const notice = new Notice((initialMessage && initialMessage.length > 0)? initialMessage : " ", 0)
-		notice.noticeEl.addClass("fit-notice")	
-		addClasses.map(cls => notice.noticeEl.addClass(cls))
-		return notice
-	}
-
-
-
-	removeFitNotice(notice: Notice, finalClass?: string): void {
-		notice.noticeEl.removeClass("loading")
-		if (finalClass) {
-			notice.noticeEl.addClass(finalClass)
-		} else {
-			notice.noticeEl.addClass("done")
-		}
-		setTimeout(() => notice.hide(), 4000)
 	}
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
-			if (this.syncing || this.pulling || this.pushing) { return }
+			if ( this.syncing || this.autoSyncing ) { return }
 			this.syncing = true
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			const syncNotice = this.initializeFitNotice();
+			const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 			const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
 			this.fitSyncRibbonIconEl.removeClass('animate-icon');
 			if (errorCaught === true) {
-				this.removeFitNotice(syncNotice, "error")
+				syncNotice.remove("error")
 				this.syncing = false
 				return
 			}
-			this.removeFitNotice(syncNotice)
+			syncNotice.remove("done")
 			this.syncing = false
 		});
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 	}
 
+	async autoSync() {
+		if ( this.syncing || this.autoSyncing ) { return }
+		this.autoSyncing = true
+		const syncNotice = new FitNotice(
+			this.fit, 
+			["loading"], 
+			"Auto syncing", 
+			0, 
+			this.settings.autoSync === "muted"
+		);
+		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+		if (errorCaught === true) {
+			syncNotice.remove("error")
+		} else {
+			syncNotice.remove()
+		}
+		this.autoSyncing = false
+	}
+
+	async autoUpdate() {
+		if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
+			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
+				await this.autoSync();
+			} else if (this.settings.autoSync === "remind") {
+				const { updated } = await this.fit.remoteUpdated();
+				if (updated) {
+					const initialMessage = "Remote update detected, please pull the latest changes.";
+					const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
+					intervalNotice.remove("static");
+				}
+			}
+		}
+	}
+	
+
+	async startOrUpdateAutoSyncInterval() {
+        // Clear existing interval if it exists
+        if (this.autoSyncIntervalId !== null) {
+            window.clearInterval(this.autoSyncIntervalId);
+            this.autoSyncIntervalId = null;
+        }
+
+        // Check remote every X minutes (set in settings)
+        this.autoSyncIntervalId = window.setInterval(async () => {
+			await this.autoUpdate();
+        }, this.settings.checkEveryXMinutes * 60 * 1000);
+    }
 
 	async onload() {
 		await this.loadSettings();
 		await this.loadLocalStore();
 		this.vaultOps = new VaultOperations(this.app.vault)
 		this.fit = new Fit(this.settings, this.localStore, this.vaultOps)
-		this.fitPull = new FitPull(this.fit)
-		this.fitPush = new FitPush(this.fit)
-		this.fitSync = new FitSync(this.fit)
-		this.pulling = false
-		this.pushing = false
+		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback)
 		this.syncing = false
+		this.autoSyncing = false
 		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
 
-
-		this.addCommand({
-			id: 'debug',
-			name: 'debug',
-			callback: async () => {
-				const abc = new Notice("", 0)
-				const heading = abc.noticeEl.createEl("span")
-				heading.setText("File changes\n")
-				heading.addClass("file-changes-heading")
-				const createdH = abc.noticeEl.createEl("span")
-				createdH.setText("Created\n")
-				createdH.addClass("file-changes-subheading")
-				const abcde = ['a','b', 'c', 'd', 'e']
-				abcde.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-created");
-				});
-				const changeH = abc.noticeEl.createEl("span")
-				changeH.setText("Changed\n")
-				changeH.addClass("file-changes-subheading")
-				const hij = ['j','h', 'i']
-				hij.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-changed");
-				});
-				const deleteH = abc.noticeEl.createEl("span")
-				deleteH.setText("Deleted\n")
-				deleteH.addClass("file-changes-subheading")
-				const ijk = ['j','k', 'i']
-				ijk.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-deleted");
-				});
-				ijk.map((char) => {
-					const listItem = abc.noticeEl.createEl("li");
-					listItem.setText(`${char}`);
-					listItem.addClass("file-deleted");
-				});
-				
-				const conflictHeading = abc.noticeEl.createEl("span")
-				conflictHeading.setText("Conflict to be resolved:\n")
-				conflictHeading.addClass("file-changes-heading")
-				const conflictStatus = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				});
-				conflictStatus.createDiv().setText("Local")
-				conflictStatus.createDiv().setText("Remote")
-				const conflictItem = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				});
-				conflictItem.createDiv({
-					cls: "file-conflict-delete"
-				});
-				conflictItem.createDiv("div")
-					.setText("File Path");
-				conflictItem.createDiv({
-					cls: "file-conflict-create"
-				});
-				const footer = abc.noticeEl.createDiv({
-					cls: "file-conflict-row"
-				})
-				footer.setText("Note:")
-				footer.style.fontWeight = "bold";
-				abc.noticeEl.createEl("li", {cls: "file-conflict-note"})
-					.setText("Remote changes in _fit")
-				abc.noticeEl.createEl("li", {cls: "file-conflict-note"})
-					.setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.")
-
-				console.log(abc.noticeEl)
-			}
-		});
-
-
-		// recompute local sha to unblock pulling
-		this.addCommand({
-			id: 'recompute-local-sha',
-			name: `Update local store with new local sha, to unblock pulling when local clashes are detected (Dangerous!
-				Running pull after this command will discard local changes, please backup vault before running this.)`,
-				callback: async () => {
-					this.localStore.localSha = await this.fit.computeLocalSha()
-					this.saveLocalStore()
-					new Notice(`Stored local sha recomputation, recent local changes will not be considered in future push/pull.`)
-				}
-			});
-
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
-
-		// Check remote every 5 minutes to see if there are new commits
-		this.registerInterval(window.setInterval(async () => {
-			if (this.checkSettingsConfigured()) {
-				const updatedRemoteCommitSha = await this.fitPull.remoteHasUpdates()
-				if (updatedRemoteCommitSha) {
-					const intervalNotice = this.initializeFitNotice(["static"]);
-					intervalNotice.setMessage("Remote update detected, please pull the latest changes.")
-					this.removeFitNotice(intervalNotice)
-				} 
-			}
-		}, this.settings.checkEveryXMinutes * 60 * 1000));
+		
+		// register interval to repeat auto check
+		await this.startOrUpdateAutoSyncInterval();
 	}
 
-	onunload() {}
+	onunload() {
+		if (this.autoSyncIntervalId !== null) {
+            window.clearInterval(this.autoSyncIntervalId);
+            this.autoSyncIntervalId = null;
+        }
+	}
 
 	async loadSettings() {
 		const userSetting = await this.loadData()
@@ -417,12 +258,13 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					// if (key == "singleButtonMode") {
-						// obj[key] = Boolean(settings[key]);
-					// } else 
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
-					} else {
+					} 
+					else if (key === "notifyChanges" || key === "notifyConflicts") {
+						obj[key] = Boolean(settings[key]);
+					}
+					else {
 						obj[key] = settings[key];
 					}
 				}
@@ -454,6 +296,8 @@ export default class FitPlugin extends Plugin {
 	async saveSettings() {
 		const data = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		await this.saveData({...data, ...this.settings});
+		// update auto sync interval with new setting
+		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings)
 	}

@@ -4,6 +4,9 @@
     2. modify the svg then reencode the modified svg back to base64
     3. replace the original base64 svg with the updated one */
     --gray-cat: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM5NDk0OTQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1naXRodWIiPjxwYXRoIGQ9Ik0xNSAyMnYtNGE0LjggNC44IDAgMCAwLTEtMy41YzMgMCA2LTIgNi01LjUuMDgtMS4yNS0uMjctMi40OC0xLTMuNS4yOC0xLjE1LjI4LTIuMzUgMC0zLjUgMCAwLTEgMC0zIDEuNS0yLjY0LS41LTUuMzYtLjUtOCAwQzYgMiA1IDIgNSAyYy0uMyAxLjE1LS4zIDIuMzUgMCAzLjVBNS40MDMgNS40MDMgMCAwIDAgNCA5YzAgMy41IDMgNS41IDYgNS41LS4zOS40OS0uNjggMS4wNS0uODUgMS42NS0uMTcuNi0uMjIgMS4yMy0uMTUgMS44NXY0Ii8+PHBhdGggZD0iTTkgMThjLTQuNTEgMi01LTItNy0yIi8+PC9zdmc+");
+    --file-delete: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgY2xhc3M9Imx1Y2lkZSBsdWNpZGUtdHJhc2gtMiI+PHBhdGggZD0iTTMgNmgxOCIvPjxwYXRoIGQ9Ik0xOSA2djE0YzAgMS0xIDItMiAySDdjLTEgMC0yLTEtMi0yVjYiLz48cGF0aCBkPSJNOCA2VjRjMC0xIDEtMiAyLTJoNGMxIDAgMiAxIDIgMnYyIi8+PGxpbmUgeDE9IjEwIiB4Mj0iMTAiIHkxPSIxMSIgeTI9IjE3Ii8+PGxpbmUgeDE9IjE0IiB4Mj0iMTQiIHkxPSIxMSIgeTI9IjE3Ii8+PC9zdmc+");
+    --file-create: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgY2xhc3M9Imx1Y2lkZSBsdWNpZGUtZmlsZS1wbHVzLTIiPjxwYXRoIGQ9Ik00IDIyaDE0YTIgMiAwIDAgMCAyLTJWN2wtNS01SDZhMiAyIDAgMCAwLTIgMnY0Ii8+PHBhdGggZD0iTTE0IDJ2NGEyIDIgMCAwIDAgMiAyaDQiLz48cGF0aCBkPSJNMyAxNWg2Ii8+PHBhdGggZD0iTTYgMTJ2NiIvPjwvc3ZnPg==");
+    --file-change: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgY2xhc3M9Imx1Y2lkZSBsdWNpZGUtcGVuY2lsIj48cGF0aCBkPSJNMTcgM2EyLjg1IDIuODMgMCAxIDEgNCA0TDcuNSAyMC41IDIgMjJsMS41LTUuNVoiLz48cGF0aCBkPSJtMTUgNSA0IDQiLz48L3N2Zz4=");
 }
 
 .fit-github-handle {
@@ -297,34 +300,42 @@
     }
 }
 
+.file-update-row {
+    padding-top: 3px;
+    padding-bottom: 2px;
+    background-position: left center;
+    background-size: 16px 16px;
+    background-position-x: 3px;
+    background-repeat: no-repeat;
+    list-style-type: none;
+    padding-left: 25px;
+    border-radius: 5px;
+    margin-bottom: 2px;
+}
+
 .file-created {
-    background-color: rgba(144, 238, 144, 0.4); /* Light green with transparency for success status */
-    list-style-type: "📄  ";
-    padding-left: 5px;
-    padding-top: 2px;
+    background-color: rgba(144, 238, 144, 0.4); 
+    background-image: var(--file-create);
 }
 
 .file-changed {
-    background-color: rgba(249, 180, 52, 0.4); /* Yellow-orange with transparency for line changes */
-    list-style-type: "✍︎  ";
-    padding-left: 5px;
-    padding-top: 2px;
+    background-color: rgba(249, 180, 52, 0.4); 
+    background-image: var(--file-change);
+    
 }
 
 .file-deleted {
-    background-color: rgba(255, 99, 71, 0.3); /* Light red with transparency for error status */
-    list-style-type: "🗑️  ";
-    padding-left: 5px;
-    padding-top: 2px;
+    background-color: rgba(255, 99, 71, 0.3); 
+    background-image: var(--file-delete);
 }
 
 .file-changes-heading {
     font-weight: bold;
-    font-size: medium;
+    font-size: small;
     line-height: 25px;
 }
 .file-changes-subheading {
-    font-weight: bold;
+    /* font-weight: bold; */
     font-size: small;
     line-height: 25px;
 }
@@ -339,19 +350,30 @@
 .file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after {
     padding: 4px;
     border-radius: 20%;
+    content: "     ";
+    background-position: center center;
+    background-repeat: no-repeat;
 }
 .file-conflict-delete::after {
-    content: "🗑️";
+    background-image: var(--file-delete);
     background-color: rgba(255, 99, 71, 0.3); 
 }
 .file-conflict-create::after {
-    content: "📄";
-    background-color: rgba(144, 238, 144, 0.4); 
+    background-image: var(--file-create);
+    background-color: rgba(144, 238, 144, 0.4);  
 }
 .file-conflict-change::after {
-    content: "✍︎";
+    background-image: var(--file-change);
     background-color: rgba(249, 180, 52, 0.4); 
 }
 .file-conflict-note {
     padding-left: 5px;
+}
+
+.clear {
+    display: none;
+}
+
+.restore {
+    display: visible;
 }
