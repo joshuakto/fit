@@ -1,424 +1,601 @@
-import FitPlugin from "main";
-import { App, PluginSettingTab, Setting } from "obsidian";
-import { setEqual } from "./utils";
-import { warn } from "console";
-
-type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache"
+import FitPlugin, { DEFAULT_REPOSITORY, SyncSetting, DEFAULT_LOCAL_STORE } from "main";
+import { App, PluginSettingTab, Setting, Notice } from "obsidian";
+import { difference, intersection, setEqual } from "./utils";
 
 export default class FitSettingTab extends PluginSettingTab {
-	plugin: FitPlugin;
-	authenticating: boolean;
-	authUserAvatar: HTMLDivElement;
-	authUserHandle: HTMLSpanElement;
-	patSetting: Setting
-	ownerSetting: Setting
-	repoSetting: Setting
-	branchSetting: Setting
-	existingRepos: Array<string>;
-	existingBranches: Array<string>;
-	repoLink: string;
+    plugin: FitPlugin;
+    // authenticating: boolean;
+    authUserAvatar: HTMLDivElement;
+    authUserHandle: HTMLSpanElement;
+    // patSetting: Setting;
+    // ownerSetting: Setting;
+    // repoSetting: Setting;
+    // branchSetting: Setting;
+    // syncPathSetting: Setting;
+    // existingRepos: Array<string>;
+    // existingBranches: Array<string>;
+    // repoLink: string;
+    // syncPath: string;
+    currentSyncIndex: number = 0;
 
-	constructor(app: App, plugin: FitPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-		this.repoLink = this.getLatestLink();
-		this.authenticating = false
-		this.existingRepos = []
-		this.existingBranches = []
-	}
+    constructor(app: App, plugin: FitPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+        // this.currentSyncIndex = plugin.settings.currentSyncIndex || 0;
+        // this.repoLink = this.getLatestLink();
+        // this.authenticating = false;
+        // this.existingRepos = [];
+        // this.existingBranches = [];
+    }
 
-	getLatestLink = (): string => {
-		const {owner, repo, branch} = this.plugin.settings;
-		if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
-			return `https://github.com/${owner}/${repo}/tree/${branch}`
-		}
-		return ""
-	}
+    getCurrentSyncSetting(): SyncSetting {
+        return this.plugin.storage.repo[this.currentSyncIndex].settings;
+    }
 
-	handleUserFetch = async () => {
-		this.authenticating = true
-		this.authUserAvatar.removeClass('error')
-		this.authUserAvatar.empty()
-		this.authUserAvatar.removeClass('empty')
-		this.authUserAvatar.addClass('cat')
-		try {
-			const {owner, avatarUrl} = await this.plugin.fit.getUser();
-			this.authUserAvatar.removeClass('cat')
-			this.authUserAvatar.createEl('img', { attr: { src: avatarUrl } });
-			this.authUserHandle.setText(owner)
-			if (owner !== this.plugin.settings.owner) {
-				this.plugin.settings.owner = owner
-				this.plugin.settings.avatarUrl = avatarUrl
-				this.plugin.settings.repo = ""
-				this.plugin.settings.branch = ""
-				this.existingBranches = []
-				this.existingRepos = []
-				await this.plugin.saveSettings();
-				await this.refreshFields('repo(0)');
-			}
-			this.authenticating = false
-		} catch (error) {
-			this.authUserAvatar.removeClass('cat')
-			this.authUserAvatar.addClass('error')
-			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.")
-			this.plugin.settings.owner = ""
-			this.plugin.settings.avatarUrl = ""
-			this.plugin.settings.repo = ""
-			this.plugin.settings.branch = ""
-			this.existingBranches = []
-			this.existingRepos = []
-			await this.plugin.saveSettings();
-			this.refreshFields('initialize');
-			this.authenticating = false
-		}
-	}
+    getLatestLink = (): string => {
+        const currentSetting = this.getCurrentSyncSetting();
+        const {owner, repo, branch} = currentSetting;
+        if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
+            return `https://github.com/${owner}/${repo}/tree/${branch}`;
+        }
+        return "";
+    }
 
-	githubUserInfoBlock = () => {
-		const {containerEl} = this
-		new Setting(containerEl).setHeading()
-		.setName("GitHub user info")
-		.addButton(button => button
-			.setCta()
-			.setButtonText("Authenticate user")
-			.setDisabled(this.authenticating)
-			.onClick(async ()=>{
-				if (this.authenticating) return
-				await this.handleUserFetch()
-			}))
-		this.ownerSetting = new Setting(containerEl)
-			.setDesc("Input your personal access token below to get authenticated. Create a GitHub account here if you don't have one yet.")
-			.addExtraButton(button=>button
-				.setIcon('github')
-				.setTooltip("Sign up on github.com")
-				.onClick(async ()=>{
-					window.open("https://github.com/signup", "_blank")
-				}))
-		this.ownerSetting.nameEl.addClass('fit-avatar-container');
-		if (this.plugin.settings.owner === "") {
-			this.authUserAvatar = this.ownerSetting.nameEl.createDiv(
-				{cls: 'fit-avatar-container empty'})
-			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'})
-			this.authUserHandle.setText("Unauthenticated")
-		} else {
-			this.authUserAvatar = this.ownerSetting.nameEl.createDiv(
-				{cls: 'fit-avatar-container'})
-			this.authUserAvatar.createEl('img', { attr: { src: this.plugin.settings.avatarUrl } });
-			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'})
-			this.authUserHandle.setText(this.plugin.settings.owner)
-		}
-		// hide the control element to make space for authUser
-		this.ownerSetting.controlEl.addClass('fit-avatar-display-text');
+    async githubUserInfoBlock() {
+        const {containerEl} = this;
+        const currentSetting = this.getCurrentSyncSetting();
 
-		this.patSetting = new Setting(containerEl)
-			.setName('Github personal access token')
-			.setDesc('Remember to give it access for reading and writing to the storage repo.')
-			.addText(text => text
-				.setPlaceholder('GitHub personal access token')
-				.setValue(this.plugin.settings.pat)
-				.onChange(async (value) => {
-					this.plugin.settings.pat = value;
-					await this.plugin.saveSettings();
-				}))
-			.addExtraButton(button=>button
-				.setIcon('external-link')
-				.setTooltip("Create a token")
-				.onClick(async ()=>{
-					window.open("https://github.com/settings/tokens/new", '_blank');
-				}))
-	}
+        const {folders, files} = await this.plugin.vaultOps.getAllInVault()
 
-	repoInfoBlock = async () => {
-		const {containerEl} = this
-		new Setting(containerEl).setHeading().setName("Repository info")
-		.setDesc("Refresh to retrieve the latest list of repos and branches.")
-		.addExtraButton(button => button
-			.setTooltip("Refresh repos and branches list")
-			.setDisabled(this.plugin.settings.owner === "")
-			.setIcon('refresh-cw')
-			.onClick(async () => {
-				await this.refreshFields('repo(0)');
-			}))
-			
-		new Setting(containerEl)
-			.setDesc("Select 'Add a README file' if creating a new repo. Make sure you are logged in to github on your browser.")
-			.addExtraButton(button => button
-				.setIcon('github')
-				.setTooltip("Create a new repository")
-				.onClick(() => {
-					window.open(`https://github.com/new`, '_blank');
-				}))
-				
-		this.repoSetting = new Setting(containerEl)
-			.setName('Github repository name')
-			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
-			.addDropdown(dropdown => {
-				dropdown.selectEl.addClass('repo-dropdown');
-				this.existingRepos.map(repo=>dropdown.addOption(repo, repo))
-				dropdown.setDisabled(this.existingRepos.length === 0)
-				dropdown.setValue(this.plugin.settings.repo)
-				dropdown.onChange(async (value) => {
-					const repoChanged = value !== this.plugin.settings.repo
-					if (repoChanged) {
-						this.plugin.settings.repo = value;
-						await this.plugin.saveSettings();
-						await this.refreshFields('branch(1)');
-					}
-				})
-			})
+        new Setting(containerEl).setHeading()
+            .setName(`GitHub user info (Repository ${this.currentSyncIndex + 1})`)
 
-		this.branchSetting = new Setting(containerEl)
-			.setName('Branch name')
-			.setDesc('Select a repo above to view existing branches.')
-			.addDropdown(dropdown => {
-				dropdown.selectEl.addClass('branch-dropdown');
-				dropdown.setDisabled(this.existingBranches.length === 0)
-				this.existingBranches.map(repo=>dropdown.addOption(repo, repo))
-				dropdown.setValue(this.plugin.settings.branch)
-				dropdown.onChange(async (value) => {
-					const branchChanged = value !== this.plugin.settings.branch
-					if (branchChanged) {
-						this.plugin.settings.branch = value;
-						await this.plugin.saveSettings();
-						await this.refreshFields('link(2)');
-					}
-				})
-			})
+        new Setting(containerEl)
+            .setName('Github username')
+            .setDesc('Enter your name on Github')
+            .addText(text => text
+                .setPlaceholder('GitHub username')
+                .setValue(currentSetting.owner)
+                .onChange(async (value) => {
+                    currentSetting.owner = value;
+                    await this.plugin.saveSettings();
+                }))
 
-		this.repoLink = this.getLatestLink()
-		const linkDisplay = new Setting(containerEl)
-			.setName("View your vault on GitHub")
-			.setDesc(this.repoLink)
-			.addExtraButton(button => button
-				.setDisabled(this.repoLink.length === 0)
-				.setTooltip("Open on GitHub")
-				.setIcon('external-link')
-				.onClick(() => {
-					console.log(`opening ${this.repoLink}`)
-					window.open(this.repoLink, '_blank');
-				})
-			)
-		linkDisplay.descEl.addClass("link-desc")
-	}
+        new Setting(containerEl)
+            .setName('Github personal access token')
+            .setDesc('Remember to give it access for reading and writing to the storage repo.')
+            .addText(text => text
+                .setPlaceholder('GitHub personal access token')
+                .setValue(currentSetting.pat)
+                .onChange(async (value) => {
+                    currentSetting.pat = value;
+                    await this.plugin.saveSettings();
+                }))
+            .addExtraButton(button=>button
+                .setIcon('external-link')
+                .setTooltip("Create a token")
+                .onClick(async ()=>{
+                    window.open("https://github.com/settings/tokens/new", '_blank');
+                }));
 
-	localConfigBlock = () => {
-		const {containerEl} = this
-		new Setting(containerEl).setHeading().setName("Local configurations");		
-		new Setting(containerEl)
-			.setName('Device name')
-			.setDesc('Sign commit message with this device name.')
-			.addText(text => text
-				.setPlaceholder('Device name')
-				.setValue(this.plugin.settings.deviceName)
-				.onChange(async (value) => {
-					this.plugin.settings.deviceName = value;
-					await this.plugin.saveSettings();
-				}));
+        new Setting(containerEl)
+            .setName('Device name')
+            .setDesc('Sign commit message with this device name.')
+            .addText(text => text
+                .setPlaceholder('Device name')
+                .setValue(currentSetting.deviceName)
+                .onChange(async (value) => {
+                    currentSetting.deviceName = value;
+                    await this.plugin.saveSettings();
+                }));
 
-				
-		new Setting(containerEl)
-		.setName("Auto sync")
-		.setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices, except for file changes and conflicts notice)`)
-		.addDropdown(dropdown => {
-			dropdown
-			.addOption('off', 'Off')
-			.addOption('muted', 'Muted')
-			.addOption('remind', 'Remind only')
-			.addOption('on', 'On')
-			.setValue(this.plugin.settings.autoSync ? this.plugin.settings.autoSync : 'off')
-			.onChange(async (value) => {
-				this.plugin.settings.autoSync = value as "off" | "muted" | "remind" | "on";
-				checkIntervalSlider.settingEl.addClass(value === "off" ? "clear" : "restore");
-				checkIntervalSlider.settingEl.removeClass(value === "off" ? "restore" : "clear");
-				await this.plugin.saveSettings();
-			})
-		})
-		
-		const checkIntervalSlider = new Setting(containerEl)
-			.setName('Auto check interval')
-			.setDesc(`Automatically check for remote changes in the background every ${this.plugin.settings.checkEveryXMinutes} minutes.`)
-			.addSlider(slider => slider
-				.setLimits(1, 60, 1)
-				.setValue(this.plugin.settings.checkEveryXMinutes)
-				.setDynamicTooltip()
-				.onChange(async (value) => {
-					this.plugin.settings.checkEveryXMinutes = value;
-					await this.plugin.saveSettings();
-					checkIntervalSlider.setDesc(`Automatically check for remote changes in the background every ${value} minutes.`)
-				})
-			)
+// export interface SyncSetting {
+//     pat: string; +
+//     owner: string; +
+//     avatarUrl: string;
+//     repo: string; +
+//     branch: string; +
+//     syncPath: string; +
+//     deviceName: string; +
+//     excludes: string[]
+// }
+        new Setting(containerEl)
+            .setName('Repository name')
+            .setDesc('Select a repo.')
+            .addText(text => text
+                .setPlaceholder('Repository')
+                .setValue(currentSetting.repo)
+                .onChange(async (value) => {
+                    currentSetting.repo = value;
+                    await this.plugin.saveSettings();
+                }));
 
-		if (this.plugin.settings.autoSync === "off") {
-			checkIntervalSlider.settingEl.addClass("clear")
-		}
-	}
+        new Setting(containerEl)
+            .setName('Branch name')
+            .setDesc('Select a branch.')
+            .addText(text => text
+                .setPlaceholder('Branch')
+                .setValue(currentSetting.branch)
+                .onChange(async (value) => {
+                    currentSetting.branch = value;
+                    await this.plugin.saveSettings();
+                }));
 
-	noticeConfigBlock = () => {
-		const {containerEl} = this
-		const selectedCol = "var(--interactive-accent)"
-		const selectedTxtCol = "var(--text-on-accent)"
-		const unselectedColor = "var(--interactive-normal)"
-		const unselectedTxtCol = "var(--text-normal)"
-		const stateTextMap = (notifyConflicts: boolean, notifyChanges: boolean) => {
-			if (notifyConflicts && notifyChanges) {
-				return "Displaying file changes and conflicts "
-			} else if (!notifyConflicts && notifyChanges) {
-				return "Displaying file changes "
-			} else if (notifyConflicts && !notifyChanges) {
-				return "Displaying change conflicts "
-			} else {
-				return "No notice displayed "
-			}
-		}
-		const noticeDisplay = new Setting(containerEl)
-			.setName("Notice display")
-			.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`)
+        new Setting(containerEl)
+            .setName('Sync path')
+            .setDesc('Select a local path to sync with the repo. If the field is empty, the entire vault will be synced.')
+            .addText(async (text) => {
+                text.setPlaceholder('Enter folder path')
+                    .setValue(currentSetting.syncPath || '')
+                    .onChange(async (value) => {
+                        if (!folders.contains(value))
+                            return
 
-		noticeDisplay.addButton(button => {
-			button.setButtonText("Change conflicts")
-			button.onClick(async () => {
-				const notifyConflicts = !this.plugin.settings.notifyConflicts;
-				this.plugin.settings.notifyConflicts = notifyConflicts
-				await this.plugin.saveSettings();
-				button.buttonEl.setCssStyles({
-					"background": notifyConflicts ? selectedCol : unselectedColor,
-					"color": notifyConflicts ? selectedTxtCol : unselectedTxtCol,
-				})
-				noticeDisplay.setDesc(`${stateTextMap(notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`)
-			})
-			button.buttonEl.setCssStyles({
-				"background": this.plugin.settings.notifyConflicts ? selectedCol : unselectedColor,
-				"color": this.plugin.settings.notifyConflicts ? selectedTxtCol : unselectedTxtCol,
-			})
-		})
-		noticeDisplay.addButton(button => {
-			button.setButtonText("File changes")
-			button.onClick(async () => {
-				const notifyChanges = !this.plugin.settings.notifyChanges;
-				this.plugin.settings.notifyChanges = notifyChanges
-				await this.plugin.saveSettings();
-				button.buttonEl.setCssStyles({
-					"background": notifyChanges ? selectedCol : unselectedColor,
-					"color": notifyChanges ? selectedTxtCol : unselectedTxtCol,
-				})
-				noticeDisplay.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, notifyChanges)} after sync.`)
-			})
-			button.buttonEl.setCssStyles({
-				"background": this.plugin.settings.notifyChanges ? selectedCol : unselectedColor,
-				"color": this.plugin.settings.notifyChanges ? selectedTxtCol : unselectedTxtCol,
-			})
-		})
-	}
+                        currentSetting.syncPath = value;
+                        await this.plugin.saveSettings();
+                    });
 
-	refreshFields = async (refreshFrom: RefreshCheckPoint) => {
-		const {containerEl} = this
-		const repo_dropdown = containerEl.querySelector('.repo-dropdown') as HTMLSelectElement
-		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement
-		const link_el = containerEl.querySelector('.link-desc') as HTMLElement
-		if (refreshFrom === "repo(0)") {
-			repo_dropdown.disabled = true
-			branch_dropdown.disabled = true
-			this.existingRepos = await this.plugin.fit.getRepos();
-			const repoOptions = Array.from(repo_dropdown.options).map(option => option.value);
-			if (!setEqual<string>(this.existingRepos, repoOptions)) {
-				repo_dropdown.empty()
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo))
-				});
-				// if original repo not in the updated existing repo, -1 will be returned
-				const selectedRepoIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-				// setting selectedIndex to -1 to indicate no options selected
-				repo_dropdown.selectedIndex = selectedRepoIndex 
-				if (selectedRepoIndex===-1){
-					this.plugin.settings.repo = ""
-				}
-			}
-			repo_dropdown.disabled = false
-		}
-		if (refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
-			if (this.plugin.settings.repo === "") {
-				branch_dropdown.empty()
-			} else {
-				const latestBranches = await this.plugin.fit.getBranches();
-				if (!setEqual<string>(this.existingBranches, latestBranches)) {
-					branch_dropdown.empty()
-					this.existingBranches = latestBranches
-					this.existingBranches.map(branch => {
-						branch_dropdown.add(new Option(branch, branch))
-					});
-					// if original branch not in the updated existing branch, -1 will be returned
-					const selectedBranchIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
-					// setting selectedIndex to -1 to indicate no options selected
-					branch_dropdown.selectedIndex = selectedBranchIndex
-					if (selectedBranchIndex===-1){
-						this.plugin.settings.branch = ""
-					}
-				}
-			}
-			branch_dropdown.disabled = false
-		} 
-		if (refreshFrom === "link(2)" || refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
-			this.repoLink = this.getLatestLink();
-			link_el.innerText = this.repoLink
-		} 
-		if (refreshFrom === "initialize") {
-			const {repo, branch} = this.plugin.settings
-			repo_dropdown.empty()
-			branch_dropdown.empty()
-			repo_dropdown.add(new Option(repo, repo))
-			branch_dropdown.add(new Option(branch, branch))
-			link_el.innerText = this.getLatestLink()
-		}
-		if (refreshFrom === "withCache") {
-			repo_dropdown.empty()
-			branch_dropdown.empty()
-			if (this.existingRepos.length > 0) {
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo))
-				});
-				repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo)
-			}
-			if (this.existingBranches.length > 0) {
-				this.existingBranches.map(branch => {
-					branch_dropdown.add(new Option(branch, branch))
-				});
-				if (this.plugin.settings.branch === "") {
-					branch_dropdown.selectedIndex = -1
-				}
-				branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch)
-			}
-			if (this.plugin.settings.repo !== "") {
-				if (this.existingRepos.length === 0) {
-					repo_dropdown.add(new Option(this.plugin.settings.repo, this.plugin.settings.repo))
-				} else {
-					repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo)
-					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`)
-					}
-				}
-			}
-			if (this.plugin.settings.branch !== "") {
-				if (this.existingBranches.length === 0) {
-					branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch))
-				} else {
-					branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch)
-					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`)
-					}
-				}
-			}
-		}
-	}
+                const dataList = document.createElement('datalist');
+                dataList.id = `folder-suggestions`;
+
+                const otherSyncPath = new Set()
+                this.plugin.storage.repo.forEach(
+                    (el, i) => {
+                        if (i == this.currentSyncIndex)
+                            return
+
+                        otherSyncPath.add(
+                            el.settings.syncPath
+                        )
+                    }
+                )
+
+                const allFolders = new Set(
+                    await this.plugin.vaultOps.getFoldersInVault()
+                )
+
+                const folders = Array.from(
+                    difference(allFolders, otherSyncPath)
+                )
+                for (let i in folders) {
+                    const folder = folders[i]
+
+                    const option = document.createElement('option');
+                    option.value = folder;
+                    dataList.appendChild(option);
+                }
+
+                text.inputEl.setAttribute('list', `folder-suggestions`);
+                text.inputEl.parentElement?.appendChild(dataList);
+            });
+
+        new Setting(containerEl)
+            .setName("View your vault on GitHub")
+            .addExtraButton(button => button
+                .setTooltip("Open on GitHub")
+                .setIcon('external-link')
+                .onClick(() => {
+                    const link = this.getLatestLink();
+
+                    console.log(`opening ${link}`);
+                    window.open(link);
+                })
+            )
+            .descEl.addClass("link-desc");
+
+        new Setting(containerEl)
+            .setName('Excluded files/folders')
+            .setDesc('Files or folders within sync path that will not be synced')
+            .addButton(button => button
+                .setButtonText('Add exclusion')
+                .setCta()
+                .onClick(async () => {
+                    if (!currentSetting.excludes) {
+                        currentSetting.excludes = [];
+                    }
+                    currentSetting.excludes.push('');
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        const allItems = await this.plugin.vaultOps.getAllInVault();
+        const allPaths = [...allItems.folders, ...allItems.files];
+
+        if (currentSetting.excludes?.length > 0) {
+            currentSetting.excludes.forEach((exclude, index) => {
+                new Setting(containerEl)
+                    .setName(`Exclusion ${index + 1}`)
+                    // .setDesc('Path relative to sync path')
+                    .addText(text => {
+                        text.setPlaceholder('path/to/exclude')
+                            .setValue(exclude)
+                            .onChange(async (value) => {
+                                if (!folders.contains(value) && !files.contains(value))
+                                    return
+
+                                currentSetting.excludes[index] = value;
+                                // TODO и исключения не должны повторяться, но это пофиг
+                                await this.plugin.saveSettings();
+                            });
+
+                        // Добавляем datalist для автодополнения
+                        const dataList = document.createElement('datalist');
+                        dataList.id = `exclude-suggestions-${index}`;
+
+                        // Фильтруем пути: только те, которые находятся внутри syncPath (если он задан)
+                        let filteredPaths = allPaths;
+                        if (currentSetting.syncPath) {
+                            filteredPaths = allPaths.filter(path =>
+                                path.startsWith(currentSetting.syncPath + '/') ||
+                                path === currentSetting.syncPath
+                            );
+                        }
+
+                        filteredPaths.forEach(path => {
+                            const option = document.createElement('option');
+                            option.value = path;
+                            dataList.appendChild(option);
+                        });
+
+                        text.inputEl.setAttribute('list', `exclude-suggestions-${index}`);
+                        text.inputEl.parentElement?.appendChild(dataList);
+                    })
+                    .addButton(button => button
+                        .setIcon('trash')
+                        .setTooltip('Remove this exclusion')
+                        .onClick(async () => {
+                            currentSetting.excludes.splice(index, 1);
+                            await this.plugin.saveSettings();
+                            this.display(); // Перерисовываем после удаления
+                        }));
+            });
+        }
+
+    }
+
+    async getItemsInSyncPath(): Promise<string[]> {
+        const currentSetting = this.getCurrentSyncSetting();
+        if (!currentSetting.syncPath) return [];
+
+        try {
+            const syncPath = currentSetting.syncPath;
+            const allItems: string[] = [];
+
+            const all = await this.plugin.vaultOps.getAllInVault()
+            for (const file in all) {
+                if (syncPath == ""
+                    || file.startsWith(syncPath + '/')
+                    || file === syncPath)
+                {
+                    allItems.push(file);
+                }
+            }
+
+            return allItems.sort();
+        } catch (error) {
+            console.error("Error getting items in sync path:", error);
+            return [];
+        }
+    }
+
+    localConfigBlock = () => {
+        const {containerEl} = this;
+        // const currentSetting = this.getCurrentSyncSetting();
+
+        new Setting(containerEl).setHeading().setName("Local configurations");
+
+        new Setting(containerEl)
+            .setName("Auto sync")
+            .setDesc(`Automatically sync your vault when remote has updates. (Muted: sync in the background without displaying notices, except for file changes and conflicts notice)`)
+            .addDropdown(dropdown => {
+                dropdown
+                .addOption('off', 'Off')
+                .addOption('muted', 'Muted')
+                .addOption('remind', 'Remind only')
+                .addOption('on', 'On')
+                .setValue(this.plugin.storage.autoSync ? this.plugin.storage.autoSync : 'off')
+                .onChange(async (value) => {
+                    this.plugin.storage.autoSync = value as "off" | "muted" | "remind" | "on";
+                    checkIntervalSlider.settingEl.addClass(value === "off" ? "clear" : "restore");
+                    checkIntervalSlider.settingEl.removeClass(value === "off" ? "restore" : "clear");
+                    await this.plugin.saveSettings();
+                })
+            })
+
+        const checkIntervalSlider = new Setting(containerEl)
+            .setName('Auto check interval')
+            .setDesc(`Automatically check for remote changes in the background every ${this.plugin.storage.checkEveryXMinutes} minutes.`)
+            .addSlider(slider => slider
+                .setLimits(1, 60, 1)
+                .setValue(this.plugin.storage.checkEveryXMinutes)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.storage.checkEveryXMinutes = value;
+                    await this.plugin.saveSettings();
+                    checkIntervalSlider.setDesc(`Automatically check for remote changes in the background every ${value} minutes.`)
+                })
+            )
+
+        if (this.plugin.storage.autoSync === "off") {
+            checkIntervalSlider.settingEl.addClass("clear")
+        }
+    }
+
+    noticeConfigBlock = () => {
+        const {containerEl} = this;
+        const selectedCol = "var(--interactive-accent)";
+        const selectedTxtCol = "var(--text-on-accent)";
+        const unselectedColor = "var(--interactive-normal)";
+        const unselectedTxtCol = "var(--text-normal)";
+        const stateTextMap = (notifyConflicts: boolean, notifyChanges: boolean) => {
+            if (notifyConflicts && notifyChanges) {
+                return "Displaying file changes and conflicts ";
+            } else if (!notifyConflicts && notifyChanges) {
+                return "Displaying file changes ";
+            } else if (notifyConflicts && !notifyChanges) {
+                return "Displaying change conflicts ";
+            } else {
+                return "No notice displayed ";
+            }
+        };
+        const noticeDisplay = new Setting(containerEl)
+            .setName("Notice display")
+            .setDesc(`${stateTextMap(this.plugin.storage.notifyConflicts, this.plugin.storage.notifyChanges)} after sync.`)
+            .addButton(button => {
+                button.setButtonText("Change conflicts");
+                button.onClick(async () => {
+                    const notifyConflicts = !this.plugin.storage.notifyConflicts;
+                    this.plugin.storage.notifyConflicts = notifyConflicts;
+                    await this.plugin.saveSettings();
+                    button.buttonEl.setCssStyles({
+                        "background": notifyConflicts ? selectedCol : unselectedColor,
+                        "color": notifyConflicts ? selectedTxtCol : unselectedTxtCol,
+                    });
+                    noticeDisplay.setDesc(`${stateTextMap(notifyConflicts, this.plugin.storage.notifyChanges)} after sync.`);
+                });
+                button.buttonEl.setCssStyles({
+                    "background": this.plugin.storage.notifyConflicts ? selectedCol : unselectedColor,
+                    "color": this.plugin.storage.notifyConflicts ? selectedTxtCol : unselectedTxtCol,
+                });
+            })
+            .addButton(button => {
+                button.setButtonText("File changes");
+                button.onClick(async () => {
+                    const notifyChanges = !this.plugin.storage.notifyChanges;
+                    this.plugin.storage.notifyChanges = notifyChanges;
+                    await this.plugin.saveSettings();
+                    button.buttonEl.setCssStyles({
+                        "background": notifyChanges ? selectedCol : unselectedColor,
+                        "color": notifyChanges ? selectedTxtCol : unselectedTxtCol,
+                    });
+                    noticeDisplay.setDesc(`${stateTextMap(this.plugin.storage.notifyConflicts, notifyChanges)} after sync.`);
+                });
+                button.buttonEl.setCssStyles({
+                    "background": this.plugin.storage.notifyChanges ? selectedCol : unselectedColor,
+                    "color": this.plugin.storage.notifyChanges ? selectedTxtCol : unselectedTxtCol,
+                });
+            });
+    }
+
+    counterRepoBlock = () => {
+        const {containerEl} = this;
+
+        new Setting(containerEl)
+            .setName('Manage repositories')
+            .setDesc('Add or remove repository configurations')
+            .addButton(button => button
+                .setButtonText('Add Repository')
+                .setCta()
+                .onClick(async () => {
+                    this.plugin.storage.repo.push(DEFAULT_REPOSITORY);
+                    await this.plugin.saveSettings();
+                    this.display();
+                }))
+            .addButton(button => button
+                .setButtonText('Remove Repository')
+                .setWarning()
+                .setDisabled(this.plugin.storage.repo.length <= 1)
+                .onClick(async () => {
+                    if (this.plugin.storage.repo.length > 1) {
+                        this.plugin.storage.repo.splice(this.currentSyncIndex, 1);
+                        if (this.currentSyncIndex >= this.plugin.storage.repo.length) {
+                            this.currentSyncIndex = this.plugin.storage.repo.length - 1;
+                        }
+                        await this.plugin.saveSettings();
+                        this.display();
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('Current repository')
+            .setDesc('Select which repository configuration to edit')
+            .addDropdown(dropdown => {
+                this.plugin.storage.repo.forEach((_, index) => {
+                    dropdown.addOption(index.toString(), `Repository ${index + 1}`);
+                });
+                dropdown.setValue(this.currentSyncIndex.toString());
+                dropdown.onChange(async (value) => {
+                    this.currentSyncIndex = parseInt(value);
+                    await this.plugin.saveSettings();
+                    this.display();
+                });
+            });
+    }
+
+    resetBlock = () => {
+        const {containerEl} = this;
+
+        new Setting(containerEl)
+            .setName('Reset settings')
+            .setDesc('Remove Sync storage or Settings')
+            .addButton(button => button
+                .setButtonText('Reset storage')
+                .setWarning()
+                .onClick(async () => {
+                    for (let storage of this.plugin.storage.repo) {
+                        storage.localStore = DEFAULT_LOCAL_STORE
+                    }
+                    // TODO add notice("Done")
+                    await this.plugin.saveSettings();
+                    this.display();
+                }))
+            .addButton(button => button
+                .setButtonText('Reset Settings')
+                .setWarning()
+                .onClick(async () => {
+                    this.plugin.storage.repo = [DEFAULT_REPOSITORY];
+                    // TODO add notice("Done")
+                    await this.plugin.saveSettings();
+                    this.display();
+                }))
+
+    }
+
+    importExport() {
+        const {containerEl} = this;
+
+        new Setting(containerEl)
+            .setName('Import/Export settings')
+            .setDesc('Backup or restore your plugin configuration')
+            .setHeading();
+
+        // Текстовое поле для отображения/ввода конфигурации
+        const textAreaContainer = containerEl.createDiv('import-export-container');
+        const textArea = textAreaContainer.createEl('textarea', {
+            attr: {
+                placeholder: 'Configuration JSON will appear here...',
+                rows: '10',
+                style: 'width: 100%; font-family: monospace;'
+            },
+            cls: 'import-export-textarea'
+        });
+
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Export to Text Field')
+                .setCta()
+                .onClick(async () => {
+                    this.exportToTextField(textArea);
+                }))
+            .addButton(button => button
+                .setButtonText('Import from Text Field')
+                .setWarning()
+                .onClick(async () => {
+                    await this.importFromTextField(textArea);
+                }))
+            .addButton(button => button
+                .setButtonText('Clear Field')
+                .setIcon('trash')
+                .onClick(() => {
+                    textArea.value = '';
+                }));
+    }
+
+    private exportToTextField(textArea: HTMLTextAreaElement) {
+        try {
+            const result: any = structuredClone(this.plugin.storage)
+            for(let i in result.repo) {
+                delete result.repo[i].localStore
+            }
+
+            const settingsJson = JSON.stringify(result, null, 4);
+
+            textArea.value = settingsJson;
+            textArea.focus();
+            textArea.select();
+
+        }
+        catch (error) {
+            console.error('Error exporting settings:', error);
+            new Notice('Error exporting configuration', 3000);
+        }
+    }
+
+    private async importFromTextField(textArea: HTMLTextAreaElement) {
+        try {
+            const jsonContent = textArea.value.trim();
+
+            if (!jsonContent) {
+                new Notice('Text field is empty', 3000);
+                return;
+            }
+
+            const importedSettings = JSON.parse(jsonContent);
+
+            // Валидация импортированных настроек
+            if (this.validateImportedSettings(importedSettings)) {
+                for (let repo of importedSettings.repo) {
+                    repo.localStore = DEFAULT_LOCAL_STORE
+                }
+
+                this.plugin.storage = importedSettings
+                await this.plugin.saveSettings();
+
+                new Notice('Settings imported successfully!', 3000);
+
+                await this.display();
+            } else {
+                new Notice('Invalid settings format in text field', 4000);
+            }
+        }
+        catch (error) {
+            console.error('Error importing settings from text field:', error);
+            new Notice('Error parsing JSON configuration', 4000);
+        }
+    }
+
+    private validateImportedSettings(settings: any): boolean {
+        // Basic validation
+        return settings &&
+            typeof settings === 'object' &&
+            Array.isArray(settings.repo) &&
+            settings.repo.length > 0 &&
+            settings.repo[0].settings &&
+            typeof settings.repo[0].settings === 'object' &&
+            'syncPath' in settings.repo[0].settings;
+    }
+
+    async display(): Promise<void> {
+        const {containerEl} = this;
+
+        containerEl.empty();
 
 
-	async display(): Promise<void> {
-		const {containerEl} = this;
+        this.localConfigBlock();
+        this.noticeConfigBlock();
+        containerEl.createEl('hr');
 
-		containerEl.empty();
+        await this.importExport()
+        containerEl.createEl('hr');
 
-		this.githubUserInfoBlock()
-		this.repoInfoBlock()
-		this.localConfigBlock()
-		this.noticeConfigBlock()
-		this.refreshFields("withCache")
-	}
+        this.counterRepoBlock();
+        containerEl.createEl('hr');
+
+        // TODO написать, что тут для allSettings, а не отдельный репозиторий
+        // TODO add prune settings exactly for one repo
+        this.resetBlock()
+        containerEl.createEl('hr');
+
+        await this.githubUserInfoBlock();
+    }
 }
+
+// class FolderSuggestModal extends SuggestModal<string> {
+//     constructor(app: App, private folders: string[], private callback: (folder: string) => void) {
+//         super(app);
+//     }
+
+//     getSuggestions(query: string): string[] {
+//         return this.folders.filter(folder =>
+//             folder.toLowerCase().includes(query.toLowerCase())
+//         );
+//     }
+
+//     renderSuggestion(folder: string, el: HTMLElement) {
+//         el.createEl('div', { text: folder });
+//     }
+
+//     onChooseSuggestion(folder: string, evt: MouseEvent | KeyboardEvent) {
+//         this.callback(folder);
+//     }
+// }

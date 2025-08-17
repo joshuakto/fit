@@ -1,12 +1,13 @@
 import { Notice } from "obsidian";
 import { ClashStatus, FileOpRecord, LocalFileStatus, RemoteChangeType } from "./fitTypes";
+import { conflictResolutionFolder } from "./const";
 
 type Status = RemoteChangeType | LocalFileStatus
 
 type FileLocation = "remote" | "local"
 
 type ComparisonResult<Env extends FileLocation> = {
-    path: string, 
+    path: string,
     status: Env extends "local" ? LocalFileStatus: RemoteChangeType
     currentSha?: string
     extension?: string
@@ -19,11 +20,11 @@ function getValueOrNull(obj: Record<string, string>, key: string): string | null
 
 // compare currentSha with storedSha and check for differences, files only in currentSha
 //  are considerd added, while files only in storedSha are considered removed
-export function compareSha<Env extends "remote" | "local">(
-    currentShaMap: Record<string, string>, 
+export function compareSha<Env extends FileLocation>(
+    currentShaMap: Record<string, string>,
     storedShaMap: Record<string, string>,
     env: Env): ComparisonResult<Env>[] {
-        const determineStatus = (currentSha: string | null, storedSha: string | null): Status | null  => 
+        const determineStatus = (currentSha: string | null, storedSha: string | null): Status | null  =>
         {
             if (currentSha && storedSha && currentSha !== storedSha) {
                 return env === "local" ? "changed" : "MODIFIED";
@@ -50,7 +51,7 @@ export function compareSha<Env extends "remote" | "local">(
         });
 }
 
-export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"]
+export const RECOGNIZED_TXT_EXT = ["txt", "md"]
 
 export function extractExtension(path: string): string | undefined {
     return path.match(/[^.]+$/)?.[0];
@@ -59,11 +60,11 @@ export function extractExtension(path: string): string | undefined {
 // Using file extension to determine encoding of files (works in most cases)
 export function getFileEncoding(path: string): string {
     const extension = path.match(/[^.]+$/)?.[0];
-    const isBinary = extension && RECOGNIZED_BINARY_EXT.includes(extension);
-    if (isBinary) {
-        return "base64"
-    } 
-    return "utf-8"
+    const isTxt = extension && RECOGNIZED_TXT_EXT.includes(extension);
+    if (isTxt) {
+        return "utf-8"
+    }
+    return "base64"
 }
 
 export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
@@ -78,7 +79,6 @@ export function removeLineEndingsFromBase64String(content: string): string {
 }
 
 export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRecord[]}>): void {
-    console.log(records)
     if (records.length === 0 || records.every(r=>r.ops.length===0)) {return}
     const fileOpsNotice = new Notice("", 0)
     records.map(recordSet => {
@@ -88,8 +88,8 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
         })
         heading.setText(`${recordSet.heading}\n`)
         const fileChanges = {
-            created: [] as Array<string>, 
-            changed: [] as Array<string>, 
+            created: [] as Array<string>,
+            changed: [] as Array<string>,
             deleted: [] as Array<string>
         }
         for (const op of recordSet.ops) {
@@ -131,7 +131,7 @@ export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
         cls: "file-conflict-row"
     });
     conflictStatus.createDiv().setText("Local")
-	conflictStatus.createDiv().setText("Remote")
+    conflictStatus.createDiv().setText("Remote")
     for (const clash of clashedFiles) {
         const conflictItem = conflictNotice.noticeEl.createDiv({
             cls: "file-conflict-row"
@@ -151,7 +151,15 @@ export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
     footer.setText("Note:")
     footer.style.fontWeight = "bold";
     conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-        .setText("Remote changes in _fit")
+        .setText(`Remote changes in ${conflictResolutionFolder}`)
     conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-        .setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.")
+        .setText(`${conflictResolutionFolder} folder is overwritten on conflict, copy needed changes outside ${conflictResolutionFolder}.`)
+}
+
+export function intersection(setA: Set<any>, setB: Set<any>) {
+    return new Set([...setA].filter(x => setB.has(x)));
+}
+
+export function difference(setA: Set<any>, setB: Set<any>) {
+    return new Set([...setA].filter(x => !setB.has(x)));
 }
