@@ -3,7 +3,15 @@
 
 Sync your files across mobile and desktop devices with one click.
 
-Note about status of the project: https://github.com/joshuakto/fit/issues/39
+## Community project
+
+This project is a community collaboration. If you'd like to contribute please check out the [Discussions section] on GitHub to suggest or discuss ideas.
+
+[Discussions section]: https://github.com/joshuakto/fit/discussions
+
+## Security review
+
+Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
 
 ## Features
 - **Universally supported**: sync your vault across multiple devices, support both mobile and desktop
