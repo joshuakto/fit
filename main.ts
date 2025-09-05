@@ -159,23 +159,26 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
+	// Shared method for both ribbon icon and command palette
+	performManualSync = async (): Promise<void> => {
+		if ( this.syncing || this.autoSyncing ) { return }
+		this.syncing = true
+		this.fitSyncRibbonIconEl.addClass('animate-icon');
+		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
+		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+		this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		if (errorCaught === true) {
+			syncNotice.remove("error")
+			this.syncing = false
+			return
+		}
+		syncNotice.remove("done")
+		this.syncing = false
+	}
+
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
-		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
-			if ( this.syncing || this.autoSyncing ) { return }
-			this.syncing = true
-			this.fitSyncRibbonIconEl.addClass('animate-icon');
-			const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
-			const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
-			this.fitSyncRibbonIconEl.removeClass('animate-icon');
-			if (errorCaught === true) {
-				syncNotice.remove("error")
-				this.syncing = false
-				return
-			}
-			syncNotice.remove("done")
-			this.syncing = false
-		});
+		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', this.performManualSync);
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 	}
 
@@ -238,6 +241,13 @@ export default class FitPlugin extends Plugin {
 		this.settingTab = new FitSettingTab(this.app, this)
 		this.loadRibbonIcons();
 
+		// Add command to command palette for fit sync
+		this.addCommand({
+			id: 'fit-sync',
+			name: 'Fit Sync',
+			callback: this.performManualSync
+		});
+		
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
 		
