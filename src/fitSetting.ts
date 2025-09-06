@@ -111,7 +111,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		this.patSetting = new Setting(containerEl)
 			.setName('Github personal access token')
-			.setDesc('Remember to give it access for reading and writing to the storage repo.')
+			.setDesc('Make sure Permissions has Contents: "Read and write". Recommended: Limit to selected repository, adjust expiration.')
 			.addText(text => text
 				.setPlaceholder('GitHub personal access token')
 				.setValue(this.plugin.settings.pat)
@@ -123,7 +123,9 @@ export default class FitSettingTab extends PluginSettingTab {
 				.setIcon('external-link')
 				.setTooltip("Create a token")
 				.onClick(async ()=>{
-					window.open("https://github.com/settings/tokens/new", '_blank');
+					window.open(
+						"https://github.com/settings/personal-access-tokens/new?name=Obsidian%20FIT&description=Obsidian%20FIT%20plugin&contents=write",
+						'_blank');
 				}))
 	}
 
