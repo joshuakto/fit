@@ -1689,7 +1689,7 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
       new import_obsidian4.Setting(containerEl).setName("Manage repositories").setDesc("Add or remove repository configurations").addButton((button) => button.setButtonText("Add Repository").setCta().onClick(async () => {
         this.plugin.storage.repo.push(DEFAULT_REPOSITORY);
         await this.plugin.saveSettings();
-        this.display();
+        await this.display();
       })).addButton((button) => button.setButtonText("Remove Repository").setWarning().setDisabled(this.plugin.storage.repo.length <= 1).onClick(async () => {
         if (this.plugin.storage.repo.length > 1) {
           this.plugin.storage.repo.splice(this.currentSyncIndex, 1);
@@ -1697,7 +1697,7 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
             this.currentSyncIndex = this.plugin.storage.repo.length - 1;
           }
           await this.plugin.saveSettings();
-          this.display();
+          await this.display();
         }
       }));
       new import_obsidian4.Setting(containerEl).setName("Current repository").setDesc("Select which repository configuration to edit").addDropdown((dropdown) => {
@@ -1708,7 +1708,7 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
         dropdown.onChange(async (value) => {
           this.currentSyncIndex = parseInt(value);
           await this.plugin.saveSettings();
-          this.display();
+          await this.display();
         });
       });
     };
@@ -1719,11 +1719,11 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
           storage.localStore = DEFAULT_LOCAL_STORE;
         }
         await this.plugin.saveSettings();
-        this.display();
+        await this.display();
       })).addButton((button) => button.setButtonText("Reset Settings").setWarning().onClick(async () => {
         this.plugin.storage.repo = [DEFAULT_REPOSITORY];
         await this.plugin.saveSettings();
-        this.display();
+        await this.display();
       }));
     };
     this.plugin = plugin;
@@ -1732,10 +1732,11 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
     return this.plugin.storage.repo[this.currentSyncIndex].settings;
   }
   async githubUserInfoBlock() {
-    var _a;
     const { containerEl } = this;
     const currentSetting = this.getCurrentSyncSetting();
-    const { folders, files } = await this.plugin.vaultOps.getAllInVault();
+    const allItems = await this.plugin.vaultOps.getAllInVault();
+    const allPaths = [...allItems.folders, ...allItems.files];
+    const { folders, files } = allItems;
     new import_obsidian4.Setting(containerEl).setHeading().setName(`GitHub user info (Repository ${this.currentSyncIndex + 1})`);
     new import_obsidian4.Setting(containerEl).setName("Github username").setDesc("Enter your name on Github").addText((text) => text.setPlaceholder("GitHub username").setValue(currentSetting.owner).onChange(async (value) => {
       currentSetting.owner = value;
@@ -1760,7 +1761,7 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
       await this.plugin.saveSettings();
     }));
     new import_obsidian4.Setting(containerEl).setName("Sync path").setDesc("Select a local path to sync with the repo. If the field is empty, the entire vault will be synced.").addText(async (text) => {
-      var _a2;
+      var _a;
       text.setPlaceholder("Enter folder path").setValue(currentSetting.syncPath || "").onChange(async (value) => {
         if (!folders2.contains(value))
           return;
@@ -1792,7 +1793,7 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
         dataList.appendChild(option);
       }
       text.inputEl.setAttribute("list", `folder-suggestions`);
-      (_a2 = text.inputEl.parentElement) == null ? void 0 : _a2.appendChild(dataList);
+      (_a = text.inputEl.parentElement) == null ? void 0 : _a.appendChild(dataList);
     });
     new import_obsidian4.Setting(containerEl).setName("View your vault on GitHub").addExtraButton(
       (button) => button.setTooltip("Open on GitHub").setIcon("external-link").onClick(() => {
@@ -1807,41 +1808,39 @@ var FitSettingTab = class extends import_obsidian4.PluginSettingTab {
       }
       currentSetting.excludes.push("");
       await this.plugin.saveSettings();
-      this.display();
+      await this.display();
     }));
-    const allItems = await this.plugin.vaultOps.getAllInVault();
-    const allPaths = [...allItems.folders, ...allItems.files];
-    if (((_a = currentSetting.excludes) == null ? void 0 : _a.length) > 0) {
-      currentSetting.excludes.forEach((exclude, index) => {
-        new import_obsidian4.Setting(containerEl).setName(`Exclusion ${index + 1}`).addText((text) => {
-          var _a2;
-          text.setPlaceholder("path/to/exclude").setValue(exclude).onChange(async (value) => {
-            if (!folders.contains(value) && !files.contains(value))
-              return;
-            currentSetting.excludes[index] = value;
-            await this.plugin.saveSettings();
-          });
-          const dataList = document.createElement("datalist");
-          dataList.id = `exclude-suggestions-${index}`;
-          let filteredPaths = allPaths;
-          if (currentSetting.syncPath) {
-            filteredPaths = allPaths.filter(
-              (path) => path.startsWith(currentSetting.syncPath + "/") || path === currentSetting.syncPath
-            );
-          }
-          filteredPaths.forEach((path) => {
-            const option = document.createElement("option");
-            option.value = path;
-            dataList.appendChild(option);
-          });
-          text.inputEl.setAttribute("list", `exclude-suggestions-${index}`);
-          (_a2 = text.inputEl.parentElement) == null ? void 0 : _a2.appendChild(dataList);
-        }).addButton((button) => button.setIcon("trash").setTooltip("Remove this exclusion").onClick(async () => {
-          currentSetting.excludes.splice(index, 1);
+    for (let index_ in currentSetting.excludes) {
+      const index = Number(index_);
+      const exclude = currentSetting.excludes[index];
+      new import_obsidian4.Setting(containerEl).setName(`Exclusion ${index + 1}`).addText((text) => {
+        var _a;
+        text.setPlaceholder("path/to/exclude").setValue(exclude).onChange(async (value) => {
+          if (!folders.contains(value) && !files.contains(value))
+            return;
+          currentSetting.excludes[index] = value;
           await this.plugin.saveSettings();
-          this.display();
-        }));
-      });
+        });
+        const dataList = document.createElement("datalist");
+        dataList.id = `exclude-suggestions-${index}`;
+        let filteredPaths = allPaths;
+        if (currentSetting.syncPath) {
+          filteredPaths = allPaths.filter(
+            (path) => path.startsWith(currentSetting.syncPath + "/") || path === currentSetting.syncPath
+          );
+        }
+        filteredPaths.forEach((path) => {
+          const option = document.createElement("option");
+          option.value = path;
+          dataList.appendChild(option);
+        });
+        text.inputEl.setAttribute("list", `exclude-suggestions-${index}`);
+        (_a = text.inputEl.parentElement) == null ? void 0 : _a.appendChild(dataList);
+      }).addButton((button) => button.setIcon("trash").setTooltip("Remove this exclusion").onClick(async () => {
+        currentSetting.excludes.splice(index, 1);
+        await this.plugin.saveSettings();
+        await this.display();
+      }));
     }
   }
   async getItemsInSyncPath() {

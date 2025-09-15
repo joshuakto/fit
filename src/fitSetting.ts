@@ -45,7 +45,9 @@ export default class FitSettingTab extends PluginSettingTab {
         const {containerEl} = this;
         const currentSetting = this.getCurrentSyncSetting();
 
-        const {folders, files} = await this.plugin.vaultOps.getAllInVault()
+        const allItems = await this.plugin.vaultOps.getAllInVault();
+        const allPaths = [...allItems.folders, ...allItems.files];
+        const {folders, files} = allItems
 
         new Setting(containerEl).setHeading()
             .setName(`GitHub user info (Repository ${this.currentSyncIndex + 1})`)
@@ -89,16 +91,6 @@ export default class FitSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-// export interface SyncSetting {
-//     pat: string; +
-//     owner: string; +
-//     avatarUrl: string;
-//     repo: string; +
-//     branch: string; +
-//     syncPath: string; +
-//     deviceName: string; +
-//     excludes: string[]
-// }
         new Setting(containerEl)
             .setName('Repository name')
             .setDesc('Select a repo.')
@@ -195,60 +187,58 @@ export default class FitSettingTab extends PluginSettingTab {
                     }
                     currentSetting.excludes.push('');
                     await this.plugin.saveSettings();
-                    this.display();
+                    await this.display();
                 }));
 
-        const allItems = await this.plugin.vaultOps.getAllInVault();
-        const allPaths = [...allItems.folders, ...allItems.files];
+        for (let index_ in currentSetting.excludes) {
+            const index = Number(index_)
+            const exclude = currentSetting.excludes[index]
 
-        if (currentSetting.excludes?.length > 0) {
-            currentSetting.excludes.forEach((exclude, index) => {
-                new Setting(containerEl)
-                    .setName(`Exclusion ${index + 1}`)
-                    // .setDesc('Path relative to sync path')
-                    .addText(text => {
-                        text.setPlaceholder('path/to/exclude')
-                            .setValue(exclude)
-                            .onChange(async (value) => {
-                                if (!folders.contains(value) && !files.contains(value))
-                                    return
+            new Setting(containerEl)
+                .setName(`Exclusion ${index + 1}`)
+                // .setDesc('Path relative to sync path')
+                .addText(text => {
+                    text.setPlaceholder('path/to/exclude')
+                        .setValue(exclude)
+                        .onChange(async (value) => {
+                            if (!folders.contains(value) && !files.contains(value))
+                                return
 
-                                currentSetting.excludes[index] = value;
-                                // TODO и исключения не должны повторяться, но это пофиг
-                                await this.plugin.saveSettings();
-                            });
-
-                        // Добавляем datalist для автодополнения
-                        const dataList = document.createElement('datalist');
-                        dataList.id = `exclude-suggestions-${index}`;
-
-                        // Фильтруем пути: только те, которые находятся внутри syncPath (если он задан)
-                        let filteredPaths = allPaths;
-                        if (currentSetting.syncPath) {
-                            filteredPaths = allPaths.filter(path =>
-                                path.startsWith(currentSetting.syncPath + '/') ||
-                                path === currentSetting.syncPath
-                            );
-                        }
-
-                        filteredPaths.forEach(path => {
-                            const option = document.createElement('option');
-                            option.value = path;
-                            dataList.appendChild(option);
+                            currentSetting.excludes[index] = value;
+                            // TODO и исключения не должны повторяться, но это пофиг
+                            await this.plugin.saveSettings();
                         });
 
-                        text.inputEl.setAttribute('list', `exclude-suggestions-${index}`);
-                        text.inputEl.parentElement?.appendChild(dataList);
-                    })
-                    .addButton(button => button
-                        .setIcon('trash')
-                        .setTooltip('Remove this exclusion')
-                        .onClick(async () => {
-                            currentSetting.excludes.splice(index, 1);
-                            await this.plugin.saveSettings();
-                            this.display(); // Перерисовываем после удаления
-                        }));
-            });
+                    // Добавляем datalist для автодополнения
+                    const dataList = document.createElement('datalist');
+                    dataList.id = `exclude-suggestions-${index}`;
+
+                    // Фильтруем пути: только те, которые находятся внутри syncPath (если он задан)
+                    let filteredPaths = allPaths;
+                    if (currentSetting.syncPath) {
+                        filteredPaths = allPaths.filter(path =>
+                            path.startsWith(currentSetting.syncPath + '/') ||
+                            path === currentSetting.syncPath
+                        );
+                    }
+
+                    filteredPaths.forEach(path => {
+                        const option = document.createElement('option');
+                        option.value = path;
+                        dataList.appendChild(option);
+                    });
+
+                    text.inputEl.setAttribute('list', `exclude-suggestions-${index}`);
+                    text.inputEl.parentElement?.appendChild(dataList);
+                })
+                .addButton(button => button
+                    .setIcon('trash')
+                    .setTooltip('Remove this exclusion')
+                    .onClick(async () => {
+                        currentSetting.excludes.splice(index, 1);
+                        await this.plugin.saveSettings();
+                        await this.display()
+                    }));
         }
 
     }
@@ -389,7 +379,7 @@ export default class FitSettingTab extends PluginSettingTab {
                 .onClick(async () => {
                     this.plugin.storage.repo.push(DEFAULT_REPOSITORY);
                     await this.plugin.saveSettings();
-                    this.display();
+                    await this.display();
                 }))
             .addButton(button => button
                 .setButtonText('Remove Repository')
@@ -402,7 +392,7 @@ export default class FitSettingTab extends PluginSettingTab {
                             this.currentSyncIndex = this.plugin.storage.repo.length - 1;
                         }
                         await this.plugin.saveSettings();
-                        this.display();
+                        await this.display();
                     }
                 }));
 
@@ -417,7 +407,7 @@ export default class FitSettingTab extends PluginSettingTab {
                 dropdown.onChange(async (value) => {
                     this.currentSyncIndex = parseInt(value);
                     await this.plugin.saveSettings();
-                    this.display();
+                    await this.display();
                 });
             });
     }
@@ -437,7 +427,7 @@ export default class FitSettingTab extends PluginSettingTab {
                     }
                     // TODO add notice("Done")
                     await this.plugin.saveSettings();
-                    this.display();
+                    await this.display();
                 }))
             .addButton(button => button
                 .setButtonText('Reset Settings')
@@ -446,7 +436,7 @@ export default class FitSettingTab extends PluginSettingTab {
                     this.plugin.storage.repo = [DEFAULT_REPOSITORY];
                     // TODO add notice("Done")
                     await this.plugin.saveSettings();
-                    this.display();
+                    await this.display();
                 }))
 
     }
