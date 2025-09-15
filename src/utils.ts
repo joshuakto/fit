@@ -1,6 +1,7 @@
 import { Notice } from "obsidian";
 import { ClashStatus, FileOpRecord, LocalFileStatus, RemoteChangeType } from "./fitTypes";
-import { conflictResolutionFolder } from "./const";
+import { basicTemplateConflict, conflictResolutionFolder } from "./const";
+import { diffWords } from "diff";
 
 type Status = RemoteChangeType | LocalFileStatus
 
@@ -57,14 +58,18 @@ export function extractExtension(path: string): string | undefined {
     return path.match(/[^.]+$/)?.[0];
 }
 
+export function isBinaryFile(path: string): boolean {
+    const extension = extractExtension(path)
+    const isTxt = extension && RECOGNIZED_TXT_EXT.includes(extension);
+
+    return !isTxt
+}
+
 // Using file extension to determine encoding of files (works in most cases)
 export function getFileEncoding(path: string): string {
-    const extension = path.match(/[^.]+$/)?.[0];
-    const isTxt = extension && RECOGNIZED_TXT_EXT.includes(extension);
-    if (isTxt) {
-        return "utf-8"
-    }
-    return "base64"
+    if (isBinaryFile(path))
+        return "base64"
+    return "utf-8"
 }
 
 export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
@@ -162,4 +167,53 @@ export function intersection(setA: Set<any>, setB: Set<any>) {
 
 export function difference(setA: Set<any>, setB: Set<any>) {
     return new Set([...setA].filter(x => !setB.has(x)));
+}
+
+export function getDiffText(oldContent: string, newContent: string): string {
+    let result = '';
+
+    const diff = diffWords(oldContent, newContent);
+
+    const hasChanges = diff.some(part => part.added || part.removed);
+    if (!hasChanges) {
+        return basicTemplateConflict + 'No differences found';
+    }
+
+    let currentLine = '';
+    let hasLineChanges = false;
+
+    for (let part of diff) {
+        let text: string
+        if (part.removed) {
+            text = `<span style="color:rgb(223, 73, 73)">${part.value}</span>`
+        }
+        else if (part.added) {
+            text = `<span style="color:rgb(0, 176, 80)">${part.value}</span>`
+        }
+        else {
+            text = part.value
+        }
+
+        const lines = text.split('\n');
+
+        currentLine += lines[0];
+        if (part.added || part.removed) {
+            hasLineChanges = true;
+        }
+
+        for (let i = 1; i < lines.length; i++) {
+            if (hasLineChanges) {
+                result += currentLine + '\n'
+            }
+
+            currentLine = lines[i]
+            hasLineChanges = part.added || part.removed
+        }
+    }
+
+    if (hasLineChanges && currentLine) {
+        result += currentLine + '\n';
+    }
+
+    return result;
 }

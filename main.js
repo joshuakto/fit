@@ -36,6 +36,12 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian7 = require("obsidian");
 
+// src/const.ts
+var rootFitFolder = "_fit";
+var conflictReportPath = rootFitFolder + "/report-conflict.md";
+var conflictResolutionFolder = rootFitFolder + "/conflict/";
+var basicTemplateConflict = "<<<---";
+
 // node_modules/@octokit/core/node_modules/universal-user-agent/index.js
 function getUserAgent() {
   if (typeof navigator === "object" && "userAgent" in navigator) {
@@ -1014,8 +1020,448 @@ __publicField(Octokit, "plugins", []);
 // src/utils.ts
 var import_obsidian = require("obsidian");
 
-// src/const.ts
-var conflictResolutionFolder = "_fit/";
+// node_modules/diff/libesm/diff/base.js
+var Diff = class {
+  diff(oldStr, newStr, options = {}) {
+    let callback;
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    } else if ("callback" in options) {
+      callback = options.callback;
+    }
+    const oldString = this.castInput(oldStr, options);
+    const newString = this.castInput(newStr, options);
+    const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
+    const newTokens = this.removeEmpty(this.tokenize(newString, options));
+    return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+  }
+  diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+    var _a;
+    const done = (value) => {
+      value = this.postProcess(value, options);
+      if (callback) {
+        setTimeout(function() {
+          callback(value);
+        }, 0);
+        return void 0;
+      } else {
+        return value;
+      }
+    };
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let editLength = 1;
+    let maxEditLength = newLen + oldLen;
+    if (options.maxEditLength != null) {
+      maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+    }
+    const maxExecutionTime = (_a = options.timeout) !== null && _a !== void 0 ? _a : Infinity;
+    const abortAfterTimestamp = Date.now() + maxExecutionTime;
+    const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
+    let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
+    if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+      return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+    }
+    let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+    const execEditLength = () => {
+      for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+        let basePath;
+        const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+        if (removePath) {
+          bestPath[diagonalPath - 1] = void 0;
+        }
+        let canAdd = false;
+        if (addPath) {
+          const addPathNewPos = addPath.oldPos - diagonalPath;
+          canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+        }
+        const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+        if (!canAdd && !canRemove) {
+          bestPath[diagonalPath] = void 0;
+          continue;
+        }
+        if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+          basePath = this.addToPath(addPath, true, false, 0, options);
+        } else {
+          basePath = this.addToPath(removePath, false, true, 1, options);
+        }
+        newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
+        if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+        } else {
+          bestPath[diagonalPath] = basePath;
+          if (basePath.oldPos + 1 >= oldLen) {
+            maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+          }
+          if (newPos + 1 >= newLen) {
+            minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+          }
+        }
+      }
+      editLength++;
+    };
+    if (callback) {
+      (function exec() {
+        setTimeout(function() {
+          if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+            return callback(void 0);
+          }
+          if (!execEditLength()) {
+            exec();
+          }
+        }, 0);
+      })();
+    } else {
+      while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+        const ret = execEditLength();
+        if (ret) {
+          return ret;
+        }
+      }
+    }
+  }
+  addToPath(path, added, removed, oldPosInc, options) {
+    const last = path.lastComponent;
+    if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
+      };
+    } else {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: { count: 1, added, removed, previousComponent: last }
+      };
+    }
+  }
+  extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+    while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
+      newPos++;
+      oldPos++;
+      commonCount++;
+      if (options.oneChangePerToken) {
+        basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
+      }
+    }
+    if (commonCount && !options.oneChangePerToken) {
+      basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+    }
+    basePath.oldPos = oldPos;
+    return newPos;
+  }
+  equals(left, right, options) {
+    if (options.comparator) {
+      return options.comparator(left, right);
+    } else {
+      return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
+    }
+  }
+  removeEmpty(array) {
+    const ret = [];
+    for (let i = 0; i < array.length; i++) {
+      if (array[i]) {
+        ret.push(array[i]);
+      }
+    }
+    return ret;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  castInput(value, options) {
+    return value;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  tokenize(value, options) {
+    return Array.from(value);
+  }
+  join(chars) {
+    return chars.join("");
+  }
+  postProcess(changeObjects, options) {
+    return changeObjects;
+  }
+  get useLongestToken() {
+    return false;
+  }
+  buildValues(lastComponent, newTokens, oldTokens) {
+    const components = [];
+    let nextComponent;
+    while (lastComponent) {
+      components.push(lastComponent);
+      nextComponent = lastComponent.previousComponent;
+      delete lastComponent.previousComponent;
+      lastComponent = nextComponent;
+    }
+    components.reverse();
+    const componentLen = components.length;
+    let componentPos = 0, newPos = 0, oldPos = 0;
+    for (; componentPos < componentLen; componentPos++) {
+      const component = components[componentPos];
+      if (!component.removed) {
+        if (!component.added && this.useLongestToken) {
+          let value = newTokens.slice(newPos, newPos + component.count);
+          value = value.map(function(value2, i) {
+            const oldValue = oldTokens[oldPos + i];
+            return oldValue.length > value2.length ? oldValue : value2;
+          });
+          component.value = this.join(value);
+        } else {
+          component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+        }
+        newPos += component.count;
+        if (!component.added) {
+          oldPos += component.count;
+        }
+      } else {
+        component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+        oldPos += component.count;
+      }
+    }
+    return components;
+  }
+};
+
+// node_modules/diff/libesm/util/string.js
+function longestCommonPrefix(str1, str2) {
+  let i;
+  for (i = 0; i < str1.length && i < str2.length; i++) {
+    if (str1[i] != str2[i]) {
+      return str1.slice(0, i);
+    }
+  }
+  return str1.slice(0, i);
+}
+function longestCommonSuffix(str1, str2) {
+  let i;
+  if (!str1 || !str2 || str1[str1.length - 1] != str2[str2.length - 1]) {
+    return "";
+  }
+  for (i = 0; i < str1.length && i < str2.length; i++) {
+    if (str1[str1.length - (i + 1)] != str2[str2.length - (i + 1)]) {
+      return str1.slice(-i);
+    }
+  }
+  return str1.slice(-i);
+}
+function replacePrefix(string, oldPrefix, newPrefix) {
+  if (string.slice(0, oldPrefix.length) != oldPrefix) {
+    throw Error(`string ${JSON.stringify(string)} doesn't start with prefix ${JSON.stringify(oldPrefix)}; this is a bug`);
+  }
+  return newPrefix + string.slice(oldPrefix.length);
+}
+function replaceSuffix(string, oldSuffix, newSuffix) {
+  if (!oldSuffix) {
+    return string + newSuffix;
+  }
+  if (string.slice(-oldSuffix.length) != oldSuffix) {
+    throw Error(`string ${JSON.stringify(string)} doesn't end with suffix ${JSON.stringify(oldSuffix)}; this is a bug`);
+  }
+  return string.slice(0, -oldSuffix.length) + newSuffix;
+}
+function removePrefix(string, oldPrefix) {
+  return replacePrefix(string, oldPrefix, "");
+}
+function removeSuffix(string, oldSuffix) {
+  return replaceSuffix(string, oldSuffix, "");
+}
+function maximumOverlap(string1, string2) {
+  return string2.slice(0, overlapCount(string1, string2));
+}
+function overlapCount(a, b) {
+  let startA = 0;
+  if (a.length > b.length) {
+    startA = a.length - b.length;
+  }
+  let endB = b.length;
+  if (a.length < b.length) {
+    endB = a.length;
+  }
+  const map = Array(endB);
+  let k = 0;
+  map[0] = 0;
+  for (let j = 1; j < endB; j++) {
+    if (b[j] == b[k]) {
+      map[j] = map[k];
+    } else {
+      map[j] = k;
+    }
+    while (k > 0 && b[j] != b[k]) {
+      k = map[k];
+    }
+    if (b[j] == b[k]) {
+      k++;
+    }
+  }
+  k = 0;
+  for (let i = startA; i < a.length; i++) {
+    while (k > 0 && a[i] != b[k]) {
+      k = map[k];
+    }
+    if (a[i] == b[k]) {
+      k++;
+    }
+  }
+  return k;
+}
+function trailingWs(string) {
+  let i;
+  for (i = string.length - 1; i >= 0; i--) {
+    if (!string[i].match(/\s/)) {
+      break;
+    }
+  }
+  return string.substring(i + 1);
+}
+function leadingWs(string) {
+  const match = string.match(/^\s*/);
+  return match ? match[0] : "";
+}
+
+// node_modules/diff/libesm/diff/word.js
+var extendedWordChars = "a-zA-Z0-9_\\u{C0}-\\u{FF}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
+var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
+var WordDiff = class extends Diff {
+  equals(left, right, options) {
+    if (options.ignoreCase) {
+      left = left.toLowerCase();
+      right = right.toLowerCase();
+    }
+    return left.trim() === right.trim();
+  }
+  tokenize(value, options = {}) {
+    let parts;
+    if (options.intlSegmenter) {
+      const segmenter = options.intlSegmenter;
+      if (segmenter.resolvedOptions().granularity != "word") {
+        throw new Error('The segmenter passed must have a granularity of "word"');
+      }
+      parts = Array.from(segmenter.segment(value), (segment) => segment.segment);
+    } else {
+      parts = value.match(tokenizeIncludingWhitespace) || [];
+    }
+    const tokens = [];
+    let prevPart = null;
+    parts.forEach((part) => {
+      if (/\s/.test(part)) {
+        if (prevPart == null) {
+          tokens.push(part);
+        } else {
+          tokens.push(tokens.pop() + part);
+        }
+      } else if (prevPart != null && /\s/.test(prevPart)) {
+        if (tokens[tokens.length - 1] == prevPart) {
+          tokens.push(tokens.pop() + part);
+        } else {
+          tokens.push(prevPart + part);
+        }
+      } else {
+        tokens.push(part);
+      }
+      prevPart = part;
+    });
+    return tokens;
+  }
+  join(tokens) {
+    return tokens.map((token, i) => {
+      if (i == 0) {
+        return token;
+      } else {
+        return token.replace(/^\s+/, "");
+      }
+    }).join("");
+  }
+  postProcess(changes, options) {
+    if (!changes || options.oneChangePerToken) {
+      return changes;
+    }
+    let lastKeep = null;
+    let insertion = null;
+    let deletion = null;
+    changes.forEach((change) => {
+      if (change.added) {
+        insertion = change;
+      } else if (change.removed) {
+        deletion = change;
+      } else {
+        if (insertion || deletion) {
+          dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, change);
+        }
+        lastKeep = change;
+        insertion = null;
+        deletion = null;
+      }
+    });
+    if (insertion || deletion) {
+      dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, null);
+    }
+    return changes;
+  }
+};
+var wordDiff = new WordDiff();
+function diffWords(oldStr, newStr, options) {
+  if ((options === null || options === void 0 ? void 0 : options.ignoreWhitespace) != null && !options.ignoreWhitespace) {
+    return diffWordsWithSpace(oldStr, newStr, options);
+  }
+  return wordDiff.diff(oldStr, newStr, options);
+}
+function dedupeWhitespaceInChangeObjects(startKeep, deletion, insertion, endKeep) {
+  if (deletion && insertion) {
+    const oldWsPrefix = leadingWs(deletion.value);
+    const oldWsSuffix = trailingWs(deletion.value);
+    const newWsPrefix = leadingWs(insertion.value);
+    const newWsSuffix = trailingWs(insertion.value);
+    if (startKeep) {
+      const commonWsPrefix = longestCommonPrefix(oldWsPrefix, newWsPrefix);
+      startKeep.value = replaceSuffix(startKeep.value, newWsPrefix, commonWsPrefix);
+      deletion.value = removePrefix(deletion.value, commonWsPrefix);
+      insertion.value = removePrefix(insertion.value, commonWsPrefix);
+    }
+    if (endKeep) {
+      const commonWsSuffix = longestCommonSuffix(oldWsSuffix, newWsSuffix);
+      endKeep.value = replacePrefix(endKeep.value, newWsSuffix, commonWsSuffix);
+      deletion.value = removeSuffix(deletion.value, commonWsSuffix);
+      insertion.value = removeSuffix(insertion.value, commonWsSuffix);
+    }
+  } else if (insertion) {
+    if (startKeep) {
+      const ws = leadingWs(insertion.value);
+      insertion.value = insertion.value.substring(ws.length);
+    }
+    if (endKeep) {
+      const ws = leadingWs(endKeep.value);
+      endKeep.value = endKeep.value.substring(ws.length);
+    }
+  } else if (startKeep && endKeep) {
+    const newWsFull = leadingWs(endKeep.value), delWsStart = leadingWs(deletion.value), delWsEnd = trailingWs(deletion.value);
+    const newWsStart = longestCommonPrefix(newWsFull, delWsStart);
+    deletion.value = removePrefix(deletion.value, newWsStart);
+    const newWsEnd = longestCommonSuffix(removePrefix(newWsFull, newWsStart), delWsEnd);
+    deletion.value = removeSuffix(deletion.value, newWsEnd);
+    endKeep.value = replacePrefix(endKeep.value, newWsFull, newWsEnd);
+    startKeep.value = replaceSuffix(startKeep.value, newWsFull, newWsFull.slice(0, newWsFull.length - newWsEnd.length));
+  } else if (endKeep) {
+    const endKeepWsPrefix = leadingWs(endKeep.value);
+    const deletionWsSuffix = trailingWs(deletion.value);
+    const overlap = maximumOverlap(deletionWsSuffix, endKeepWsPrefix);
+    deletion.value = removeSuffix(deletion.value, overlap);
+  } else if (startKeep) {
+    const startKeepWsSuffix = trailingWs(startKeep.value);
+    const deletionWsPrefix = leadingWs(deletion.value);
+    const overlap = maximumOverlap(startKeepWsSuffix, deletionWsPrefix);
+    deletion.value = removePrefix(deletion.value, overlap);
+  }
+}
+var WordsWithSpaceDiff = class extends Diff {
+  tokenize(value) {
+    const regex = new RegExp(`(\\r?\\n)|[${extendedWordChars}]+|[^\\S\\n\\r]+|[^${extendedWordChars}]`, "ug");
+    return value.match(regex) || [];
+  }
+};
+var wordsWithSpaceDiff = new WordsWithSpaceDiff();
+function diffWordsWithSpace(oldStr, newStr, options) {
+  return wordsWithSpaceDiff.diff(oldStr, newStr, options);
+}
 
 // src/utils.ts
 function getValueOrNull(obj, key) {
@@ -1050,6 +1496,11 @@ var RECOGNIZED_TXT_EXT = ["txt", "md"];
 function extractExtension(path) {
   var _a;
   return (_a = path.match(/[^.]+$/)) == null ? void 0 : _a[0];
+}
+function isBinaryFile(path) {
+  const extension = extractExtension(path);
+  const isTxt = extension && RECOGNIZED_TXT_EXT.includes(extension);
+  return !isTxt;
 }
 function removeLineEndingsFromBase64String(content) {
   return content.replace(/\r?\n|\r|\n/g, "");
@@ -1140,6 +1591,42 @@ function showUnappliedConflicts(clashedFiles) {
 }
 function difference(setA, setB) {
   return new Set([...setA].filter((x) => !setB.has(x)));
+}
+function getDiffText(oldContent, newContent) {
+  let result = "";
+  const diff = diffWords(oldContent, newContent);
+  const hasChanges = diff.some((part) => part.added || part.removed);
+  if (!hasChanges) {
+    return basicTemplateConflict + "No differences found";
+  }
+  let currentLine = "";
+  let hasLineChanges = false;
+  for (let part of diff) {
+    let text;
+    if (part.removed) {
+      text = `<span style="color:rgb(223, 73, 73)">${part.value}</span>`;
+    } else if (part.added) {
+      text = `<span style="color:rgb(0, 176, 80)">${part.value}</span>`;
+    } else {
+      text = part.value;
+    }
+    const lines = text.split("\n");
+    currentLine += lines[0];
+    if (part.added || part.removed) {
+      hasLineChanges = true;
+    }
+    for (let i = 1; i < lines.length; i++) {
+      if (hasLineChanges) {
+        result += currentLine + "\n";
+      }
+      currentLine = lines[i];
+      hasLineChanges = part.added || part.removed;
+    }
+  }
+  if (hasLineChanges && currentLine) {
+    result += currentLine + "\n";
+  }
+  return result;
 }
 
 // src/fit.ts
@@ -2703,6 +3190,18 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
     }
     return true;
   }
+  async getDiff() {
+    const files = await this.vaultOps.getFilesInVault();
+    const conflictFiles = files.filter(
+      (el) => el.startsWith(conflictResolutionFolder)
+    );
+    const conflictStatuses = await this.getConflictStatus(conflictFiles);
+    const text = await this.getTextByConflictStatuses(conflictStatuses);
+    await this.vaultOps.vault.adapter.write(conflictReportPath, text);
+    this.app.workspace.getLeaf(true).openFile(
+      this.vaultOps.vault.getFileByPath(conflictReportPath)
+    );
+  }
   loadRibbonIcons() {
     this.fitSyncRibbonIconEl = this.addRibbonIcon("github", "Fit Sync", async (evt) => {
       if (this.syncing || this.autoSyncing) {
@@ -2722,6 +3221,13 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
       this.syncing = false;
     });
     this.fitSyncRibbonIconEl.addClass("fit-sync-ribbon-el");
+    this.addRibbonIcon(
+      "git-compare-arrows",
+      "Fit: show diff",
+      async () => {
+        const res = await this.getDiff();
+      }
+    );
   }
   async autoSync() {
     if (this.syncing || this.autoSyncing) {
@@ -2842,5 +3348,45 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
         excludes.push(path);
     }
     return excludes;
+  }
+  async getConflictStatus(conflictFiles) {
+    const res = [];
+    for (let file of conflictFiles) {
+      let newFile = file.slice(conflictResolutionFolder.length);
+      const isDeleted = !await this.vaultOps.vault.adapter.exists(newFile);
+      const isBinary = isBinaryFile(file);
+      res.push({
+        oldFilePath: file,
+        newFilePath: newFile,
+        isDeleted,
+        isBinary
+      });
+    }
+    return res;
+  }
+  async getTextByConflictStatuses(statuses) {
+    let result = "";
+    const templateStart = "start of the: ";
+    const templateEnd = "end of the: ";
+    for (let status of statuses) {
+      result += basicTemplateConflict + templateStart + status.newFilePath + "\n";
+      if (status.isDeleted) {
+        result += "local:  changed\n";
+        result += "remote: deleted";
+      } else if (status.isBinary) {
+        result += "both file was modified:";
+        result += `	old: ${status.oldFilePath}`;
+        result += `	new: ${status.newFilePath}`;
+      } else {
+        result += getDiffText(
+          await this.vaultOps.vault.adapter.read(status.oldFilePath),
+          await this.vaultOps.vault.adapter.read(status.newFilePath)
+        );
+      }
+      result += "\n";
+      result += basicTemplateConflict + templateEnd + status.newFilePath + "\n";
+      result += "\n\n\n";
+    }
+    return result;
   }
 };

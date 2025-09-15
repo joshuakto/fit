@@ -1,10 +1,18 @@
-import { Plugin, SettingTab } from 'obsidian';
+import { normalizePath, Plugin, SettingTab, TFile } from 'obsidian';
+import { basicTemplateConflict, conflictReportPath, conflictResolutionFolder } from 'src/const';
 import { Fit, OctokitHttpError } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
-import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
+import { getDiffText, isBinaryFile, showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
 import { VaultOperations } from 'src/vaultOps';
+
+type ConflictStatus = {
+    oldFilePath: string,
+    newFilePath: string,
+    isDeleted: boolean,
+    isBinary: boolean
+}
 
 export interface SyncSetting {
     pat: string;
@@ -237,6 +245,23 @@ export default class FitPlugin extends Plugin {
         }
     }
 
+    async getDiff() {
+        const files = await this.vaultOps.getFilesInVault()
+        const conflictFiles = files.filter(
+            el => el.startsWith(conflictResolutionFolder)
+        )
+
+        const conflictStatuses = await this.getConflictStatus(conflictFiles)
+        const text = await this.getTextByConflictStatuses(conflictStatuses)
+
+        // NOTE to workaround Error: File exists
+        await this.vaultOps.vault.adapter.write(conflictReportPath, text)
+
+        this.app.workspace.getLeaf(true).openFile(
+            this.vaultOps.vault.getFileByPath(conflictReportPath) as TFile
+        )
+    }
+
     loadRibbonIcons() {
         // Pull from remote then Push to remote if no clashing changes detected during pull
         this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', async (evt: MouseEvent) => {
@@ -255,6 +280,14 @@ export default class FitPlugin extends Plugin {
             this.syncing = false
         });
         this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
+
+        this.addRibbonIcon(
+            "git-compare-arrows",
+            "Fit: show diff",
+            async () => {
+                const res = await this.getDiff()
+            }
+        )
     }
 
     async autoSync() {
@@ -408,6 +441,68 @@ export default class FitPlugin extends Plugin {
         }
 
         return excludes
+    }
+
+    private async getConflictStatus(conflictFiles: string[]): Promise<ConflictStatus[]> {
+        const res: ConflictStatus[] = []
+        for (let file of conflictFiles) {
+            let newFile = file.slice(conflictResolutionFolder.length)
+
+            const isDeleted = !await this.vaultOps.vault.adapter.exists(newFile)
+
+            const isBinary = isBinaryFile(file)
+
+            res.push({
+                oldFilePath: file,
+                newFilePath: newFile,
+                isDeleted, isBinary
+            })
+        }
+        return res
+    }
+
+    private async getTextByConflictStatuses(statuses: ConflictStatus[]): Promise<string> {
+        let result = ''
+        /* NOTE
+        >>>>>>>>>>----------start of the <file path>
+        ---local line
+        <content>
+        ---remote line
+        <content>
+
+        >>>>>>>>>>----------start of the <file path>
+        local:  changed
+        remote: deleted
+        */
+        const templateStart = "start of the: "
+        const templateEnd = "end of the: "
+
+        for (let status of statuses) {
+            result += basicTemplateConflict + templateStart + status.newFilePath + "\n"
+
+            if (status.isDeleted) {
+                result += "local:  changed\n"
+                result += "remote: deleted"
+            }
+            else if (status.isBinary) {
+                result += 'both file was modified:'
+                result += `\told: ${status.oldFilePath}`
+                result += `\tnew: ${status.newFilePath}`
+            }
+            else {
+                result += getDiffText(
+                    await this.vaultOps.vault.adapter.read(status.oldFilePath),
+                    await this.vaultOps.vault.adapter.read(status.newFilePath)
+                )
+            }
+            result += "\n"
+
+            result += basicTemplateConflict + templateEnd + status.newFilePath + "\n"
+            result += "\n\n\n"
+        }
+
+        return result
+
     }
 
 }

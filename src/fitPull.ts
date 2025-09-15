@@ -70,7 +70,8 @@ export class FitPull implements IFitPull {
                 return acc;
             }, {} as Record<string, string>);
 
-            const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess)
+        const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess)
+
         return {addToLocal, deleteFromLocal}
     }
 

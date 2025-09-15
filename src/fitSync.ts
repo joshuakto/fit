@@ -13,6 +13,13 @@ export interface IFitSync {
     fit: Fit
 }
 
+export type ResolveConflict = {
+    noConflict: boolean,
+    unresolvedFiles: ClashStatus[],
+    fileOpsRecord: FileOpRecord[],
+    // diff: any
+}
+
 type PreSyncCheckResult =  {
     status: "inSync"
 } | {
@@ -210,9 +217,6 @@ export class FitSync implements IFitSync {
         }
 
         const path = this.fit.syncPath + clash.path
-        // const localFile = await this.fit.vaultOps.getTFile(path)
-        // if (!localFile)
-        //     return null
 
         // NOTE use adapter for files in the .obsidian/...
         const localFileContent = arrayBufferToBase64(
@@ -247,7 +251,8 @@ export class FitSync implements IFitSync {
 
     async resolveConflicts(
         clashedFiles: Array<ClashStatus>, latestRemoteTreeSha: Record<string, string>)
-        : Promise<{noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[]}> {
+            : Promise<ResolveConflict>
+        {
             const fileResolutions = await Promise.all(
                 clashedFiles.map(
                     async (clash) => {
@@ -262,6 +267,7 @@ export class FitSync implements IFitSync {
                 }
                 return null
             }).filter(Boolean) as Array<ClashStatus>
+
             return {
                 noConflict: fileResolutions.every(res=>res?.noDiff),
                 unresolvedFiles,
@@ -386,7 +392,6 @@ export class FitSync implements IFitSync {
 
     private async unresolvedChangesConflicts(): Promise<boolean> {
         return await this.vaultOps.vault.adapter.exists(conflictResolutionFolder)
-
     }
 
     async sync(syncNotice: FitNotice):
@@ -484,17 +489,20 @@ export class FitSync implements IFitSync {
 
         if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
             const conflictResolutionResult = await this.syncWithConflicts(
-                localUpdate.localChanges, remoteUpdate, syncNotice)
+                localUpdate.localChanges, remoteUpdate, syncNotice
+            )
+
             if (conflictResolutionResult) {
                 const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult
-                    return ({
-                        ops:[
-                            {heading: "Local file updates:", ops: localOps},
-                            {heading: "Remote file updates:", ops: remoteOps},
-                        ],
-                        clash: unresolvedFiles,
-                        // basepath: this.fit.syncPath
-                    })
+
+                return ({
+                    ops:[
+                        {heading: "Local file updates:", ops: localOps},
+                        {heading: "Remote file updates:", ops: remoteOps},
+                    ],
+                    clash: unresolvedFiles,
+                    // basepath: this.fit.syncPath
+                })
             }
         }
     }
