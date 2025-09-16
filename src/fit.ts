@@ -4,7 +4,7 @@ import { RECOGNIZED_TXT_EXT, compareSha, extractExtension } from "./utils"
 import { VaultOperations } from "./vaultOps"
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
 import { arrayBufferToBase64 } from "obsidian"
-import { conflictResolutionFolder } from "./const"
+import { conflictResolutionFolder, rootFitFolder } from "./const"
 
 type AddToLocal = {
     path: string;
@@ -150,7 +150,7 @@ export class Fit implements IFit {
         const paths = []
         for (let path of allPaths) {
             // TODO нужны ли мне эти файлы в будущем?
-            let isExcluded = path.startsWith(conflictResolutionFolder)
+            let isExcluded = path.startsWith(rootFitFolder)
                 || !path.startsWith(this.syncPath)
                 || this.excludes.contains(path)
 

@@ -168,13 +168,6 @@ export class FitSync implements IFitSync {
             this.fit.vaultOps.writeToLocal(conflictResolutionPath, localContent),
         ])
 
-        // TODO add
-        /*
-            return {
-                path: conflictPath,
-                status: "changed"
-            }
-        */
         return {
             path: conflictResolutionPath,
             status: "created"
