@@ -1,5 +1,5 @@
 import { normalizePath, Plugin, SettingTab, TFile } from 'obsidian';
-import { basicTemplateConflict, conflictReportPath, conflictResolutionFolder } from 'src/const';
+import { basicTemplateConflict, conflictReportPath, conflictResolutionFolder, rootFitFolder } from 'src/const';
 import { Fit, OctokitHttpError } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
@@ -246,6 +246,14 @@ export default class FitPlugin extends Plugin {
     }
 
     async getDiff() {
+        if (!this.vaultOps.vault.getFolderByPath(rootFitFolder)) {
+            new FitNotice(
+                ["static"],
+                "It's seems the folder doesn't exist"
+            )
+            return
+        }
+
         const files = await this.vaultOps.getFilesInVault()
         const conflictFiles = files.filter(
             el => el.startsWith(conflictResolutionFolder)

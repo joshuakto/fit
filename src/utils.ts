@@ -65,6 +65,12 @@ export function isBinaryFile(path: string): boolean {
     return !isTxt
 }
 
+export function extractDirname(path: string): string | undefined {
+    const match = path.match(/^(.*[\/\\])[^\/\\]*$/);
+
+    return match ? match[1].replace(/\\/g, '/') : undefined;
+}
+
 // Using file extension to determine encoding of files (works in most cases)
 export function getFileEncoding(path: string): string {
     if (isBinaryFile(path))

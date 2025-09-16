@@ -1502,6 +1502,10 @@ function isBinaryFile(path) {
   const isTxt = extension && RECOGNIZED_TXT_EXT.includes(extension);
   return !isTxt;
 }
+function extractDirname(path) {
+  const match = path.match(/^(.*[\/\\])[^\/\\]*$/);
+  return match ? match[1].replace(/\\/g, "/") : void 0;
+}
 function removeLineEndingsFromBase64String(content) {
   return content.replace(/\r?\n|\r|\n/g, "");
 }
@@ -1696,7 +1700,7 @@ var Fit = class {
     const allPaths = await this.vaultOps.getFilesInVault();
     const paths = [];
     for (let path of allPaths) {
-      let isExcluded = path.startsWith(conflictResolutionFolder) || !path.startsWith(this.syncPath) || this.excludes.contains(path) || this.excludes.some(
+      let isExcluded = path.startsWith(rootFitFolder) || !path.startsWith(this.syncPath) || this.excludes.contains(path) || this.excludes.some(
         (exclude) => path.startsWith(exclude) && !this.syncPath.startsWith(exclude)
         // NOTE if one syncPath nested in another syncPath
       );
@@ -2913,11 +2917,21 @@ var VaultOperations = class {
   async deleteFromLocal(path) {
     const isExists = await this.vault.adapter.exists(path);
     if (!isExists) {
-      console.error(`Attempting to read ${path} from local drive but not successful:
+      console.error(`Attempting to delete ${path} from local drive but not successful:
                 the file doesn't exists`);
       return null;
     }
     await this.vault.adapter.remove(path);
+    let dirname = extractDirname(path);
+    while (dirname) {
+      const { files } = await this.traverseDirectory(dirname);
+      if (files.length)
+        break;
+      await this.vault.adapter.rmdir(dirname, true);
+      dirname = extractDirname(
+        dirname.slice(0, dirname.length - 1)
+      );
+    }
     return { path, status: "deleted" };
   }
   // if checking a folder, require including the last / in the path param
@@ -2979,28 +2993,33 @@ var VaultOperations = class {
   }
   async getAllInObsidian() {
     const rootPath = this.vault.configDir;
-    const folders = [rootPath + "/"];
+    return await this.traverseDirectory(rootPath + "/");
+  }
+  /*
+  * path: normalized folder path (folder1/folder2/, not folder1/folder2)
+  */
+  async traverseDirectory(path) {
+    const folders = [path];
     const files = [];
-    const traverseDirectory = async (path) => {
-      let items;
-      try {
-        items = await this.vault.adapter.list(path);
-      } catch (error) {
-        return null;
-      }
-      for (const folder of items.folders) {
-        await traverseDirectory(folder);
-        let folderPath = folder.startsWith("/") ? folder.slice(1) : folder;
-        folderPath = folderPath === "" ? "" : `${folderPath}/`;
-        folders.push(folderPath);
-      }
-      for (const file of items.files) {
-        let filePath = file.startsWith("/") ? file.slice(1) : file;
-        files.push(filePath);
-      }
-    };
-    await traverseDirectory(rootPath);
-    return { folders, files };
+    let items;
+    try {
+      items = await this.vault.adapter.list(path);
+    } catch (error) {
+      return { files, folders };
+    }
+    for (const folder of items.folders) {
+      const iter = await this.traverseDirectory(folder);
+      files.push(...iter.files);
+      folders.push(...iter.folders);
+      let folderPath = folder.startsWith("/") ? folder.slice(1) : folder;
+      folderPath = folderPath === "" ? "" : `${folderPath}/`;
+      folders.push(folderPath);
+    }
+    for (const file of items.files) {
+      let filePath = file.startsWith("/") ? file.slice(1) : file;
+      files.push(filePath);
+    }
+    return { files, folders };
   }
   async getAllInVault() {
     const all = this.vault.getAllLoadedFiles();
@@ -3191,6 +3210,13 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
     return true;
   }
   async getDiff() {
+    if (!this.vaultOps.vault.getFolderByPath(rootFitFolder)) {
+      new FitNotice(
+        ["static"],
+        "It's seems the folder doesn't exist"
+      );
+      return;
+    }
     const files = await this.vaultOps.getFilesInVault();
     const conflictFiles = files.filter(
       (el) => el.startsWith(conflictResolutionFolder)

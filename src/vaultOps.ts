@@ -1,6 +1,7 @@
 import { ListedFiles, TFile, TFolder, Vault, base64ToArrayBuffer } from "obsidian";
 import { FileOpRecord } from "./fitTypes";
 import { conflictResolutionFolder } from "./const";
+import { extractDirname } from "./utils";
 
 type FilesFolders = {
     folders: string[]
@@ -44,13 +45,27 @@ export class VaultOperations implements IVaultOperations {
         // const file = this.vault.getAbstractFileByPath(path)
         const isExists = await this.vault.adapter.exists(path)
         if (!isExists) {
-            console.error(`Attempting to read ${path} from local drive but not successful:
+            console.error(`Attempting to delete ${path} from local drive but not successful:
                 the file doesn't exists`)
 
             return null
         }
 
         await this.vault.adapter.remove(path);
+
+        let dirname = extractDirname(path)
+        while (dirname) {
+            const { files } = await this.traverseDirectory(dirname)
+            if (files.length)
+                break
+
+            await this.vault.adapter.rmdir(dirname, true)
+            // cutoff last '/'
+            dirname = extractDirname(
+                dirname.slice(0, dirname.length-1)
+            )
+        }
+
         return {path, status: "deleted"}
     }
 
@@ -149,37 +164,43 @@ export class VaultOperations implements IVaultOperations {
     async getAllInObsidian(): Promise<FilesFolders> {
         const rootPath = this.vault.configDir;
 
-        const folders: string[] = [rootPath + "/"];
-        const files: string[] = [];
+        return await this.traverseDirectory(rootPath + "/");
+    }
 
-        const traverseDirectory = async (path: string) => {
-            let items: ListedFiles
-            try {
-                items = await this.vault.adapter.list(path);
-            } catch (error) {
-                // console.error(`Error traversing directory ${path}:`, error);
-                return null
-            }
+    /*
+    * path: normalized folder path (folder1/folder2/, not folder1/folder2)
+    */
+    async traverseDirectory(path: string): Promise<FilesFolders> {
+        const folders: string[] = [ path ];
+        const files: string[] = []
 
-            for (const folder of items.folders) {
-                await traverseDirectory(folder);
+        let items: ListedFiles
+        try {
+            items = await this.vault.adapter.list(path);
+        }
+        catch (error) {
+            return {files, folders}
+        }
 
-                let folderPath = folder.startsWith('/') ? folder.slice(1) : folder;
-                folderPath = folderPath === "" ? "" : `${folderPath}/`;
+        for (const folder of items.folders) {
+            const iter = await this.traverseDirectory(folder);
 
-                folders.push(folderPath);
-            }
+            files.push(...iter.files);
+            folders.push(...iter.folders);
 
-            for (const file of items.files) {
-                let filePath = file.startsWith('/') ? file.slice(1) : file;
+            let folderPath = folder.startsWith('/') ? folder.slice(1) : folder;
+            folderPath = folderPath === "" ? "" : `${folderPath}/`;
 
-                files.push(filePath);
-            }
-        };
+            folders.push(folderPath);
+        }
 
-        await traverseDirectory(rootPath);
+        for (const file of items.files) {
+            let filePath = file.startsWith('/') ? file.slice(1) : file;
 
-        return {folders, files}
+            files.push(filePath);
+        }
+
+        return {files, folders}
     }
 
     async getAllInVault(): Promise<FilesFolders> {
