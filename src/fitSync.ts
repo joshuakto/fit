@@ -116,8 +116,31 @@ export class FitSync implements IFitSync {
         }
     }
 
-    private async handleBinaryConflict(path: string, localContent: string, remoteContent: string): Promise<FileOpRecord|null> {
+    private async moveConflictBinary(srcFile: string) {
+        const conflictPath = this.fit.syncPath+srcFile
+        const conflictResolutionPath = conflictResolutionFolder + conflictPath
 
+        const excludes = this.fit.excludes
+
+        let isExcluded = false
+        if (excludes.length) {
+          isExcluded = excludes.some(el => conflictResolutionPath.startsWith(el))
+        }
+
+        if (isExcluded)
+            return false
+
+        const content = arrayBufferToBase64(
+            await this.fit.vaultOps.vault.adapter.readBinary(srcFile)
+        )
+
+        await this.fit.vaultOps.writeToLocal(conflictResolutionPath, content)
+        await this.fit.vaultOps.deleteFromLocal(conflictPath)
+
+       return true
+    }
+
+    private async handleBinaryConflict(path: string, localContent: string, remoteContent: string): Promise<FileOpRecord|null> {
         const conflictPath = this.fit.syncPath+path
         const conflictResolutionPath = conflictResolutionFolder + conflictPath
 
@@ -216,9 +239,12 @@ export class FitSync implements IFitSync {
             await this.fit.vaultOps.vault.adapter.readBinary(path)
         )
 
-        if (!latestRemoteFileSha)
+        if (!latestRemoteFileSha) {
+            await this.moveConflictBinary(clash.path)
+
             // assumes remote file is deleted if sha not found in latestRemoteTreeSha.
-            return { path: clash.path, noDiff: false }
+            return { path: clash.path, noDiff: true, fileOp: {path:clash.path, status: "changed"} }
+        }
 
 
         const remoteContent = await this.fit.getBlob(latestRemoteFileSha)
@@ -320,7 +346,7 @@ export class FitSync implements IFitSync {
     {
         const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate
         const {noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha)
-        let localChangesToPush: Array<LocalChange>;
+        let localChangesToPush: Array<LocalChange> = [];
         let remoteChangesToWrite: Array<RemoteChange>
         if (noConflict) {
             // no conflict detected among clashed files, just pull changes only made on remote and push changes only made on local
@@ -331,6 +357,7 @@ export class FitSync implements IFitSync {
             syncNotice.setMessage(`Change conflicts detected`)
             // do not modify unresolved files locally
             remoteChangesToWrite = remoteUpdate.remoteChanges.filter(c => !unresolvedFiles.some(l => l.path === c.path))
+
             // push change even if they are in unresolved files, so remote has a record of them,
             // so user can resolve later by modifying local and push again
             localChangesToPush = localChanges

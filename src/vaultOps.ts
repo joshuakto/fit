@@ -99,6 +99,9 @@ export class VaultOperations implements IVaultOperations {
         return true
     }
 
+    /*
+    * content is base64
+    */
     async writeToLocal(path: string, content: string): Promise<FileOpRecord> {
         // TODO: add capability for creating folder from remote
         const file = await this.vault.adapter.exists(path)

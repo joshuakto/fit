@@ -2605,6 +2605,23 @@ var FitSync = class {
       remoteContent
     };
   }
+  async moveConflictBinary(srcFile) {
+    const conflictPath = this.fit.syncPath + srcFile;
+    const conflictResolutionPath = conflictResolutionFolder + conflictPath;
+    const excludes = this.fit.excludes;
+    let isExcluded = false;
+    if (excludes.length) {
+      isExcluded = excludes.some((el) => conflictResolutionPath.startsWith(el));
+    }
+    if (isExcluded)
+      return false;
+    const content = (0, import_obsidian5.arrayBufferToBase64)(
+      await this.fit.vaultOps.vault.adapter.readBinary(srcFile)
+    );
+    await this.fit.vaultOps.writeToLocal(conflictResolutionPath, content);
+    await this.fit.vaultOps.deleteFromLocal(conflictPath);
+    return true;
+  }
   async handleBinaryConflict(path, localContent, remoteContent) {
     const conflictPath = this.fit.syncPath + path;
     const conflictResolutionPath = conflictResolutionFolder + conflictPath;
@@ -2672,8 +2689,10 @@ var FitSync = class {
     const localFileContent = (0, import_obsidian5.arrayBufferToBase64)(
       await this.fit.vaultOps.vault.adapter.readBinary(path)
     );
-    if (!latestRemoteFileSha)
-      return { path: clash.path, noDiff: false };
+    if (!latestRemoteFileSha) {
+      await this.moveConflictBinary(clash.path);
+      return { path: clash.path, noDiff: true, fileOp: { path: clash.path, status: "changed" } };
+    }
     const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
     if (removeLineEndingsFromBase64String(remoteContent) !== removeLineEndingsFromBase64String(localFileContent)) {
       const report = this.generateConflictReport(clash.path, localFileContent, remoteContent);
@@ -2749,7 +2768,7 @@ var FitSync = class {
   async syncWithConflicts(localChanges, remoteUpdate, syncNotice) {
     const { latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha } = remoteUpdate;
     const { noConflict, unresolvedFiles, fileOpsRecord } = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha);
-    let localChangesToPush;
+    let localChangesToPush = [];
     let remoteChangesToWrite;
     if (noConflict) {
       remoteChangesToWrite = remoteUpdate.remoteChanges.filter((c) => !localChanges.some((l) => l.path === c.path));
@@ -2956,6 +2975,9 @@ var VaultOperations = class {
     }
     return true;
   }
+  /*
+  * content is base64
+  */
   async writeToLocal(path, content) {
     const file = await this.vault.adapter.exists(path);
     if (file) {
