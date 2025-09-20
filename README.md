@@ -14,14 +14,14 @@ This project is a community collaboration. If you'd like to contribute please ch
 Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
 
 ## Features
-- **Universally supported**: sync your vault across multiple devices, support both mobile and desktop
-- Auto sync is now available 🎉 
-- One-click to sync your vault.
+- **Universally supported**: sync your vault across multiple devices, supports both mobile and desktop
+- Auto sync is now available 🎉
+- One-click to sync your vault
 - Conflict resolution: Stores conflicting changes from remote in the local _fit folder so you can resolve conflicts after sync
 - Guided setup: **Intuitive** settings, easy to configure even if you are new to GitHub
 - Works with existing vaults or repos
 
-**Note:** This plugin is still in alpha, please backup your vault before using this plugin.
+**Note:** This plugin is still in beta, please backup your vault before using this plugin.
 
 
 # Quick demo
@@ -32,10 +32,12 @@ Users are highly recommended to do a security review of the code of this project
 
 
 ## Setup
-1. Create a personal access token (refers to [Github: creating a personal access token](https://docs.github.com/en/enterprise-server@3.9/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token))
+1. Create a personal access token with read/write access to the repo for your vault (refer to [Github: creating a personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token))
 2. Once the personal access token is filled in, you can authenticate the user. The GitHub username, list of repositories, and branches will auto-populate.
 3. Select a repo and branch and you are ready to sync.
-<img width="1100" alt="Screenshot 2024-03-13 at 9 49 33 AM" src="https://github.com/joshuakto/fit/assets/34743132/3ab3665a-5a78-468c-a936-fcf5fd2a8774">
+<img width="1100" alt="Screenshot of FIT settings for tokens and repos" src="https://github.com/joshuakto/fit/assets/34743132/3ab3665a-5a78-468c-a936-fcf5fd2a8774">
+
+NOTE: For security, it's recommended to limit the token scope to only the necessary repository for your vault and avoid sharing your entire plugin settings file that contains this token.
 
 ## Notes about the first sync
 - Repo cannot be empty (Select 'Add a README file' if you are creating a new repo)
@@ -54,30 +56,10 @@ There are also other plugins for synchronizing changes such as [Git integration]
 
 [!["Buy Me A Coffee"](https://cdn.buymeacoffee.com/buttons/v2/default-blue.png)](https://www.buymeacoffee.com/joshuakto)
 
+## Developer Documentation
+
+For developers interested in contributing to FIT or understanding its architecture, comprehensive documentation is available in the [docs/](https://github.com/joshuakto/fit/tree/main/docs) directory in GitHub.
+
 ## Acknowledgements
  - This plugin used [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
  - This plugin uses [Octokit](https://github.com/octokit/core.js/) to interface with GitHub rest api across devices.
-
-<!--- 
-## Releasing new releases
-
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
-
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
-
-## Adding your plugin to the community plugin list
-
-- Check https://github.com/obsidianmd/obsidian-releases/blob/master/plugin-review.md
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-  
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
---->
