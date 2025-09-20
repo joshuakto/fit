@@ -12,6 +12,8 @@ npm run dev
 
 **Testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
 
+**Unit Tests**: Run `npm test` to execute Jest unit tests, or `npm run test:watch` for development.
+
 ## Architecture
 
 See [`architecture.md`](./architecture.md) for system design, data flow, and component relationships.
@@ -68,10 +70,11 @@ See [Obsidian Hub instructions](https://publish.obsidian.md/hub/04+-+Guides%2C+W
 
 Please use your judgement and try to follow conventions from surrounding code to keep project quality high. Most critical project guidelines will be validated by GitHub checks on PRs, so there aren't too many strict requirements you need to follow.
 
+**Linting**: Check for code style issues with `npm run lint` and automatically fix fixable issues with `npm run lint:fix`.
+
 If you'd like to help set up more automated checking, there are a few quality aspects we don't have automated checks for but would like to:
 
 - [ ] **ESLint rules** for TypeScript strict mode
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
-- [ ] **Unit tests**
 - [ ] **Functional tests** to ensure mobile compatibility
 - [ ] **Release automation/validation** to ensure releases are correctly configured & versioned
