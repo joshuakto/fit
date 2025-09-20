@@ -1,3 +1,20 @@
+/**
+ * Core sync engine for FIT plugin
+ *
+ * This module implements the main synchronization logic between Obsidian vaults
+ * and GitHub repositories. It handles:
+ * - GitHub API operations via Octokit
+ * - File change detection using SHA comparison
+ * - Conflict resolution during sync
+ * - Binary and text file handling
+ *
+ * Key patterns:
+ * - All GitHub operations implement error handling with OctokitHttpError
+ * - SHA-based change detection for efficient sync
+ * - Files in _fit/ directory are ignored during sync
+ * - Binary files are base64 encoded for GitHub API
+ */
+
 import { LocalStores, FitSettings } from "main"
 import { Octokit } from "@octokit/core"
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils"
@@ -5,8 +22,10 @@ import { VaultOperations } from "./vaultOps"
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
 import { arrayBufferToBase64 } from "obsidian"
 
-
-
+/**
+ * Represents a node in GitHub's git tree structure
+ * Maps to GitHub API tree object format
+ */
 export type TreeNode = {
     path: string, 
     mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined, 
@@ -27,15 +46,24 @@ type OctokitCallMethods = {
     getBlob: (file_sha:string) =>Promise<string>
 }
 
+/**
+ * Main interface for FIT sync engine
+ *
+ * Combines GitHub API operations with local state management.
+ * Implementations must handle:
+ * - Secure token storage and API authentication
+ * - Local SHA cache for change detection
+ * - Conflict-free sync operations
+ */
 export interface IFit extends OctokitCallMethods{
     owner: string
     repo: string
     branch: string
     headers: {[k: string]: string}
     deviceName: string
-    localSha: Record<string, string>
-	lastFetchedCommitSha: string | null
-	lastFetchedRemoteSha: Record<string, string>
+    localSha: Record<string, string>              // Cache of local file SHAs
+	lastFetchedCommitSha: string | null           // Last synced commit SHA
+	lastFetchedRemoteSha: Record<string, string>  // Cache of remote file SHAs
     octokit: Octokit
     vaultOps: VaultOperations
     fileSha1: (path: string) => Promise<string>

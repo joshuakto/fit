@@ -1,3 +1,21 @@
+/**
+ * Main FIT Plugin Entry Point
+ *
+ * This is the primary plugin class that orchestrates all FIT functionality:
+ * - Plugin lifecycle management (load/unload)
+ * - Settings persistence and validation
+ * - Auto-sync scheduling and execution
+ * - UI ribbon icons and command registration
+ * - Error handling and user notifications
+ *
+ * Architecture:
+ * - FitPlugin (this class) manages overall plugin state and coordination
+ * - Fit handles core sync engine and GitHub API
+ * - FitSync orchestrates sync workflows
+ * - VaultOperations abstracts Obsidian vault interactions
+ * - Settings are validated on each operation to ensure proper configuration
+ */
+
 import { Plugin, SettingTab } from 'obsidian';
 import { Fit, OctokitHttpError } from 'src/fit';
 import FitNotice from 'src/fitNotice';
@@ -6,6 +24,10 @@ import { FitSync } from 'src/fitSync';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
 import { VaultOperations } from 'src/vaultOps';
 
+/**
+ * Plugin configuration interface
+ * Settings are persisted in Obsidian's plugin data storage
+ */
 export interface FitSettings {
 	pat: string;
 	owner: string;
@@ -33,10 +55,14 @@ const DEFAULT_SETTINGS: FitSettings = {
 }
 
 
+/**
+ * Local state persistence interface
+ * Tracks sync state between plugin sessions to enable incremental sync
+ */
 export interface LocalStores {
-	localSha: Record<string, string>
-	lastFetchedCommitSha: string | null
-	lastFetchedRemoteSha: Record<string, string>
+	localSha: Record<string, string>              // File path -> SHA cache
+	lastFetchedCommitSha: string | null           // Last synced commit
+	lastFetchedRemoteSha: Record<string, string>  // Remote file path -> SHA cache
 }
 
 const DEFAULT_LOCAL_STORE: LocalStores = {
