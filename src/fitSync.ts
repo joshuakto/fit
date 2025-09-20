@@ -7,6 +7,8 @@ import { FitPush } from "./fitPush"
 import { VaultOperations } from "./vaultOps"
 import { LocalStores } from "main"
 import FitNotice from "./fitNotice"
+import { SyncResult, SyncErrors } from "./syncResult"
+import { OctokitHttpError } from "./fit"
 
 export interface IFitSync {
     fit: Fit
@@ -279,28 +281,36 @@ export class FitSync implements IFitSync {
             return {unresolvedFiles, localOps: ops, remoteOps: pushedChanges}
     }
 
-    async sync(syncNotice: FitNotice): Promise<{ops: Array<{heading: string, ops: FileOpRecord[]}>, clash: ClashStatus[]} | void> {
-        syncNotice.setMessage("Performing pre sync checks.")
-		const preSyncCheckResult = await this.performPreSyncChecks();
+	async sync(syncNotice: FitNotice): Promise<SyncResult> {
+		try {
+			syncNotice.setMessage("Performing pre sync checks.")
+			const preSyncCheckResult = await this.performPreSyncChecks();
 
-        // convert to switch statement later on for better maintainability
-		if (preSyncCheckResult.status === "inSync") {
-			syncNotice.setMessage("Sync successful")
-			return
-		}
+			// convert to switch statement later on for better maintainability
+			if (preSyncCheckResult.status === "inSync") {
+				syncNotice.setMessage("Sync successful")
+				return { success: true, operations: [], conflicts: [] }
+			}
 
-		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
-			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
-			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha})
-			syncNotice.setMessage("Sync successful")
-			return
-		}
+			if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
+				const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate
+				await this.saveLocalStoreCallback({ lastFetchedCommitSha: latestRemoteCommitSha })
+				syncNotice.setMessage("Sync successful")
+				return { success: true, operations: [], conflicts: [] }
+			}
 
-		const remoteUpdate = preSyncCheckResult.remoteUpdate
-		if (preSyncCheckResult.status === "onlyRemoteChanged") {
-			const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
-            syncNotice.setMessage("Sync successful")
-            return {ops: [{heading: "Local file updates:", ops: fileOpsRecord}], clash: []}
+			const remoteUpdate = preSyncCheckResult.remoteUpdate
+			if (preSyncCheckResult.status === "onlyRemoteChanged") {
+				let fileOpsRecord: FileOpRecord[]
+				try {
+					fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
+				} catch (error) {
+					const syncError = SyncErrors.filesystem(error instanceof Error ? error.message : 'Filesystem operation failed')
+					console.error("Sync operation failed:", error)
+					return { success: false, error: syncError }
+			}
+				syncNotice.setMessage("Sync successful")
+				return { success: true, operations: [{ heading: "Local file updates:", ops: fileOpsRecord }], conflicts: [] }
 		}
 
 		const {localChanges, localTreeSha} = preSyncCheckResult
@@ -311,32 +321,34 @@ export class FitSync implements IFitSync {
 		if (preSyncCheckResult.status === "onlyLocalChanged") {
 			syncNotice.setMessage("Uploading local changes")
 			const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate)
-            syncNotice.setMessage("Sync successful")
-            if (pushResult) {
-                await this.saveLocalStoreCallback({
-                    localSha: localTreeSha,
-                    lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
-                    lastFetchedCommitSha: pushResult.lastFetchedCommitSha
-                })
-                return {ops: [{heading: "Local file updates:", ops: pushResult.pushedChanges}], clash: []}
-            }
-            return
+			syncNotice.setMessage("Sync successful")
+			if (pushResult) {
+				await this.saveLocalStoreCallback({
+					localSha: localTreeSha,
+					lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
+					lastFetchedCommitSha: pushResult.lastFetchedCommitSha
+				})
+				return { success: true, operations: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], conflicts: [] }
+			}
+			console.error("Sync operation failed: Failed to push local changes")
+			return { success: false, error: SyncErrors.unknown("Failed to push local changes") }
 		}
-		
-		// do both pull and push (orders of execution different from pullRemoteToLocal and 
-		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original 
+
+		// do both pull and push (orders of execution different from pullRemoteToLocal and
+		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original
 		// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-		//  please open an issue on the fit repo
+		// please open an issue on the fit repo
 		if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
 			const {localOps, remoteOps} = await this.syncCompatibleChanges(
 				localUpdate, remoteUpdate, syncNotice)
-                return ({
-                    ops: [
-                        {heading: "Local file updates:", ops: localOps},
-                        {heading: "Remote file updates:", ops: remoteOps},
-                    ], 
-                    clash: []
-                })
+			return {
+				success: true,
+				operations: [
+					{ heading: "Local file updates:", ops: localOps },
+					{ heading: "Remote file updates:", ops: remoteOps },
+				],
+				conflicts: []
+			}
 		}
 
 		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
@@ -344,14 +356,47 @@ export class FitSync implements IFitSync {
 				localUpdate.localChanges, remoteUpdate, syncNotice)
 			if (conflictResolutionResult) {
 				const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult
-                    return ({
-                        ops:[
-                            {heading: "Local file updates:", ops: localOps},
-                            {heading: "Remote file updates:", ops: remoteOps},
-                        ],
-                        clash: unresolvedFiles
-                    })
+                        return {
+                            success: true,
+                            operations: [
+                                {heading: "Local file updates:", ops: localOps},
+                                {heading: "Remote file updates:", ops: remoteOps},
+                            ],
+                            conflicts: unresolvedFiles
+                        }
 			}
 		}
+
+            console.error("Sync operation failed: Unknown sync status")
+            return { success: false, error: SyncErrors.unknown("Unknown sync status") }
+        } catch (error) {
+            console.error("Sync operation failed:", error)
+
+            // Map specific error types to appropriate SyncError
+            if (error instanceof OctokitHttpError) {
+                if (error.status === 401) {
+                    return { success: false, error: SyncErrors.auth(error.message) }
+                }
+                if (error.status === 404) {
+                    let context: string
+                    if (error.source === 'getRef') {
+                        context = `Branch or repository not found while calling ${error.source} (check repository name and branch name in settings)`
+                    } else {
+                        context = `Repository not found while calling ${error.source} (check repository name and access permissions)`
+                    }
+                    return { success: false, error: SyncErrors.repoNotFound(`${context}, error from GitHub: ${error.message}`) }
+                }
+                // Other HTTP errors from GitHub API
+                return { success: false, error: SyncErrors.network(`GitHub API error while calling ${error.source} (${error.status}): ${error.message}`) }
+            }
+
+            if (error instanceof Error) {
+                if (error.message.includes('network') || error.message.includes('fetch')) {
+                    return { success: false, error: SyncErrors.network(error.message) }
+                }
+            }
+
+            return { success: false, error: SyncErrors.unknown(error instanceof Error ? error.message : 'Unknown error occurred') }
+        }
     }
 }
