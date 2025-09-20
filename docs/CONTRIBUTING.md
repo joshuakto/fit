@@ -29,7 +29,16 @@ See [`architecture.md`](./architecture.md) for system design, data flow, and com
 
 1. **Create feature/bug branch** from `main`
 2. **Make your changes** following existing code patterns
-3. **Submit PR** with clear description
+3. **Create PR** with clear description
+
+All PRs are automatically checked by GitHub Actions for:
+- ✅ Code linting and formatting
+- ✅ TypeScript compilation
+- ✅ Unit test execution
+- 📊 Test coverage reporting (informational)
+- 🔍 Security scanning via CodeQL
+
+**Future security improvements**: We plan to enable Dependabot for automated dependency vulnerability scanning and updates.
 
 Please try to avoid breaking functionality (on desktop or mobile), and test major changes to ensure they work correctly.
 
@@ -58,7 +67,7 @@ npm version major   # breaking changes
 
 **Manual Steps**:
 1. Push that version bump commit and tag to GitHub
-1. Run `npm run build`
+2. Run `npm run build`
 3. Create GitHub release (use `1.0.1`, not `v1.0.1` with "v" prefix)
 4. Upload `manifest.json`, `main.js`, `styles.css` as artifacts on the release
 
