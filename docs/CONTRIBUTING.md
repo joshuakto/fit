@@ -12,6 +12,8 @@ npm run dev
 
 **Testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
 
+**Unit Tests**: Run `npm test` to execute Jest unit tests, or `npm run test:watch` for development.
+
 ## Architecture
 
 See [`architecture.md`](./architecture.md) for system design, data flow, and component relationships.
@@ -27,7 +29,16 @@ See [`architecture.md`](./architecture.md) for system design, data flow, and com
 
 1. **Create feature/bug branch** from `main`
 2. **Make your changes** following existing code patterns
-3. **Submit PR** with clear description
+3. **Create PR** with clear description
+
+All PRs are automatically checked by GitHub Actions for:
+- ✅ Code linting and formatting
+- ✅ TypeScript compilation
+- ✅ Unit test execution
+- 📊 Test coverage reporting (informational)
+- 🔍 Security scanning via CodeQL
+
+**Future security improvements**: We plan to enable Dependabot for automated dependency vulnerability scanning and updates.
 
 Please try to avoid breaking functionality (on desktop or mobile), and test major changes to ensure they work correctly.
 
@@ -56,7 +67,7 @@ npm version major   # breaking changes
 
 **Manual Steps**:
 1. Push that version bump commit and tag to GitHub
-1. Run `npm run build`
+2. Run `npm run build`
 3. Create GitHub release (use `1.0.1`, not `v1.0.1` with "v" prefix)
 4. Upload `manifest.json`, `main.js`, `styles.css` as artifacts on the release
 
@@ -68,10 +79,11 @@ See [Obsidian Hub instructions](https://publish.obsidian.md/hub/04+-+Guides%2C+W
 
 Please use your judgement and try to follow conventions from surrounding code to keep project quality high. Most critical project guidelines will be validated by GitHub checks on PRs, so there aren't too many strict requirements you need to follow.
 
+**Linting**: Check for code style issues with `npm run lint` and automatically fix fixable issues with `npm run lint:fix`.
+
 If you'd like to help set up more automated checking, there are a few quality aspects we don't have automated checks for but would like to:
 
 - [ ] **ESLint rules** for TypeScript strict mode
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
-- [ ] **Unit tests**
 - [ ] **Functional tests** to ensure mobile compatibility
 - [ ] **Release automation/validation** to ensure releases are correctly configured & versioned
