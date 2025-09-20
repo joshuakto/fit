@@ -1,0 +1,83 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  quality-checks:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run ESLint
+      id: lint
+      run: npm run lint -- --format=compact
+      continue-on-error: true
+
+    - name: Run TypeScript compiler
+      id: typecheck
+      run: npm run build
+      continue-on-error: true
+
+    - name: Run tests with coverage
+      id: test
+      run: npm test -- --coverage
+      continue-on-error: true
+
+    - name: Generate status summary
+      id: summary
+      run: |
+        lint_status="${{ steps.lint.outcome }}"
+        typecheck_status="${{ steps.typecheck.outcome }}"
+        test_status="${{ steps.test.outcome }}"
+
+        lint_icon="❌"; [[ "$lint_status" == "success" ]] && lint_icon="✅"
+        typecheck_icon="❌"; [[ "$typecheck_status" == "success" ]] && typecheck_icon="✅"
+        test_icon="❌"; [[ "$test_status" == "success" ]] && test_icon="✅"
+
+        if [[ "$lint_status" == "success" && "$typecheck_status" == "success" && "$test_status" == "success" ]]; then
+          overall_message="🎉 **All checks passed!** Great work on maintaining code quality."
+        else
+          overall_message="⚠️ **Some checks failed.** Please review the failed checks above and address any issues."
+        fi
+
+        cat << EOF > pr_comment.md
+        ## 🔍 Code Quality Check Results
+
+        | Check | Status | Details |
+        |-------|--------|---------|
+        | **Linting** | ${lint_icon} | ESLint code quality check |
+        | **Type Check** | ${typecheck_icon} | TypeScript compilation |
+        | **Unit Tests** | ${test_icon} | Jest test execution |
+
+        ${overall_message}
+        <details>
+        <summary>📊 Test Coverage Report</summary>
+
+        [View coverage details in the action run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+        </details>
+        EOF
+
+    - name: Comment PR
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body-path: pr_comment.md
+        edit-mode: replace
+        token: ${{ secrets.GITHUB_TOKEN }}
+      if: github.event.pull_request.head.repo.full_name == github.repository
