@@ -10,6 +10,8 @@ import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors } from "./syncResult";
 import { OctokitHttpError } from "./fit";
 
+type FilesystemError = Error & { isFilesystemError: true };
+
 export interface IFitSync {
 	fit: Fit
 }
@@ -228,7 +230,15 @@ export class FitSync implements IFitSync {
 		remoteUpdate: RemoteUpdate,
 		syncNotice: FitNotice) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[]} | null> {
 		const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate;
-		const {noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha);
+		let noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[];
+		try {
+			({noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha));
+		} catch (error) {
+			// Mark filesystem errors for proper classification in outer catch block
+			const fsError = error instanceof Error ? error : new Error(String(error));
+			(fsError as FilesystemError).isFilesystemError = true;
+			throw fsError;
+		}
 		let localChangesToPush: Array<LocalChange>;
 		let remoteChangesToWrite: Array<RemoteChange>;
 		if (noConflict) {
@@ -263,12 +273,22 @@ export class FitSync implements IFitSync {
 			lastFetchedCommitSha = remoteUpdate.latestRemoteCommitSha;
 			lastFetchedRemoteSha = remoteUpdate.remoteTreeSha;
 		}
-		const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
-		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha,
-			lastFetchedCommitSha,
-			localSha: await this.fit.computeLocalSha()
-		});
+
+		let localFileOpsRecord: LocalChange[];
+		try {
+			localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+
+			await this.saveLocalStoreCallback({
+				lastFetchedRemoteSha,
+				lastFetchedCommitSha,
+				localSha: await this.fit.computeLocalSha()
+			});
+		} catch (error) {
+			// Mark filesystem errors for proper classification in outer catch block
+			const fsError = error instanceof Error ? error : new Error(String(error));
+			(fsError as FilesystemError).isFilesystemError = true;
+			throw fsError;
+		}
 		const ops = localFileOpsRecord.concat(fileOpsRecord);
 		if (unresolvedFiles.length === 0) {
 			syncNotice.setMessage(`Sync successful`);
@@ -294,7 +314,7 @@ export class FitSync implements IFitSync {
 
 			if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
 				const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate;
-				await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha});
+				await this.saveLocalStoreCallback({ lastFetchedCommitSha: latestRemoteCommitSha });
 				syncNotice.setMessage("Sync successful");
 				return { success: true, ops: [], clash: [] };
 			}
@@ -306,10 +326,10 @@ export class FitSync implements IFitSync {
 					syncNotice.setMessage("Sync successful");
 					return { success: true, ops: [{ heading: "Local file updates:", ops: fileOpsRecord }], clash: [] };
 				} catch (error) {
-					const errorMessage = error instanceof Error ? error.message : 'Filesystem operation failed';
-					console.error(`Sync operation failed - File system error: ${errorMessage}`);
-					// TODO: Create 'filesystem' error type when improving error messaging
-					return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error instanceof Error ? error : new Error(errorMessage) }) };
+					// Mark filesystem errors for proper classification in outer catch block
+					const fsError = error instanceof Error ? error : new Error(String(error));
+					(fsError as FilesystemError).isFilesystemError = true;
+					throw fsError;
 				}
 			}
 
@@ -330,13 +350,13 @@ export class FitSync implements IFitSync {
 					});
 					return { success: true, ops: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], clash: [] };
 				}
-				return { success: true, ops: [], clash: [] };
+				return { success: false, error: SyncErrors.unknown("Failed to push local changes") };
 			}
 
 			// do both pull and push (orders of execution different from pullRemoteToLocal and
 			// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original
 			// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-			//  please open an issue on the fit repo
+			// please open an issue on the fit repo
 			if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
 				const {localOps, remoteOps} = await this.syncCompatibleChanges(
 					localUpdate, remoteUpdate, syncNotice);
@@ -367,24 +387,56 @@ export class FitSync implements IFitSync {
 			}
 
 			// Fallback case - shouldn't reach here
-			console.error("Sync operation failed - Unknown sync status");
 			return { success: false, error: SyncErrors.unknown("Unknown sync status") };
 
 		} catch (error) {
-			// Handle unexpected errors that escape from individual sync operations
-			const errorObj = error as Error;
+			// Handle unexpected errors that escape from individual sync operations.
+			// Ensures good meaningful detailMessage according to the guidelines documented on SyncError.detailMessage.
+
+			// Check if error came from filesystem operations
+			if ((error as FilesystemError)?.isFilesystemError) {
+				const message = error instanceof Error
+					? error.message
+					: (error && typeof error === 'object' && error.message)
+						? String(error.message)
+						: `File operation failed: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
+				return { success: false, error: SyncErrors.filesystem(message, { originalError: error }) };
+			}
 
 			if (error instanceof OctokitHttpError) {
-				// GitHub API 404 errors for repository/branch access - preserve existing behavior
-				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
-					return { success: false, error: SyncErrors.remoteNotFound(errorObj.message, { source: error.source, originalError: errorObj }) };
+				// Detect network connectivity issues - either no status or fake 500 without response
+				if (error.status === null || (error.status === 500 && (error as unknown as { response?: unknown }).response === undefined)) {
+					return { success: false, error: SyncErrors.network("Couldn't reach GitHub API", { source: error.source, originalError: error }) };
 				}
-				// All other GitHub API errors treated as unknown (same message as previous error handling)
-				return { success: false, error: SyncErrors.unknown(errorObj.message, { originalError: errorObj }) };
+
+				// GitHub API authentication/authorization errors
+				if (error.status === 401) {
+					return { success: false, error: SyncErrors.remoteAccess('Authentication failed (bad token?)', { source: error.source, originalError: error }) };
+				}
+
+				// TODO: Consider using @octokit/plugin-retry to handle rate limiting automatically
+				// with proper exponential backoff based on retry-after/x-ratelimit-* headers
+				if (error.status === 403) {
+					return { success: false, error: SyncErrors.remoteAccess('Access denied (token missing permissions?)', { source: error.source, originalError: error }) };
+				}
+
+				// GitHub API 404 errors for repository/branch access
+				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
+					const detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
+					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
+				}
+
+				// All other GitHub API errors (rate limiting, server errors, etc.)
+				return { success: false, error: SyncErrors.apiError('GitHub API error', { source: error.source, originalError: error }) };
 			}
 
 			// All other errors - unknown type
-			return { success: false, error: SyncErrors.unknown(errorObj.message, { originalError: errorObj }) };
+			const errorMessage = error instanceof Error
+				? String(error) // Gets "ErrorType: message" which includes both type and message
+				: (error && typeof error === 'object' && error.message)
+					? String(error.message)
+					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
+			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
 		}
 	}
 }

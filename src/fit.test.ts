@@ -112,21 +112,19 @@ async function attemptSuccessfulSync(
 	notice.setMessage("Initiating sync");
 	notice.states.push('loading');
 
-	// Attempt sync - should succeed (emulates main.ts sync method success path)
-	const result = await mockFitSync.sync(notice as unknown as FitNotice);
-	if (result.success) {
-		// Success path just removes notice as "done"
+	// Attempt sync - should succeed (emulates main.ts performManualSync success path)
+	try {
+		const result = await mockFitSync.sync(notice as unknown as FitNotice);
+		// Success path doesn't call getUserErrorMessage, just removes notice as "done"
 		notice.remove('done');
 		return {
 			syncSucceeded: true,
 			notice,
 			syncResult: result
 		};
-	} else {
+	} catch (_error) {
 		// This shouldn't happen in success scenarios - return failure
-		const fit = createFitForErrorScenario({ localFiles });
-		const userMessage = fit.getSyncErrorMessage(result.error);
-		notice.setMessage(userMessage, true);
+		notice.setMessage('Unexpected error in success scenario', true);
 		notice.remove('error');
 		return {
 			syncSucceeded: false,
@@ -135,6 +133,7 @@ async function attemptSuccessfulSync(
 		};
 	}
 }
+
 
 describe('Fit Sync Success Scenarios', () => {
 	it('should complete sync successfully and show done notice when no files need updating', async () => {
@@ -236,8 +235,8 @@ describe('Fit Sync Error Scenarios', () => {
 		} else {
 			syncFailed = true;
 			// Generate user-friendly message from structured sync error (new approach)
-			const userMessage = fit.getSyncErrorMessage(result.error);
-			notice.setMessage(userMessage, true);
+			const errorMessage = fit.getSyncErrorMessage(result.error);
+			notice.setMessage(`Sync failed: ${errorMessage}`, true);
 			notice.remove('error');
 		}
 
@@ -248,12 +247,11 @@ describe('Fit Sync Error Scenarios', () => {
 		};
 	}
 
-	it('should show error notice and make no local updates when repository does not exist', async () => {
+	it('should show error notice and make no local updates when branch does not exist', async () => {
 		const fit = createFitForErrorScenario({
-			settings: { repo: "nonexistent-repo" },
+			settings: { repo: "valid-repo", branch: "nonexistent-branch" },
 			localFiles: [
-				{ path: 'existing-note.md', content: 'Original content' },
-				{ path: 'another-file.md', content: 'More content' }
+				{ path: 'existing-note.md', content: 'Original content' }
 			]
 		});
 
@@ -261,14 +259,43 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Not Found', { source: 'getRef' })
+				error: SyncErrors.remoteNotFound('Repository \'testuser/valid-repo\' or branch \'nonexistent-branch\' not found', { source: 'getRef', originalError: new Error('Branch not found') })
 			}
 		);
 
-		// Verify error notice was shown
+		// Verify error notice was shown with user-friendly message
 		expect(syncFailed).toBe(true);
 		expect(notice.messages[1]).toEqual({
-			message: "Failed to get ref, make sure your repo name and branch name are set correctly.",
+			message: "Sync failed: Repository 'testuser/valid-repo' or branch 'nonexistent-branch' not found. Check your repo and branch settings.",
+			isError: true
+		});
+		expect(notice.states).toContain('loading');
+		expect(notice.states).toContain('error');
+
+		// Verify no local file updates occurred
+		expect(mockVaultOps.updateLocalFiles).not.toHaveBeenCalled();
+	});
+
+	it('should show error notice and make no local updates when repository does not exist', async () => {
+		const fit = createFitForErrorScenario({
+			settings: { repo: "nonexistent-repo" },
+			localFiles: [
+				{ path: 'existing-note.md', content: 'Original content' }
+			]
+		});
+
+		const { syncFailed, notice, mockVaultOps } = await attemptSyncWithStructuredError(
+			fit,
+			{
+				success: false,
+				error: SyncErrors.remoteNotFound('Repository \'testuser/nonexistent-repo\' or branch \'main\' not found', { originalError: new Error('Repository not found'), source: 'getTree' })
+			}
+		);
+
+		// Verify error notice was shown with user-friendly message
+		expect(syncFailed).toBe(true);
+		expect(notice.messages[1]).toEqual({
+			message: "Sync failed: Repository 'testuser/nonexistent-repo' or branch 'main' not found. Check your repo and branch settings.",
 			isError: true
 		});
 		expect(notice.states).toContain('loading');
@@ -287,20 +314,20 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.unknown('Bad credentials')
+				error: SyncErrors.remoteAccess('Authentication failed (bad token?)', { source: 'getUser', originalError: new Error('Bad credentials') })
 			}
 		);
 
 		expect(syncFailed).toBe(true);
 		expect(notice.messages[1]).toEqual({
-			message: "Unable to sync, if you are not connected to the internet, turn off auto sync.",
+			message: "Sync failed: Authentication failed (bad token?). Check your GitHub personal access token.",
 			isError: true
 		});
 		expect(notice.states).toContain('loading');
 		expect(notice.states).toContain('error');
 	});
 
-	it('should show generic error notice for non-Octokit errors like filesystem issues', async () => {
+	it('should show appropriate error notice for filesystem issues', async () => {
 		const fit = createFitForErrorScenario({
 			localFiles: [
 				{ path: 'notes/important.md', content: 'Important content' }
@@ -311,14 +338,14 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.unknown('EACCES: permission denied, open \'/vault/notes/important.md\'')
+				error: SyncErrors.filesystem('EACCES: permission denied, open \'/vault/notes/important.md\'', { originalError: new Error('EACCES: permission denied, open \'/vault/notes/important.md\'') })
 			}
 		);
 
-		// Verify the same generic message is shown for filesystem errors
+		// Verify the filesystem error message includes technical details
 		expect(syncFailed).toBe(true);
 		expect(notice.messages[1]).toEqual({
-			message: "Unable to sync, if you are not connected to the internet, turn off auto sync.",
+			message: "Sync failed: File system error: EACCES: permission denied, open '/vault/notes/important.md'",
 			isError: true
 		});
 		expect(notice.states).toContain('loading');
@@ -326,5 +353,27 @@ describe('Fit Sync Error Scenarios', () => {
 
 		// Verify no local file updates occurred
 		expect(mockVaultOps.updateLocalFiles).not.toHaveBeenCalled();
+	});
+
+	it('should show appropriate error notice for network issues', async () => {
+		const fit = createFitForErrorScenario({
+			settings: { pat: "valid_token" }
+		});
+
+		const { syncFailed, notice } = await attemptSyncWithStructuredError(
+			fit,
+			{
+				success: false,
+				error: SyncErrors.network("Couldn't reach GitHub API", { source: 'getUser', originalError: new Error('Failed to fetch') })
+			}
+		);
+
+		expect(syncFailed).toBe(true);
+		expect(notice.messages[1]).toEqual({
+			message: "Sync failed: Couldn't reach GitHub API. Please check your internet connection.",
+			isError: true
+		});
+		expect(notice.states).toContain('loading');
+		expect(notice.states).toContain('error');
 	});
 });

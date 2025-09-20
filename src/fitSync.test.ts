@@ -1,9 +1,9 @@
 import { FitSync } from './fitSync';
-import { Fit } from './fit';
+import { Fit, OctokitHttpError } from './fit';
 import { VaultOperations } from './vaultOps';
 import FitNotice from './fitNotice';
 import { LocalStores } from '../main';
-import { LocalChange, RemoteChange, FileOpRecord } from './fitTypes';
+import { LocalChange, RemoteChange, FileOpRecord, LocalFileStatus, RemoteChangeType } from './fitTypes';
 
 // Simple test doubles focused on behavior
 describe('FitSync', () => {
@@ -17,9 +17,11 @@ describe('FitSync', () => {
 		remoteCommitSha?: string;
 		remoteChanges?: RemoteChange[];
 		remoteTreeSha?: Record<string, string>;
+		localSha?: Record<string, string>;
+		clashes?: Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}>;
 	}) {
 		const mockFit = {
-			computeLocalSha: jest.fn().mockResolvedValue({ 'file1.txt': 'sha1' }),
+			computeLocalSha: jest.fn().mockResolvedValue(scenario.localSha || { 'file1.txt': 'sha1' }),
 			getLocalChanges: jest.fn().mockResolvedValue(scenario.localChanges || []),
 			remoteUpdated: jest.fn().mockResolvedValue({
 				remoteCommitSha: scenario.remoteCommitSha || 'commit123',
@@ -27,7 +29,7 @@ describe('FitSync', () => {
 			}),
 			getRemoteTreeSha: jest.fn().mockResolvedValue(scenario.remoteTreeSha || {}),
 			getRemoteChanges: jest.fn().mockResolvedValue(scenario.remoteChanges || []),
-			getClashedChanges: jest.fn().mockReturnValue([]),
+			getClashedChanges: jest.fn().mockReturnValue(scenario.clashes || []),
 			vaultOps: {} as VaultOperations,
 		} as unknown as Fit;
 
@@ -222,6 +224,270 @@ describe('FitSync', () => {
 			expect(mockNotice.setMessage).toHaveBeenCalled();
 			expect(mockNotice.hide).not.toHaveBeenCalled(); // FitSync doesn't directly hide notices
 			expect(mockNotice.mute).not.toHaveBeenCalled(); // FitSync doesn't mute notices
+		});
+
+		// Sync orchestration and error classification tests
+		describe('sync orchestration logic', () => {
+			it('should correctly classify generic errors as unknown', async () => {
+				// Arrange - Mock a generic failure during pre-sync checks
+				const genericError = new Error('fetch failed');
+				const mockFit = {
+					computeLocalSha: jest.fn().mockRejectedValue(genericError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Verify error classification and technical details
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'unknown',
+						detailMessage: 'Error: fetch failed',
+						details: {
+							originalError: genericError
+						}
+					});
+				}
+			});
+
+			it('should correctly classify authentication errors with technical details', async () => {
+				// Arrange - Mock GitHub API 401 error
+				const githubError = new OctokitHttpError('Bad credentials', 401, 'getUser');
+				const mockFit = {
+					computeLocalSha: jest.fn().mockRejectedValue(githubError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Verify error classification with GitHub-specific details
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'remote_access',
+						detailMessage: 'Authentication failed (bad token?)',
+						details: {
+							source: 'getUser',
+							originalError: githubError
+						}
+					});
+				}
+			});
+
+			it('should correctly classify remote not found errors with operation context', async () => {
+				// Arrange - Mock GitHub API 404 error from getRef operation
+				const githubError = new OctokitHttpError('Not Found - https://docs.github.com/rest/git/refs#get-a-reference', 404, 'getRef');
+				const mockFit = {
+					owner: 'testuser',
+					repo: 'testrepo',
+					branch: 'main',
+					computeLocalSha: jest.fn().mockRejectedValue(githubError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Verify operation-specific error classification
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'remote_not_found',
+						detailMessage: 'Repository \'testuser/testrepo\' or branch \'main\' not found',
+						details: {
+							source: 'getRef',
+							originalError: githubError
+						}
+					});
+				}
+			});
+
+			it('should classify 403 access denied as remote access error', async () => {
+				// Arrange - Mock GitHub API 403 permissions error
+				const accessDeniedError = new OctokitHttpError('Insufficient permissions', 403, 'getUser');
+				const mockFit = {
+					computeLocalSha: jest.fn().mockRejectedValue(accessDeniedError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - 403 should be classified as remote access error
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'remote_access',
+						detailMessage: 'Access denied (token missing permissions?)',
+						details: {
+							source: 'getUser',
+							originalError: accessDeniedError
+						}
+					});
+				}
+			});
+
+			it.each([
+				{
+					scenario: 'null status',
+					status: null,
+					setupResponse: (_error: OctokitHttpError) => { /* no response setup needed */ }
+				},
+				{
+					scenario: 'fake 500 status without response',
+					status: 500,
+					setupResponse: (error: OctokitHttpError) => { (error as unknown as { response?: unknown }).response = undefined; } // What we've observed from Octokit in practice
+				}
+			])('should correctly classify network connectivity errors with $scenario', async ({ status, setupResponse }) => {
+				// Arrange - Mock network connectivity failure
+				const networkError = new OctokitHttpError('Network request failed', status, 'getRef');
+				setupResponse(networkError);
+
+				const mockFit = {
+					computeLocalSha: jest.fn().mockRejectedValue(networkError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Network errors should be classified as network type
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'network',
+						detailMessage: "Couldn't reach GitHub API",
+						details: {
+							source: 'getRef',
+							originalError: networkError
+						}
+					});
+				}
+			});
+
+			it('should correctly classify real 500 server errors with response', async () => {
+				// Arrange - Mock real GitHub API 500 server error with response
+				const realServerError = new OctokitHttpError('Internal Server Error', 500, 'getRef');
+				// Simulate a real 500 error with proper response object
+				(realServerError as unknown as { response?: unknown }).response = {
+					status: 500,
+					headers: { 'x-github-request-id': '123456' },
+					data: { message: 'Internal Server Error' }
+				};
+
+				const mockFit = {
+					computeLocalSha: jest.fn().mockRejectedValue(realServerError),
+					getLocalChanges: jest.fn(),
+					remoteUpdated: jest.fn(),
+					getRemoteTreeSha: jest.fn(),
+					getRemoteChanges: jest.fn(),
+					getClashedChanges: jest.fn(),
+				} as unknown as Fit;
+
+				const mockVaultOps = {} as VaultOperations;
+				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Real 500 with response should be classified as API error
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'api_error',
+						detailMessage: 'GitHub API error',
+						details: {
+							source: 'getRef',
+							originalError: realServerError
+						}
+					});
+				}
+			});
+
+			it('should correctly classify filesystem errors during sync operations', async () => {
+				// Arrange - Set up scenario where vault operation fails with filesystem error
+				const obsidianFile = '.obsidian/community-plugins.json';
+				const filesystemError = new Error(`EACCES: permission denied, delete '${obsidianFile}'`);
+
+				const mockFit = {
+					computeLocalSha: jest.fn().mockResolvedValue({ 'file1.txt': 'sha1' }),
+					getLocalChanges: jest.fn().mockResolvedValue([]),
+					remoteUpdated: jest.fn().mockResolvedValue({
+						remoteCommitSha: 'commit123',
+						updated: true
+					}),
+					getRemoteTreeSha: jest.fn().mockResolvedValue({}),
+					getRemoteChanges: jest.fn().mockResolvedValue([
+						{ path: obsidianFile, status: 'REMOVED' as const }
+					]),
+					getClashedChanges: jest.fn().mockReturnValue([]),
+					vaultOps: {
+						updateLocalFiles: jest.fn().mockRejectedValue(filesystemError)
+					}
+				} as unknown as Fit;
+
+				fitSync = new FitSync(mockFit, mockFit.vaultOps, saveLocalStoreCallback);
+				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+				// Act
+				const result = await fitSync.sync(notice);
+
+				// Assert - Filesystem errors should be caught and properly classified
+				expect(result.success).toBe(false);
+				if (!result.success) {
+					expect(result.error).toEqual({
+						type: 'filesystem',
+						detailMessage: 'EACCES: permission denied, delete \'.obsidian/community-plugins.json\'',
+						details: {
+							originalError: filesystemError
+						}
+					});
+				}
+			});
 		});
 	});
 });
