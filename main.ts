@@ -17,7 +17,7 @@
  */
 
 import { Plugin, SettingTab } from 'obsidian';
-import { Fit, OctokitHttpError } from 'src/fit';
+import { Fit } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
@@ -135,53 +135,24 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore();
 	};
 
-	sync = async (syncNotice: FitNotice): Promise<void> => {
-		if (!this.checkSettingsConfigured()) { return; }
+	sync = async (syncNotice: FitNotice): Promise<boolean> => {
+		if (!this.checkSettingsConfigured()) { return false; }
 		await this.loadLocalStore();
-		const syncRecords = await this.fitSync.sync(syncNotice);
-		if (syncRecords) {
-			const {ops, clash} = syncRecords;
+		const syncResult = await this.fitSync.sync(syncNotice);
+
+		if (syncResult.success) {
 			if (this.settings.notifyConflicts) {
-				showUnappliedConflicts(clash);
+				showUnappliedConflicts(syncResult.clash);
 			}
 			if (this.settings.notifyChanges) {
-				showFileOpsRecord(ops);
+				showFileOpsRecord(syncResult.ops);
 			}
-		}
-	};
-
-	// wrapper to convert error to notice, return true if error is caught
-	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: FitNotice, ...args: P) => Promise<R>, notice: FitNotice, ...args: P): Promise<R|true> => {
-		try {
-			const result = await func(notice, ...args);
-			return result;
-		} catch (error) {
-			if (error instanceof OctokitHttpError) {
-				console.log("error.status");
-				console.log(error.status);
-				switch (error.source) {
-					case 'getTree':
-					case 'getRef':
-						console.error("Caught error from getRef: ", error.message);
-						if (error.status === 404) {
-							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true);
-							return true;
-						}
-						notice.setMessage("Unknown error in getting ref, refers to console for details.", true);
-						return true;
-					case 'getCommitTreeSha':
-					case 'getRemoteTreeSha':
-					case 'createBlob':
-					case 'createTreeNodeFromFile':
-					case 'createCommit':
-					case 'updateRef':
-					case 'getBlob':
-				}
-				return true;
-			}
-			console.error("Caught unknown error: ", error);
-			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true);
 			return true;
+		} else {
+			// Generate user-friendly message from structured sync error
+			const userMessage = this.fit.getSyncErrorMessage(syncResult.error);
+			syncNotice.setMessage(userMessage, true);
+			return false;
 		}
 	};
 
@@ -191,14 +162,15 @@ export default class FitPlugin extends Plugin {
 		this.syncing = true;
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
-		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+		const syncSuccess = await this.sync(syncNotice);
+		// TODO: Consider wrapping this in try-catch to ensure spinner always stops
+		// even if sync() throws an unexpected exception
 		this.fitSyncRibbonIconEl.removeClass('animate-icon');
-		if (errorCaught === true) {
+		if (!syncSuccess) {
 			syncNotice.remove("error");
-			this.syncing = false;
-			return;
+		} else {
+			syncNotice.remove("done");
 		}
-		syncNotice.remove("done");
 		this.syncing = false;
 	};
 
@@ -218,8 +190,8 @@ export default class FitPlugin extends Plugin {
 			0,
 			this.settings.autoSync === "muted"
 		);
-		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
-		if (errorCaught === true) {
+		const syncSuccess = await this.sync(syncNotice);
+		if (!syncSuccess) {
 			syncNotice.remove("error");
 		} else {
 			syncNotice.remove();

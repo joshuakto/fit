@@ -21,6 +21,7 @@ import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
 import { VaultOperations } from "./vaultOps";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
 import { arrayBufferToBase64 } from "obsidian";
+import { SyncError } from "./syncResult";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -71,10 +72,10 @@ export interface IFit extends OctokitCallMethods{
 
 // Define a custom HttpError class that extends Error
 export class OctokitHttpError extends Error {
-	status: number;
+	status: number | null;
 	source: keyof OctokitCallMethods;
 
-	constructor(message: string, status: number, source: keyof OctokitCallMethods) {
+	constructor(message: string, status: number | null, source: keyof OctokitCallMethods) {
 		super(message);
 		this.name = 'HttpError';
 		this.status = status;
@@ -204,7 +205,7 @@ export class Fit implements IFit {
 				});
 			return {owner: response.login, avatarUrl:response.avatar_url};
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status, "getUser");
+			throw new OctokitHttpError(error.message, error.status ?? null, "getUser");
 		}
 	}
 
@@ -236,7 +237,7 @@ export class Fit implements IFit {
 
 			return allRepos;
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status, "getRepos");
+			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
 		}
 	}
 
@@ -251,7 +252,7 @@ export class Fit implements IFit {
 				});
 			return response.map(r => r.name);
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status, "getRepos");
+			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
 		}
 	}
 
@@ -266,7 +267,7 @@ export class Fit implements IFit {
 				});
 			return response.object.sha;
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status, "getRef");
+			throw new OctokitHttpError(error.message, error.status ?? null, "getRef");
 		}
 	}
 
@@ -428,5 +429,19 @@ export class Fit implements IFit {
 				headers: this.headers
 			});
 		return blob.content;
+	}
+
+
+	/**
+     * Generate user-friendly error message from structured sync error
+     * Maintains same behavior as the previous error messaging for transition period
+     */
+	getSyncErrorMessage(syncError: SyncError): string {
+		// Match behavior of previous error messaging - only two messages
+		if (syncError.type === 'remote_not_found' &&
+            (syncError.details?.source === 'getRef' || syncError.details?.source === 'getTree')) {
+			return "Failed to get ref, make sure your repo name and branch name are set correctly.";
+		}
+		return "Unable to sync, if you are not connected to the internet, turn off auto sync.";
 	}
 }

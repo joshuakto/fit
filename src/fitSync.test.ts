@@ -52,7 +52,7 @@ describe('FitSync', () => {
 			const result = await fitSync.sync(notice);
 
 			// Assert
-			expect(result).toBeUndefined();
+			expect(result).toEqual({ success: true, ops: [], clash: [] });
 		});
 
 		it('should update commit SHA when only remote commit changed', async () => {
@@ -70,7 +70,7 @@ describe('FitSync', () => {
 			const result = await fitSync.sync(notice);
 
 			// Assert
-			expect(result).toBeUndefined();
+			expect(result).toEqual({ success: true, ops: [], clash: [] });
 			expect(saveLocalStoreCallback).toHaveBeenCalledWith({
 				lastFetchedCommitSha: newCommitSha
 			});
@@ -94,6 +94,7 @@ describe('FitSync', () => {
 
 			// Assert
 			expect(result).toEqual({
+				success: true,
 				ops: [{ heading: 'Local file updates:', ops: localChanges }],
 				clash: []
 			});
@@ -120,6 +121,7 @@ describe('FitSync', () => {
 
 			// Assert
 			expect(result).toEqual({
+				success: true,
 				ops: [{ heading: 'Local file updates:', ops: mockFileOps }],
 				clash: []
 			});
@@ -152,6 +154,7 @@ describe('FitSync', () => {
 
 			// Assert
 			expect(result).toEqual({
+				success: true,
 				ops: [
 					{ heading: 'Local file updates:', ops: mockLocalOps },
 					{ heading: 'Remote file updates:', ops: mockRemoteOps }
@@ -192,6 +195,7 @@ describe('FitSync', () => {
 
 			// Assert
 			expect(result).toEqual({
+				success: true,
 				ops: [
 					{ heading: 'Local file updates:', ops: conflictFileOps },
 					{ heading: 'Remote file updates:', ops: [] }
