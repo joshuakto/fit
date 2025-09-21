@@ -1,9 +1,9 @@
 import { FitSync } from './fitSync';
-import { Fit } from './fit';
+import { Fit, OctokitHttpError } from './fit';
 import { VaultOperations } from './vaultOps';
 import FitNotice from './fitNotice';
 import { LocalStores } from '../main';
-import { LocalChange, RemoteChange, FileOpRecord } from './fitTypes';
+import { LocalChange, RemoteChange, FileOpRecord, LocalFileStatus, RemoteChangeType } from './fitTypes';
 
 // Simple test doubles focused on behavior
 describe('FitSync', () => {
@@ -17,9 +17,11 @@ describe('FitSync', () => {
     remoteCommitSha?: string;
     remoteChanges?: RemoteChange[];
     remoteTreeSha?: Record<string, string>;
+    localSha?: Record<string, string>;
+    clashes?: Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}>;
   }) {
     const mockFit = {
-      computeLocalSha: jest.fn().mockResolvedValue({ 'file1.txt': 'sha1' }),
+      computeLocalSha: jest.fn().mockResolvedValue(scenario.localSha || { 'file1.txt': 'sha1' }),
       getLocalChanges: jest.fn().mockResolvedValue(scenario.localChanges || []),
       remoteUpdated: jest.fn().mockResolvedValue({
         remoteCommitSha: scenario.remoteCommitSha || 'commit123',
@@ -27,7 +29,7 @@ describe('FitSync', () => {
       }),
       getRemoteTreeSha: jest.fn().mockResolvedValue(scenario.remoteTreeSha || {}),
       getRemoteChanges: jest.fn().mockResolvedValue(scenario.remoteChanges || []),
-      getClashedChanges: jest.fn().mockReturnValue([]),
+      getClashedChanges: jest.fn().mockReturnValue(scenario.clashes || []),
       vaultOps: {} as VaultOperations,
     } as unknown as Fit;
 
@@ -52,7 +54,7 @@ describe('FitSync', () => {
       const result = await fitSync.sync(notice);
 
       // Assert
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ success: true, operations: [], conflicts: [] });
     });
 
     it('should update commit SHA when only remote commit changed', async () => {
@@ -70,7 +72,7 @@ describe('FitSync', () => {
       const result = await fitSync.sync(notice);
 
       // Assert
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ success: true, operations: [], conflicts: [] });
       expect(saveLocalStoreCallback).toHaveBeenCalledWith({
         lastFetchedCommitSha: newCommitSha
       });
@@ -94,8 +96,9 @@ describe('FitSync', () => {
 
       // Assert
       expect(result).toEqual({
-        ops: [{ heading: 'Local file updates:', ops: localChanges }],
-        clash: []
+        success: true,
+        operations: [{ heading: 'Local file updates:', ops: localChanges }],
+        conflicts: []
       });
     });
 
@@ -120,8 +123,9 @@ describe('FitSync', () => {
 
       // Assert
       expect(result).toEqual({
-        ops: [{ heading: 'Local file updates:', ops: mockFileOps }],
-        clash: []
+        success: true,
+        operations: [{ heading: 'Local file updates:', ops: mockFileOps }],
+        conflicts: []
       });
     });
 
@@ -152,11 +156,12 @@ describe('FitSync', () => {
 
       // Assert
       expect(result).toEqual({
-        ops: [
+        success: true,
+        operations: [
           { heading: 'Local file updates:', ops: mockLocalOps },
           { heading: 'Remote file updates:', ops: mockRemoteOps }
         ],
-        clash: []
+        conflicts: []
       });
     });
 
@@ -192,11 +197,12 @@ describe('FitSync', () => {
 
       // Assert
       expect(result).toEqual({
-        ops: [
+        success: true,
+        operations: [
           { heading: 'Local file updates:', ops: conflictFileOps },
           { heading: 'Remote file updates:', ops: [] }
         ],
-        clash: clashedFiles
+        conflicts: clashedFiles
       });
     });
 
@@ -218,6 +224,126 @@ describe('FitSync', () => {
       expect(mockNotice.setMessage).toHaveBeenCalled();
       expect(mockNotice.hide).not.toHaveBeenCalled(); // FitSync doesn't directly hide notices
       expect(mockNotice.mute).not.toHaveBeenCalled(); // FitSync doesn't mute notices
+    });
+
+    // Error scenario tests for improved error messaging
+    describe('error scenarios', () => {
+      it('should return network error for connection issues', async () => {
+        // Arrange - Mock a network failure
+        const mockFit = {
+          computeLocalSha: jest.fn().mockRejectedValue(new Error('fetch failed')),
+          getLocalChanges: jest.fn(),
+          remoteUpdated: jest.fn(),
+          getRemoteTreeSha: jest.fn(),
+          getRemoteChanges: jest.fn(),
+          getClashedChanges: jest.fn(),
+        } as unknown as Fit;
+
+        const mockVaultOps = {} as VaultOperations;
+        fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+        const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+        // Act
+        const result = await fitSync.sync(notice);
+
+        // Assert
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.type).toBe('network');
+          expect(result.error.message).toContain('fetch failed');
+        }
+      });
+
+      it('should return auth error for GitHub HTTP 401 errors', async () => {
+        // Arrange - Mock GitHub API 401 error using the real OctokitHttpError class
+        const githubError = new OctokitHttpError('Bad credentials', 401, 'getUser');
+        const mockFit = {
+          computeLocalSha: jest.fn().mockRejectedValue(githubError),
+          getLocalChanges: jest.fn(),
+          remoteUpdated: jest.fn(),
+          getRemoteTreeSha: jest.fn(),
+          getRemoteChanges: jest.fn(),
+          getClashedChanges: jest.fn(),
+        } as unknown as Fit;
+
+        const mockVaultOps = {} as VaultOperations;
+        fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+        const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+        // Act
+        const result = await fitSync.sync(notice);
+
+        // Assert
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.type).toBe('auth');
+          expect(result.error.message).toContain('Bad credentials');
+        }
+      });
+
+      it('should return specific error for branch not found (404 from getRef)', async () => {
+        // Arrange - Mock GitHub API 404 error from getRef (branch not found) using the real OctokitHttpError class
+        const githubError = new OctokitHttpError('Reference does not exist', 404, 'getRef');
+        const mockFit = {
+          computeLocalSha: jest.fn().mockRejectedValue(githubError),
+          getLocalChanges: jest.fn(),
+          remoteUpdated: jest.fn(),
+          getRemoteTreeSha: jest.fn(),
+          getRemoteChanges: jest.fn(),
+          getClashedChanges: jest.fn(),
+        } as unknown as Fit;
+
+        const mockVaultOps = {} as VaultOperations;
+        fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+        const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+        // Act
+        const result = await fitSync.sync(notice);
+
+        // Assert
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.type).toBe('remote_not_found');
+          expect(result.error.message).toBe('Branch not found');
+        }
+      });
+
+      it('should fail when .obsidian file deletion encounters vault operation error', async () => {
+        // Arrange - Set up scenario where remote deleted .obsidian file but local deletion fails
+        const obsidianFile = '.obsidian/community-plugins.json';
+
+        const mockFit = {
+          computeLocalSha: jest.fn().mockResolvedValue({ 'file1.txt': 'sha1' }),
+          getLocalChanges: jest.fn().mockResolvedValue([]),
+          remoteUpdated: jest.fn().mockResolvedValue({
+            remoteCommitSha: 'commit123',
+            updated: true
+          }),
+          getRemoteTreeSha: jest.fn().mockResolvedValue({}), // File deleted from remote
+          getRemoteChanges: jest.fn().mockResolvedValue([
+            { path: obsidianFile, status: 'REMOVED' as const }
+          ]),
+          getClashedChanges: jest.fn().mockReturnValue([]),
+          vaultOps: {
+            updateLocalFiles: jest.fn().mockRejectedValue(
+              new Error(`Attempting to delete ${obsidianFile} from local but not successful, file is of type object.`)
+            )
+          }
+        } as unknown as Fit;
+
+        fitSync = new FitSync(mockFit, mockFit.vaultOps, saveLocalStoreCallback);
+        const notice = { setMessage: jest.fn() } as unknown as FitNotice;
+
+        // Act
+        const result = await fitSync.sync(notice);
+
+        // Assert - Should return filesystem error for .obsidian deletion failure
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.type).toBe('filesystem');
+          expect(result.error.message).toContain('Attempting to delete .obsidian/community-plugins.json from local but not successful, file is of type object');
+        }
+      });
     });
   });
 });

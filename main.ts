@@ -17,7 +17,7 @@
  */
 
 import { Plugin, SettingTab } from 'obsidian';
-import { Fit, OctokitHttpError } from 'src/fit';
+import { Fit } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
@@ -134,54 +134,55 @@ export default class FitPlugin extends Plugin {
 		this.localStore = {...this.localStore, ...localStore}
 		await this.saveLocalStore()
 	}
-	
-	sync = async (syncNotice: FitNotice): Promise<void> => {
-		if (!this.checkSettingsConfigured()) { return }
-		await this.loadLocalStore()
-		const syncRecords = await this.fitSync.sync(syncNotice)
-		if (syncRecords) {
-			const {ops, clash} = syncRecords
-			if (this.settings.notifyConflicts) {
-				showUnappliedConflicts(clash)
-			}
-			if (this.settings.notifyChanges) {
-				showFileOpsRecord(ops)
-			}
-		}
-	}
 
-	// wrapper to convert error to notice, return true if error is caught
-	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: FitNotice, ...args: P) => Promise<R>, notice: FitNotice, ...args: P): Promise<R|true> => {
+	sync = async (syncNotice: FitNotice): Promise<boolean> => {
+		if (!this.checkSettingsConfigured()) { return false }
+
 		try {
-			const result = await func(notice, ...args)
-			return result
+			await this.loadLocalStore()
 		} catch (error) {
-			if (error instanceof OctokitHttpError) {
-				console.log("error.status")
-				console.log(error.status)
-				switch (error.source) {
-					case 'getTree':
-					case 'getRef':
-						console.error("Caught error from getRef: ", error.message)
-						if (error.status === 404) {
-							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true)
-							return true
-						}
-						notice.setMessage("Unknown error in getting ref, refers to console for details.", true)
-						return true
-					case 'getCommitTreeSha':
-					case 'getRemoteTreeSha':
-					case 'createBlob':
-					case 'createTreeNodeFromFile':
-					case 'createCommit':
-					case 'updateRef':
-					case 'getBlob':
-				}
-				return true
+			console.error("Failed to load local store:", error)
+			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+			syncNotice.setMessage(`Failed to load local data: ${errorMessage}`, true)
+			return false
+		}
+
+		const syncResult = await this.fitSync.sync(syncNotice)
+
+		if (syncResult.success) {
+			if (this.settings.notifyConflicts && syncResult.conflicts.length > 0) {
+				showUnappliedConflicts(syncResult.conflicts)
 			}
-			console.error("Caught unknown error: ", error)
-			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
+			if (this.settings.notifyChanges && syncResult.operations.length > 0) {
+				showFileOpsRecord(syncResult.operations)
+			}
 			return true
+		} else {
+			// Handle different error types with specific messages
+			switch (syncResult.error.type) {
+				case 'network':
+					syncNotice.setMessage(`Network error: ${syncResult.error.message}. Check your internet connection.`, true)
+					break
+				case 'auth':
+					syncNotice.setMessage(`Authentication failed: ${syncResult.error.message}. Check your GitHub token.`, true)
+					break
+				case 'remote_not_found':
+					syncNotice.setMessage(`Remote not found: ${syncResult.error.message}. Check your repo settings.`, true)
+					break
+				case 'api_rate_limit':
+					syncNotice.setMessage(`GitHub API rate limit exceeded: ${syncResult.error.message}. Try again later.`, true)
+					break
+				case 'conflict':
+					syncNotice.setMessage(`Sync conflicts detected: ${syncResult.error.message}. Resolve conflicts and try again.`, true)
+					break
+				case 'filesystem':
+					syncNotice.setMessage(`File system error: ${syncResult.error.message}. Check file permissions.`, true)
+					break
+				default:
+					syncNotice.setMessage(`Sync failed: ${syncResult.error.message}`, true)
+					break
+			}
+			return false
 		}
 	}
 
@@ -191,14 +192,15 @@ export default class FitPlugin extends Plugin {
 		this.syncing = true
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
-		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
+		const syncSuccess = await this.sync(syncNotice);
+		// TODO: Consider wrapping this in try-catch to ensure spinner always stops 
+		// even if sync() throws an unexpected exception
 		this.fitSyncRibbonIconEl.removeClass('animate-icon');
-		if (errorCaught === true) {
+		if (syncSuccess !== true) {
 			syncNotice.remove("error")
-			this.syncing = false
-			return
+		} else {
+			syncNotice.remove("done")
 		}
-		syncNotice.remove("done")
 		this.syncing = false
 	}
 
@@ -218,8 +220,8 @@ export default class FitPlugin extends Plugin {
 			0, 
 			this.settings.autoSync === "muted"
 		);
-		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
-		if (errorCaught === true) {
+		const syncSuccess = await this.sync(syncNotice);
+		if (syncSuccess !== true) {
 			syncNotice.remove("error")
 		} else {
 			syncNotice.remove()
