@@ -3,13 +3,14 @@
     "parser": "@typescript-eslint/parser",
     "env": { "node": true },
     "plugins": [
-      "@typescript-eslint"
+      "@typescript-eslint",
+      "@stylistic"
     ],
     "extends": [
       "eslint:recommended",
       "plugin:@typescript-eslint/eslint-recommended",
       "plugin:@typescript-eslint/recommended"
-    ], 
+    ],
     "parserOptions": {
         "sourceType": "module"
     },
@@ -20,6 +21,9 @@
       "no-prototype-builtins": "off",
       "@typescript-eslint/no-empty-function": "off",
       "no-trailing-spaces": "warn",
-      "eol-last": "warn"
-    } 
+      "eol-last": "warn",
+      "@stylistic/no-mixed-spaces-and-tabs": ["warn"],
+      "@stylistic/semi": ["warn", "always"],
+      "@stylistic/indent": ["warn", "tab"]
+    }
   }
