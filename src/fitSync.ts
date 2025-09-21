@@ -305,9 +305,9 @@ export class FitSync implements IFitSync {
 				try {
 					fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback)
 				} catch (error) {
-					const syncError = SyncErrors.filesystem(error instanceof Error ? error.message : 'Filesystem operation failed')
-					console.error("Sync operation failed:", error)
-					return { success: false, error: syncError }
+					const errorMessage = error instanceof Error ? error.message : 'Filesystem operation failed'
+					console.error(`Sync operation failed - File system error: ${errorMessage}`)
+					return { success: false, error: SyncErrors.filesystem(errorMessage) }
 			}
 				syncNotice.setMessage("Sync successful")
 				return { success: true, operations: [{ heading: "Local file updates:", ops: fileOpsRecord }], conflicts: [] }
@@ -330,7 +330,7 @@ export class FitSync implements IFitSync {
 				})
 				return { success: true, operations: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], conflicts: [] }
 			}
-			console.error("Sync operation failed: Failed to push local changes")
+			console.error("Sync operation failed - Failed to push local changes")
 			return { success: false, error: SyncErrors.unknown("Failed to push local changes") }
 		}
 
@@ -367,36 +367,39 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-            console.error("Sync operation failed: Unknown sync status")
+            console.error("Sync operation failed - Unknown sync status")
             return { success: false, error: SyncErrors.unknown("Unknown sync status") }
         } catch (error) {
-            console.error("Sync operation failed:", error)
-
             // Map specific error types to appropriate SyncError
             if (error instanceof OctokitHttpError) {
                 if (error.status === 401) {
+                    console.error(`Sync operation failed - Authentication failed: ${error.message}`)
                     return { success: false, error: SyncErrors.auth(error.message) }
                 }
                 if (error.status === 404) {
-                    let context: string
                     if (error.source === 'getRef') {
-                        context = `Branch or repository not found while calling ${error.source} (check repository name and branch name in settings)`
+                        console.error(`Sync operation failed - Branch not found: ${error.message}`)
+                        return { success: false, error: SyncErrors.repoNotFound(`Branch not found. Check repository name and branch name in settings.`) }
                     } else {
-                        context = `Repository not found while calling ${error.source} (check repository name and access permissions)`
+                        console.error(`Sync operation failed - Repository not found: ${error.message}`)
+                        return { success: false, error: SyncErrors.repoNotFound(`Repository not found. Check repository name and access permissions.`) }
                     }
-                    return { success: false, error: SyncErrors.repoNotFound(`${context}, error from GitHub: ${error.message}`) }
                 }
                 // Other HTTP errors from GitHub API
-                return { success: false, error: SyncErrors.network(`GitHub API error while calling ${error.source} (${error.status}): ${error.message}`) }
+                console.error(`Sync operation failed - GitHub API error (${error.status}): ${error.message}`)
+                return { success: false, error: SyncErrors.network(`GitHub API error (${error.status}): ${error.message}`) }
             }
 
             if (error instanceof Error) {
                 if (error.message.includes('network') || error.message.includes('fetch')) {
+                    console.error(`Sync operation failed - Network error: ${error.message}`)
                     return { success: false, error: SyncErrors.network(error.message) }
                 }
             }
 
-            return { success: false, error: SyncErrors.unknown(error instanceof Error ? error.message : 'Unknown error occurred') }
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+            console.error(`Sync operation failed - Unknown error: ${errorMessage}`)
+            return { success: false, error: SyncErrors.unknown(errorMessage) }
         }
     }
 }

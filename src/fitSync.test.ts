@@ -304,9 +304,8 @@ describe('FitSync', () => {
         expect(result.success).toBe(false);
         if (!result.success) {
           expect(result.error.type).toBe('repo_not_found');
-          expect(result.error.message).toContain('Branch or repository not found while calling getRef');
-          expect(result.error.message).toContain('check repository name and branch name in settings');
-          expect(result.error.message).toContain('Reference does not exist');
+          expect(result.error.message).toContain('Branch not found');
+          expect(result.error.message).toContain('Check repository name and branch name in settings');
         }
       });
 
