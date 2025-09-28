@@ -37,6 +37,7 @@ type OctokitCallMethods = {
 	getUser: () => Promise<{owner: string, avatarUrl: string}>
 	getRepos: () => Promise<string[]>
 	getRef: (ref: string) => Promise<string>
+	getRepo: () => Promise<void>
 	getTree: (tree_sha: string) => Promise<TreeNode[]>
 	getCommitTreeSha: (ref: string) => Promise<string>
 	getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
@@ -253,6 +254,22 @@ export class Fit implements IFit {
 			return response.map(r => r.name);
 		} catch (error) {
 			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
+		}
+	}
+
+	/**
+     * Get repository info - throws OctokitHttpError with status codes
+     * Used to check if repository exists and is accessible
+     */
+	async getRepo(): Promise<void> {
+		try {
+			await this.octokit.request(`GET /repos/{owner}/{repo}`, {
+				owner: this.owner,
+				repo: this.repo,
+				headers: this.headers
+			});
+		} catch (error) {
+			throw new OctokitHttpError(error.message, error.status, "getRepo");
 		}
 	}
 
