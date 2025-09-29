@@ -18,7 +18,8 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
+        # Corresponds to Obsidian 1.4.0
+        node-version: '18.x'
         cache: 'npm'
 
     - name: Install dependencies
@@ -31,7 +32,7 @@ jobs:
 
     - name: Run TypeScript compiler
       id: typecheck
-      run: npm run build
+      run: npm run typecheck
       continue-on-error: true
 
     - name: Run tests with coverage
@@ -52,8 +53,10 @@ jobs:
 
         if [[ "$lint_status" == "success" && "$typecheck_status" == "success" && "$test_status" == "success" ]]; then
           overall_message="🎉 **All checks passed!** Great work on maintaining code quality."
+        elif [[ "$typecheck_status" != "success" || "$test_status" != "success" ]]; then
+          overall_message="🚫 **Critical failures detected.**"
         else
-          overall_message="⚠️ **Some checks failed.** Please review the failed checks above and address any issues."
+          overall_message="⚠️ **Linting issues detected.** Please fix code style issues."
         fi
 
         cat << EOF > pr_comment.md
@@ -81,3 +84,24 @@ jobs:
         edit-mode: replace
         token: ${{ secrets.GITHUB_TOKEN }}
       if: github.event.pull_request.head.repo.full_name == github.repository
+
+    - name: Log comment status
+      run: |
+        if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+          echo "✅ PR comment posted successfully"
+        else
+          echo "ℹ️ Skipped PR comment - external fork lacks write permissions"
+          echo "Check results above: Lint: ${{ steps.lint.outcome }}, TypeCheck: ${{ steps.typecheck.outcome }}, Tests: ${{ steps.test.outcome }}"
+        fi
+
+    - name: Fail workflow if critical checks failed
+      run: |
+        if [[ "${{ steps.test.outcome }}" != "success" ]]; then
+          echo "❌ Tests failed - blocking PR merge"
+          exit 1
+        fi
+        if [[ "${{ steps.typecheck.outcome }}" != "success" ]]; then
+          echo "❌ TypeScript compilation failed - blocking PR merge"
+          exit 1
+        fi
+        echo "✅ All critical checks passed"

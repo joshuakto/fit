@@ -380,7 +380,7 @@ export class Fit implements IFit {
 	async createTree(
 		treeNodes: Array<TreeNode>,
 		base_tree_sha: string):
-		Promise<string> {
+	Promise<string> {
 		const {data: newTree} = await this.octokit.request(
 			`POST /repos/{owner}/{repo}/git/trees`,
 			{
