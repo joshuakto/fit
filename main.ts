@@ -51,8 +51,8 @@ const DEFAULT_SETTINGS: FitSettings = {
 	checkEveryXMinutes: 5,
 	autoSync: "off",
 	notifyChanges: true,
-	notifyConflicts: true	
-}
+	notifyConflicts: true
+};
 
 
 /**
@@ -69,22 +69,22 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 	localSha: {},
 	lastFetchedCommitSha: null,
 	lastFetchedRemoteSha: {}
-}
+};
 
 
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
-	settingTab: FitSettingTab
-	localStore: LocalStores
+	settingTab: FitSettingTab;
+	localStore: LocalStores;
 	fit: Fit;
 	vaultOps: VaultOperations;
-	fitSync: FitSync
-	autoSyncing: boolean
-	syncing: boolean
-	autoSyncIntervalId: number | null
-	fitPullRibbonIconEl: HTMLElement
-	fitPushRibbonIconEl: HTMLElement
-	fitSyncRibbonIconEl: HTMLElement
+	fitSync: FitSync;
+	autoSyncing: boolean;
+	syncing: boolean;
+	autoSyncIntervalId: number | null;
+	fitPullRibbonIconEl: HTMLElement;
+	fitPushRibbonIconEl: HTMLElement;
+	fitSyncRibbonIconEl: HTMLElement;
 
 	// if settings not configured, open settings to let user quickly setup
 	// Note: this is not a stable feature and might be disabled at any point in the future
@@ -95,80 +95,80 @@ export default class FitPlugin extends Plugin {
 				open(): void;
 				openTabById(id: string): SettingTab | null;
 			}
-		}
-		appWithSetting.setting.open()
-		appWithSetting.setting.openTabById("fit")
+		};
+		appWithSetting.setting.open();
+		appWithSetting.setting.openTabById("fit");
 	}
 
 	checkSettingsConfigured(): boolean {
-		const actionItems: Array<string> = []
+		const actionItems: Array<string> = [];
 		if (this.settings.pat === "") {
-			actionItems.push("provide GitHub personal access token")
+			actionItems.push("provide GitHub personal access token");
 		}
 		if (this.settings.owner === "") {
-			actionItems.push("authenticate with personal access token")
+			actionItems.push("authenticate with personal access token");
 		}
 		if (this.settings.repo === "") {
-			actionItems.push("select a repository to sync to")
+			actionItems.push("select a repository to sync to");
 		}
 		if (this.settings.branch === "") {
-			actionItems.push("select a branch to sync to")	
+			actionItems.push("select a branch to sync to");
 		}
 
 		if (actionItems.length > 0) {
-			const initialMessage = "Settings not configured, please complete the following action items:\n" + actionItems.join("\n")
-			const settingsNotice = new FitNotice(this.fit, ["static"], initialMessage)
-			this.openPluginSettings()
-			settingsNotice.remove("static")
-			return false
+			const initialMessage = "Settings not configured, please complete the following action items:\n" + actionItems.join("\n");
+			const settingsNotice = new FitNotice(this.fit, ["static"], initialMessage);
+			this.openPluginSettings();
+			settingsNotice.remove("static");
+			return false;
 
 		}
 
-		this.fit.loadSettings(this.settings)
-		return true
+		this.fit.loadSettings(this.settings);
+		return true;
 	}
 
 	// use of arrow functions to ensure this refers to the FitPlugin class
 	saveLocalStoreCallback = async (localStore: Partial<LocalStores>): Promise<void> => {
-		await this.loadLocalStore()
-		this.localStore = {...this.localStore, ...localStore}
-		await this.saveLocalStore()
-	}
-	
+		await this.loadLocalStore();
+		this.localStore = {...this.localStore, ...localStore};
+		await this.saveLocalStore();
+	};
+
 	sync = async (syncNotice: FitNotice): Promise<void> => {
-		if (!this.checkSettingsConfigured()) { return }
-		await this.loadLocalStore()
-		const syncRecords = await this.fitSync.sync(syncNotice)
+		if (!this.checkSettingsConfigured()) { return; }
+		await this.loadLocalStore();
+		const syncRecords = await this.fitSync.sync(syncNotice);
 		if (syncRecords) {
-			const {ops, clash} = syncRecords
+			const {ops, clash} = syncRecords;
 			if (this.settings.notifyConflicts) {
-				showUnappliedConflicts(clash)
+				showUnappliedConflicts(clash);
 			}
 			if (this.settings.notifyChanges) {
-				showFileOpsRecord(ops)
+				showFileOpsRecord(ops);
 			}
 		}
-	}
+	};
 
 	// wrapper to convert error to notice, return true if error is caught
 	catchErrorAndNotify = async <P extends unknown[], R>(func: (notice: FitNotice, ...args: P) => Promise<R>, notice: FitNotice, ...args: P): Promise<R|true> => {
 		try {
-			const result = await func(notice, ...args)
-			return result
+			const result = await func(notice, ...args);
+			return result;
 		} catch (error) {
 			if (error instanceof OctokitHttpError) {
-				console.log("error.status")
-				console.log(error.status)
+				console.log("error.status");
+				console.log(error.status);
 				switch (error.source) {
 					case 'getTree':
 					case 'getRef':
-						console.error("Caught error from getRef: ", error.message)
+						console.error("Caught error from getRef: ", error.message);
 						if (error.status === 404) {
-							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true)
-							return true
+							notice.setMessage("Failed to get ref, make sure your repo name and branch name are set correctly.", true);
+							return true;
 						}
-						notice.setMessage("Unknown error in getting ref, refers to console for details.", true)
-						return true
+						notice.setMessage("Unknown error in getting ref, refers to console for details.", true);
+						return true;
 					case 'getCommitTreeSha':
 					case 'getRemoteTreeSha':
 					case 'createBlob':
@@ -177,30 +177,30 @@ export default class FitPlugin extends Plugin {
 					case 'updateRef':
 					case 'getBlob':
 				}
-				return true
+				return true;
 			}
-			console.error("Caught unknown error: ", error)
-			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true)
-			return true
+			console.error("Caught unknown error: ", error);
+			notice.setMessage("Unable to sync, if you are not connected to the internet, turn off auto sync.", true);
+			return true;
 		}
-	}
+	};
 
 	// Shared method for both ribbon icon and command palette
 	performManualSync = async (): Promise<void> => {
-		if ( this.syncing || this.autoSyncing ) { return }
-		this.syncing = true
+		if ( this.syncing || this.autoSyncing ) { return; }
+		this.syncing = true;
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
 		this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		if (errorCaught === true) {
-			syncNotice.remove("error")
-			this.syncing = false
-			return
+			syncNotice.remove("error");
+			this.syncing = false;
+			return;
 		}
-		syncNotice.remove("done")
-		this.syncing = false
-	}
+		syncNotice.remove("done");
+		this.syncing = false;
+	};
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
@@ -209,22 +209,22 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async autoSync() {
-		if ( this.syncing || this.autoSyncing ) { return }
-		this.autoSyncing = true
+		if ( this.syncing || this.autoSyncing ) { return; }
+		this.autoSyncing = true;
 		const syncNotice = new FitNotice(
-			this.fit, 
-			["loading"], 
-			"Auto syncing", 
-			0, 
+			this.fit,
+			["loading"],
+			"Auto syncing",
+			0,
 			this.settings.autoSync === "muted"
 		);
 		const errorCaught = await this.catchErrorAndNotify(this.sync, syncNotice);
 		if (errorCaught === true) {
-			syncNotice.remove("error")
+			syncNotice.remove("error");
 		} else {
-			syncNotice.remove()
+			syncNotice.remove();
 		}
-		this.autoSyncing = false
+		this.autoSyncing = false;
 	}
 
 	async autoUpdate() {
@@ -241,30 +241,30 @@ export default class FitPlugin extends Plugin {
 			}
 		}
 	}
-	
+
 
 	async startOrUpdateAutoSyncInterval() {
-        // Clear existing interval if it exists
-        if (this.autoSyncIntervalId !== null) {
-            window.clearInterval(this.autoSyncIntervalId);
-            this.autoSyncIntervalId = null;
-        }
+		// Clear existing interval if it exists
+		if (this.autoSyncIntervalId !== null) {
+			window.clearInterval(this.autoSyncIntervalId);
+			this.autoSyncIntervalId = null;
+		}
 
-        // Check remote every X minutes (set in settings)
-        this.autoSyncIntervalId = window.setInterval(async () => {
+		// Check remote every X minutes (set in settings)
+		this.autoSyncIntervalId = window.setInterval(async () => {
 			await this.autoUpdate();
-        }, this.settings.checkEveryXMinutes * 60 * 1000);
-    }
+		}, this.settings.checkEveryXMinutes * 60 * 1000);
+	}
 
 	async onload() {
 		await this.loadSettings();
 		await this.loadLocalStore();
-		this.vaultOps = new VaultOperations(this.app.vault)
-		this.fit = new Fit(this.settings, this.localStore, this.vaultOps)
-		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback)
-		this.syncing = false
-		this.autoSyncing = false
-		this.settingTab = new FitSettingTab(this.app, this)
+		this.vaultOps = new VaultOperations(this.app.vault);
+		this.fit = new Fit(this.settings, this.localStore, this.vaultOps);
+		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback);
+		this.syncing = false;
+		this.autoSyncing = false;
+		this.settingTab = new FitSettingTab(this.app, this);
 		this.loadRibbonIcons();
 
 		// Add command to command palette for fit sync
@@ -273,30 +273,30 @@ export default class FitPlugin extends Plugin {
 			name: 'Fit Sync',
 			callback: this.performManualSync
 		});
-		
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new FitSettingTab(this.app, this));
-		
+
 		// register interval to repeat auto check
 		await this.startOrUpdateAutoSyncInterval();
 	}
 
 	onunload() {
 		if (this.autoSyncIntervalId !== null) {
-            window.clearInterval(this.autoSyncIntervalId);
-            this.autoSyncIntervalId = null;
-        }
+			window.clearInterval(this.autoSyncIntervalId);
+			this.autoSyncIntervalId = null;
+		}
 	}
 
 	async loadSettings() {
-		const userSetting = await this.loadData()
+		const userSetting = await this.loadData();
 		const settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
-					} 
+					}
 					else if (key === "notifyChanges" || key === "notifyConflicts") {
 						obj[key] = Boolean(settings[key]);
 					}
@@ -306,7 +306,7 @@ export default class FitPlugin extends Plugin {
 				}
 				return obj;
 			}, {} as FitSettings);
-		this.settings = settingsObj
+		this.settings = settingsObj;
 	}
 
 	async loadLocalStore() {
@@ -318,15 +318,15 @@ export default class FitPlugin extends Plugin {
 				}
 				return obj;
 			}, {} as LocalStores);
-		this.localStore = localStoreObj
+		this.localStore = localStoreObj;
 	}
 
 	// allow saving of local stores property, passed in properties will override existing stored value
 	async saveLocalStore() {
 		const data = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
-		await this.saveData({...data, ...this.localStore})
+		await this.saveData({...data, ...this.localStore});
 		// sync local store to Fit class as well upon saving
-		this.fit.loadLocalStore(this.localStore)
+		this.fit.loadLocalStore(this.localStore);
 	}
 
 	async saveSettings() {
@@ -335,6 +335,6 @@ export default class FitPlugin extends Plugin {
 		// update auto sync interval with new setting
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
-		this.fit.loadSettings(this.settings)
+		this.fit.loadSettings(this.settings);
 	}
 }
