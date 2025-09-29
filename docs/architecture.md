@@ -39,8 +39,11 @@ graph TB
 
 ### Sync Engine (fit.ts, fitSync.ts)
 **Purpose**: Core synchronization logic
-- **Fit**: GitHub API operations, change detection, conflict identification
+- **Fit**: GitHub API operations via Octokit, change detection, conflict identification
 - **FitSync**: High-level sync workflow coordination and conflict resolution
+
+**GitHub API Integration**:
+- Uses `@octokit/core` for all GitHub API communications with automatic retry handling
 
 ### Support Systems
 - **VaultOperations**: Abstracts Obsidian vault file operations
@@ -140,7 +143,7 @@ Obsidian Vault:
 ### Scalability Considerations
 - **Large Repositories**: Handles 1000+ files through paginated API calls
 - **Large Files**: Supports files up to GitHub's 100MB limit
-- **Rate Limiting**: Respects GitHub API rate limits with proper error handling
+- **Rate Limiting**: Handled automatically by GitHub API client
 
 ## Extension Points
 
