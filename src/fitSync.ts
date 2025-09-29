@@ -7,6 +7,8 @@ import { FitPush } from "./fitPush";
 import { VaultOperations } from "./vaultOps";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
+import { SyncResult, SyncErrors } from "./syncResult";
+import { OctokitHttpError } from "./fit";
 
 export interface IFitSync {
 	fit: Fit
@@ -279,79 +281,110 @@ export class FitSync implements IFitSync {
 		return {unresolvedFiles, localOps: ops, remoteOps: pushedChanges};
 	}
 
-	async sync(syncNotice: FitNotice): Promise<{ops: Array<{heading: string, ops: FileOpRecord[]}>, clash: ClashStatus[]} | void> {
-		syncNotice.setMessage("Performing pre sync checks.");
-		const preSyncCheckResult = await this.performPreSyncChecks();
+	async sync(syncNotice: FitNotice): Promise<SyncResult> {
+		try {
+			syncNotice.setMessage("Performing pre sync checks.");
+			const preSyncCheckResult = await this.performPreSyncChecks();
 
-		// convert to switch statement later on for better maintainability
-		if (preSyncCheckResult.status === "inSync") {
-			syncNotice.setMessage("Sync successful");
-			return;
-		}
-
-		if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
-			const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate;
-			await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha});
-			syncNotice.setMessage("Sync successful");
-			return;
-		}
-
-		const remoteUpdate = preSyncCheckResult.remoteUpdate;
-		if (preSyncCheckResult.status === "onlyRemoteChanged") {
-			const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
-			syncNotice.setMessage("Sync successful");
-			return {ops: [{heading: "Local file updates:", ops: fileOpsRecord}], clash: []};
-		}
-
-		const {localChanges, localTreeSha} = preSyncCheckResult;
-		const localUpdate = {
-			localChanges,
-			parentCommitSha: remoteUpdate.latestRemoteCommitSha
-		};
-		if (preSyncCheckResult.status === "onlyLocalChanged") {
-			syncNotice.setMessage("Uploading local changes");
-			const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
-			syncNotice.setMessage("Sync successful");
-			if (pushResult) {
-				await this.saveLocalStoreCallback({
-					localSha: localTreeSha,
-					lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
-					lastFetchedCommitSha: pushResult.lastFetchedCommitSha
-				});
-				return {ops: [{heading: "Local file updates:", ops: pushResult.pushedChanges}], clash: []};
+			// convert to switch statement later on for better maintainability
+			if (preSyncCheckResult.status === "inSync") {
+				syncNotice.setMessage("Sync successful");
+				return { success: true, ops: [], clash: [] };
 			}
-			return;
-		}
 
-		// do both pull and push (orders of execution different from pullRemoteToLocal and
-		// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original
-		// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-		//  please open an issue on the fit repo
-		if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-			const {localOps, remoteOps} = await this.syncCompatibleChanges(
-				localUpdate, remoteUpdate, syncNotice);
-			return ({
-				ops: [
-					{heading: "Local file updates:", ops: localOps},
-					{heading: "Remote file updates:", ops: remoteOps},
-				],
-				clash: []
-			});
-		}
+			if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
+				const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate;
+				await this.saveLocalStoreCallback({lastFetchedCommitSha: latestRemoteCommitSha});
+				syncNotice.setMessage("Sync successful");
+				return { success: true, ops: [], clash: [] };
+			}
 
-		if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
-			const conflictResolutionResult = await this.syncWithConflicts(
-				localUpdate.localChanges, remoteUpdate, syncNotice);
-			if (conflictResolutionResult) {
-				const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult;
-				return ({
-					ops:[
+			const remoteUpdate = preSyncCheckResult.remoteUpdate;
+			if (preSyncCheckResult.status === "onlyRemoteChanged") {
+				try {
+					const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
+					syncNotice.setMessage("Sync successful");
+					return { success: true, ops: [{ heading: "Local file updates:", ops: fileOpsRecord }], clash: [] };
+				} catch (error) {
+					const errorMessage = error instanceof Error ? error.message : 'Filesystem operation failed';
+					console.error(`Sync operation failed - File system error: ${errorMessage}`);
+					// TODO: Create 'filesystem' error type when improving error messaging
+					return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error instanceof Error ? error : new Error(errorMessage) }) };
+				}
+			}
+
+			const {localChanges, localTreeSha} = preSyncCheckResult;
+			const localUpdate = {
+				localChanges,
+				parentCommitSha: remoteUpdate.latestRemoteCommitSha
+			};
+			if (preSyncCheckResult.status === "onlyLocalChanged") {
+				syncNotice.setMessage("Uploading local changes");
+				const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
+				syncNotice.setMessage("Sync successful");
+				if (pushResult) {
+					await this.saveLocalStoreCallback({
+						localSha: localTreeSha,
+						lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
+						lastFetchedCommitSha: pushResult.lastFetchedCommitSha
+					});
+					return { success: true, ops: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], clash: [] };
+				}
+				return { success: true, ops: [], clash: [] };
+			}
+
+			// do both pull and push (orders of execution different from pullRemoteToLocal and
+			// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original
+			// state if the transaction failed) If you have ideas on how to make this more transaction-like,
+			//  please open an issue on the fit repo
+			if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
+				const {localOps, remoteOps} = await this.syncCompatibleChanges(
+					localUpdate, remoteUpdate, syncNotice);
+				return {
+					success: true,
+					ops: [
 						{heading: "Local file updates:", ops: localOps},
 						{heading: "Remote file updates:", ops: remoteOps},
 					],
-					clash: unresolvedFiles
-				});
+					clash: []
+				};
 			}
+
+			if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
+				const conflictResolutionResult = await this.syncWithConflicts(
+					localUpdate.localChanges, remoteUpdate, syncNotice);
+				if (conflictResolutionResult) {
+					const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult;
+					return {
+						success: true,
+						ops: [
+							{heading: "Local file updates:", ops: localOps},
+							{heading: "Remote file updates:", ops: remoteOps},
+						],
+						clash: unresolvedFiles
+					};
+				}
+			}
+
+			// Fallback case - shouldn't reach here
+			console.error("Sync operation failed - Unknown sync status");
+			return { success: false, error: SyncErrors.unknown("Unknown sync status") };
+
+		} catch (error) {
+			// Handle unexpected errors that escape from individual sync operations
+			const errorObj = error as Error;
+
+			if (error instanceof OctokitHttpError) {
+				// GitHub API 404 errors for repository/branch access - preserve existing behavior
+				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
+					return { success: false, error: SyncErrors.remoteNotFound(errorObj.message, { source: error.source, originalError: errorObj }) };
+				}
+				// All other GitHub API errors treated as unknown (same message as previous error handling)
+				return { success: false, error: SyncErrors.unknown(errorObj.message, { originalError: errorObj }) };
+			}
+
+			// All other errors - unknown type
+			return { success: false, error: SyncErrors.unknown(errorObj.message, { originalError: errorObj }) };
 		}
 	}
 }
