@@ -422,7 +422,16 @@ export class FitSync implements IFitSync {
 
 				// GitHub API 404 errors for repository/branch access
 				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
-					const detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
+					let detailMessage;
+					// Try to distinguish between repo and branch errors
+					try {
+						detailMessage = await this.fit.checkRepoExists() ?
+							`Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`
+							: `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
+					} catch (_repoError) {
+						// For checkRepoExists errors (403, network, etc.), fall back to generic message
+						detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
+					}
 					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
 				}
 

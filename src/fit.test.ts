@@ -259,14 +259,14 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Repository \'testuser/valid-repo\' or branch \'nonexistent-branch\' not found', { source: 'getRef', originalError: new Error('Branch not found') })
+				error: SyncErrors.remoteNotFound('Branch \'nonexistent-branch\' not found on repository \'testuser/valid-repo\'', { source: 'getRef', originalError: new Error('Branch not found') })
 			}
 		);
 
 		// Verify error notice was shown with user-friendly message
 		expect(syncFailed).toBe(true);
 		expect(notice.messages[1]).toEqual({
-			message: "Sync failed: Repository 'testuser/valid-repo' or branch 'nonexistent-branch' not found. Check your repo and branch settings.",
+			message: "Sync failed: Branch 'nonexistent-branch' not found on repository 'testuser/valid-repo'. Check your repo and branch settings.",
 			isError: true
 		});
 		expect(notice.states).toContain('loading');
@@ -288,14 +288,14 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Repository \'testuser/nonexistent-repo\' or branch \'main\' not found', { originalError: new Error('Repository not found'), source: 'getTree' })
+				error: SyncErrors.remoteNotFound('Repository \'testuser/nonexistent-repo\' not found', { originalError: new Error('Repository not found'), source: 'getTree' })
 			}
 		);
 
 		// Verify error notice was shown with user-friendly message
 		expect(syncFailed).toBe(true);
 		expect(notice.messages[1]).toEqual({
-			message: "Sync failed: Repository 'testuser/nonexistent-repo' or branch 'main' not found. Check your repo and branch settings.",
+			message: "Sync failed: Repository 'testuser/nonexistent-repo' not found. Check your repo and branch settings.",
 			isError: true
 		});
 		expect(notice.states).toContain('loading');

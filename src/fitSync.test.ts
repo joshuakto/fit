@@ -293,7 +293,23 @@ describe('FitSync', () => {
 				}
 			});
 
-			it('should correctly classify remote not found errors with operation context', async () => {
+			it.each([
+				{
+					scenario: 'branch not found (repo exists)',
+					checkRepoExistsMock: jest.fn().mockResolvedValue(true), // checkRepoExists returns true
+					expectedMessage: 'Branch \'main\' not found on repository \'testuser/testrepo\''
+				},
+				{
+					scenario: 'repository not found',
+					checkRepoExistsMock: jest.fn().mockResolvedValue(false), // checkRepoExists returns false
+					expectedMessage: 'Repository \'testuser/testrepo\' not found'
+				},
+				{
+					scenario: 'repository access denied during check',
+					checkRepoExistsMock: jest.fn().mockRejectedValue(new OctokitHttpError('Forbidden', 403, 'checkRepoExists')), // checkRepoExists throws
+					expectedMessage: 'Repository \'testuser/testrepo\' or branch \'main\' not found'
+				}
+			])('should correctly classify remote not found errors: $scenario', async ({ checkRepoExistsMock, expectedMessage }) => {
 				// Arrange - Mock GitHub API 404 error from getRef operation
 				const githubError = new OctokitHttpError('Not Found - https://docs.github.com/rest/git/refs#get-a-reference', 404, 'getRef');
 				const mockFit = {
@@ -306,6 +322,7 @@ describe('FitSync', () => {
 					getRemoteTreeSha: jest.fn(),
 					getRemoteChanges: jest.fn(),
 					getClashedChanges: jest.fn(),
+					checkRepoExists: checkRepoExistsMock,
 				} as unknown as Fit;
 
 				const mockVaultOps = {} as VaultOperations;
@@ -320,7 +337,7 @@ describe('FitSync', () => {
 				if (!result.success) {
 					expect(result.error).toEqual({
 						type: 'remote_not_found',
-						detailMessage: 'Repository \'testuser/testrepo\' or branch \'main\' not found',
+						detailMessage: expectedMessage,
 						details: {
 							source: 'getRef',
 							originalError: githubError
