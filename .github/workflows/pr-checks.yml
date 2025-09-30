@@ -28,7 +28,7 @@ jobs:
     - name: Run ESLint
       id: lint
       run: |
-        npm run lint -- --format=compact
+        npm run lint
         exit_code=$?
         if [ $exit_code -eq 1 ]; then
           echo "lint_result=success_with_warnings" >> $GITHUB_OUTPUT
