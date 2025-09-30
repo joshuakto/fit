@@ -1,0 +1,10 @@
+{
+  "ignores": [
+    "@types/jest",
+    "tslib"
+  ],
+  "ignore-patterns": [
+    "main.js",
+    "coverage"
+  ]
+}

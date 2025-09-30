@@ -57,7 +57,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				await this.refreshFields('repo(0)');
 			}
 			this.authenticating = false;
-		} catch (error) {
+		} catch (_error) {
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.addClass('error');
 			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
