@@ -434,14 +434,28 @@ export class Fit implements IFit {
 
 	/**
      * Generate user-friendly error message from structured sync error
-     * Maintains same behavior as the previous error messaging for transition period
      */
 	getSyncErrorMessage(syncError: SyncError): string {
-		// Match behavior of previous error messaging - only two messages
-		if (syncError.type === 'remote_not_found' &&
-            (syncError.details?.source === 'getRef' || syncError.details?.source === 'getTree')) {
-			return "Failed to get ref, make sure your repo name and branch name are set correctly.";
+		// Return user-friendly message based on error type
+		switch (syncError.type) {
+			case 'network':
+				return `${syncError.detailMessage}. Please check your internet connection.`;
+
+			case 'remote_access':
+				return `${syncError.detailMessage}. Check your GitHub personal access token.`;
+
+			case 'remote_not_found':
+				return `${syncError.detailMessage}. Check your repo and branch settings.`;
+
+			case 'filesystem': {
+				return `File system error: ${syncError.detailMessage}`;
+			}
+
+			case 'unknown':
+			case 'api_error':
+			default:
+				return syncError.detailMessage;
 		}
-		return "Unable to sync, if you are not connected to the internet, turn off auto sync.";
 	}
+
 }

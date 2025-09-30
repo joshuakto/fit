@@ -150,8 +150,16 @@ export default class FitPlugin extends Plugin {
 			return true;
 		} else {
 			// Generate user-friendly message from structured sync error
-			const userMessage = this.fit.getSyncErrorMessage(syncResult.error);
-			syncNotice.setMessage(userMessage, true);
+			const errorMessage = this.fit.getSyncErrorMessage(syncResult.error);
+			const fullMessage = `Sync failed: ${errorMessage}`;
+
+			// Log detailed error information for debugging
+			console.error(fullMessage, {
+				type: syncResult.error.type,
+				...(syncResult.error.details || {})
+			});
+
+			syncNotice.setMessage(fullMessage, true);
 			return false;
 		}
 	};
