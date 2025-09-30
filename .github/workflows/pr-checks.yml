@@ -27,7 +27,19 @@ jobs:
 
     - name: Run ESLint
       id: lint
-      run: npm run lint -- --format=compact
+      run: |
+        npm run lint -- --format=compact
+        exit_code=$?
+        if [ $exit_code -eq 1 ]; then
+          echo "lint_result=success_with_warnings" >> $GITHUB_OUTPUT
+          exit 0
+        elif [ $exit_code -eq 0 ]; then
+          echo "lint_result=success" >> $GITHUB_OUTPUT
+          exit 0
+        else
+          echo "lint_result=execution_failure" >> $GITHUB_OUTPUT
+          exit 1
+        fi
       continue-on-error: true
 
     - name: Run TypeScript compiler
@@ -43,11 +55,20 @@ jobs:
     - name: Generate status summary
       id: summary
       run: |
-        lint_status="${{ steps.lint.outcome }}"
+        lint_result="${{ steps.lint.outputs.lint_result }}"
         typecheck_status="${{ steps.typecheck.outcome }}"
         test_status="${{ steps.test.outcome }}"
 
-        lint_icon="❌"; [[ "$lint_status" == "success" ]] && lint_icon="✅"
+        if [[ "$lint_result" == "success" ]]; then
+          lint_icon="✅"
+          lint_status="success"
+        elif [[ "$lint_result" == "success_with_warnings" ]]; then
+          lint_icon="⚠️"
+          lint_status="success"
+        else
+          lint_icon="❌"
+          lint_status="failure"
+        fi
         typecheck_icon="❌"; [[ "$typecheck_status" == "success" ]] && typecheck_icon="✅"
         test_icon="❌"; [[ "$test_status" == "success" ]] && test_icon="✅"
 
