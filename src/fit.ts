@@ -37,7 +37,7 @@ type OctokitCallMethods = {
 	getUser: () => Promise<{owner: string, avatarUrl: string}>
 	getRepos: () => Promise<string[]>
 	getRef: (ref: string) => Promise<string>
-	getRepo: () => Promise<void>
+	checkRepoExists: () => Promise<boolean>
 	getTree: (tree_sha: string) => Promise<TreeNode[]>
 	getCommitTreeSha: (ref: string) => Promise<string>
 	getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
@@ -96,6 +96,7 @@ export class Fit implements IFit {
 	lastFetchedRemoteSha: Record<string, string>;
 	octokit: Octokit;
 	vaultOps: VaultOperations;
+	private _repoExistsCache: boolean | null = null; // Cache invalidated when owner/repo change in loadSettings()
 
 
 	constructor(setting: FitSettings, localStores: LocalStores, vaultOps: VaultOperations) {
@@ -116,6 +117,7 @@ export class Fit implements IFit {
 		this.branch = setting.branch;
 		this.deviceName = setting.deviceName;
 		this.octokit = new Octokit({auth: setting.pat});
+		this._repoExistsCache = null; // Invalidate cache when owner/repo potentially change
 	}
 
 	loadLocalStore(localStore: LocalStores) {
@@ -258,18 +260,29 @@ export class Fit implements IFit {
 	}
 
 	/**
-     * Get repository info - throws OctokitHttpError with status codes
-     * Used to check if repository exists and is accessible
+     * Check if repository exists and is accessible - returns boolean for 404, throws for other errors
+     * Cached to avoid repeated API calls during error handling
      */
-	async getRepo(): Promise<void> {
+	async checkRepoExists(): Promise<boolean> {
+		if (this._repoExistsCache !== null) {
+			return this._repoExistsCache; // Return cached result (true or false)
+		}
+
 		try {
 			await this.octokit.request(`GET /repos/{owner}/{repo}`, {
 				owner: this.owner,
 				repo: this.repo,
 				headers: this.headers
 			});
+			this._repoExistsCache = true;
+			return true;
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status, "getRepo");
+			if (error.status === 404) {
+				this._repoExistsCache = false;
+				return false;
+			}
+			// Throw for non-404 errors (auth, network, etc.)
+			throw new OctokitHttpError(error.message, error.status ?? null, "checkRepoExists");
 		}
 	}
 

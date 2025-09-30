@@ -422,21 +422,17 @@ export class FitSync implements IFitSync {
 
 				// GitHub API 404 errors for repository/branch access
 				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
+					let detailMessage;
 					// Try to distinguish between repo and branch errors
 					try {
-						await this.fit.getRepo(); // If this succeeds, repo exists but branch doesn't
-						const detailMessage = `Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`;
-						return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
-					} catch (repoError) {
-						// Only if getRepo fails with 404, we know it's specifically a repo issue
-						if (repoError instanceof OctokitHttpError && repoError.status === 404) {
-							const detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
-							return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
-						}
-						// For other getRepo errors (403, network, etc.), fall back to generic message
-						const detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
-						return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
+						detailMessage = await this.fit.checkRepoExists() ?
+							`Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`
+							: `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
+					} catch (_repoError) {
+						// For checkRepoExists errors (403, network, etc.), fall back to generic message
+						detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
 					}
+					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
 				}
 
 				// All other GitHub API errors (rate limiting, server errors, etc.)
