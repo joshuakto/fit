@@ -1,25 +1,31 @@
 /**
- * Core sync engine for FIT plugin
+ * GitHub API Client and Local State Access Layer
  *
- * This module implements the main synchronization logic between Obsidian vaults
- * and GitHub repositories. It handles:
+ * This module provides low-level access to both local vault storage (via LocalVault)
+ * and remote GitHub storage (via Octokit). It serves as the data access layer for
+ * the sync engine, providing primitives that higher-level components (FitSync, FitPull,
+ * FitPush) use to coordinate synchronization.
+ *
+ * Architecture Role:
+ * - **Data Access Layer**: Abstracts storage operations for both local and remote
+ * - **Used by**: FitSync (orchestrator), FitPull (pull operations), FitPush (push operations)
+ * - **Uses**: LocalVault (local file operations), Octokit (GitHub API)
+ *
+ * Key Responsibilities:
  * - GitHub API operations via Octokit with automatic retry on rate limits
- * - File change detection using SHA comparison
- * - Conflict resolution during sync
+ * - Local vault state detection (delegated to LocalVault)
+ * - Change detection helpers (comparing local vs remote state)
  * - Binary and text file handling
  *
- * Key patterns:
- * - All GitHub operations implement error handling with OctokitHttpError
+ * GitHub API Error Handling:
+ * - All GitHub operations throw OctokitHttpError with status codes and source method
  * - Automatic retry with exponential backoff for rate limiting (via @octokit/plugin-retry)
- * - SHA-based change detection for efficient sync
- * - Files in _fit/ directory are ignored during sync
- * - Binary files are base64 encoded for GitHub API
- *
- * Rate Limiting & Retry Behavior:
- * - Uses @octokit/plugin-retry to automatically handle GitHub API rate limits
  * - Respects 'retry-after' and 'x-ratelimit-*' headers for optimal retry timing
- * - Applies exponential backoff for transient server errors (5xx)
  * - Does not retry client errors (4xx) except specific rate limit cases
+ *
+ * Future Refactoring Note:
+ * - GitHub-specific code should move to src/github/RemoteGitHubVault
+ * - Fit should work with IVault abstraction for both local and remote
  */
 
 import { LocalStores, FitSettings } from "main";
@@ -57,13 +63,19 @@ type OctokitCallMethods = {
 };
 
 /**
- * Main interface for FIT sync engine
+ * Interface for the Fit data access layer.
  *
- * Combines GitHub API operations with local state management.
- * Implementations must handle:
- * - Secure token storage and API authentication
- * - Local SHA cache for change detection
- * - Conflict-free sync operations
+ * Provides access to both local vault state (via LocalVault) and remote GitHub
+ * repository state (via Octokit). This is the primary interface used by FitSync,
+ * FitPull, and FitPush to access storage backends.
+ *
+ * Key characteristics:
+ * - **Not the sync orchestrator** - that's FitSync's role
+ * - **Data access only** - provides primitives for reading/writing both local and remote
+ * - **State management** - maintains cached SHAs for efficient change detection
+ *
+ * @see Fit - The concrete implementation
+ * @see FitSync - The orchestrator that uses this interface
  */
 export interface IFit extends OctokitCallMethods{
 	owner: string
@@ -79,7 +91,18 @@ export interface IFit extends OctokitCallMethods{
 	fileSha1: (path: string) => Promise<string>
 }
 
-// Define a custom HttpError class that extends Error
+/**
+ * HTTP error from GitHub API operations.
+ *
+ * Thrown by all GitHub API methods in Fit when Octokit requests fail.
+ * Contains the HTTP status code (or null for network errors) and the source
+ * method name for debugging.
+ *
+ * @property status - HTTP status code, or null if network error (couldn't reach GitHub)
+ * @property source - Name of the GitHub API method that failed
+ *
+ * @see FitSync.sync() - Catches and categorizes these errors for user-friendly messages
+ */
 export class OctokitHttpError extends Error {
 	status: number | null;
 	source: keyof OctokitCallMethods;
@@ -92,6 +115,28 @@ export class OctokitHttpError extends Error {
 	}
 }
 
+/**
+ * Data access layer for local vault and remote GitHub repository.
+ *
+ * Provides low-level primitives for:
+ * - **Local storage**: Reading/writing vault files via LocalVault
+ * - **Remote storage**: GitHub API operations via Octokit
+ * - **State management**: Cached SHAs for efficient change detection
+ * - **Change detection**: Helpers for comparing local vs remote state
+ *
+ * Architecture:
+ * - **Used by**: FitSync (orchestrator), FitPull, FitPush
+ * - **Uses**: LocalVault (for Obsidian vault), Octokit (for GitHub API)
+ * - **Role**: Data access layer - NOT the sync orchestrator (that's FitSync)
+ *
+ * Key cached state:
+ * - `localSha`: Last known local file SHAs (updated after successful sync)
+ * - `lastFetchedRemoteSha`: Last known remote file SHAs (from GitHub tree)
+ * - `lastFetchedCommitSha`: Last synced commit SHA (for detecting remote updates)
+ *
+ * @see FitSync - The high-level orchestrator that coordinates sync operations
+ * @see LocalVault - Abstracts Obsidian vault file operations
+ */
 export class Fit implements IFit {
 	owner: string;
 	repo: string;

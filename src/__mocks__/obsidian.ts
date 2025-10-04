@@ -3,12 +3,10 @@ export const arrayBufferToBase64 = jest.fn((buffer: ArrayBuffer) => {
 });
 
 export class TFile {
-	path: string;
-	name: string;
-	constructor(path: string) {
-		this.path = path;
-		this.name = path.split('/').pop() || '';
-	}
+	path!: string;
+	name!: string;
+	extension!: string;
+	basename!: string;
 }
 
 export class Vault {
