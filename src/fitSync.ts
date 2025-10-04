@@ -12,6 +12,15 @@ import { OctokitHttpError } from "./fit";
 
 type FilesystemError = Error & { isFilesystemError: true };
 
+/**
+ * Interface for the sync orchestrator.
+ *
+ * FitSync is the high-level coordinator for all sync operations between local
+ * vault and remote GitHub repository. It's the main entry point for triggering
+ * sync and handles all the decision logic about what type of sync to perform.
+ *
+ * @see FitSync - The concrete implementation
+ */
 export interface IFitSync {
 	fit: Fit
 }
@@ -34,6 +43,39 @@ type PreSyncCheckResultType = (
     "localAndRemoteChangesClashed"
 );
 
+/**
+ * Sync orchestrator - coordinates all sync operations between local and remote.
+ *
+ * FitSync is the **main entry point** for synchronization. It:
+ * - Analyzes current state to determine what type of sync is needed
+ * - Coordinates conflict resolution when local and remote both changed
+ * - Delegates to FitPull for remote→local operations
+ * - Delegates to FitPush for local→remote operations
+ * - Categorizes errors into user-friendly messages
+ *
+ * Architecture:
+ * - **Role**: High-level orchestrator and decision maker
+ * - **Used by**: FitPlugin (main.ts) - the Obsidian plugin entry point
+ * - **Uses**: Fit (data access), FitPull (pull ops), FitPush (push ops)
+ *
+ * Key responsibilities:
+ * - Pre-sync analysis: Determine if changes are compatible or conflicting
+ * - Conflict resolution: Decide how to handle clashes, write to _fit/ when needed
+ * - Error handling: Catch all errors and categorize them (network, auth, filesystem, etc.)
+ * - State updates: Update cached SHAs after successful sync
+ *
+ * Sync strategies (determined by performPreSyncChecks):
+ * - **inSync**: No changes, nothing to do
+ * - **onlyLocalChanged**: Push local changes to remote
+ * - **onlyRemoteChanged**: Pull remote changes to local
+ * - **localAndRemoteChangesCompatible**: Both changed different files, merge them
+ * - **localAndRemoteChangesClashed**: Both changed same files, resolve conflicts
+ *
+ * @see sync() - The main entry point method
+ * @see Fit - Data access layer for local and remote storage
+ * @see FitPull - Handles pull (remote→local) operations
+ * @see FitPush - Handles push (local→remote) operations
+ */
 export class FitSync implements IFitSync {
 	fit: Fit;
 	fitPull: FitPull;

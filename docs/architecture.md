@@ -10,20 +10,20 @@ FIT enables bidirectional sync between Obsidian vaults and GitHub repositories w
 graph TB
     User[User] --> Obsidian[Obsidian UI]
     Obsidian --> FitPlugin[FIT Plugin]
-    
+
     FitPlugin --> Sync[Sync Engine]
     FitPlugin --> Settings[Settings Manager]
     FitPlugin --> AutoSync[Auto Sync Timer]
-    
+
     Sync --> GitHub[GitHub API]
     Sync --> Vault[Local Vault]
-    
+
     Vault --> ConflictDir[_fit/ Directory]
-    
+
     classDef core fill:#e1f5fe
     classDef external fill:#f3e5f5
     classDef storage fill:#e8f5e8
-    
+
     class FitPlugin,Sync core
     class Obsidian,GitHub external
     class Vault,ConflictDir storage
@@ -37,16 +37,39 @@ graph TB
 - Coordinates between sync engine and Obsidian UI
 - Handles error recovery and user notifications
 
+### Vault Abstractions (IVault)
+**Purpose**: Abstract file operations (read/write) for different storage backends
+
+A "vault" represents a complete collection of synced files, whether stored locally (Obsidian vault) or remotely (GitHub repository).
+
+- **IVault**: Common interface for vault operations
+  - **Read operations**: `computeCurrentState()`, `getChanges(baseline)`, `readFileContent(path)`
+  - **Write operations**: `writeFile()`, `deleteFile()`, `applyChanges()` *(Phase 2)*
+  - **Metadata**: `shouldTrackState(path)` - Filter paths during sync
+
+- **LocalVault**: Obsidian vault implementation
+  - Computes SHA hashes from vault files
+  - Filters ignored paths (`_fit/`, hidden files like `.obsidian/`)
+  - Encapsulates Obsidian Vault API quirks
+  - Will handle file write operations (Phase 2)
+
+- **RemoteGitHubVault**: GitHub repository implementation
+  - Fetches remote tree via Octokit
+  - Will handle push/commit operations (Phase 3)
+  - Future: RemoteGitLabVault, RemoteGiteaVault
+
 ### Sync Engine (fit.ts, fitSync.ts)
 **Purpose**: Core synchronization logic
-- **Fit**: GitHub API operations via Octokit, change detection, conflict identification
+- **Fit**: GitHub API operations via Octokit, conflict identification
+  - Uses LocalVault for local state detection
+  - Will use RemoteGitHubVault for remote operations (Phase 3)
 - **FitSync**: High-level sync workflow coordination and conflict resolution
 
 **GitHub API Integration**:
 - Uses `@octokit/core` for all GitHub API communications with automatic retry handling
 
 ### Support Systems
-- **VaultOperations**: Abstracts Obsidian vault file operations
+- **VaultOperations**: Low-level Obsidian vault file I/O operations
 - **Settings UI**: GitHub authentication and configuration management
 - **Notifications**: User feedback during sync operations
 
@@ -64,19 +87,19 @@ sequenceDiagram
 
     User->>Plugin: Trigger Sync
     Plugin->>Sync: Initiate sync workflow
-    
+
     Sync->>Vault: Scan local files
     Sync->>GitHub: Fetch remote changes
-    
+
     Sync->>Sync: Detect conflicts
-    
+
     alt No Conflicts
         Sync->>Vault: Apply remote changes
         Sync->>GitHub: Push local changes
     else Conflicts Found
         Sync->>Vault: Save conflicts to _fit/
     end
-    
+
     Sync-->>Plugin: Sync result
     Plugin->>User: Show notification
 ```
@@ -147,21 +170,35 @@ Obsidian Vault:
 
 ## Extension Points
 
-### Adding Sync Providers
-Implement the `IFit` interface to support additional git providers:
+### Adding Sync Backends
+Implement the `IVault` interface to support additional remote backends:
 ```typescript
-interface IFit {
-    // Core sync operations
-    getLocalChanges(): Promise<LocalChange[]>
-    getRemoteChanges(remoteTreeSha: {[k:string]: string}): Promise<RemoteChange[]>
-    // Provider-specific API implementations
-    getUser(): Promise<{owner: string, avatarUrl: string}>
-    getRepos(): Promise<string[]>
-    getBranches(): Promise<string[]>
-    createCommit(treeSha: string, parentSha: string): Promise<string>
-    // ... other GitHub API methods
+interface IVault {
+    // Read operations
+    computeCurrentState(): Promise<FileState>  // FileState = Record<path, sha>
+    getChanges(baselineState: FileState): Promise<StateChange[]>
+    readFileContent(path: string): Promise<string>
+
+    // Write operations
+    writeFile(path: string, content: string): Promise<FileOpRecord>
+    deleteFile(path: string): Promise<FileOpRecord>
+    applyChanges(filesToWrite, filesToDelete): Promise<FileOpRecord[]>
+
+    // Metadata
+    shouldTrackState(path: string): boolean
 }
 ```
+
+**Example**: Create `RemoteGitLabVault` by:
+1. Implementing `IVault`
+2. Using GitLab API to fetch repository tree
+3. Computing SHA hashes from GitLab blobs
+4. Handling GitLab-specific path filtering
+5. Implementing push/commit operations for write methods
+
+**Current implementations**:
+- `LocalVault`: Obsidian vault (read operations complete, write in Phase 2)
+- `RemoteGitHubVault`: GitHub repositories (stub, implementation in Phase 3)
 
 ### Custom Conflict Resolution
 Extend `FitSync` class to implement custom conflict resolution strategies:
