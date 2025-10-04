@@ -414,8 +414,7 @@ export class FitSync implements IFitSync {
 					return { success: false, error: SyncErrors.remoteAccess('Authentication failed (bad token?)', { source: error.source, originalError: error }) };
 				}
 
-				// TODO: Consider using @octokit/plugin-retry to handle rate limiting automatically
-				// with proper exponential backoff based on retry-after/x-ratelimit-* headers
+				// Rate limiting is now handled automatically by @octokit/plugin-retry
 				if (error.status === 403) {
 					return { success: false, error: SyncErrors.remoteAccess('Access denied (token missing permissions?)', { source: error.source, originalError: error }) };
 				}

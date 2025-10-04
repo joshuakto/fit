@@ -3,20 +3,28 @@
  *
  * This module implements the main synchronization logic between Obsidian vaults
  * and GitHub repositories. It handles:
- * - GitHub API operations via Octokit
+ * - GitHub API operations via Octokit with automatic retry on rate limits
  * - File change detection using SHA comparison
  * - Conflict resolution during sync
  * - Binary and text file handling
  *
  * Key patterns:
  * - All GitHub operations implement error handling with OctokitHttpError
+ * - Automatic retry with exponential backoff for rate limiting (via @octokit/plugin-retry)
  * - SHA-based change detection for efficient sync
  * - Files in _fit/ directory are ignored during sync
  * - Binary files are base64 encoded for GitHub API
+ *
+ * Rate Limiting & Retry Behavior:
+ * - Uses @octokit/plugin-retry to automatically handle GitHub API rate limits
+ * - Respects 'retry-after' and 'x-ratelimit-*' headers for optimal retry timing
+ * - Applies exponential backoff for transient server errors (5xx)
+ * - Does not retry client errors (4xx) except specific rate limit cases
  */
 
 import { LocalStores, FitSettings } from "main";
 import { Octokit } from "@octokit/core";
+import { retry } from "@octokit/plugin-retry";
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
 import { VaultOperations } from "./vaultOps";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
@@ -116,7 +124,14 @@ export class Fit implements IFit {
 		this.repo = setting.repo;
 		this.branch = setting.branch;
 		this.deviceName = setting.deviceName;
-		this.octokit = new Octokit({auth: setting.pat});
+
+		// Use Octokit with retry plugin for enhanced rate limiting handling
+		const OctokitWithRetry = Octokit.plugin(retry);
+		this.octokit = new OctokitWithRetry({
+			auth: setting.pat
+			// Retry plugin operates silently - users will simply experience fewer rate limit errors
+			// Future: Could add verbose logging option to plugin settings
+		});
 		this._repoExistsCache = null; // Invalidate cache when owner/repo potentially change
 	}
 

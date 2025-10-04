@@ -6,4 +6,9 @@ export class Octokit {
 	request(): Promise<{ data: Record<string, unknown> }> {
 		return Promise.resolve({ data: {} });
 	}
+
+	// Mock plugin method for testing retry functionality
+	static plugin(plugin: (octokit: typeof Octokit) => typeof Octokit) {
+		return plugin(Octokit);
+	}
 }

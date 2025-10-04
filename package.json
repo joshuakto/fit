@@ -35,6 +35,7 @@
 		"typescript": "^5.9.2"
 	},
 	"dependencies": {
-		"@octokit/core": "^6.0.1"
+		"@octokit/core": "^6.0.1",
+		"@octokit/plugin-retry": "^7.2.1"
 	}
 }
