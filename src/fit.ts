@@ -25,7 +25,7 @@
 import { LocalStores, FitSettings } from "main";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
+import { RECOGNIZED_BINARY_EXT, compareSha, EMPTY_TREE_SHA } from "./utils";
 import { VaultOperations } from "./vaultOps";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
 import { arrayBufferToBase64 } from "obsidian";
@@ -48,7 +48,7 @@ type OctokitCallMethods = {
 	checkRepoExists: () => Promise<boolean>
 	getTree: (tree_sha: string) => Promise<TreeNode[]>
 	getCommitTreeSha: (ref: string) => Promise<string>
-	getRemoteTreeSha: (tree_sha: string) => Promise<{[k:string]: string}>
+	getRemoteTreeSha: (tree_or_ref_sha: string) => Promise<{[k:string]: string}>
 	createBlob: (content: string, encoding: string) =>Promise<string>
 	createTreeNodeFromFile: ({path, status, extension}: LocalChange, remoteTree: TreeNode[]) => Promise<TreeNode|null>
 	createCommit: (treeSha: string, parentSha: string) =>Promise<string>
@@ -323,7 +323,13 @@ export class Fit implements IFit {
 
 	// ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME),
 	// refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
-	async getCommitTreeSha(ref: string): Promise<string> {
+	/**
+	 * Get full commit data from GitHub API
+	 * @param ref - commit SHA or ref name (e.g., "heads/main")
+	 * @returns Full commit response from GitHub
+	 * @private
+	 */
+	private async getCommit(ref: string) {
 		const {data: commit} =  await this.octokit.request(
 			`GET /repos/{owner}/{repo}/commits/{ref}`, {
 				owner: this.owner,
@@ -331,6 +337,14 @@ export class Fit implements IFit {
 				ref,
 				headers: this.headers
 			});
+		return commit;
+	}
+
+	/**
+	 * Get just the tree SHA from a commit
+	 */
+	async getCommitTreeSha(ref: string): Promise<string> {
+		const commit = await this.getCommit(ref);
 		return commit.commit.tree.sha;
 	}
 
@@ -347,8 +361,23 @@ export class Fit implements IFit {
 	}
 
 	// get the remote tree sha in the format compatible with local store
-	async getRemoteTreeSha(tree_sha: string): Promise<{[k:string]: string}> {
-		const remoteTree = await this.getTree(tree_sha);
+	async getRemoteTreeSha(tree_or_ref_sha: string): Promise<{[k:string]: string}> {
+		// Try to get commit info first (works if input is ref/commit SHA)
+		// This lets us check for empty tree before calling getTree (avoiding 404)
+		let treeSha;
+		try {
+			treeSha = await this.getCommitTreeSha(tree_or_ref_sha);
+		} catch (_error) {
+			// If getCommit fails, fall back to trying input as tree SHA directly.
+			// Any error will surface when we try getTree() below.
+			treeSha = tree_or_ref_sha;
+		}
+
+		// Check if this is the empty tree - if so, skip getTree() call (would return 404)
+		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
+			? []
+			: await this.getTree(treeSha);
+
 		const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
 			// currently ignoring directory changes, if you'd like to upload a new directory,
 			// a quick hack would be creating an empty file inside

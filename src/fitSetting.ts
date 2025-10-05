@@ -142,7 +142,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setDesc("Select 'Add a README file' if creating a new repo. Make sure you are logged in to github on your browser.")
+			.setDesc("Make sure you are logged in to github on your browser.")
 			.addExtraButton(button => button
 				.setIcon('github')
 				.setTooltip("Create a new repository")
