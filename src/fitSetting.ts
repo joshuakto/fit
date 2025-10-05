@@ -309,6 +309,23 @@ export default class FitSettingTab extends PluginSettingTab {
 				"color": this.plugin.settings.notifyChanges ? selectedTxtCol : unselectedTxtCol,
 			});
 		});
+
+		// Debug logging setting
+		new Setting(containerEl)
+			.setName("Enable debug logging")
+			.setDesc(`Write detailed sync logs to ${this.plugin.manifest.dir}/debug.log. Useful for troubleshooting and bug reports.`)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableDebugLogging)
+				.onChange(async (value) => {
+					this.plugin.settings.enableDebugLogging = value;
+					await this.plugin.saveSettings();
+					// Update logger immediately
+					const { fitLogger } = await import('./logger');
+					fitLogger.setEnabled(value);
+					if (value) {
+						fitLogger.log('[Settings] Debug logging enabled', { timestamp: new Date().toISOString() });
+					}
+				}));
 	};
 
 	refreshFields = async (refreshFrom: RefreshCheckPoint) => {

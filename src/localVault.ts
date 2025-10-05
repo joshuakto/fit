@@ -8,6 +8,7 @@ import { arrayBufferToBase64, base64ToArrayBuffer, TFile, Vault } from "obsidian
 import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT } from "./utils";
+import { fitLogger } from "./logger";
 
 /**
  * Local vault implementation for Obsidian.
@@ -60,9 +61,16 @@ export class LocalVault implements IVault {
 		const allFiles = this.vault.getFiles();
 
 		// Filter to only tracked paths
-		const trackedPaths = allFiles
-			.map(f => f.path)
-			.filter(path => this.shouldTrackState(path));
+		const allPaths = allFiles.map(f => f.path);
+		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
+		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
+
+		if (ignoredPaths.length > 0) {
+			fitLogger.log('[LocalVault] Ignored paths in local scan', {
+				count: ignoredPaths.length,
+				paths: ignoredPaths
+			});
+		}
 
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
@@ -72,6 +80,13 @@ export class LocalVault implements IVault {
 		);
 
 		const newState = Object.fromEntries(shaEntries);
+
+		// Log computed SHAs for provenance tracking
+		fitLogger.log('[LocalVault] Computed local SHAs from filesystem', {
+			source: 'vault files',
+			fileCount: Object.keys(newState).length
+		});
+
 		return { ...newState };
 	}
 
@@ -206,12 +221,22 @@ export class LocalVault implements IVault {
 	): Promise<FileOpRecord[]> {
 		// Process file additions or updates
 		const writeOperations = filesToWrite.map(async ({path, content}) => {
-			return await this.writeFile(path, content);
+			try {
+				return await this.writeFile(path, content);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(`Failed to write to ${path}: ${message}`);
+			}
 		});
 
 		// Process file deletions
 		const deletionOperations = filesToDelete.map(async (path) => {
-			return await this.deleteFile(path);
+			try {
+				return await this.deleteFile(path);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(`Failed to delete ${path}: ${message}`);
+			}
 		});
 
 		const fileOps = await Promise.all([...writeOperations, ...deletionOperations]);

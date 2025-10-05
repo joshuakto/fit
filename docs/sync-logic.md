@@ -417,6 +417,73 @@ lastFetchedRemoteSha = {
 
 **Recovery:** All operations are idempotent, safe to retry
 
+## Debug Logging
+
+### Provenance Tracking
+
+When debug logging is enabled (Settings → Enable debug logging), FIT writes a complete audit trail to `.obsidian/plugins/fit/debug.log`:
+
+**Logged events:**
+1. **SHA cache load:** Where caches came from (plugin data.json)
+2. **SHA computation:** Files scanned from vault
+3. **Per-file decisions:** Why each file was marked create/delete/modify
+4. **SHA cache updates:** What changed in caches after sync
+5. **Sync decisions:** Complete reasoning for sync operations
+
+**Example log trace for deletion:**
+```
+[2025-10-04T03:25:38.106Z] [Fit] SHA caches loaded from storage: {
+  "source": "plugin data.json",
+  "localShaCount": 256,
+  "remoteShaCount": 263,
+  "lastCommit": "3f45fe4f0ecacc9400b7ec19c20c8c6044a539e0"
+}
+
+[2025-10-04T03:25:38.106Z] [Fit] Computed local SHAs from filesystem: {
+  "source": "vault files",
+  "fileCount": 255  // One less than cache - something was deleted
+}
+
+[2025-10-04T03:25:38.107Z] [compareSha] local change detected: {
+  "path": "deleted-file.md",
+  "status": "deleted",
+  "currentSha": "null (file absent)",
+  "storedSha": "abc123...",
+  "decision": "DELETE"
+}
+
+[2025-10-04T03:25:38.107Z] [compareSha] local change summary: {
+  "totalChanges": 1,
+  "creates": 0,
+  "modifies": 0,
+  "deletes": 1
+}
+
+[2025-10-04T03:25:38.108Z] [Fit] Local changes detected: {
+  "changeCount": 1,
+  "changes": [{"path": "deleted-file.md", "status": "deleted"}],
+  "currentFilesCount": 255,
+  "cachedFilesCount": 256,
+  "filesOnlyInCache": ["deleted-file.md"],
+  "filesOnlyInCurrent": []
+}
+
+[2025-10-04T03:25:39.376Z] [FitSync] Pre-sync check complete: {
+  "status": "onlyLocalChanged",
+  "filesPendingRemoteDeletion": ["deleted-file.md"]
+}
+
+[2025-10-04T03:25:42.258Z] [FitSync] Updating local store after push: {
+  "source": "push",
+  "oldLocalShaCount": 256,
+  "newLocalShaCount": 255,
+  "localShaRemoved": ["deleted-file.md"],
+  "remoteShaRemoved": ["deleted-file.md"],
+  "commitShaChanged": true,
+  "pushedChanges": 1
+}
+```
+
 ## Further Reading
 
 - [Architecture Overview](./architecture.md) - High-level system design

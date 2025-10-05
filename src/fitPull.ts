@@ -1,6 +1,7 @@
 import { Fit } from "./fit";
 import { LocalStores } from "main";
 import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
+import { fitLogger } from "./logger";
 
 type PrePullCheckResultType = (
     "localCopyUpToDate" |
@@ -101,11 +102,27 @@ export class FitPull {
 
 		const fileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-		const newLocalState = await this.fit.localVault.readFromSource();
+		const newLocalSha = this.fit.filterSyncedState(await this.fit.localVault.readFromSource());
+
+		fitLogger.log('[FitPull] Updating local store after pull', {
+			oldLocalShaCount: Object.keys(this.fit.localSha || {}).length,
+			newLocalShaCount: Object.keys(newLocalSha).length,
+			oldRemoteShaCount: Object.keys(this.fit.lastFetchedRemoteSha || {}).length,
+			newRemoteShaCount: Object.keys(remoteTreeSha).length,
+			localOpsApplied: fileOpsRecord.length,
+			localShaAdded: Object.keys(newLocalSha).filter(k => !(this.fit.localSha || {})[k]),
+			localShaRemoved: Object.keys(this.fit.localSha || {}).filter(k => !newLocalSha[k]),
+			remoteShaAdded: Object.keys(remoteTreeSha).filter(k => !(this.fit.lastFetchedRemoteSha || {})[k]),
+			remoteShaRemoved: Object.keys(this.fit.lastFetchedRemoteSha || {}).filter(k => !remoteTreeSha[k]),
+			commitShaChanged: this.fit.lastFetchedCommitSha !== latestRemoteCommitSha,
+			oldCommitSha: this.fit.lastFetchedCommitSha,
+			newCommitSha: latestRemoteCommitSha
+		});
+
 		await saveLocalStoreCallback({
 			lastFetchedRemoteSha: this.fit.filterSyncedState(remoteTreeSha),
 			lastFetchedCommitSha: latestRemoteCommitSha,
-			localSha: this.fit.filterSyncedState(newLocalState)
+			localSha: newLocalSha
 		});
 		return fileOpsRecord;
 	}
