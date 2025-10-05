@@ -4,7 +4,7 @@
 
 import { Fit } from './fit';
 import { FitSettings, LocalStores } from '../main';
-import { VaultOperations } from './vaultOps';
+import { Vault } from 'obsidian';
 import FitNotice from './fitNotice';
 import { SyncErrors, SyncError } from './syncResult';
 
@@ -51,23 +51,19 @@ function createFitForErrorScenario(scenario: {
 	const settings = { ...validSettings, ...scenario.settings };
 	const localStore = { ...emptyLocalStore };
 
-	// Create mock vault operations
-	const mockVaultOps = {
-		vault: {
-			getFiles: jest.fn().mockReturnValue(
-				scenario.localFiles?.map(f => ({
-					path: f.path,
-					extension: f.path.split('.').pop() || '',
-					name: f.path.split('/').pop() || f.path
-				})) || []
-			),
-			read: jest.fn(),
-			updateLocalFiles: jest.fn().mockResolvedValue([])
-		},
-		getTFile: jest.fn()
-	} as unknown as jest.Mocked<VaultOperations>;
+	// Create mock vault
+	const mockVault = {
+		getFiles: jest.fn().mockReturnValue(
+			scenario.localFiles?.map(f => ({
+				path: f.path,
+				extension: f.path.split('.').pop() || '',
+				name: f.path.split('/').pop() || f.path
+			})) || []
+		),
+		read: jest.fn(),
+	} as unknown as jest.Mocked<Vault>;
 
-	return new Fit(settings, localStore, mockVaultOps);
+	return new Fit(settings, localStore, mockVault);
 }
 
 // Helper that emulates a successful sync with realistic results based on local files

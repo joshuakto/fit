@@ -2,11 +2,45 @@ import { Fit, TreeNode } from "./fit";
 import { LocalChange, LocalUpdate } from "./fitTypes";
 
 
+/**
+ * Interface for push operations (local→remote sync).
+ *
+ * @see FitPush - The concrete implementation
+ */
 export interface IFitPush {
 	localSha: Record<string, string>
 	fit: Fit
 }
 
+/**
+ * Handles push operations - syncing changes from local vault to remote GitHub.
+ *
+ * Encapsulates the logic for:
+ * - Creating GitHub blobs from local file content
+ * - Building Git trees from local changes
+ * - Creating commits on the remote repository
+ * - Updating the remote branch reference
+ *
+ * Architecture:
+ * - **Role**: Directional sync coordinator (local→remote only)
+ * - **Used by**: FitSync (orchestrator)
+ * - **Uses**: Fit (for GitHub API and local vault access)
+ *
+ * Key methods:
+ * - pushChangedFilesToRemote(): Complete push operation with state updates
+ * - createCommitFromLocalUpdate(): Builds commit from local changes
+ *
+ * Git commit workflow:
+ * 1. Read local file content from vault
+ * 2. Create blobs on GitHub for each changed file
+ * 3. Build tree with new blobs + unchanged files from parent
+ * 4. Create commit pointing to new tree
+ * 5. Update branch ref to point to new commit
+ *
+ * @see FitSync - The orchestrator that decides when to push
+ * @see FitPull - The counterpart for pull operations
+ * @see Fit - Provides GitHub API access and local vault operations
+ */
 export class FitPush implements IFitPush {
 	localSha: Record<string, string>;
 	fit: Fit;

@@ -39,4 +39,12 @@ export default [
 			'@stylistic/indent': ['warn', 'tab'],
 		},
 	},
+	{
+		// Test-related files: Allow 'any' type for mocking external libraries
+		// Covers: test files, mock implementations, and test utilities
+		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts'],
+		rules: {
+			'@typescript-eslint/no-explicit-any': 'off',
+		},
+	},
 ];

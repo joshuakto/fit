@@ -1,5 +1,5 @@
 /**
- * GitHub API Client and Local State Access Layer
+ * Sync Coordinator and State Manager
  *
  * This module provides low-level access to both local vault storage (via LocalVault)
  * and remote GitHub storage (via Octokit). It serves as the data access layer for
@@ -15,7 +15,6 @@
  * - GitHub API operations via Octokit with automatic retry on rate limits
  * - Local vault state detection (delegated to LocalVault)
  * - Change detection helpers (comparing local vs remote state)
- * - Binary and text file handling
  *
  * GitHub API Error Handling:
  * - All GitHub operations throw OctokitHttpError with status codes and source method
@@ -26,16 +25,17 @@
  * Future Refactoring Note:
  * - GitHub-specific code should move to src/github/RemoteGitHubVault
  * - Fit should work with IVault abstraction for both local and remote
+ * @see LocalVault - Local Obsidian vault file operations
  */
 
 import { LocalStores, FitSettings } from "main";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { RECOGNIZED_BINARY_EXT, compareSha, EMPTY_TREE_SHA } from "./utils";
-import { VaultOperations } from "./vaultOps";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
-import { arrayBufferToBase64 } from "obsidian";
+import { Vault } from "obsidian";
 import { SyncError } from "./syncResult";
+import { LocalVault } from "./localVault";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -70,12 +70,13 @@ type OctokitCallMethods = {
  * FitPull, and FitPush to access storage backends.
  *
  * Key characteristics:
+ * - **State management**: Maintains cached SHAs for efficient change detection
  * - **Not the sync orchestrator** - that's FitSync's role
  * - **Data access only** - provides primitives for reading/writing both local and remote
- * - **State management** - maintains cached SHAs for efficient change detection
  *
  * @see Fit - The concrete implementation
  * @see FitSync - The orchestrator that uses this interface
+ * @see LocalVault - Local file operations
  */
 export interface IFit extends OctokitCallMethods{
 	owner: string
@@ -87,8 +88,6 @@ export interface IFit extends OctokitCallMethods{
 	lastFetchedCommitSha: string | null           // Last synced commit SHA
 	lastFetchedRemoteSha: Record<string, string>  // Cache of remote file SHAs
 	octokit: Octokit
-	vaultOps: VaultOperations
-	fileSha1: (path: string) => Promise<string>
 }
 
 /**
@@ -135,7 +134,7 @@ export class OctokitHttpError extends Error {
  * - `lastFetchedCommitSha`: Last synced commit SHA (for detecting remote updates)
  *
  * @see FitSync - The high-level orchestrator that coordinates sync operations
- * @see LocalVault - Abstracts Obsidian vault file operations
+ * @see LocalVault - Local Obsidian vault file operations
  */
 export class Fit implements IFit {
 	owner: string;
@@ -148,14 +147,17 @@ export class Fit implements IFit {
 	lastFetchedCommitSha: string | null;
 	lastFetchedRemoteSha: Record<string, string>;
 	octokit: Octokit;
-	vaultOps: VaultOperations;
+	localVault: LocalVault;
 	private _repoExistsCache: boolean | null = null; // Cache invalidated when owner/repo change in loadSettings()
 
 
-	constructor(setting: FitSettings, localStores: LocalStores, vaultOps: VaultOperations) {
+	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
+		// Initialize localVault before loadSettings
+		this.localVault = new LocalVault(vault, localStores.localSha);
+
 		this.loadSettings(setting);
+
 		this.loadLocalStore(localStores);
-		this.vaultOps = vaultOps;
 		this.headers = {
 			// Hack to disable caching which leads to inconsistency for
 			// read after write https://github.com/octokit/octokit.js/issues/890
@@ -184,41 +186,41 @@ export class Fit implements IFit {
 		this.localSha = localStore.localSha;
 		this.lastFetchedCommitSha = localStore.lastFetchedCommitSha;
 		this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha;
+		// Update vault baseline (should always exist after construction)
+		this.localVault.updateBaselineState(this.localSha);
 	}
 
-	async fileSha1(fileContent: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		return hashHex;
-	}
-
-	async computeFileLocalSha(path: string): Promise<string> {
-		// Note: only support TFile now, investigate need for supporting TFolder later on
-		const file = await this.vaultOps.getTFile(path);
-		// compute sha1 based on path and file content
-		let content: string;
-		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
-			content = arrayBufferToBase64(await this.vaultOps.vault.readBinary(file));
-		} else {
-			content = await this.vaultOps.vault.read(file);
+	/**
+	 * Check if a file path should be included in sync operations.
+	 *
+	 * Excludes paths based on sync policy:
+	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
+	 * - `.obsidian/`: Obsidian workspace settings and plugin code
+	 *
+	 * Future: Will also respect .gitignore patterns when implemented.
+	 *
+	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
+	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
+	 *
+	 * @param path - File path to check
+	 * @returns true if path should be included in sync
+	 */
+	shouldSyncPath(path: string): boolean {
+		// Exclude _fit/ directory (conflict resolution area)
+		if (path.startsWith("_fit/")) {
+			return false;
 		}
-		return await this.fileSha1(path + content);
+
+		// Exclude .obsidian/ directory (Obsidian workspace settings and plugins)
+		if (path.startsWith(".obsidian/")) {
+			return false;
+		}
+
+		return true;
 	}
 
 	async computeLocalSha(): Promise<{[k:string]:string}> {
-		const paths = this.vaultOps.vault.getFiles().map(f=>{
-			// ignore local files in the _fit/ directory
-			return f.path.startsWith("_fit/") ? null : f.path;
-		}).filter(Boolean);
-		return Object.fromEntries(
-			await Promise.all(
-				paths.map(async (p: string): Promise<[string, string]> =>{
-					return [p, await this.computeFileLocalSha(p)];
-				})
-			)
-		);
+		return await this.localVault.computeCurrentState();
 	}
 
 	async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
@@ -230,8 +232,7 @@ export class Fit implements IFit {
 		if (!currentLocalSha) {
 			currentLocalSha = await this.computeLocalSha();
 		}
-		const localChanges = compareSha(currentLocalSha, this.localSha, "local");
-		return localChanges;
+		return await this.localVault.getChanges(this.localSha);
 	}
 
 	async getRemoteChanges(remoteTreeSha: {[k: string]: string}): Promise<RemoteChange[]> {
@@ -240,6 +241,14 @@ export class Fit implements IFit {
 	}
 
 	getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {
+		// TODO: Also treat remote changes to untrackable paths as clashes.
+		// If remoteChange.path fails localVault.shouldTrackState() check:
+		// - We can't read the file to know if it exists or what its content is
+		// - We can't safely determine if creating/modifying it would cause conflicts
+		// - Should be treated as a clash with localStatus: "untrackable" (new status)
+		// - Conflict resolution should write to _fit/ since we can't verify safety
+		// Example: Remote has .gitignore change, but we can't see if .gitignore exists
+		// locally or what it contains, so we must treat it as a potential conflict.
 		const localChangePaths = localChanges.map(c=>c.path);
 		const remoteChangePaths = remoteChanges.map(c=>c.path);
 		const clashedFiles = localChangePaths.map(
@@ -430,8 +439,8 @@ export class Fit implements IFit {
 				if (!node.path || !node.sha) {
 					throw new Error("Path or sha not found for blob node in remote");
 				}
-				// ignore changes in the _fit/ directory
-				if (node.path.startsWith("_fit/")) {return null;}
+				// Filter paths based on sync policy
+				if (!this.shouldSyncPath(node.path)) {return null;}
 				return [node.path, node.sha];
 			}
 			return null;
@@ -465,24 +474,10 @@ export class Fit implements IFit {
 				sha: null
 			};
 		}
-		const file = await this.vaultOps.getTFile(path);
-		let encoding: string;
-		let content: string;
-		// TODO check whether every files including md can be read using readBinary to reduce code complexity
-		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
-			encoding = "base64";
+		// LocalVault.readFileContent() returns base64 for binary files, raw text otherwise
+		const content = await this.localVault.readFileContent(path);
+		const encoding = (extension && RECOGNIZED_BINARY_EXT.includes(extension)) ? "base64" : "utf-8";
 
-			const fileArrayBuf = await this.vaultOps.vault.readBinary(file);
-			const uint8Array = new Uint8Array(fileArrayBuf);
-			let binaryString = '';
-			for (let i = 0; i < uint8Array.length; i++) {
-				binaryString += String.fromCharCode(uint8Array[i]);
-			}
-			content = btoa(binaryString);
-		} else {
-			encoding = 'utf-8';
-			content = await this.vaultOps.vault.read(file);
-		}
 		const blobSha = await this.createBlob(content, encoding);
 		// skip creating node if file found on remote is the same as the created blob
 		if (remoteTree.some(node => node.path === path && node.sha === blobSha)) {
@@ -552,8 +547,8 @@ export class Fit implements IFit {
 
 
 	/**
-     * Generate user-friendly error message from structured sync error
-     */
+	 * Generate user-friendly error message from structured sync error
+	 */
 	getSyncErrorMessage(syncError: SyncError): string {
 		// Return user-friendly message based on error type
 		switch (syncError.type) {

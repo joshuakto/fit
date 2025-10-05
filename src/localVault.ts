@@ -4,8 +4,7 @@
  * Implements IVault for Obsidian vault files.
  */
 
-import { arrayBufferToBase64 } from "obsidian";
-import { VaultOperations } from "./vaultOps";
+import { arrayBufferToBase64, base64ToArrayBuffer, TFile, Vault } from "obsidian";
 import { IVault, FileState } from "./vault";
 import { LocalChange, FileOpRecord } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
@@ -22,11 +21,11 @@ import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
  * Isolates Obsidian Vault API quirks from sync logic.
  */
 export class LocalVault implements IVault {
-	private vaultOps: VaultOperations;
+	private vault: Vault;
 	private baselineState: FileState;
 
-	constructor(vaultOps: VaultOperations, baselineState: FileState = {}) {
-		this.vaultOps = vaultOps;
+	constructor(vault: Vault, baselineState: FileState = {}) {
+		this.vault = vault;
 		this.baselineState = baselineState;
 	}
 
@@ -69,16 +68,28 @@ export class LocalVault implements IVault {
 	}
 
 	/**
+	 * Get TFile for a given path, throwing error if not found or not a file
+	 */
+	private async getTFile(path: string): Promise<TFile> {
+		const file = this.vault.getAbstractFileByPath(path);
+		if (file && file instanceof TFile) {
+			return file;
+		} else {
+			throw new Error(`Attempting to read ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
+		}
+	}
+
+	/**
 	 * Compute SHA for a single file in the vault
 	 */
 	private async computeFileLocalSha(path: string): Promise<string> {
-		const file = await this.vaultOps.getTFile(path);
+		const file = await this.getTFile(path);
 		let content: string;
 
 		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
-			content = arrayBufferToBase64(await this.vaultOps.vault.readBinary(file));
+			content = arrayBufferToBase64(await this.vault.readBinary(file));
 		} else {
-			content = await this.vaultOps.vault.read(file);
+			content = await this.vault.read(file);
 		}
 
 		return await this.fileSha1(path + content);
@@ -88,7 +99,7 @@ export class LocalVault implements IVault {
 	 * Compute current state of all tracked files in vault
 	 */
 	async computeCurrentState(): Promise<FileState> {
-		const allFiles = this.vaultOps.vault.getFiles();
+		const allFiles = this.vault.getFiles();
 
 		// Filter to only tracked paths
 		const trackedPaths = allFiles
@@ -115,38 +126,102 @@ export class LocalVault implements IVault {
 	}
 
 	/**
+	 * Ensure folder exists for a given file path
+	 */
+	private async ensureFolderExists(path: string): Promise<void> {
+		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
+		const folderPath = path.match(/^(.*)\//)?.[1] || '';
+		if (folderPath != "") {
+			const folder = this.vault.getAbstractFileByPath(folderPath);
+			if (!folder) {
+				await this.vault.createFolder(folderPath);
+			}
+		}
+	}
+
+	/**
 	 * Read file content for a specific path
-	 * Phase 2: Will be implemented for conflict resolution
 	 */
 	async readFileContent(path: string): Promise<string> {
-		throw new Error("LocalVault.readFileContent not yet implemented (Phase 2)");
+		const file = await this.getTFile(path);
+
+		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
+			return arrayBufferToBase64(await this.vault.readBinary(file));
+		} else {
+			return await this.vault.read(file);
+		}
 	}
 
 	/**
 	 * Write or update a file
-	 * Phase 2: Will consolidate VaultOperations.writeToLocal()
 	 */
 	async writeFile(path: string, content: string): Promise<FileOpRecord> {
-		throw new Error("LocalVault.writeFile not yet implemented (Phase 2)");
+		const file = this.vault.getAbstractFileByPath(path);
+		if (file && file instanceof TFile) {
+			await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
+			return {path, status: "changed"};
+		} else if (!file) {
+			await this.ensureFolderExists(path);
+			await this.vault.createBinary(path, base64ToArrayBuffer(content));
+			return {path, status: "created"};
+		}
+		throw new Error(`${path} writeFile operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
 	}
 
 	/**
 	 * Delete a file
-	 * Phase 2: Will consolidate VaultOperations.deleteFromLocal()
 	 */
 	async deleteFile(path: string): Promise<FileOpRecord> {
-		throw new Error("LocalVault.deleteFile not yet implemented (Phase 2)");
+		const file = this.vault.getAbstractFileByPath(path);
+		if (file && file instanceof TFile) {
+			await this.vault.delete(file);
+			return {path, status: "deleted"};
+		}
+		throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
 	}
 
 	/**
 	 * Apply a batch of changes (writes and deletes)
-	 * Phase 2: Will consolidate VaultOperations.updateLocalFiles()
 	 */
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: string}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
-		throw new Error("LocalVault.applyChanges not yet implemented (Phase 2)");
+		// Process file additions or updates
+		const writeOperations = filesToWrite.map(async ({path, content}) => {
+			return await this.writeFile(path, content);
+		});
+
+		// Process file deletions
+		const deletionOperations = filesToDelete.map(async (path) => {
+			return await this.deleteFile(path);
+		});
+
+		const fileOps = await Promise.all([...writeOperations, ...deletionOperations]);
+		return fileOps;
+	}
+
+	/**
+	 * Create a copy of a file in a specified directory (typically _fit/)
+	 */
+	async createCopyInDir(path: string, copyDir = "_fit"): Promise<void> {
+		const file = this.vault.getAbstractFileByPath(path);
+		if (file && file instanceof TFile) {
+			const copy = await this.vault.readBinary(file);
+			const copyPath = `${copyDir}/${path}`;
+			await this.ensureFolderExists(copyPath);
+			const copyFile = this.vault.getAbstractFileByPath(copyPath);
+			if (copyFile && copyFile instanceof TFile) {
+				await this.vault.modifyBinary(copyFile, copy);
+			} else if (!copyFile) {
+				await this.vault.createBinary(copyPath, copy);
+			} else {
+				this.vault.delete(copyFile, true); // TODO add warning to let user know files in _fit will be overwritten
+				await this.vault.createBinary(copyPath, copy);
+			}
+		} else {
+			throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
+		}
 	}
 
 	/**

@@ -59,16 +59,16 @@ export interface IVault {
 	getChanges(baselineState: FileState): Promise<StateChange[]>;
 
 	/**
-	 * Phase 2: Will be implemented for conflict resolution and file reading
-	 * @param path - File path to read
 	 * Read file content for a specific path or SHA
+	 *
+	 * For LocalVault: path is a file path in the vault
+	 *
+	 * @param path - File path (LocalVault) or blob SHA (RemoteGitHubVault)
 	 * @returns File content (base64 encoded for binary files)
 	 */
 	readFileContent(path: string): Promise<string>;
 
 	// ===== Write Operations (Applying Changes) =====
-	// Phase 2: These methods will be implemented to consolidate VaultOperations
-	//          functionality into the vault abstraction
 
 	/**
 	 * Write or update a file
@@ -87,6 +87,9 @@ export interface IVault {
 
 	/**
 	 * Apply a batch of changes (writes and deletes)
+	 *
+	 * For LocalVault: Applies changes to Obsidian vault files
+	 *
 	 * @param filesToWrite - Files to write or update
 	 * @param filesToDelete - Files to delete
 	 * @returns Records of all file operations performed
