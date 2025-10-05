@@ -14,10 +14,37 @@ type PrePullCheckResult = (
     { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
 );
 
+/**
+ * Interface for pull operations (remote→local sync).
+ *
+ * @see FitPull - The concrete implementation
+ */
 export interface IFitPull {
 	fit: Fit
 }
 
+/**
+ * Handles pull operations - syncing changes from remote GitHub to local vault.
+ *
+ * Encapsulates the logic for:
+ * - Fetching remote file content from GitHub (via Fit.getBlob)
+ * - Writing remote changes to local vault (via Fit.localVault.applyChanges)
+ * - Updating cached state after successful pull
+ *
+ * Architecture:
+ * - **Role**: Directional sync coordinator (remote→local only)
+ * - **Used by**: FitSync (orchestrator)
+ * - **Uses**: Fit (for GitHub API and local vault access)
+ *
+ * Key methods:
+ * - pullRemoteToLocal(): Complete pull operation with state updates
+ * - prepareChangesToExecute(): Separates adds/modifications from deletions
+ * - getRemoteNonDeletionChangesContent(): Fetches file content from GitHub
+ *
+ * @see FitSync - The orchestrator that decides when to pull
+ * @see FitPush - The counterpart for push operations
+ * @see Fit - Provides GitHub API access and local vault operations
+ */
 export class FitPull implements IFitPull {
 	fit: Fit;
 
@@ -78,7 +105,7 @@ export class FitPull implements IFitPull {
 		const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate;
 		const {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges);
 
-		const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+		const fileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 		await saveLocalStoreCallback({
 			lastFetchedRemoteSha: remoteTreeSha,
 			lastFetchedCommitSha: latestRemoteCommitSha,

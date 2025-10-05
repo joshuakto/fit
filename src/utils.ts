@@ -64,15 +64,6 @@ export function extractExtension(path: string): string | undefined {
 }
 
 // Using file extension to determine encoding of files (works in most cases)
-export function getFileEncoding(path: string): string {
-	const extension = path.match(/[^.]+$/)?.[0];
-	const isBinary = extension && RECOGNIZED_BINARY_EXT.includes(extension);
-	if (isBinary) {
-		return "base64";
-	}
-	return "utf-8";
-}
-
 export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 	const set1 = new Set(arr1);
 	const set2 = new Set(arr2);

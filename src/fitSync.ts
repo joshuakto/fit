@@ -1,10 +1,8 @@
-import { arrayBufferToBase64 } from "obsidian";
 import { Fit } from "./fit";
 import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteChange, RemoteUpdate } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT, extractExtension, removeLineEndingsFromBase64String } from "./utils";
 import { FitPull } from "./fitPull";
 import { FitPush } from "./fitPush";
-import { VaultOperations } from "./vaultOps";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors } from "./syncResult";
@@ -80,15 +78,13 @@ export class FitSync implements IFitSync {
 	fit: Fit;
 	fitPull: FitPull;
 	fitPush: FitPush;
-	vaultOps: VaultOperations;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
 
 
-	constructor(fit: Fit, vaultOps: VaultOperations, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
+	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
 		this.fit = fit;
 		this.fitPull = new FitPull(fit);
 		this.fitPush = new FitPush(fit);
-		this.vaultOps = vaultOps;
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
@@ -151,35 +147,19 @@ export class FitSync implements IFitSync {
 	async handleBinaryConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		await this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		await this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
-
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async handleUTF8Conflict(path: string, localContent: string, remoteConent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteConent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteConent);
 	}
 
 	async handleLocalDeletionConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionFolder);
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async resolveFileConflict(clash: ClashStatus, latestRemoteFileSha: string): Promise<ConflictResolutionResult> {
@@ -191,8 +171,7 @@ export class FitSync implements IFitSync {
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
 		}
 
-		const localFile = await this.fit.vaultOps.getTFile(clash.path);
-		const localFileContent = arrayBufferToBase64(await this.fit.vaultOps.vault.readBinary(localFile));
+		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
 
 		if (latestRemoteFileSha) {
 			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
@@ -256,7 +235,7 @@ export class FitSync implements IFitSync {
 		}
 
 		syncNotice.setMessage("Writing remote changes to local");
-		const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: latestRemoteTreeSha,
 			lastFetchedCommitSha: latestCommitSha,
@@ -318,7 +297,7 @@ export class FitSync implements IFitSync {
 
 		let localFileOpsRecord: LocalChange[];
 		try {
-			localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+			localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha,
