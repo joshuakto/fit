@@ -255,7 +255,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Branch \'nonexistent-branch\' not found on repository \'testuser/valid-repo\'', { source: 'getRef', originalError: new Error('Branch not found') })
+				error: SyncErrors.remoteNotFound('Branch \'nonexistent-branch\' not found on repository \'testuser/valid-repo\'', { originalError: new Error('Branch not found') })
 			}
 		);
 

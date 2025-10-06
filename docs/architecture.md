@@ -42,30 +42,39 @@ graph TB
 
 A "vault" represents a complete collection of synced files, whether stored locally (Obsidian vault) or remotely (GitHub repository).
 
-- **IVault**: Common interface for vault operations
-  - **Read operations**: `computeCurrentState()`, `getChanges(baseline)`, `readFileContent(path)`
-  - **Write operations**: `writeFile()`, `deleteFile()`, `applyChanges()`
-  - **Metadata**: `shouldTrackState(path)` - Filter paths during sync
+- **IVault Interface**: Common interface for vault operations
+  - **Read operations**: `readFromSource()`, `readFileContent(path)`
+  - **Write operations**: `applyChanges(filesToWrite, filesToDelete)` - batch operations
+  - **Metadata**: `shouldTrackState(path)` - filter paths during sync
 
-- **LocalVault**: Obsidian vault implementation (fully implemented)
-  - Computes SHA hashes from vault files
-  - Filters ignored paths (`_fit/`, hidden files like `.obsidian/`)
-  - Encapsulates Obsidian Vault API quirks
-  - Integrated into Fit class for local state detection
+- **LocalVault**: Obsidian vault implementation
+  - Computes SHA-1 hashes from vault files
+  - Owns local state
+  - Batch file operations via `applyChanges()`
 
 - **RemoteGitHubVault**: GitHub repository implementation
-  - Fetches remote tree via Octokit
-  - Future: RemoteGitLabVault, RemoteGiteaVault
+  - Fetches remote tree state via GitHub API
+  - Owns remote state
+  - Creates commits via `applyChanges()` (creates blobs, builds trees, creates commits, updates refs)
+  - Handles empty repository case
 
-### Sync Engine (fit.ts, fitSync.ts)
+### Sync Engine (fit.ts, fitSync.ts, fitPull.ts, fitPush.ts)
 **Purpose**: Core synchronization logic
-- **Fit**: GitHub API operations via Octokit, conflict identification
-  - Uses LocalVault for local state detection
-  - Will use RemoteGitHubVault for remote operations (Phase 3)
-- **FitSync**: High-level sync workflow coordination and conflict resolution
+- **Fit**: Coordinator between vaults with clean abstractions
+  - Owns LocalVault and RemoteGitHubVault instances
+  - Provides `getLocalChanges()` / `getRemoteChanges()` abstractions
+  - Implements sync policy via `shouldSyncPath()` (ignores paths like `_fit/`)
+
+- **FitSync**: High-level sync workflow and conflict resolution
+  - Uses `Fit.getLocalChanges()` / `getRemoteChanges()` for change detection
+  - Orchestrates bidirectional sync with conflict handling
+
+- **FitPull/FitPush**: Pull-only / push-only operations
+  - Uses same abstractions for consistency
 
 **GitHub API Integration**:
-- Uses `@octokit/core` for all GitHub API communications with automatic retry handling
+- RemoteGitHubVault encapsulates all GitHub API calls
+- Uses `@octokit/core` with automatic retry handling
 
 ### Support Systems
 - **Settings UI**: GitHub authentication and configuration management
@@ -172,33 +181,31 @@ Obsidian Vault:
 
 ### Adding Sync Backends
 Implement the `IVault` interface to support additional remote backends:
+
 ```typescript
 interface IVault {
     // Read operations
-    computeCurrentState(): Promise<FileState>  // FileState = Record<path, sha>
-    getChanges(baselineState: FileState): Promise<StateChange[]>
-    readFileContent(path: string): Promise<string>
+    readFromSource(): Promise<FileState>;
+    readFileContent(path: string): Promise<string>;
 
     // Write operations
-    writeFile(path: string, content: string): Promise<FileOpRecord>
-    deleteFile(path: string): Promise<FileOpRecord>
-    applyChanges(filesToWrite, filesToDelete): Promise<FileOpRecord[]>
+    applyChanges(filesToWrite: FileToWrite[], filesToDelete: string[]): Promise<FileOpRecord[]>;
 
     // Metadata
-    shouldTrackState(path: string): boolean
+    shouldTrackState(path: string): boolean;
 }
 ```
 
 **Example**: Create `RemoteGitLabVault` by:
-1. Implementing `IVault`
-2. Using GitLab API to fetch repository tree
-3. Computing SHA hashes from GitLab blobs
-4. Handling GitLab-specific path filtering
-5. Implementing push/commit operations for write methods
+1. Implement `IVault` interface
+2. Use GitLab API to fetch repository tree in `readFromSource()`
+3. Compute SHA hashes from GitLab blobs
+4. Handle GitLab-specific path filtering in `shouldTrackState()`
+5. Implement commit operations in `applyChanges()`
 
 **Current implementations**:
-- `RemoteGitHubVault`: GitHub repositories (stub, implementation in Phase 3)
-- `LocalVault`: Obsidian vault (fully implemented - read operations complete, write operations via VaultOperations)
+- `LocalVault`: Obsidian vault
+- `RemoteGitHubVault`: GitHub repositories
 
 ### Custom Conflict Resolution
 Extend `FitSync` class to implement custom conflict resolution strategies:

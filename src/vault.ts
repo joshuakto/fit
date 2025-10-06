@@ -19,6 +19,23 @@ export type FileState = Record<string, string>;
  */
 export type StateChange = LocalChange | RemoteChange;
 
+// ===== Vault Error Types =====
+
+/**
+ * Thrown when a remote resource (repository or branch) is not found (HTTP 404).
+ */
+export class RemoteNotFoundError extends Error {
+	constructor(
+		message: string,
+		public owner: string,
+		public repo: string,
+		public branch?: string
+	) {
+		super(message);
+		this.name = 'RemoteNotFoundError';
+	}
+}
+
 /**
  * Interface for vault implementations (local or remote).
  *
@@ -30,38 +47,44 @@ export type StateChange = LocalChange | RemoteChange;
  *
  * @example
  * ```typescript
- * const localVault = new LocalVault(obsidianVault, cachedState);
+ * // Initialize vaults with cached state from persisted storage
+ * const localVault = new LocalVault(obsidianVault, cachedLocalState);
  * const remoteVault = new RemoteGitHubVault(octokit, cachedRemoteState);
  *
- * // Detect changes without knowing storage backend details
- * const localChanges = await localVault.getChanges(lastSyncState);
- * const remoteChanges = await remoteVault.getChanges(lastSyncState);
+ * // Detect changes (typically in pre-sync checks)
+ * const currentLocal = await localVault.readFromSource();
+ * const localChanges = compareSha(currentLocal, baselineState, "local");
  *
- * // Apply changes without knowing storage backend details
- * await localVault.writeFile('file.md', 'content');
- * await remoteVault.deleteFile('old-file.md');
+ * // Apply changes during sync
+ * await localVault.applyChanges(
+ *   [{path: 'new-file.md', content: 'content'}],  // files to write
+ *   ['old-file.md']                                // files to delete
+ * );
+ *
+ * // Update vault cache after sync (scan and update internal state atomically)
+ * const newLocalState = await localVault.readFromSource();
+ * // Save to persistent cache
+ * await saveToCache({localSha: newLocalState});
  * ```
  */
 export interface IVault {
-	// ===== Read Operations (State Detection) =====
+	// ===== Read Operations =====
 
 	/**
-	 * Compute the current state of all tracked files
-	 * @returns Map of file paths to their SHA-1 content hashes
+	 * Scan source and return the current scanned state.
+	 *
+	 * For LocalVault: Scans all files in Obsidian vault
+	 * For RemoteGitHubVault: Fetches tree from GitHub API
+	 *
+	 * @returns The new scanned state
 	 */
-	computeCurrentState(): Promise<FileState>;
-
-	/**
-	 * Detect changes between baseline state and current state
-	 * @param baselineState - Previous state to compare against
-	 * @returns List of changes (added, modified, deleted files)
-	 */
-	getChanges(baselineState: FileState): Promise<StateChange[]>;
+	readFromSource(): Promise<FileState>;
 
 	/**
 	 * Read file content for a specific path or SHA
 	 *
 	 * For LocalVault: path is a file path in the vault
+	 * For RemoteGitHubVault: path is a blob SHA (GitHub stores content by hash)
 	 *
 	 * @param path - File path (LocalVault) or blob SHA (RemoteGitHubVault)
 	 * @returns File content (base64 encoded for binary files)
@@ -71,24 +94,10 @@ export interface IVault {
 	// ===== Write Operations (Applying Changes) =====
 
 	/**
-	 * Write or update a file
-	 * @param path - File path to write
-	 * @param content - File content (base64 encoded for binary files)
-	 * @returns Record of file operation performed
-	 */
-	writeFile(path: string, content: string): Promise<FileOpRecord>;
-
-	/**
-	 * Delete a file
-	 * @param path - File path to delete
-	 * @returns Record of file operation performed
-	 */
-	deleteFile(path: string): Promise<FileOpRecord>;
-
-	/**
 	 * Apply a batch of changes (writes and deletes)
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
+	 * For RemoteGitHubVault: Creates a single commit with all changes
 	 *
 	 * @param filesToWrite - Files to write or update
 	 * @param filesToDelete - Files to delete

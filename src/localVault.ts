@@ -6,8 +6,8 @@
 
 import { arrayBufferToBase64, base64ToArrayBuffer, TFile, Vault } from "obsidian";
 import { IVault, FileState } from "./vault";
-import { LocalChange, FileOpRecord } from "./fitTypes";
-import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
+import { FileOpRecord } from "./fitTypes";
+import { RECOGNIZED_BINARY_EXT } from "./utils";
 
 /**
  * Local vault implementation for Obsidian.
@@ -22,11 +22,9 @@ import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
  */
 export class LocalVault implements IVault {
 	private vault: Vault;
-	private baselineState: FileState;
 
-	constructor(vault: Vault, baselineState: FileState = {}) {
+	constructor(vault: Vault) {
 		this.vault = vault;
-		this.baselineState = baselineState;
 	}
 
 	/**
@@ -53,6 +51,28 @@ export class LocalVault implements IVault {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Scan vault, update latest known state, and return it
+	 */
+	async readFromSource(): Promise<FileState> {
+		const allFiles = this.vault.getFiles();
+
+		// Filter to only tracked paths
+		const trackedPaths = allFiles
+			.map(f => f.path)
+			.filter(path => this.shouldTrackState(path));
+
+		// Compute SHAs for all tracked files
+		const shaEntries = await Promise.all(
+			trackedPaths.map(async (path): Promise<[string, string]> => {
+				return [path, await this.computeFileLocalSha(path)];
+			})
+		);
+
+		const newState = Object.fromEntries(shaEntries);
+		return { ...newState };
 	}
 
 	/**
@@ -96,36 +116,6 @@ export class LocalVault implements IVault {
 	}
 
 	/**
-	 * Compute current state of all tracked files in vault
-	 */
-	async computeCurrentState(): Promise<FileState> {
-		const allFiles = this.vault.getFiles();
-
-		// Filter to only tracked paths
-		const trackedPaths = allFiles
-			.map(f => f.path)
-			.filter(path => this.shouldTrackState(path));
-
-		// Compute SHAs for all tracked files
-		const shaEntries = await Promise.all(
-			trackedPaths.map(async (path): Promise<[string, string]> => {
-				return [path, await this.computeFileLocalSha(path)];
-			})
-		);
-
-		return Object.fromEntries(shaEntries);
-	}
-
-	/**
-	 * Detect changes between baseline and current vault state
-	 */
-	async getChanges(baselineState: FileState): Promise<LocalChange[]> {
-		const currentState = await this.computeCurrentState();
-		const changes = compareSha(currentState, baselineState, "local");
-		return changes;
-	}
-
-	/**
 	 * Ensure folder exists for a given file path
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
@@ -154,6 +144,9 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Write or update a file
+	 * @param path - File path to write
+	 * @param content - File content (base64 encoded for binary files)
+	 * @returns Record of file operation performed
 	 */
 	async writeFile(path: string, content: string): Promise<FileOpRecord> {
 		const file = this.vault.getAbstractFileByPath(path);
@@ -173,6 +166,8 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Delete a file
+	 * @param path - File path to delete
+	 * @returns Record of file operation performed
 	 */
 	async deleteFile(path: string): Promise<FileOpRecord> {
 		const file = this.vault.getAbstractFileByPath(path);
@@ -227,19 +222,5 @@ export class LocalVault implements IVault {
 		} else {
 			throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
 		}
-	}
-
-	/**
-	 * Update the baseline state (typically after successful sync)
-	 */
-	updateBaselineState(newState: FileState): void {
-		this.baselineState = newState;
-	}
-
-	/**
-	 * Get current baseline state
-	 */
-	getBaselineState(): FileState {
-		return { ...this.baselineState };
 	}
 }

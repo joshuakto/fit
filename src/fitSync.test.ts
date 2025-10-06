@@ -1,40 +1,86 @@
+/**
+ * Tests to cover behaviors in the FitSync component.
+ */
+
 import { FitSync } from './fitSync';
 import { Fit, OctokitHttpError } from './fit';
 import FitNotice from './fitNotice';
-import { LocalStores } from '../main';
-import { LocalChange, RemoteChange, FileOpRecord, LocalFileStatus, RemoteChangeType } from './fitTypes';
+import { FitSettings, LocalStores } from '../main';
+import { LocalChange, RemoteChange } from './fitTypes';
+import { RemoteNotFoundError } from './vault';
 
 // Simple test doubles focused on behavior
 describe('FitSync', () => {
-	let fitSync: FitSync;
 	let saveLocalStoreCallback: jest.MockedFunction<(localStore: Partial<LocalStores>) => Promise<void>>;
 
-	// Helper to create a FitSync with configured behavior
-	function createFitSync(scenario: {
-		localChanges?: LocalChange[];
-		remoteUpdated?: boolean;
-		remoteCommitSha?: string;
-		remoteChanges?: RemoteChange[];
-		remoteTreeSha?: Record<string, string>;
-		localSha?: Record<string, string>;
-		clashes?: Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}>;
-	}) {
-		const mockFit = {
-			computeLocalSha: jest.fn().mockResolvedValue(scenario.localSha || { 'file1.txt': 'sha1' }),
-			getLocalChanges: jest.fn().mockResolvedValue(scenario.localChanges || []),
-			remoteUpdated: jest.fn().mockResolvedValue({
-				remoteCommitSha: scenario.remoteCommitSha || 'commit123',
-				updated: scenario.remoteUpdated || false
-			}),
-			getRemoteTreeSha: jest.fn().mockResolvedValue(scenario.remoteTreeSha || {}),
-			getRemoteChanges: jest.fn().mockResolvedValue(scenario.remoteChanges || []),
-			getClashedChanges: jest.fn().mockReturnValue(scenario.clashes || []),
-			localVault: {
-				applyChanges: jest.fn().mockResolvedValue([{ path: 'file.txt', status: 'created' as const }] as FileOpRecord[]),
-			},
-		} as unknown as Fit;
+	function createFakeFit(
+		scenario: {
+			localPendingChanges?: LocalChange[],
+			remotePendingChanges?: { commitSha: string | null, changes: RemoteChange[] },
+			simulateError?: Error, // Inject error for error classification tests
+			simulateApplyChangesError?: Error, // Inject error in filesystem-specific calls
+		},
+		settings?: FitSettings) {
+		// Stateful fake that simulates Fit behavior:
+		// - Changes are consumed when getLocalChanges/getRemoteChanges is called
+		// - State transitions from "has changes" to "no changes" after first scan
+		let localChanges = scenario.localPendingChanges ?? [];
+		let remoteChanges = scenario.remotePendingChanges?.changes ?? [];
+		const remoteCommitSha = scenario.remotePendingChanges?.commitSha ?? null;
 
-		return new FitSync(mockFit, saveLocalStoreCallback);
+		const fakeFit = {
+			// Core change detection methods
+			async remoteUpdated() {
+				return {
+					remoteCommitSha: remoteCommitSha || '',
+					updated: remoteChanges.length > 0 || remoteCommitSha !== null,
+				};
+			},
+			async getLocalChanges() {
+				if (scenario.simulateError) {
+					throw scenario.simulateError;
+				}
+				const changes = localChanges;
+				localChanges = []; // Consumed after first scan
+				return { changes, state: {} };
+			},
+			async getRemoteChanges() {
+				const changes = remoteChanges;
+				remoteChanges = []; // Consumed after first scan
+				return { changes, state: {} };
+			},
+			getClashedChanges(_localChanges: LocalChange[], _remoteChanges: RemoteChange[]) {
+				return [];
+			},
+			async createTreeNodeFromFile() {
+				return null;
+			},
+
+			// TODO: FitSync currently accesses vault internals directly - these shouldn't be needed
+			// once we refactor FitSync to use higher-level Fit methods instead
+			localVault: {
+				async applyChanges(_toWrite: Array<{path: string, content: string}>, _toDelete: string[]) {
+					if (scenario.simulateApplyChangesError) {
+						throw scenario.simulateApplyChangesError;
+					}
+					// Return ops matching what was requested
+					return _toWrite.map(f => ({ path: f.path, status: 'created' as const }));
+				},
+				async updateFromSource() { return {}; },
+				async readFileContent() { return ''; },
+				async writeFile(path: string) { return { path, status: 'created' as const }; },
+			},
+			remoteVault: {
+				async getTree() { return []; },
+				async updateRef() { return 'newCommitSha'; },
+				async readFileContent() { return ''; },
+				getOwner() { return settings?.owner; },
+				getRepo() { return settings?.repo; },
+				getBranch() { return settings?.branch; },
+			},
+			async getRemoteTreeSha() { return {}; },
+		};
+		return fakeFit as unknown as Fit;
 	}
 
 	beforeEach(() => {
@@ -44,7 +90,7 @@ describe('FitSync', () => {
 	describe('sync', () => {
 		it('should complete successfully when files are already in sync', async () => {
 			// Arrange
-			fitSync = createFitSync({ localChanges: [], remoteUpdated: false });
+			const fitSync = new FitSync(createFakeFit({}), saveLocalStoreCallback);
 			const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 			// Act
@@ -52,17 +98,19 @@ describe('FitSync', () => {
 
 			// Assert
 			expect(result).toEqual({ success: true, ops: [], clash: [] });
+			expect(notice.setMessage).toHaveBeenCalledWith('Performing pre sync checks.');
+			expect(notice.setMessage).toHaveBeenCalledWith('Sync successful');
 		});
 
 		it('should update commit SHA when only remote commit changed', async () => {
 			// Arrange
 			const newCommitSha = 'newCommit456';
-			fitSync = createFitSync({
-				localChanges: [],
-				remoteUpdated: true,
-				remoteCommitSha: newCommitSha,
-				remoteChanges: []
-			});
+			const fitSync = new FitSync(createFakeFit({
+				remotePendingChanges: {
+					commitSha: newCommitSha,
+					changes: []
+				}
+			}), saveLocalStoreCallback);
 			const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 			// Act
@@ -73,15 +121,19 @@ describe('FitSync', () => {
 			expect(saveLocalStoreCallback).toHaveBeenCalledWith({
 				lastFetchedCommitSha: newCommitSha
 			});
+			expect(notice.setMessage).toHaveBeenCalledWith('Performing pre sync checks.');
+			expect(notice.setMessage).toHaveBeenCalledWith('Sync successful');
 		});
 
 		it('should handle local changes scenario', async () => {
 			// Arrange
 			const localChanges = [{ path: 'file1.txt', status: 'changed' as const }];
-			fitSync = createFitSync({ localChanges, remoteUpdated: false });
+			const fitSync = new FitSync(createFakeFit({
+				localPendingChanges: localChanges
+			}), saveLocalStoreCallback);
 			const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
-			// Mock the push behavior
+			// Mock the push behavior - FitPush is instantiated by FitSync
 			fitSync.fitPush.pushChangedFilesToRemote = jest.fn().mockResolvedValue({
 				pushedChanges: localChanges,
 				lastFetchedRemoteSha: { 'file1.txt': 'newSha1' },
@@ -102,13 +154,14 @@ describe('FitSync', () => {
 		it('should handle remote changes scenario', async () => {
 			// Arrange
 			const remoteChanges = [{ path: 'file2.txt', status: 'ADDED' as const }];
-			fitSync = createFitSync({
-				localChanges: [],
-				remoteUpdated: true,
-				remoteCommitSha: 'commit456',
-				remoteChanges,
-				remoteTreeSha: { 'file1.txt': 'sha1', 'file2.txt': 'sha2' }
-			});
+			const fitSync = new FitSync(
+				createFakeFit({
+					remotePendingChanges: {
+						commitSha: 'commit123',
+						changes: remoteChanges
+					}
+				}),
+				saveLocalStoreCallback);
 			const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 			// Mock the pull behavior
@@ -130,13 +183,16 @@ describe('FitSync', () => {
 			// Arrange
 			const localChanges = [{ path: 'file1.txt', status: 'changed' as const }];
 			const remoteChanges = [{ path: 'file2.txt', status: 'ADDED' as const }];
-			fitSync = createFitSync({
-				localChanges,
-				remoteUpdated: true,
-				remoteCommitSha: 'commit456',
-				remoteChanges,
-				remoteTreeSha: { 'file1.txt': 'sha1', 'file2.txt': 'sha2' }
-			});
+
+			const fitSync = new FitSync(
+				createFakeFit({
+					localPendingChanges: localChanges,
+					remotePendingChanges: {
+						commitSha: 'commit456',
+						changes: remoteChanges
+					}
+				}),
+				saveLocalStoreCallback);
 			const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 			// Mock the compatible changes behavior
@@ -168,13 +224,15 @@ describe('FitSync', () => {
 			const remoteChanges = [{ path: 'shared.txt', status: 'MODIFIED' as const }];
 			const clashedFiles = [{ path: 'shared.txt', localStatus: 'changed' as const, remoteStatus: 'MODIFIED' as const }];
 
-			fitSync = createFitSync({
-				localChanges,
-				remoteUpdated: true,
-				remoteCommitSha: 'commit456',
-				remoteChanges,
-				remoteTreeSha: { 'shared.txt': 'remotesha' }
-			});
+			const fitSync = new FitSync(
+				createFakeFit({
+					localPendingChanges: localChanges,
+					remotePendingChanges: {
+						commitSha: 'commit456',
+						changes: remoteChanges
+					}
+				}),
+				saveLocalStoreCallback);
 
 			// Override getClashedChanges to return conflicts
 			fitSync.fit.getClashedChanges = jest.fn().mockReturnValue(clashedFiles);
@@ -205,7 +263,7 @@ describe('FitSync', () => {
 
 		it('should handle notice lifecycle correctly', async () => {
 			// Arrange
-			fitSync = createFitSync({ localChanges: [], remoteUpdated: false });
+			const fitSync = new FitSync(createFakeFit({}), saveLocalStoreCallback);
 			const mockNotice = {
 				setMessage: jest.fn(),
 				remove: jest.fn(),
@@ -228,16 +286,9 @@ describe('FitSync', () => {
 			it('should correctly classify generic errors as unknown', async () => {
 				// Arrange - Mock a generic failure during pre-sync checks
 				const genericError = new Error('fetch failed');
-				const mockFit = {
-					computeLocalSha: jest.fn().mockRejectedValue(genericError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit({
+					simulateError: genericError
+				}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -259,16 +310,9 @@ describe('FitSync', () => {
 			it('should correctly classify authentication errors with technical details', async () => {
 				// Arrange - Mock GitHub API 401 error
 				const githubError = new OctokitHttpError('Bad credentials', 401, 'getUser');
-				const mockFit = {
-					computeLocalSha: jest.fn().mockRejectedValue(githubError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit({
+					simulateError: githubError
+				}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -288,53 +332,38 @@ describe('FitSync', () => {
 				}
 			});
 
-			it.each([
-				{
-					scenario: 'branch not found (repo exists)',
-					checkRepoExistsMock: jest.fn().mockResolvedValue(true), // checkRepoExists returns true
-					expectedMessage: 'Branch \'main\' not found on repository \'testuser/testrepo\''
-				},
-				{
-					scenario: 'repository not found',
-					checkRepoExistsMock: jest.fn().mockResolvedValue(false), // checkRepoExists returns false
-					expectedMessage: 'Repository \'testuser/testrepo\' not found'
-				},
-				{
-					scenario: 'repository access denied during check',
-					checkRepoExistsMock: jest.fn().mockRejectedValue(new OctokitHttpError('Forbidden', 403, 'checkRepoExists')), // checkRepoExists throws
-					expectedMessage: 'Repository \'testuser/testrepo\' or branch \'main\' not found'
-				}
-			])('should correctly classify remote not found errors: $scenario', async ({ checkRepoExistsMock, expectedMessage }) => {
-				// Arrange - Mock GitHub API 404 error from getRef operation
-				const githubError = new OctokitHttpError('Not Found - https://docs.github.com/rest/git/refs#get-a-reference', 404, 'getRef');
-				const mockFit = {
-					owner: 'testuser',
-					repo: 'testrepo',
-					branch: 'main',
-					computeLocalSha: jest.fn().mockRejectedValue(githubError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-					checkRepoExists: checkRepoExistsMock,
-				} as unknown as Fit;
+			it('should convert RemoteNotFoundError to remote_not_found SyncError', async () => {
+				// Arrange - RemoteNotFoundError thrown by RemoteGitHubVault
+				// (The specific error message generation is tested in remoteGitHubVault.test.ts)
+				const remoteError = new RemoteNotFoundError(
+					'Repository \'testuser/testrepo\' not found',
+					'testuser',
+					'testrepo',
+					'main'
+				);
+				const fitSync = new FitSync(createFakeFit(
+					{
+						simulateError: remoteError
+					},
+					{
+						owner: 'testuser',
+						repo: 'testrepo',
+						branch: 'main'
+					} as unknown as FitSettings), saveLocalStoreCallback);
 
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
 				const result = await fitSync.sync(notice);
 
-				// Assert - Verify operation-specific error classification
+				// Assert - Verify RemoteNotFoundError is converted to remote_not_found type
 				expect(result.success).toBe(false);
 				if (!result.success) {
 					expect(result.error).toEqual({
 						type: 'remote_not_found',
-						detailMessage: expectedMessage,
+						detailMessage: 'Repository \'testuser/testrepo\' not found',
 						details: {
-							source: 'getRef',
-							originalError: githubError
+							originalError: remoteError
 						}
 					});
 				}
@@ -343,16 +372,10 @@ describe('FitSync', () => {
 			it('should classify 403 access denied as remote access error', async () => {
 				// Arrange - Mock GitHub API 403 permissions error
 				const accessDeniedError = new OctokitHttpError('Insufficient permissions', 403, 'getUser');
-				const mockFit = {
-					computeLocalSha: jest.fn().mockRejectedValue(accessDeniedError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit(
+					{
+						simulateError: accessDeniedError
+					}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -385,19 +408,12 @@ describe('FitSync', () => {
 				}
 			])('should correctly classify network connectivity errors with $scenario', async ({ status, setupResponse }) => {
 				// Arrange - Mock network connectivity failure
-				const networkError = new OctokitHttpError('Network request failed', status, 'getRef');
+				const networkError = new OctokitHttpError('Network request failed', status, 'getUser');
 				setupResponse(networkError);
 
-				const mockFit = {
-					computeLocalSha: jest.fn().mockRejectedValue(networkError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit({
+					simulateError: networkError
+				}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -410,7 +426,7 @@ describe('FitSync', () => {
 						type: 'network',
 						detailMessage: "Couldn't reach GitHub API",
 						details: {
-							source: 'getRef',
+							source: 'getUser',
 							originalError: networkError
 						}
 					});
@@ -419,7 +435,7 @@ describe('FitSync', () => {
 
 			it('should correctly classify real 500 server errors with response', async () => {
 				// Arrange - Mock real GitHub API 500 server error with response
-				const realServerError = new OctokitHttpError('Internal Server Error', 500, 'getRef');
+				const realServerError = new OctokitHttpError('Internal Server Error', 500, 'getUser');
 				// Simulate a real 500 error with proper response object
 				(realServerError as unknown as { response?: unknown }).response = {
 					status: 500,
@@ -427,16 +443,9 @@ describe('FitSync', () => {
 					data: { message: 'Internal Server Error' }
 				};
 
-				const mockFit = {
-					computeLocalSha: jest.fn().mockRejectedValue(realServerError),
-					getLocalChanges: jest.fn(),
-					remoteUpdated: jest.fn(),
-					getRemoteTreeSha: jest.fn(),
-					getRemoteChanges: jest.fn(),
-					getClashedChanges: jest.fn(),
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit({
+					simulateError: realServerError
+				}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -449,7 +458,7 @@ describe('FitSync', () => {
 						type: 'api_error',
 						detailMessage: 'GitHub API error',
 						details: {
-							source: 'getRef',
+							source: 'getUser',
 							originalError: realServerError
 						}
 					});
@@ -461,24 +470,13 @@ describe('FitSync', () => {
 				const obsidianFile = '.obsidian/community-plugins.json';
 				const filesystemError = new Error(`EACCES: permission denied, delete '${obsidianFile}'`);
 
-				const mockFit = {
-					computeLocalSha: jest.fn().mockResolvedValue({ 'file1.txt': 'sha1' }),
-					getLocalChanges: jest.fn().mockResolvedValue([]),
-					remoteUpdated: jest.fn().mockResolvedValue({
-						remoteCommitSha: 'commit123',
-						updated: true
-					}),
-					getRemoteTreeSha: jest.fn().mockResolvedValue({}),
-					getRemoteChanges: jest.fn().mockResolvedValue([
-						{ path: obsidianFile, status: 'REMOVED' as const }
-					]),
-					getClashedChanges: jest.fn().mockReturnValue([]),
-					localVault: {
-						applyChanges: jest.fn().mockRejectedValue(filesystemError)
-					}
-				} as unknown as Fit;
-
-				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
+				const fitSync = new FitSync(createFakeFit({
+					remotePendingChanges: {
+						commitSha: 'commit123',
+						changes: [{ path: obsidianFile, status: 'REMOVED' as const}],
+					},
+					simulateApplyChangesError: filesystemError
+				}), saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act

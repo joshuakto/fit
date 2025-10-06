@@ -9,7 +9,6 @@
 
 import { LocalVault } from './localVault';
 import { TFile, Vault } from 'obsidian';
-import { FileState } from './vault';
 import { StubTFile } from './testUtils';
 
 describe('LocalVault', () => {
@@ -58,8 +57,8 @@ describe('LocalVault', () => {
 		});
 	});
 
-	describe('computeCurrentState', () => {
-		it('should compute state for text files', async () => {
+	describe('readFromSource', () => {
+		it('should scan vault and update state for text files', async () => {
 			const mockFiles = [
 				StubTFile.ofPath('note1.md'),
 				StubTFile.ofPath('note2.txt')
@@ -76,7 +75,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.computeCurrentState();
+			const state = await localVault.readFromSource();
 
 			expect(Object.keys(state).sort()).toEqual(['note1.md', 'note2.txt']);
 		});
@@ -95,7 +94,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.computeCurrentState();
+			const state = await localVault.readFromSource();
 
 			// Only hidden files are excluded from state tracking
 			expect(Object.keys(state).sort()).toEqual(['_fit/conflict.md', 'normal.md']);
@@ -114,7 +113,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.computeCurrentState();
+			const state = await localVault.readFromSource();
 
 			expect(Object.keys(state).sort()).toEqual(['doc.pdf', 'image.png']);
 		});
@@ -123,127 +122,9 @@ describe('LocalVault', () => {
 			mockVault.getFiles.mockReturnValue([]);
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.computeCurrentState();
+			const state = await localVault.readFromSource();
 
 			expect(state).toEqual({});
-		});
-	});
-
-	describe('getChanges', () => {
-		it('should detect newly created files', async () => {
-			const baselineState: FileState = {};
-			const mockFiles = [StubTFile.ofPath('new.md')];
-
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockResolvedValue('new content');
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFiles[0] as TFile);
-
-			const localVault = new LocalVault(mockVault);
-			const changes = await localVault.getChanges(baselineState);
-
-			expect(changes).toHaveLength(1);
-			expect(changes[0]).toMatchObject({
-				path: 'new.md',
-				status: 'created'
-			});
-		});
-
-		it('should detect modified files', async () => {
-			// Baseline with old SHA
-			const baselineState: FileState = {
-				'note.md': 'old_sha_hash'
-			};
-
-			const mockFiles = [StubTFile.ofPath('note.md')];
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockResolvedValue('modified content'); // Different content = different SHA
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFiles[0] as TFile);
-
-			const localVault = new LocalVault(mockVault);
-			const changes = await localVault.getChanges(baselineState);
-
-			expect(changes).toHaveLength(1);
-			expect(changes[0]).toMatchObject({
-				path: 'note.md',
-				status: 'changed'
-			});
-		});
-
-		it('should detect deleted files', async () => {
-			const baselineState: FileState = {
-				'deleted.md': 'some_sha',
-				'still-here.md': 'another_sha'
-			};
-
-			const mockFiles = [StubTFile.ofPath('still-here.md')];
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockResolvedValue('content');
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFiles[0] as TFile);
-
-			const localVault = new LocalVault(mockVault);
-			const changes = await localVault.getChanges(baselineState);
-
-			const deletedChange = changes.find(c => c.path === 'deleted.md');
-			expect(deletedChange).toBeDefined();
-			expect(deletedChange?.status).toBe('deleted');
-		});
-
-		it('should return empty array when no changes', async () => {
-			const mockFiles = [StubTFile.ofPath('unchanged.md')];
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockResolvedValue('same content');
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFiles[0] as TFile);
-
-			const localVault = new LocalVault(mockVault);
-			const currentState = await localVault.computeCurrentState();
-
-			// Use same state as baseline
-			const changes = await localVault.getChanges(currentState);
-
-			expect(changes).toHaveLength(0);
-		});
-	});
-
-	describe('baseline state management', () => {
-		it('should update baseline state', () => {
-			const localVault = new LocalVault(mockVault, {});
-			const newState: FileState = {
-				'file1.md': 'sha1',
-				'file2.md': 'sha2'
-			};
-
-			localVault.updateBaselineState(newState);
-			const retrievedState = localVault.getBaselineState();
-
-			expect(retrievedState).toEqual(newState);
-		});
-
-		it('should initialize with provided baseline', () => {
-			const initialBaseline: FileState = {
-				'existing.md': 'sha_existing'
-			};
-
-			const localVault = new LocalVault(mockVault, initialBaseline);
-			const retrievedState = localVault.getBaselineState();
-
-			expect(retrievedState).toEqual(initialBaseline);
-		});
-
-		it('should return copy of baseline state (not reference)', () => {
-			const initialBaseline: FileState = {
-				'file.md': 'sha'
-			};
-
-			const localVault = new LocalVault(mockVault, initialBaseline);
-			const state1 = localVault.getBaselineState();
-			const state2 = localVault.getBaselineState();
-
-			// Modify one copy
-			state1['modified.md'] = 'new_sha';
-
-			// Other copy should be unaffected
-			expect(state2).not.toHaveProperty('modified.md');
-			expect(localVault.getBaselineState()).toEqual(initialBaseline);
 		});
 	});
 
