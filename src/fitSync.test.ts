@@ -311,6 +311,11 @@ describe('FitSync', () => {
 					owner: 'testuser',
 					repo: 'testrepo',
 					branch: 'main',
+					remoteVault: {
+						getOwner: () => 'testuser',
+						getRepo: () => 'testrepo',
+						getBranch: () => 'main',
+					},
 					computeLocalSha: jest.fn().mockRejectedValue(githubError),
 					getLocalChanges: jest.fn(),
 					remoteUpdated: jest.fn(),

@@ -61,6 +61,8 @@ export class FitPull implements IFitPull {
 		if (!localChanges) {
 			localChanges = await this.fit.getLocalChanges();
 		}
+		// TODO: Refactor to use remoteVault.computeCurrentState() instead of getRemoteTreeSha()
+		// This will simplify the logic and remove dependency on Fit's GitHub-specific methods
 		const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha);
 		const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha);
 		const clashedFiles = this.fit.getClashedChanges(localChanges, remoteChanges);
@@ -81,7 +83,7 @@ export class FitPull implements IFitPull {
 	// Get changes from remote, pathShaMap is coupled to the Fit plugin design
 	async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
 		const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
-			const content = await this.fit.getBlob(file_sha);
+			const content = await this.fit.remoteVault.readFileContent(file_sha);
 			return {path, content};
 		});
 		return await Promise.all(remoteChanges);

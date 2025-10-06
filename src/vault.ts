@@ -62,6 +62,7 @@ export interface IVault {
 	 * Read file content for a specific path or SHA
 	 *
 	 * For LocalVault: path is a file path in the vault
+	 * For RemoteGitHubVault: path is a blob SHA (GitHub stores content by hash)
 	 *
 	 * @param path - File path (LocalVault) or blob SHA (RemoteGitHubVault)
 	 * @returns File content (base64 encoded for binary files)
@@ -89,6 +90,7 @@ export interface IVault {
 	 * Apply a batch of changes (writes and deletes)
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
+	 * For RemoteGitHubVault: Creates a single commit with all changes
 	 *
 	 * @param filesToWrite - Files to write or update
 	 * @param filesToDelete - Files to delete

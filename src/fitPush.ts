@@ -1,4 +1,5 @@
-import { Fit, TreeNode } from "./fit";
+import { Fit } from "./fit";
+import { TreeNode } from "./remoteGitHubVault";
 import { LocalChange, LocalUpdate } from "./fitTypes";
 
 
@@ -50,6 +51,14 @@ export class FitPush implements IFitPush {
 		this.fit = fit;
 	}
 
+	// TODO: MAJOR REFACTORING - Replace entire push workflow with remoteVault.applyChanges()
+	// Current code: Manually creates blobs/trees/commits using low-level Fit methods
+	// Target: Use remoteVault.applyChanges(filesToWrite, filesToDelete) which handles:
+	//   - Reading local file content via localVault.readFileContent()
+	//   - Creating blobs with correct encoding (binary vs text)
+	//   - Building tree with all changes in one commit
+	//   - Creating commit and updating ref
+	// This will eliminate ~50 lines of GitHub API orchestration code
 	async createCommitFromLocalUpdate(localUpdate: LocalUpdate, remoteTree: Array<TreeNode>): Promise<{createdCommitSha: string, pushedChanges: LocalChange[]} | null> {
 		const {localChanges, parentCommitSha} = localUpdate;
 		const pushedChanges: LocalChange[] = [];
@@ -64,9 +73,9 @@ export class FitPush implements IFitPush {
 		if (treeNodes.length === 0) {
 			return null;
 		}
-		const latestRemoteCommitTreeSha = await this.fit.getCommitTreeSha(parentCommitSha);
-		const createdTreeSha = await this.fit.createTree(treeNodes, latestRemoteCommitTreeSha);
-		const createdCommitSha = await this.fit.createCommit(createdTreeSha, parentCommitSha);
+		const latestRemoteCommitTreeSha = await this.fit.remoteVault.getCommitTreeSha(parentCommitSha);
+		const createdTreeSha = await this.fit.remoteVault.createTree(treeNodes, latestRemoteCommitTreeSha);
+		const createdCommitSha = await this.fit.remoteVault.createCommit(createdTreeSha, parentCommitSha);
 		return {createdCommitSha, pushedChanges};
 	}
 
@@ -80,14 +89,14 @@ export class FitPush implements IFitPush {
 			return null;
 		}
 		// const {localTreeSha} = localUpdate;
-		const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha);
+		const remoteTree = await this.fit.remoteVault.getTree(localUpdate.parentCommitSha);
 		const createCommitResult = await this.createCommitFromLocalUpdate(localUpdate, remoteTree);
 		if (!createCommitResult) {
 			// did not update ref
 			return null;
 		}
 		const {createdCommitSha, pushedChanges} = createCommitResult;
-		const updatedRefSha = await this.fit.updateRef(createdCommitSha);
+		const updatedRefSha = await this.fit.remoteVault.updateRef(createdCommitSha);
 		const updatedRemoteTreeSha = await this.fit.getRemoteTreeSha(updatedRefSha);
 		return {
 			pushedChanges,

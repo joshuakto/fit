@@ -53,15 +53,20 @@ A "vault" represents a complete collection of synced files, whether stored local
   - Encapsulates Obsidian Vault API quirks
   - Integrated into Fit class for local state detection
 
-- **RemoteGitHubVault**: GitHub repository implementation
+- **RemoteGitHubVault**: GitHub repository implementation (fully implemented)
   - Fetches remote tree via Octokit
-  - Future: RemoteGitLabVault, RemoteGiteaVault
+  - Detects changes against baseline state
+  - Handles push/commit operations via `applyChanges()` (creates blobs, builds trees, creates commits, updates refs)
+  - Integrated into Fit class with proper lifecycle management
+  - Future: RemoteGitLabVault, RemoteGiteaVault as additional implementations
 
 ### Sync Engine (fit.ts, fitSync.ts)
 **Purpose**: Core synchronization logic
-- **Fit**: GitHub API operations via Octokit, conflict identification
+- **Fit**: Data access layer for local vault and remote GitHub operations
   - Uses LocalVault for local state detection
-  - Will use RemoteGitHubVault for remote operations (Phase 3)
+  - Uses RemoteGitHubVault for remote file content fetching
+  - Still contains some direct GitHub API operations (push workflows, state detection) - these will migrate to RemoteGitHubVault over time
+  - Handles conflict identification and path filtering (via `shouldSyncPath()`)
 - **FitSync**: High-level sync workflow coordination and conflict resolution
 
 **GitHub API Integration**:
@@ -197,8 +202,10 @@ interface IVault {
 5. Implementing push/commit operations for write methods
 
 **Current implementations**:
-- `RemoteGitHubVault`: GitHub repositories (stub, implementation in Phase 3)
 - `LocalVault`: Obsidian vault (fully implemented - read operations complete, write operations via VaultOperations)
+- `RemoteGitHubVault`: GitHub repositories (fully implemented - read/write operations complete)
+
+**Note**: Some sync workflows (FitPush, state detection in FitPull/FitSync) still use Fit's direct GitHub API methods. Future work will consolidate all GitHub operations through RemoteGitHubVault for consistency.
 
 ### Custom Conflict Resolution
 Extend `FitSync` class to implement custom conflict resolution strategies:

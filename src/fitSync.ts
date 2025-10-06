@@ -95,6 +95,7 @@ export class FitSync implements IFitSync {
 		if (localChanges.length === 0 && !remoteUpdated) {
 			return {status: "inSync"};
 		}
+		// TODO: Refactor to use remoteVault.computeCurrentState() and remoteVault.getChanges()
 		const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha);
 		const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha);
 		let clashes: ClashStatus[] = [];
@@ -166,7 +167,7 @@ export class FitSync implements IFitSync {
 		if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
 			return {path: clash.path, noDiff: true};
 		} else if (clash.localStatus === "deleted") {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
 		}
@@ -178,7 +179,7 @@ export class FitSync implements IFitSync {
 		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
 
 		if (latestRemoteFileSha) {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			if (removeLineEndingsFromBase64String(remoteContent) !== removeLineEndingsFromBase64String(localFileContent)) {
 				const report = this.generateConflictReport(clash.path, localFileContent, remoteContent);
 				let fileOp: FileOpRecord;
@@ -221,14 +222,16 @@ export class FitSync implements IFitSync {
 		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
 			remoteUpdate.remoteChanges);
 		syncNotice.setMessage("Uploading local changes");
-		const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha);
+		// TODO: Refactor entire push workflow - replace getTree/createCommitFromLocalUpdate/updateRef/getRemoteTreeSha
+		// with single call to remoteVault.applyChanges(). See TODO in FitPush for details.
+		const remoteTree = await this.fit.remoteVault.getTree(localUpdate.parentCommitSha);
 		const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree);
 		let latestRemoteTreeSha: Record<string, string>;
 		let latestCommitSha: string;
 		let pushedChanges: Array<LocalChange>;
 		if (createCommitResult) {
 			const {createdCommitSha} = createCommitResult;
-			const latestRefSha = await this.fit.updateRef(createdCommitSha);
+			const latestRefSha = await this.fit.remoteVault.updateRef(createdCommitSha);
 			latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha);
 			latestCommitSha = createdCommitSha;
 			pushedChanges = createCommitResult.pushedChanges;
@@ -445,16 +448,16 @@ export class FitSync implements IFitSync {
 				}
 
 				// GitHub API 404 errors for repository/branch access
-				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
+				if (error.status === 404 && error.source === 'getRef') {
 					let detailMessage;
 					// Try to distinguish between repo and branch errors
 					try {
 						detailMessage = await this.fit.checkRepoExists() ?
-							`Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`
-							: `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
+							`Branch '${this.fit.remoteVault.getBranch()}' not found on repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}'`
+							: `Repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}' not found`;
 					} catch (_repoError) {
 						// For checkRepoExists errors (403, network, etc.), fall back to generic message
-						detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
+						detailMessage = `Repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}' or branch '${this.fit.remoteVault.getBranch()}' not found`;
 					}
 					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
 				}
