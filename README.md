@@ -1,4 +1,4 @@
-# FIT			
+# FIT
 ![Obsidian Downloads](https://img.shields.io/badge/dynamic/json?logo=obsidian&color=%23483699&label=downloads&query=%24%5B%22fit%22%5D.downloads&url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsidianmd%2Fobsidian-releases%2Fmaster%2Fcommunity-plugin-stats.json)
 
 Sync your files across mobile and desktop devices with one click.
@@ -40,7 +40,6 @@ Users are highly recommended to do a security review of the code of this project
 NOTE: For security, it's recommended to limit the token scope to only the necessary repository for your vault and avoid sharing your entire plugin settings file that contains this token.
 
 ## Notes about the first sync
-- Repo cannot be empty (Select 'Add a README file' if you are creating a new repo)
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
 

@@ -52,6 +52,13 @@ export function compareSha<Env extends "remote" | "local">(
 
 export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"];
 
+/**
+ * Git's well-known empty tree SHA - represents a tree with no files
+ * This is a constant in Git that always represents an empty tree
+ * GitHub API returns 404 when trying to fetch this SHA, so we handle it specially
+ */
+export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
 export function extractExtension(path: string): string | undefined {
 	return path.match(/[^.]+$/)?.[0];
 }
