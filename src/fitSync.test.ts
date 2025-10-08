@@ -1,6 +1,5 @@
 import { FitSync } from './fitSync';
 import { Fit, OctokitHttpError } from './fit';
-import { VaultOperations } from './vaultOps';
 import FitNotice from './fitNotice';
 import { LocalStores } from '../main';
 import { LocalChange, RemoteChange, FileOpRecord, LocalFileStatus, RemoteChangeType } from './fitTypes';
@@ -30,14 +29,12 @@ describe('FitSync', () => {
 			getRemoteTreeSha: jest.fn().mockResolvedValue(scenario.remoteTreeSha || {}),
 			getRemoteChanges: jest.fn().mockResolvedValue(scenario.remoteChanges || []),
 			getClashedChanges: jest.fn().mockReturnValue(scenario.clashes || []),
-			vaultOps: {} as VaultOperations,
+			localVault: {
+				applyChanges: jest.fn().mockResolvedValue([{ path: 'file.txt', status: 'created' as const }] as FileOpRecord[]),
+			},
 		} as unknown as Fit;
 
-		const mockVaultOps = {
-			updateLocalFiles: jest.fn().mockResolvedValue([{ path: 'file.txt', status: 'created' as const }] as FileOpRecord[]),
-		} as unknown as VaultOperations;
-
-		return new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+		return new FitSync(mockFit, saveLocalStoreCallback);
 	}
 
 	beforeEach(() => {
@@ -240,8 +237,7 @@ describe('FitSync', () => {
 					getClashedChanges: jest.fn(),
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -272,8 +268,7 @@ describe('FitSync', () => {
 					getClashedChanges: jest.fn(),
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -316,6 +311,11 @@ describe('FitSync', () => {
 					owner: 'testuser',
 					repo: 'testrepo',
 					branch: 'main',
+					remoteVault: {
+						getOwner: () => 'testuser',
+						getRepo: () => 'testrepo',
+						getBranch: () => 'main',
+					},
 					computeLocalSha: jest.fn().mockRejectedValue(githubError),
 					getLocalChanges: jest.fn(),
 					remoteUpdated: jest.fn(),
@@ -325,8 +325,7 @@ describe('FitSync', () => {
 					checkRepoExists: checkRepoExistsMock,
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -358,8 +357,7 @@ describe('FitSync', () => {
 					getClashedChanges: jest.fn(),
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -404,8 +402,7 @@ describe('FitSync', () => {
 					getClashedChanges: jest.fn(),
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -444,8 +441,7 @@ describe('FitSync', () => {
 					getClashedChanges: jest.fn(),
 				} as unknown as Fit;
 
-				const mockVaultOps = {} as VaultOperations;
-				fitSync = new FitSync(mockFit, mockVaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act
@@ -482,12 +478,12 @@ describe('FitSync', () => {
 						{ path: obsidianFile, status: 'REMOVED' as const }
 					]),
 					getClashedChanges: jest.fn().mockReturnValue([]),
-					vaultOps: {
-						updateLocalFiles: jest.fn().mockRejectedValue(filesystemError)
+					localVault: {
+						applyChanges: jest.fn().mockRejectedValue(filesystemError)
 					}
 				} as unknown as Fit;
 
-				fitSync = new FitSync(mockFit, mockFit.vaultOps, saveLocalStoreCallback);
+				fitSync = new FitSync(mockFit, saveLocalStoreCallback);
 				const notice = { setMessage: jest.fn() } as unknown as FitNotice;
 
 				// Act

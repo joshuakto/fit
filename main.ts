@@ -1,19 +1,7 @@
 /**
- * Main FIT Plugin Entry Point
+ * Obsidian Plugin Entry Point
  *
- * This is the primary plugin class that orchestrates all FIT functionality:
- * - Plugin lifecycle management (load/unload)
- * - Settings persistence and validation
- * - Auto-sync scheduling and execution
- * - UI ribbon icons and command registration
- * - Error handling and user notifications
- *
- * Architecture:
- * - FitPlugin (this class) manages overall plugin state and coordination
- * - Fit handles core sync engine and GitHub API
- * - FitSync orchestrates sync workflows
- * - VaultOperations abstracts Obsidian vault interactions
- * - Settings are validated on each operation to ensure proper configuration
+ * Defines the FitPlugin class and related types for Obsidian plugin integration.
  */
 
 import { Plugin, SettingTab } from 'obsidian';
@@ -22,7 +10,6 @@ import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
-import { VaultOperations } from 'src/vaultOps';
 
 /**
  * Plugin configuration interface
@@ -72,12 +59,30 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 };
 
 
+/**
+ * FIT Plugin - Obsidian integration layer for sync engine.
+ *
+ * Thin integration layer between Obsidian and the FIT sync engine.
+ * Handles Obsidian-specific concerns only:
+ * - Plugin lifecycle (load/unload)
+ * - Settings UI and persistence
+ * - Ribbon icons and commands
+ * - Auto-sync scheduling
+ * - Delegating to FitSync for all business logic
+ *
+ * Architecture:
+ * - **Role**: Obsidian plugin lifecycle manager and UI coordinator
+ * - **Delegates to**: FitSync (sync orchestration), Fit (data access)
+ * - **Manages**: User settings, auto-sync intervals, UI notifications
+ *
+ * @see FitSync - The sync orchestrator (contains business logic)
+ * @see Fit - Data access layer for local/remote storage
+ */
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
 	settingTab: FitSettingTab;
 	localStore: LocalStores;
 	fit: Fit;
-	vaultOps: VaultOperations;
 	fitSync: FitSync;
 	autoSyncing: boolean;
 	syncing: boolean;
@@ -239,9 +244,8 @@ export default class FitPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		await this.loadLocalStore();
-		this.vaultOps = new VaultOperations(this.app.vault);
-		this.fit = new Fit(this.settings, this.localStore, this.vaultOps);
-		this.fitSync = new FitSync(this.fit, this.vaultOps, this.saveLocalStoreCallback);
+		this.fit = new Fit(this.settings, this.localStore, this.app.vault);
+		this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
 		this.syncing = false;
 		this.autoSyncing = false;
 		this.settingTab = new FitSettingTab(this.app, this);

@@ -1,10 +1,8 @@
-import { arrayBufferToBase64 } from "obsidian";
 import { Fit } from "./fit";
 import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteChange, RemoteUpdate } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT, extractExtension, removeLineEndingsFromBase64String } from "./utils";
 import { FitPull } from "./fitPull";
 import { FitPush } from "./fitPush";
-import { VaultOperations } from "./vaultOps";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors } from "./syncResult";
@@ -12,6 +10,15 @@ import { OctokitHttpError } from "./fit";
 
 type FilesystemError = Error & { isFilesystemError: true };
 
+/**
+ * Interface for the sync orchestrator.
+ *
+ * FitSync is the high-level coordinator for all sync operations between local
+ * vault and remote GitHub repository. It's the main entry point for triggering
+ * sync and handles all the decision logic about what type of sync to perform.
+ *
+ * @see FitSync - The concrete implementation
+ */
 export interface IFitSync {
 	fit: Fit
 }
@@ -34,19 +41,50 @@ type PreSyncCheckResultType = (
     "localAndRemoteChangesClashed"
 );
 
+/**
+ * Sync orchestrator - coordinates all sync operations between local and remote.
+ *
+ * FitSync is the **main entry point** for synchronization. It:
+ * - Analyzes current state to determine what type of sync is needed
+ * - Coordinates conflict resolution when local and remote both changed
+ * - Delegates to FitPull for remote→local operations
+ * - Delegates to FitPush for local→remote operations
+ * - Categorizes errors into user-friendly messages
+ *
+ * Architecture:
+ * - **Role**: High-level orchestrator and decision maker
+ * - **Used by**: FitPlugin (main.ts) - the Obsidian plugin entry point
+ * - **Uses**: Fit (data access), FitPull (pull ops), FitPush (push ops)
+ *
+ * Key responsibilities:
+ * - Pre-sync analysis: Determine if changes are compatible or conflicting
+ * - Conflict resolution: Decide how to handle clashes, write to _fit/ when needed
+ * - Error handling: Catch all errors and categorize them (network, auth, filesystem, etc.)
+ * - State updates: Update cached SHAs after successful sync
+ *
+ * Sync strategies (determined by performPreSyncChecks):
+ * - **inSync**: No changes, nothing to do
+ * - **onlyLocalChanged**: Push local changes to remote
+ * - **onlyRemoteChanged**: Pull remote changes to local
+ * - **localAndRemoteChangesCompatible**: Both changed different files, merge them
+ * - **localAndRemoteChangesClashed**: Both changed same files, resolve conflicts
+ *
+ * @see sync() - The main entry point method
+ * @see Fit - Data access layer for local and remote storage
+ * @see FitPull - Handles pull (remote→local) operations
+ * @see FitPush - Handles push (local→remote) operations
+ */
 export class FitSync implements IFitSync {
 	fit: Fit;
 	fitPull: FitPull;
 	fitPush: FitPush;
-	vaultOps: VaultOperations;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
 
 
-	constructor(fit: Fit, vaultOps: VaultOperations, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
+	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
 		this.fit = fit;
 		this.fitPull = new FitPull(fit);
 		this.fitPush = new FitPush(fit);
-		this.vaultOps = vaultOps;
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
@@ -57,6 +95,7 @@ export class FitSync implements IFitSync {
 		if (localChanges.length === 0 && !remoteUpdated) {
 			return {status: "inSync"};
 		}
+		// TODO: Refactor to use remoteVault.computeCurrentState() and remoteVault.getChanges()
 		const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha);
 		const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha);
 		let clashes: ClashStatus[] = [];
@@ -109,51 +148,38 @@ export class FitSync implements IFitSync {
 	async handleBinaryConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		await this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		await this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
-
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async handleUTF8Conflict(path: string, localContent: string, remoteConent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteConent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteConent);
 	}
 
 	async handleLocalDeletionConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionFolder);
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async resolveFileConflict(clash: ClashStatus, latestRemoteFileSha: string): Promise<ConflictResolutionResult> {
 		if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
 			return {path: clash.path, noDiff: true};
 		} else if (clash.localStatus === "deleted") {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
 		}
 
-		const localFile = await this.fit.vaultOps.getTFile(clash.path);
-		const localFileContent = arrayBufferToBase64(await this.fit.vaultOps.vault.readBinary(localFile));
+		// TODO: Check localVault.shouldTrackState(clash.path) before reading.
+		// If false (e.g., hidden file like .gitignore), we can't reliably read it,
+		// so treat it as untrackable and write remote version to _fit/ to be safe.
+		// This prevents filesystem errors when trying to read hidden files.
+		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
 
 		if (latestRemoteFileSha) {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			if (removeLineEndingsFromBase64String(remoteContent) !== removeLineEndingsFromBase64String(localFileContent)) {
 				const report = this.generateConflictReport(clash.path, localFileContent, remoteContent);
 				let fileOp: FileOpRecord;
@@ -196,14 +222,16 @@ export class FitSync implements IFitSync {
 		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
 			remoteUpdate.remoteChanges);
 		syncNotice.setMessage("Uploading local changes");
-		const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha);
+		// TODO: Refactor entire push workflow - replace getTree/createCommitFromLocalUpdate/updateRef/getRemoteTreeSha
+		// with single call to remoteVault.applyChanges(). See TODO in FitPush for details.
+		const remoteTree = await this.fit.remoteVault.getTree(localUpdate.parentCommitSha);
 		const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree);
 		let latestRemoteTreeSha: Record<string, string>;
 		let latestCommitSha: string;
 		let pushedChanges: Array<LocalChange>;
 		if (createCommitResult) {
 			const {createdCommitSha} = createCommitResult;
-			const latestRefSha = await this.fit.updateRef(createdCommitSha);
+			const latestRefSha = await this.fit.remoteVault.updateRef(createdCommitSha);
 			latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha);
 			latestCommitSha = createdCommitSha;
 			pushedChanges = createCommitResult.pushedChanges;
@@ -214,7 +242,7 @@ export class FitSync implements IFitSync {
 		}
 
 		syncNotice.setMessage("Writing remote changes to local");
-		const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: latestRemoteTreeSha,
 			lastFetchedCommitSha: latestCommitSha,
@@ -276,7 +304,7 @@ export class FitSync implements IFitSync {
 
 		let localFileOpsRecord: LocalChange[];
 		try {
-			localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+			localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha,
@@ -420,16 +448,16 @@ export class FitSync implements IFitSync {
 				}
 
 				// GitHub API 404 errors for repository/branch access
-				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
+				if (error.status === 404 && error.source === 'getRef') {
 					let detailMessage;
 					// Try to distinguish between repo and branch errors
 					try {
 						detailMessage = await this.fit.checkRepoExists() ?
-							`Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`
-							: `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
+							`Branch '${this.fit.remoteVault.getBranch()}' not found on repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}'`
+							: `Repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}' not found`;
 					} catch (_repoError) {
 						// For checkRepoExists errors (403, network, etc.), fall back to generic message
-						detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
+						detailMessage = `Repository '${this.fit.remoteVault.getOwner()}/${this.fit.remoteVault.getRepo()}' or branch '${this.fit.remoteVault.getBranch()}' not found`;
 					}
 					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
 				}
