@@ -30,21 +30,6 @@ describe("RemoteGitHubVault", () => {
 	});
 
 	describe("Read Operations", () => {
-		describe("getTree", () => {
-			it("should fetch tree nodes from GitHub", async () => {
-				const mockTree: TreeNode[] = [
-					{ path: "file1.md", type: "blob", mode: "100644", sha: "sha1" },
-					{ path: "file2.md", type: "blob", mode: "100644", sha: "sha2" }
-				];
-
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
-
-				const tree = await vault.getTree("tree456");
-
-				expect(tree).toEqual(mockTree);
-			});
-		});
-
 		describe("readFromSource", () => {
 			it("should fetch and update state from non-empty tree", async () => {
 				const mockTree: TreeNode[] = [
@@ -66,6 +51,11 @@ describe("RemoteGitHubVault", () => {
 
 			it("should handle empty tree", async () => {
 				fakeOctokit.setupInitialState("commit123", EMPTY_TREE_SHA, []);
+				// GitHub weirdly returns a 404 error when fetching tree for empty tree SHA.
+				// Simulated error is actually skipped and unused if there's no bug.
+				const notFoundError: any = new Error("Not found");
+				notFoundError.status = 404;
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", notFoundError);
 
 				const state = await vault.readFromSource();
 
@@ -89,6 +79,17 @@ describe("RemoteGitHubVault", () => {
 					"_fit/file2.md": "sha2",
 					"file3.md": "sha3"
 				});
+			});
+
+			it("should propagate errors from getCommitTreeSha", async () => {
+				fakeOctokit.setupInitialState("commit123", "tree456", []);
+
+				// Simulate 401 auth error
+				const authError: any = new Error("Bad credentials");
+				authError.status = 401;
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/commits/{ref}", authError);
+
+				await expect(vault.readFromSource()).rejects.toThrow("Bad credentials");
 			});
 		});
 
@@ -272,18 +273,10 @@ describe("RemoteGitHubVault", () => {
 
 			it("should fall back to generic message if checkRepoExists fails", async () => {
 				// Arrange - getRef fails with 404, checkRepoExists also fails (e.g., 403)
-				// We'll simulate this by making checkRepoExists throw a non-404 error
 				fakeOctokit.setRepoExists(true);
-				// Override the GET /repos/{owner}/{repo} to throw 403 instead
-				const originalRequest = fakeOctokit.request;
-				fakeOctokit.request = async (route: string, params?: any) => {
-					if (route === "GET /repos/{owner}/{repo}") {
-						const error: any = new Error("Access denied");
-						error.status = 403;
-						throw error;
-					}
-					return originalRequest.call(fakeOctokit, route, params);
-				};
+				const accessError: any = new Error("Access denied");
+				accessError.status = 403;
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}", accessError);
 
 				// Act & Assert
 				await expect(vault.readFromSource()).rejects.toThrow(

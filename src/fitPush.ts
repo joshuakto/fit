@@ -62,6 +62,7 @@ export class FitPush {
 		const fileOps = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
 
 		// If no operations were performed, return null
+		// TODO: Should this be an error since localChanges were detected but nothing pushed?
 		if (fileOps.length === 0) {
 			return null;
 		}

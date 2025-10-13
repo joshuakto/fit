@@ -145,8 +145,14 @@ export class Fit implements OctokitCallMethods {
 		return { changes, state: currentState };
 	}
 
-	async getRemoteChanges(): Promise<{changes: RemoteChange[], state: FileState}> {
-		const currentState = await this.remoteVault.readFromSource();
+	/**
+	 * Get remote changes since last sync.
+	 *
+	 * @param commitSha - Commit SHA to read from (should be obtained from remoteUpdated())
+	 * @returns Remote changes and current state
+	 */
+	async getRemoteChanges(commitSha: string): Promise<{changes: RemoteChange[], state: FileState}> {
+		const currentState = await this.remoteVault.readFromSourceAtCommit(commitSha);
 		const changes = compareSha(currentState, this.lastFetchedRemoteSha, "remote");
 		return { changes, state: currentState };
 	}

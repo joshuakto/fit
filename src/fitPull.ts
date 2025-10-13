@@ -54,7 +54,8 @@ export class FitPull {
 			localChanges = (await this.fit.getLocalChanges()).changes;
 		}
 
-		const { changes: remoteChanges, state: remoteState } = await this.fit.getRemoteChanges();
+		// Use the remoteCommitSha we already fetched to avoid duplicate API call
+		const { changes: remoteChanges, state: remoteState } = await this.fit.getRemoteChanges(remoteCommitSha);
 
 		const clashedFiles = this.fit.getClashedChanges(localChanges, remoteChanges);
 		// TODO handle clashes without completely blocking pull

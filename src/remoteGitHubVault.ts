@@ -163,7 +163,7 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Get the git tree for a given tree SHA
 	 */
-	async getTree(tree_sha: string): Promise<TreeNode[]> {
+	private async getTree(tree_sha: string): Promise<TreeNode[]> {
 		const { data: tree } = await this.octokit.request(
 			`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
 				owner: this.owner,
@@ -538,20 +538,27 @@ export class RemoteGitHubVault implements IVault {
 	}
 
 	/**
-	 * Fetch tree from GitHub and return it
+	 * Fetch tree from GitHub at the latest commit and return it.
+	 * Implements IVault.readFromSource().
+	 *
+	 * For optimized usage when you already have the commit SHA, use readFromSourceAtCommit() instead.
 	 */
 	async readFromSource(): Promise<FileState> {
-		// Get latest commit SHA
 		const commitSha = await this.getLatestCommitSha();
+		return await this.readFromSourceAtCommit(commitSha);
+	}
 
-		// Get tree SHA from commit (handles empty tree case)
-		let treeSha: string;
-		try {
-			treeSha = await this.getCommitTreeSha(commitSha);
-		} catch (_error) {
-			// If commit doesn't exist, treat as empty tree
-			treeSha = EMPTY_TREE_SHA;
-		}
+	/**
+	 * Fetch tree from GitHub at a specific commit and return it.
+	 * Use this when you already have a commit SHA to avoid duplicate getLatestCommitSha() calls.
+	 *
+	 * @param commitSha - Commit SHA to read from
+	 * TODO: Better solution - move state caching into vault. Initialize vault with lastFetchedRemoteSha,
+	 *       then vault maintains latestKnownState cache. readFromSource() checks if commit changed - if
+	 *       not, return cached state (skip tree/blob fetches). See CLAUDE.md Medium Priority section.
+	 */
+	async readFromSourceAtCommit(commitSha: string): Promise<FileState> {
+		const treeSha = await this.getCommitTreeSha(commitSha);
 
 		// Check if this is the empty tree - skip getTree() call (would return 404)
 		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA

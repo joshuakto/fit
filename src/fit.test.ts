@@ -8,6 +8,8 @@ import { Vault } from 'obsidian';
 import FitNotice from './fitNotice';
 import { SyncErrors, SyncError } from './syncResult';
 
+// TODO: Consolidate more of these high-level tests into fitSync.realFit.test.ts.
+
 // Test settings presets
 const validSettings: FitSettings = {
 	pat: "ghp_validtoken123",

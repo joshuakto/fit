@@ -65,6 +65,7 @@ export class FakeOctokit {
 	private trees: Map<string, TreeNode[]> = new Map();
 	private blobs: Map<string, string> = new Map(); // blob SHA -> content
 	private repoExists: boolean = true; // Simulate whether repository exists
+	private errorSimulations: Map<string, Error> = new Map(); // route -> error to throw
 
 	constructor(
 		public owner: string,
@@ -86,6 +87,14 @@ export class FakeOctokit {
 	 */
 	setRepoExists(exists: boolean): void {
 		this.repoExists = exists;
+	}
+
+	/**
+	 * Simulate an error for a specific route.
+	 * The next call to this route will throw the specified error.
+	 */
+	simulateError(route: string, error: Error): void {
+		this.errorSimulations.set(route, error);
 	}
 
 	/**
@@ -119,6 +128,13 @@ export class FakeOctokit {
 	 * Octokit request method - routes requests to appropriate handlers.
 	 */
 	request = async (route: string, params?: any): Promise<{ data: any }> => {
+		// Check for simulated errors first
+		const simulatedError = this.errorSimulations.get(route);
+		if (simulatedError) {
+			this.errorSimulations.delete(route); // Clear after throwing once
+			throw simulatedError;
+		}
+
 		// GET /repos/{owner}/{repo}
 		if (route === "GET /repos/{owner}/{repo}") {
 			if (!this.repoExists) {
@@ -494,6 +510,14 @@ export class FakeRemoteVault {
 			}
 		}
 		return state;
+	}
+
+	/**
+	 * Read from source at a specific commit (for compatibility with RemoteGitHubVault).
+	 * For fake vault, just delegate to readFromSource (ignore commit SHA).
+	 */
+	async readFromSourceAtCommit(_commitSha: string): Promise<Record<string, string>> {
+		return this.readFromSource();
 	}
 
 	async readFileContent(path: string): Promise<string> {

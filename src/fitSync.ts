@@ -98,8 +98,8 @@ export class FitSync implements IFitSync {
 			return {status: "inSync"};
 		}
 
-		// Scan remote vault and update its cache
-		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges();
+		// Scan remote vault (pass commitSha to avoid duplicate API call)
+		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
 
 		let clashes: ClashStatus[] = [];
 		let status: PreSyncCheckResultType;
@@ -232,6 +232,8 @@ export class FitSync implements IFitSync {
 			pushedChanges = pushResult.pushedChanges;
 		} else {
 			// No changes were pushed
+			// TODO: Abort the sync if there were local changes detected but nothing pushed?
+			// Otherwise we may record them as synced below and incorrectly overwrite them from remote later.
 			latestRemoteTreeSha = remoteUpdate.remoteTreeSha;
 			latestCommitSha = remoteUpdate.latestRemoteCommitSha;
 			pushedChanges = [];
