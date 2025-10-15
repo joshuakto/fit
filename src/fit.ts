@@ -83,6 +83,23 @@ export class Fit {
 		return true;
 	}
 
+	/**
+	 * Filter a FileState to include only paths that should be synced.
+	 * Used when updating LocalStores to ensure excluded paths (like _fit/) aren't tracked.
+	 *
+	 * @param state - Complete file state from vault
+	 * @returns Filtered state containing only synced paths
+	 */
+	filterSyncedState(state: FileState): FileState {
+		const filtered: FileState = {};
+		for (const [path, sha] of Object.entries(state)) {
+			if (this.shouldSyncPath(path)) {
+				filtered[path] = sha;
+			}
+		}
+		return filtered;
+	}
+
 	async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
 		const remoteCommitSha = await this.remoteVault.getLatestCommitSha();
 		return {remoteCommitSha, updated: remoteCommitSha !== this.lastFetchedCommitSha};

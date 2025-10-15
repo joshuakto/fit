@@ -89,25 +89,29 @@ export class FitSync implements IFitSync {
 	async performPreSyncChecks(): Promise<PreSyncCheckResult> {
 		// Scan local vault and update its cache
 		const {changes: localChanges, state: localState} = await this.fit.getLocalChanges();
+		// Filter changes based on sync policy (e.g., exclude _fit/)
+		const filteredLocalChanges = localChanges.filter(change => this.fit.shouldSyncPath(change.path));
 
 		const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
-		if (localChanges.length === 0 && !remoteUpdated) {
+		if (filteredLocalChanges.length === 0 && !remoteUpdated) {
 			return {status: "inSync"};
 		}
 
 		// Scan remote vault (pass commitSha to avoid duplicate API call)
 		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
+		// Filter changes based on sync policy (e.g., exclude _fit/)
+		const filteredRemoteChanges = remoteChanges.filter(change => this.fit.shouldSyncPath(change.path));
 
 		let clashes: ClashStatus[] = [];
 		let status: PreSyncCheckResultType;
-		if (localChanges.length > 0 && !remoteUpdated) {
+		if (filteredLocalChanges.length > 0 && !remoteUpdated) {
 			status = "onlyLocalChanged";
-		} else if (remoteUpdated && localChanges.length === 0 && remoteChanges.length === 0) {
+		} else if (remoteUpdated && filteredLocalChanges.length === 0 && filteredRemoteChanges.length === 0) {
 			status = "onlyRemoteCommitShaChanged";
-		} else if (localChanges.length === 0 && remoteUpdated) {
+		} else if (filteredLocalChanges.length === 0 && remoteUpdated) {
 			status = "onlyRemoteChanged";
 		} else {
-			clashes = this.fit.getClashedChanges(localChanges, remoteChanges);
+			clashes = this.fit.getClashedChanges(filteredLocalChanges, filteredRemoteChanges);
 			if (clashes.length === 0) {
 				status = "localAndRemoteChangesCompatible";
 			} else {
@@ -117,12 +121,12 @@ export class FitSync implements IFitSync {
 		return {
 			status,
 			remoteUpdate: {
-				remoteChanges,
+				remoteChanges: filteredRemoteChanges,
 				remoteTreeSha,
 				latestRemoteCommitSha: remoteCommitSha,
 				clashedFiles: clashes
 			},
-			localChanges,
+			localChanges: filteredLocalChanges,
 			localTreeSha: localState
 		};
 	}
@@ -243,9 +247,9 @@ export class FitSync implements IFitSync {
 		const newLocalState = await this.fit.localVault.readFromSource();
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha: latestRemoteTreeSha,
+			lastFetchedRemoteSha: this.fit.filterSyncedState(latestRemoteTreeSha),
 			lastFetchedCommitSha: latestCommitSha,
-			localSha: newLocalState
+			localSha: this.fit.filterSyncedState(newLocalState)
 		});
 		syncNotice.setMessage("Sync successful");
 		return {localOps: localFileOpsRecord, remoteOps: pushedChanges};
@@ -301,9 +305,9 @@ export class FitSync implements IFitSync {
 		const newLocalState = await this.fit.localVault.readFromSource();
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha,
+			lastFetchedRemoteSha: this.fit.filterSyncedState(lastFetchedRemoteSha),
 			lastFetchedCommitSha,
-			localSha: newLocalState
+			localSha: this.fit.filterSyncedState(newLocalState)
 		});
 		const ops = localFileOpsRecord.concat(fileOpsRecord);
 		if (unresolvedFiles.length === 0) {
@@ -354,8 +358,8 @@ export class FitSync implements IFitSync {
 				if (pushResult) {
 					// Vault caches already updated in pre-sync checks, just save to persistent storage
 					await this.saveLocalStoreCallback({
-						localSha: localTreeSha,
-						lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
+						localSha: this.fit.filterSyncedState(localTreeSha),
+						lastFetchedRemoteSha: this.fit.filterSyncedState(pushResult.lastFetchedRemoteSha),
 						lastFetchedCommitSha: pushResult.lastFetchedCommitSha
 					});
 					return { success: true, ops: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], clash: [] };

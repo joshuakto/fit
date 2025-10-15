@@ -29,6 +29,9 @@ describe('FitSync', () => {
 
 		const fakeFit = {
 			// Core change detection methods
+			shouldSyncPath(path: string) {
+				return true;
+			},
 			async remoteUpdated() {
 				return {
 					remoteCommitSha: remoteCommitSha || '',
@@ -50,6 +53,10 @@ describe('FitSync', () => {
 			},
 			getClashedChanges(_localChanges: LocalChange[], _remoteChanges: RemoteChange[]) {
 				return [];
+			},
+			filterSyncedState(state: Record<string, string>) {
+				// Simple pass-through for tests (no _fit/ filtering needed in unit tests)
+				return state;
 			},
 
 			// Minimal vault stubs - only implement methods actually used by tests

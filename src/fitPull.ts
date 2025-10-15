@@ -101,10 +101,11 @@ export class FitPull {
 
 		const fileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
+		const newLocalState = await this.fit.localVault.readFromSource();
 		await saveLocalStoreCallback({
-			lastFetchedRemoteSha: remoteTreeSha,
+			lastFetchedRemoteSha: this.fit.filterSyncedState(remoteTreeSha),
 			lastFetchedCommitSha: latestRemoteCommitSha,
-			localSha: await this.fit.localVault.readFromSource()
+			localSha: this.fit.filterSyncedState(newLocalState)
 		});
 		return fileOpsRecord;
 	}
