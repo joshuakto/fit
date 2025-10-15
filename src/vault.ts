@@ -112,13 +112,13 @@ export interface IVault {
 	/**
 	 * Read file content for a specific path or SHA
 	 *
-	 * For LocalVault: path is a file path in the vault
-	 * For RemoteGitHubVault: path is a blob SHA (GitHub stores content by hash)
+	 * For LocalVault: pathOrSha is a file path in the vault
+	 * For RemoteGitHubVault: pathOrSha is a blob SHA (GitHub stores content by hash)
 	 *
-	 * @param path - File path (LocalVault) or blob SHA (RemoteGitHubVault)
+	 * @param pathOrSha - File path (LocalVault) or blob SHA (RemoteGitHubVault)
 	 * @returns File content (base64 encoded for binary files)
 	 */
-	readFileContent(path: string): Promise<string>;
+	readFileContent(pathOrSha: string): Promise<string>;
 
 	// ===== Write Operations (Applying Changes) =====
 

@@ -5,7 +5,7 @@ import { FitPull } from "./fitPull";
 import { FitPush } from "./fitPush";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
-import { SyncResult, SyncErrors } from "./syncResult";
+import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { VaultError } from "./vault";
 
 /**
@@ -415,5 +415,28 @@ export class FitSync implements IFitSync {
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
 		}
+	}
+
+	/**
+	 * Generate user-friendly error message from structured sync error.
+	 * Converts technical sync errors into messages appropriate for end users.
+	 */
+	getSyncErrorMessage(syncError: SyncError): string {
+		// Handle VaultError types
+		if (syncError instanceof VaultError) {
+			switch (syncError.type) {
+				case 'network':
+					return `${syncError.message}. Please check your internet connection.`;
+				case 'authentication':
+					return `${syncError.message}. Check your GitHub personal access token.`;
+				case 'remote_not_found':
+					return `${syncError.message}. Check your repo and branch settings.`;
+				case 'filesystem':
+					return `File system error: ${syncError.message}`;
+			}
+		}
+
+		// Handle sync orchestration errors (type === 'unknown')
+		return syncError.detailMessage;
 	}
 }

@@ -132,8 +132,9 @@ export class LocalVault implements IVault {
 	/**
 	 * Read file content for a specific path
 	 */
-	async readFileContent(path: string): Promise<string> {
-		const file = await this.getTFile(path);
+	async readFileContent(pathOrSha: string): Promise<string> {
+		// LocalVault only uses paths (not blob SHAs)
+		const file = await this.getTFile(pathOrSha);
 
 		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
 			return arrayBufferToBase64(await this.vault.readBinary(file));
@@ -215,39 +216,5 @@ export class LocalVault implements IVault {
 
 		const fileOps = await Promise.all([...writeOperations, ...deletionOperations]);
 		return fileOps;
-	}
-
-	/**
-	 * Create a copy of a file in a specified directory (typically _fit/)
-	 */
-	async createCopyInDir(path: string, copyDir = "_fit"): Promise<void> {
-		try {
-			const file = this.vault.getAbstractFileByPath(path);
-			if (file && file instanceof TFile) {
-				const copy = await this.vault.readBinary(file);
-				const copyPath = `${copyDir}/${path}`;
-				// TODO: Await this to avoid race condition
-				this.ensureFolderExists(copyPath);
-				const copyFile = this.vault.getAbstractFileByPath(copyPath);
-				if (copyFile && copyFile instanceof TFile) {
-					await this.vault.modifyBinary(copyFile, copy);
-				} else if (!copyFile) {
-					await this.vault.createBinary(copyPath, copy);
-				} else {
-					// TODO: This was probably supposed to await the delete.
-					this.vault.delete(copyFile, true); // TODO add warning to let user know files in _fit will be overwritten
-					await this.vault.createBinary(copyPath, copy);
-				}
-			} else {
-				throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
-			}
-		} catch (error) {
-			// Re-throw VaultError as-is (don't double-wrap)
-			if (error instanceof VaultError) {
-				throw error;
-			}
-			const message = error instanceof Error ? error.message : `Failed to create copy of file: ${String(error)}`;
-			throw VaultError.filesystem(message, { originalError: error });
-		}
 	}
 }

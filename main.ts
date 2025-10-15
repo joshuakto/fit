@@ -155,7 +155,7 @@ export default class FitPlugin extends Plugin {
 			return true;
 		} else {
 			// Generate user-friendly message from structured sync error
-			const errorMessage = this.fit.getSyncErrorMessage(syncResult.error);
+			const errorMessage = this.fitSync.getSyncErrorMessage(syncResult.error);
 			const fullMessage = `Sync failed: ${errorMessage}`;
 
 			// Log detailed error information for debugging
