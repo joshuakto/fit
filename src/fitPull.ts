@@ -14,11 +14,29 @@ type PrePullCheckResult = (
     { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
 );
 
-export interface IFitPull {
-	fit: Fit
-}
-
-export class FitPull implements IFitPull {
+/**
+ * Handles pull operations - syncing changes from remote GitHub to local vault.
+ *
+ * Encapsulates the logic for:
+ * - Fetching remote file content from GitHub (via Fit.getBlob)
+ * - Writing remote changes to local vault (via Fit.localVault.applyChanges)
+ * - Updating cached state after successful pull
+ *
+ * Architecture:
+ * - **Role**: Directional sync coordinator (remote→local only)
+ * - **Used by**: FitSync (orchestrator)
+ * - **Uses**: Fit (for GitHub API and local vault access)
+ *
+ * Key methods:
+ * - pullRemoteToLocal(): Complete pull operation with state updates
+ * - prepareChangesToExecute(): Separates adds/modifications from deletions
+ * - getRemoteNonDeletionChangesContent(): Fetches file content from GitHub
+ *
+ * @see FitSync - The orchestrator that decides when to pull
+ * @see FitPush - The counterpart for push operations
+ * @see Fit - Provides GitHub API access and local vault operations
+ */
+export class FitPull {
 	fit: Fit;
 
 
@@ -32,10 +50,13 @@ export class FitPull implements IFitPull {
 			return {status: "localCopyUpToDate", remoteUpdate: null};
 		}
 		if (!localChanges) {
-			localChanges = await this.fit.getLocalChanges();
+			// Scan vault and compare against latest known state
+			localChanges = (await this.fit.getLocalChanges()).changes;
 		}
-		const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha);
-		const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha);
+
+		// Use the remoteCommitSha we already fetched to avoid duplicate API call
+		const { changes: remoteChanges, state: remoteState } = await this.fit.getRemoteChanges(remoteCommitSha);
+
 		const clashedFiles = this.fit.getClashedChanges(localChanges, remoteChanges);
 		// TODO handle clashes without completely blocking pull
 		const prePullCheckStatus = (
@@ -46,7 +67,7 @@ export class FitPull implements IFitPull {
 		return {
 			status: prePullCheckStatus,
 			remoteUpdate: {
-				remoteChanges, remoteTreeSha, latestRemoteCommitSha: remoteCommitSha, clashedFiles
+				remoteChanges, remoteTreeSha: remoteState, latestRemoteCommitSha: remoteCommitSha, clashedFiles
 			}
 		};
 	}
@@ -54,7 +75,7 @@ export class FitPull implements IFitPull {
 	// Get changes from remote, pathShaMap is coupled to the Fit plugin design
 	async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
 		const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
-			const content = await this.fit.getBlob(file_sha);
+			const content = await this.fit.remoteVault.readFileContent(file_sha);
 			return {path, content};
 		});
 		return await Promise.all(remoteChanges);
@@ -78,11 +99,12 @@ export class FitPull implements IFitPull {
 		const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate;
 		const {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges);
 
-		const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+		const fileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+
 		await saveLocalStoreCallback({
 			lastFetchedRemoteSha: remoteTreeSha,
 			lastFetchedCommitSha: latestRemoteCommitSha,
-			localSha: await this.fit.computeLocalSha()
+			localSha: await this.fit.localVault.readFromSource()
 		});
 		return fileOpsRecord;
 	}

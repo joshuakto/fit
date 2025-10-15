@@ -1,17 +1,25 @@
-import { arrayBufferToBase64 } from "obsidian";
 import { Fit } from "./fit";
 import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteChange, RemoteUpdate } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT, extractExtension, removeLineEndingsFromBase64String } from "./utils";
 import { FitPull } from "./fitPull";
 import { FitPush } from "./fitPush";
-import { VaultOperations } from "./vaultOps";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors } from "./syncResult";
 import { OctokitHttpError } from "./fit";
+import { RemoteNotFoundError } from "./vault";
 
 type FilesystemError = Error & { isFilesystemError: true };
 
+/**
+ * Interface for the sync orchestrator.
+ *
+ * FitSync is the high-level coordinator for all sync operations between local
+ * vault and remote GitHub repository. It's the main entry point for triggering
+ * sync and handles all the decision logic about what type of sync to perform.
+ *
+ * @see FitSync - The concrete implementation
+ */
 export interface IFitSync {
 	fit: Fit
 }
@@ -34,31 +42,65 @@ type PreSyncCheckResultType = (
     "localAndRemoteChangesClashed"
 );
 
+/**
+ * Sync orchestrator - coordinates all sync operations between local and remote.
+ *
+ * FitSync is the **main entry point** for synchronization. It:
+ * - Analyzes current state to determine what type of sync is needed
+ * - Coordinates conflict resolution when local and remote both changed
+ * - Delegates to FitPull for remote→local operations
+ * - Delegates to FitPush for local→remote operations
+ * - Categorizes errors into user-friendly messages
+ *
+ * Architecture:
+ * - **Role**: High-level orchestrator and decision maker
+ * - **Used by**: FitPlugin (main.ts) - the Obsidian plugin entry point
+ * - **Uses**: Fit (data access), FitPull (pull ops), FitPush (push ops)
+ *
+ * Key responsibilities:
+ * - Pre-sync analysis: Determine if changes are compatible or conflicting
+ * - Conflict resolution: Decide how to handle clashes, write to _fit/ when needed
+ * - Error handling: Catch all errors and categorize them (network, auth, filesystem, etc.)
+ * - State updates: Update cached SHAs after successful sync
+ *
+ * Sync strategies (determined by performPreSyncChecks):
+ * - **inSync**: No changes, nothing to do
+ * - **onlyLocalChanged**: Push local changes to remote
+ * - **onlyRemoteChanged**: Pull remote changes to local
+ * - **localAndRemoteChangesCompatible**: Both changed different files, merge them
+ * - **localAndRemoteChangesClashed**: Both changed same files, resolve conflicts
+ *
+ * @see sync() - The main entry point method
+ * @see Fit - Data access layer for local and remote storage
+ * @see FitPull - Handles pull (remote→local) operations
+ * @see FitPush - Handles push (local→remote) operations
+ */
 export class FitSync implements IFitSync {
 	fit: Fit;
 	fitPull: FitPull;
 	fitPush: FitPush;
-	vaultOps: VaultOperations;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
 
 
-	constructor(fit: Fit, vaultOps: VaultOperations, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
+	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
 		this.fit = fit;
 		this.fitPull = new FitPull(fit);
 		this.fitPush = new FitPush(fit);
-		this.vaultOps = vaultOps;
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
 	async performPreSyncChecks(): Promise<PreSyncCheckResult> {
-		const currentLocalSha = await this.fit.computeLocalSha();
-		const localChanges = await this.fit.getLocalChanges(currentLocalSha);
+		// Scan local vault and update its cache
+		const {changes: localChanges, state: localState} = await this.fit.getLocalChanges();
+
 		const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
 		if (localChanges.length === 0 && !remoteUpdated) {
 			return {status: "inSync"};
 		}
-		const remoteTreeSha = await this.fit.getRemoteTreeSha(remoteCommitSha);
-		const remoteChanges = await this.fit.getRemoteChanges(remoteTreeSha);
+
+		// Scan remote vault (pass commitSha to avoid duplicate API call)
+		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
+
 		let clashes: ClashStatus[] = [];
 		let status: PreSyncCheckResultType;
 		if (localChanges.length > 0 && !remoteUpdated) {
@@ -84,7 +126,7 @@ export class FitSync implements IFitSync {
 				clashedFiles: clashes
 			},
 			localChanges,
-			localTreeSha: currentLocalSha
+			localTreeSha: localState
 		};
 	}
 
@@ -109,51 +151,34 @@ export class FitSync implements IFitSync {
 	async handleBinaryConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		await this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		await this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
-
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async handleUTF8Conflict(path: string, localContent: string, remoteConent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionPath);
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteConent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteConent);
 	}
 
 	async handleLocalDeletionConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
-		this.fit.vaultOps.ensureFolderExists(conflictResolutionFolder);
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
-		this.fit.vaultOps.writeToLocal(conflictResolutionPath, remoteContent);
-		return {
-			path: conflictResolutionPath,
-			status: "created"
-		};
+		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
 	async resolveFileConflict(clash: ClashStatus, latestRemoteFileSha: string): Promise<ConflictResolutionResult> {
 		if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
 			return {path: clash.path, noDiff: true};
 		} else if (clash.localStatus === "deleted") {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
 		}
 
-		const localFile = await this.fit.vaultOps.getTFile(clash.path);
-		const localFileContent = arrayBufferToBase64(await this.fit.vaultOps.vault.readBinary(localFile));
+		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
 
 		if (latestRemoteFileSha) {
-			const remoteContent = await this.fit.getBlob(latestRemoteFileSha);
+			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			if (removeLineEndingsFromBase64String(remoteContent) !== removeLineEndingsFromBase64String(localFileContent)) {
 				const report = this.generateConflictReport(clash.path, localFileContent, remoteContent);
 				let fileOp: FileOpRecord;
@@ -196,29 +221,34 @@ export class FitSync implements IFitSync {
 		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
 			remoteUpdate.remoteChanges);
 		syncNotice.setMessage("Uploading local changes");
-		const remoteTree = await this.fit.getTree(localUpdate.parentCommitSha);
-		const createCommitResult = await this.fitPush.createCommitFromLocalUpdate(localUpdate, remoteTree);
+		// Push local changes to remote
+		const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
 		let latestRemoteTreeSha: Record<string, string>;
 		let latestCommitSha: string;
 		let pushedChanges: Array<LocalChange>;
-		if (createCommitResult) {
-			const {createdCommitSha} = createCommitResult;
-			const latestRefSha = await this.fit.updateRef(createdCommitSha);
-			latestRemoteTreeSha = await this.fit.getRemoteTreeSha(latestRefSha);
-			latestCommitSha = createdCommitSha;
-			pushedChanges = createCommitResult.pushedChanges;
+		if (pushResult) {
+			latestRemoteTreeSha = pushResult.lastFetchedRemoteSha;
+			latestCommitSha = pushResult.lastFetchedCommitSha;
+			pushedChanges = pushResult.pushedChanges;
 		} else {
+			// No changes were pushed
+			// TODO: Abort the sync if there were local changes detected but nothing pushed?
+			// Otherwise we may record them as synced below and incorrectly overwrite them from remote later.
 			latestRemoteTreeSha = remoteUpdate.remoteTreeSha;
 			latestCommitSha = remoteUpdate.latestRemoteCommitSha;
 			pushedChanges = [];
 		}
 
 		syncNotice.setMessage("Writing remote changes to local");
-		const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+
+		// Update local vault state after applying changes
+		const newLocalState = await this.fit.localVault.readFromSource();
+
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: latestRemoteTreeSha,
 			lastFetchedCommitSha: latestCommitSha,
-			localSha: await this.fit.computeLocalSha()
+			localSha: newLocalState
 		});
 		syncNotice.setMessage("Sync successful");
 		return {localOps: localFileOpsRecord, remoteOps: pushedChanges};
@@ -276,12 +306,15 @@ export class FitSync implements IFitSync {
 
 		let localFileOpsRecord: LocalChange[];
 		try {
-			localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+			localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+
+			// Update local vault state after applying changes
+			const newLocalState = await this.fit.localVault.readFromSource();
 
 			await this.saveLocalStoreCallback({
 				lastFetchedRemoteSha,
 				lastFetchedCommitSha,
-				localSha: await this.fit.computeLocalSha()
+				localSha: newLocalState
 			});
 		} catch (error) {
 			// Mark filesystem errors for proper classification in outer catch block
@@ -343,6 +376,7 @@ export class FitSync implements IFitSync {
 				const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
 				syncNotice.setMessage("Sync successful");
 				if (pushResult) {
+					// Vault caches already updated in pre-sync checks, just save to persistent storage
 					await this.saveLocalStoreCallback({
 						localSha: localTreeSha,
 						lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha,
@@ -419,23 +453,14 @@ export class FitSync implements IFitSync {
 					return { success: false, error: SyncErrors.remoteAccess('Access denied (token missing permissions?)', { source: error.source, originalError: error }) };
 				}
 
-				// GitHub API 404 errors for repository/branch access
-				if (error.status === 404 && (error.source === 'getRef' || error.source === 'getTree')) {
-					let detailMessage;
-					// Try to distinguish between repo and branch errors
-					try {
-						detailMessage = await this.fit.checkRepoExists() ?
-							`Branch '${this.fit.branch}' not found on repository '${this.fit.owner}/${this.fit.repo}'`
-							: `Repository '${this.fit.owner}/${this.fit.repo}' not found`;
-					} catch (_repoError) {
-						// For checkRepoExists errors (403, network, etc.), fall back to generic message
-						detailMessage = `Repository '${this.fit.owner}/${this.fit.repo}' or branch '${this.fit.branch}' not found`;
-					}
-					return { success: false, error: SyncErrors.remoteNotFound(detailMessage, { source: error.source, originalError: error }) };
-				}
-
 				// All other GitHub API errors (rate limiting, server errors, etc.)
 				return { success: false, error: SyncErrors.apiError('GitHub API error', { source: error.source, originalError: error }) };
+			}
+
+			// Catch RemoteNotFoundError from RemoteGitHubVault (404 errors)
+			if (error instanceof RemoteNotFoundError) {
+				// The error message from RemoteGitHubVault is already user-friendly
+				return { success: false, error: SyncErrors.remoteNotFound(error.message, { originalError: error }) };
 			}
 
 			// All other errors - unknown type

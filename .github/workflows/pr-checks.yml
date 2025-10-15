@@ -11,6 +11,11 @@ permissions:
 jobs:
   quality-checks:
     runs-on: ubuntu-latest
+
+    env:
+      # Required for crypto module on node <19 (for SHA-1 digest)
+      NODE_OPTIONS: "--experimental-global-webcrypto"
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4

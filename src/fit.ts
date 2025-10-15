@@ -1,85 +1,56 @@
 /**
- * Core sync engine for FIT plugin
+ * Sync Coordinator and State Manager
  *
- * This module implements the main synchronization logic between Obsidian vaults
- * and GitHub repositories. It handles:
- * - GitHub API operations via Octokit with automatic retry on rate limits
- * - File change detection using SHA comparison
- * - Conflict resolution during sync
- * - Binary and text file handling
+ * This module coordinates access to both local vault (LocalVault) and remote repository
+ * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
  *
- * Key patterns:
- * - All GitHub operations implement error handling with OctokitHttpError
- * - Automatic retry with exponential backoff for rate limiting (via @octokit/plugin-retry)
- * - SHA-based change detection for efficient sync
- * - Files in _fit/ directory are ignored during sync
- * - Binary files are base64 encoded for GitHub API
+ * Architecture Role:
+ * - **Coordinator**: Bridges LocalVault and RemoteGitHubVault
+ * - **State Manager**: Maintains cached file SHAs for efficient change detection
+ * - **Used by**: FitSync (orchestrator), FitPull (pull operations), FitPush (push operations)
+ * - **Uses**: LocalVault (local file operations), RemoteGitHubVault (GitHub API operations)
  *
- * Rate Limiting & Retry Behavior:
- * - Uses @octokit/plugin-retry to automatically handle GitHub API rate limits
- * - Respects 'retry-after' and 'x-ratelimit-*' headers for optimal retry timing
- * - Applies exponential backoff for transient server errors (5xx)
- * - Does not retry client errors (4xx) except specific rate limit cases
+ * Key Responsibilities:
+ * - Delegates local operations to LocalVault
+ * - Delegates remote operations to RemoteGitHubVault
+ * - Maintains sync state (lastFetchedCommitSha)
+ * - Change detection helpers (comparing local vs remote state)
+ * - Wraps errors in OctokitHttpError for consistent error handling
+ *
+ * @see LocalVault - Local Obsidian vault file operations
+ * @see RemoteGitHubVault - Remote GitHub repository operations (including Octokit, retry logic, etc.)
  */
 
 import { LocalStores, FitSettings } from "main";
-import { Octokit } from "@octokit/core";
-import { retry } from "@octokit/plugin-retry";
-import { RECOGNIZED_BINARY_EXT, compareSha, EMPTY_TREE_SHA } from "./utils";
-import { VaultOperations } from "./vaultOps";
+import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
-import { arrayBufferToBase64 } from "obsidian";
+import { Vault } from "obsidian";
 import { SyncError } from "./syncResult";
+import { LocalVault } from "./localVault";
+import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
+import { FileState } from "./vault";
 
-/**
- * Represents a node in GitHub's git tree structure
- * Maps to GitHub API tree object format
- */
-export type TreeNode = {
-	path: string,
-	mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined,
-	type: "commit" | "blob" | "tree" | undefined,
-	sha: string | null};
-
+// TODO: Rename/reorganize this "Octokit" error handling.
 type OctokitCallMethods = {
 	getUser: () => Promise<{owner: string, avatarUrl: string}>
 	getRepos: () => Promise<string[]>
-	getRef: (ref: string) => Promise<string>
-	checkRepoExists: () => Promise<boolean>
-	getTree: (tree_sha: string) => Promise<TreeNode[]>
-	getCommitTreeSha: (ref: string) => Promise<string>
+	getBranches: () => Promise<string[]>
 	getRemoteTreeSha: (tree_or_ref_sha: string) => Promise<{[k:string]: string}>
-	createBlob: (content: string, encoding: string) =>Promise<string>
 	createTreeNodeFromFile: ({path, status, extension}: LocalChange, remoteTree: TreeNode[]) => Promise<TreeNode|null>
-	createCommit: (treeSha: string, parentSha: string) =>Promise<string>
-	updateRef: (sha: string, ref: string) => Promise<string>
-	getBlob: (file_sha:string) =>Promise<string>
 };
 
 /**
- * Main interface for FIT sync engine
+ * HTTP error from GitHub API operations.
  *
- * Combines GitHub API operations with local state management.
- * Implementations must handle:
- * - Secure token storage and API authentication
- * - Local SHA cache for change detection
- * - Conflict-free sync operations
+ * Thrown by Fit methods when RemoteGitHubVault operations fail.
+ * Contains the HTTP status code (or null for network errors) and the source
+ * method name for debugging.
+ *
+ * @property status - HTTP status code, or null if network error (couldn't reach GitHub)
+ * @property source - Name of the method that failed (matches IFit method names)
+ *
+ * @see FitSync.sync() - Catches and categorizes these errors for user-friendly messages
  */
-export interface IFit extends OctokitCallMethods{
-	owner: string
-	repo: string
-	branch: string
-	headers: {[k: string]: string}
-	deviceName: string
-	localSha: Record<string, string>              // Cache of local file SHAs
-	lastFetchedCommitSha: string | null           // Last synced commit SHA
-	lastFetchedRemoteSha: Record<string, string>  // Cache of remote file SHAs
-	octokit: Octokit
-	vaultOps: VaultOperations
-	fileSha1: (path: string) => Promise<string>
-}
-
-// Define a custom HttpError class that extends Error
 export class OctokitHttpError extends Error {
 	status: number | null;
 	source: keyof OctokitCallMethods;
@@ -92,47 +63,46 @@ export class OctokitHttpError extends Error {
 	}
 }
 
-export class Fit implements IFit {
-	owner: string;
-	repo: string;
-	auth: string | undefined;
-	branch: string;
-	headers: {[k: string]: string};
-	deviceName: string;
-	localSha: Record<string, string>;
-	lastFetchedCommitSha: string | null;
-	lastFetchedRemoteSha: Record<string, string>;
-	octokit: Octokit;
-	vaultOps: VaultOperations;
-	private _repoExistsCache: boolean | null = null; // Cache invalidated when owner/repo change in loadSettings()
+/**
+ * Coordinator for local vault and remote repository access with sync state management.
+ *
+ * Bridges two vault implementations:
+ * - **LocalVault**: Obsidian vault file operations
+ * - **RemoteGitHubVault**: GitHub repository operations
+ *
+ * Maintains sync state for efficient change detection
+ *
+ * All GitHub-specific operations (Octokit, retry logic, API details) are delegated
+ * to RemoteGitHubVault. Fit wraps these in OctokitHttpError for consistent error handling.
+ *
+ * @see FitSync - The high-level orchestrator that coordinates sync operations
+ * @see LocalVault - Local Obsidian vault file operations
+ * @see RemoteGitHubVault - Remote GitHub repository operations
+ */
+export class Fit implements OctokitCallMethods {
+	localSha: Record<string, string>;              // Cache of local file SHAs
+	lastFetchedCommitSha: string | null;           // Last synced commit SHA
+	lastFetchedRemoteSha: Record<string, string>;  // Cache of remote file SHAs
+	localVault: LocalVault;                        // Local vault (tracks local file state)
+	remoteVault: RemoteGitHubVault;
 
 
-	constructor(setting: FitSettings, localStores: LocalStores, vaultOps: VaultOperations) {
-		this.loadSettings(setting);
+	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
+		this.localVault = new LocalVault(vault);
+		this.loadSettings(setting);  // NOTE: creates this.remoteVault
 		this.loadLocalStore(localStores);
-		this.vaultOps = vaultOps;
-		this.headers = {
-			// Hack to disable caching which leads to inconsistency for
-			// read after write https://github.com/octokit/octokit.js/issues/890
-			"If-None-Match": '',
-			'X-GitHub-Api-Version': '2022-11-28'
-		};
 	}
 
 	loadSettings(setting: FitSettings) {
-		this.owner = setting.owner;
-		this.repo = setting.repo;
-		this.branch = setting.branch;
-		this.deviceName = setting.deviceName;
-
-		// Use Octokit with retry plugin for enhanced rate limiting handling
-		const OctokitWithRetry = Octokit.plugin(retry);
-		this.octokit = new OctokitWithRetry({
-			auth: setting.pat
-			// Retry plugin operates silently - users will simply experience fewer rate limit errors
-			// Future: Could add verbose logging option to plugin settings
-		});
-		this._repoExistsCache = null; // Invalidate cache when owner/repo potentially change
+		// Recreate remoteVault with new settings (preserves existing state)
+		// This is called when user changes settings in UI
+		this.remoteVault = new RemoteGitHubVault(
+			setting.pat,
+			setting.owner,
+			setting.repo,
+			setting.branch,
+			setting.deviceName
+		);
 	}
 
 	loadLocalStore(localStore: LocalStores) {
@@ -141,60 +111,56 @@ export class Fit implements IFit {
 		this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha;
 	}
 
-	async fileSha1(fileContent: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		return hashHex;
-	}
-
-	async computeFileLocalSha(path: string): Promise<string> {
-		// Note: only support TFile now, investigate need for supporting TFolder later on
-		const file = await this.vaultOps.getTFile(path);
-		// compute sha1 based on path and file content
-		let content: string;
-		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
-			content = arrayBufferToBase64(await this.vaultOps.vault.readBinary(file));
-		} else {
-			content = await this.vaultOps.vault.read(file);
+	/**
+	 * Check if a file path should be included in sync operations.
+	 *
+	 * Excludes paths based on sync policy:
+	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
+	 *
+	 * Future: Will also respect .gitignore patterns when implemented.
+	 *
+	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
+	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
+	 *
+	 * @param path - File path to check
+	 * @returns true if path should be included in sync
+	 */
+	shouldSyncPath(path: string): boolean {
+		// Exclude _fit/ directory (conflict resolution area)
+		if (path.startsWith("_fit/")) {
+			return false;
 		}
-		return await this.fileSha1(path + content);
-	}
 
-	async computeLocalSha(): Promise<{[k:string]:string}> {
-		const paths = this.vaultOps.vault.getFiles().map(f=>{
-			// ignore local files in the _fit/ directory
-			return f.path.startsWith("_fit/") ? null : f.path;
-		}).filter(Boolean);
-		return Object.fromEntries(
-			await Promise.all(
-				paths.map(async (p: string): Promise<[string, string]> =>{
-					return [p, await this.computeFileLocalSha(p)];
-				})
-			)
-		);
+		return true;
 	}
 
 	async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
-		const remoteCommitSha = await this.getLatestRemoteCommitSha();
+		const remoteCommitSha = await this.remoteVault.getLatestCommitSha();
 		return {remoteCommitSha, updated: remoteCommitSha !== this.lastFetchedCommitSha};
 	}
 
-	async getLocalChanges(currentLocalSha?: Record<string, string>): Promise<LocalChange[]> {
-		if (!currentLocalSha) {
-			currentLocalSha = await this.computeLocalSha();
-		}
-		const localChanges = compareSha(currentLocalSha, this.localSha, "local");
-		return localChanges;
+	async getLocalChanges(): Promise<{changes: LocalChange[], state: FileState}> {
+		const currentState = await this.localVault.readFromSource();
+		const changes = compareSha(currentState, this.localSha, "local");
+		return { changes, state: currentState };
 	}
 
-	async getRemoteChanges(remoteTreeSha: {[k: string]: string}): Promise<RemoteChange[]> {
-		const remoteChanges = compareSha(remoteTreeSha, this.lastFetchedRemoteSha, "remote");
-		return remoteChanges;
+	/**
+	 * Get remote changes since last sync.
+	 *
+	 * @param commitSha - Commit SHA to read from (should be obtained from remoteUpdated())
+	 * @returns Remote changes and current state
+	 */
+	async getRemoteChanges(commitSha: string): Promise<{changes: RemoteChange[], state: FileState}> {
+		const currentState = await this.remoteVault.readFromSourceAtCommit(commitSha);
+		const changes = compareSha(currentState, this.lastFetchedRemoteSha, "remote");
+		return { changes, state: currentState };
 	}
 
 	getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {
+		// TODO: Also treat remote changes to untrackable paths as potential clashes.
+		// Example: Remote has .gitignore change, but if .gitignore exists locally it's not
+		// indexed, so we don't know if it has local changes.
 		const localChangePaths = localChanges.map(c=>c.path);
 		const remoteChangePaths = remoteChanges.map(c=>c.path);
 		const clashedFiles = localChangePaths.map(
@@ -215,300 +181,80 @@ export class Fit implements IFit {
 			});
 	}
 
+	/**
+	 * Get authenticated user info from GitHub.
+	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 */
 	async getUser(): Promise<{owner: string, avatarUrl: string}> {
 		try {
-			const {data: response} = await this.octokit.request(
-				`GET /user`, {
-					headers: this.headers
-				});
-			return {owner: response.login, avatarUrl:response.avatar_url};
+			return await this.remoteVault.getUser();
 		} catch (error) {
 			throw new OctokitHttpError(error.message, error.status ?? null, "getUser");
 		}
 	}
 
+	/**
+	 * List repositories owned by authenticated user.
+	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 */
 	async getRepos(): Promise<string[]> {
-		const allRepos: string[] = [];
-		let page = 1;
-		const perPage = 100; // Set to the maximum value of 100
-
 		try {
-			let hasMorePages = true;
-			while (hasMorePages) {
-				const { data: response } = await this.octokit.request(
-					`GET /user/repos`, {
-						affiliation: "owner",
-						headers: this.headers,
-						per_page: perPage, // Number of repositories to import per page (up to 100)
-						page: page
-					}
-				);
-				allRepos.push(...response.map(r => r.name));
-
-				// Make sure you have the following pages
-				if (response.length < perPage) {
-					hasMorePages = false; // Exit when there are no more repositories
-				}
-
-				page++; // Go to the next page
-			}
-
-			return allRepos;
+			return await this.remoteVault.getRepos();
 		} catch (error) {
 			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
 		}
 	}
 
+	/**
+	 * List branches in repository.
+	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 */
 	async getBranches(): Promise<string[]> {
 		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/branches`,
-				{
-					owner: this.owner,
-					repo: this.repo,
-					headers: this.headers
-				});
-			return response.map(r => r.name);
+			return await this.remoteVault.getBranches();
 		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
+			throw new OctokitHttpError(error.message, error.status ?? null, "getBranches");
 		}
 	}
 
 	/**
-     * Check if repository exists and is accessible - returns boolean for 404, throws for other errors
-     * Cached to avoid repeated API calls during error handling
-     */
-	async checkRepoExists(): Promise<boolean> {
-		if (this._repoExistsCache !== null) {
-			return this._repoExistsCache; // Return cached result (true or false)
-		}
-
-		try {
-			await this.octokit.request(`GET /repos/{owner}/{repo}`, {
-				owner: this.owner,
-				repo: this.repo,
-				headers: this.headers
-			});
-			this._repoExistsCache = true;
-			return true;
-		} catch (error) {
-			if (error.status === 404) {
-				this._repoExistsCache = false;
-				return false;
-			}
-			// Throw for non-404 errors (auth, network, etc.)
-			throw new OctokitHttpError(error.message, error.status ?? null, "checkRepoExists");
-		}
-	}
-
-	async getRef(ref: string): Promise<string> {
-		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/git/ref/{ref}`, {
-					owner: this.owner,
-					repo: this.repo,
-					ref: ref,
-					headers: this.headers
-				});
-			return response.object.sha;
-		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status ?? null, "getRef");
-		}
-	}
-
-	// Get the sha of the latest commit in the default branch (set by user in setting)
-	async getLatestRemoteCommitSha(ref = `heads/${this.branch}`): Promise<string> {
-		return await this.getRef(ref);
-	}
-
-	// ref Can be a commit SHA, branch name (heads/BRANCH_NAME), or tag name (tags/TAG_NAME),
-	// refers to https://git-scm.com/book/en/v2/Git-Internals-Git-References
-	/**
-	 * Get full commit data from GitHub API
-	 * @param ref - commit SHA or ref name (e.g., "heads/main")
-	 * @returns Full commit response from GitHub
-	 * @private
+	 * Get remote file state as SHA map (path -> content SHA).
+	 * Accepts either tree SHA or ref/commit SHA. Filters paths based on sync policy.
+	 * Returns format compatible with local store cache.
+	 * Delegates to RemoteGitHubVault.
 	 */
-	private async getCommit(ref: string) {
-		const {data: commit} =  await this.octokit.request(
-			`GET /repos/{owner}/{repo}/commits/{ref}`, {
-				owner: this.owner,
-				repo: this.repo,
-				ref,
-				headers: this.headers
-			});
-		return commit;
-	}
-
-	/**
-	 * Get just the tree SHA from a commit
-	 */
-	async getCommitTreeSha(ref: string): Promise<string> {
-		const commit = await this.getCommit(ref);
-		return commit.commit.tree.sha;
-	}
-
-	async getTree(tree_sha: string): Promise<TreeNode[]> {
-		const { data: tree } =  await this.octokit.request(
-			`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
-				owner: this.owner,
-				repo: this.repo,
-				tree_sha,
-				recursive: 'true',
-				headers: this.headers
-			});
-		return tree.tree as TreeNode[];
-	}
-
-	// get the remote tree sha in the format compatible with local store
 	async getRemoteTreeSha(tree_or_ref_sha: string): Promise<{[k:string]: string}> {
-		// Try to get commit info first (works if input is ref/commit SHA)
-		// This lets us check for empty tree before calling getTree (avoiding 404)
-		let treeSha;
-		try {
-			treeSha = await this.getCommitTreeSha(tree_or_ref_sha);
-		} catch (_error) {
-			// If getCommit fails, fall back to trying input as tree SHA directly.
-			// Any error will surface when we try getTree() below.
-			treeSha = tree_or_ref_sha;
-		}
-
-		// Check if this is the empty tree - if so, skip getTree() call (would return 404)
-		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
-			? []
-			: await this.getTree(treeSha);
-
-		const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
-			// currently ignoring directory changes, if you'd like to upload a new directory,
-			// a quick hack would be creating an empty file inside
-			if (node.type=="blob") {
-				if (!node.path || !node.sha) {
-					throw new Error("Path or sha not found for blob node in remote");
-				}
-				// ignore changes in the _fit/ directory
-				if (node.path.startsWith("_fit/")) {return null;}
-				return [node.path, node.sha];
-			}
-			return null;
-		}).filter(Boolean) as [string, string][]);
-		return remoteSha;
-	}
-
-	async createBlob(content: string, encoding: string): Promise<string> {
-		const {data: blob} = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/blobs`, {
-				owner: this.owner,
-				repo: this.repo,
-				content,
-				encoding,
-				headers: this.headers
-			});
-		return blob.sha;
-	}
-
-
-	async createTreeNodeFromFile({path, status, extension}: LocalChange, remoteTree: Array<TreeNode>): Promise<TreeNode|null> {
-		if (status === "deleted") {
-			// skip creating deletion node if file not found on remote
-			if (remoteTree.every(node => node.path !== path)) {
-				return null;
-			}
-			return {
-				path,
-				mode: '100644',
-				type: 'blob',
-				sha: null
-			};
-		}
-		const file = await this.vaultOps.getTFile(path);
-		let encoding: string;
-		let content: string;
-		// TODO check whether every files including md can be read using readBinary to reduce code complexity
-		if (extension && RECOGNIZED_BINARY_EXT.includes(extension)) {
-			encoding = "base64";
-
-			const fileArrayBuf = await this.vaultOps.vault.readBinary(file);
-			const uint8Array = new Uint8Array(fileArrayBuf);
-			let binaryString = '';
-			for (let i = 0; i < uint8Array.length; i++) {
-				binaryString += String.fromCharCode(uint8Array[i]);
-			}
-			content = btoa(binaryString);
-		} else {
-			encoding = 'utf-8';
-			content = await this.vaultOps.vault.read(file);
-		}
-		const blobSha = await this.createBlob(content, encoding);
-		// skip creating node if file found on remote is the same as the created blob
-		if (remoteTree.some(node => node.path === path && node.sha === blobSha)) {
-			return null;
-		}
-		return {
-			path: path,
-			mode: '100644',
-			type: 'blob',
-			sha: blobSha,
-		};
-	}
-
-	async createTree(
-		treeNodes: Array<TreeNode>,
-		base_tree_sha: string):
-	Promise<string> {
-		const {data: newTree} = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/trees`,
-			{
-				owner: this.owner,
-				repo: this.repo,
-				tree: treeNodes,
-				base_tree: base_tree_sha,
-				headers: this.headers
-			}
+		return await this.remoteVault.getRemoteTreeSha(
+			tree_or_ref_sha,
+			(path) => this.shouldSyncPath(path)
 		);
-		return newTree.sha;
 	}
-
-	async createCommit(treeSha: string, parentSha: string): Promise<string> {
-		const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`;
-		const { data: createdCommit } = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/commits` , {
-				owner: this.owner,
-				repo: this.repo,
-				message,
-				tree: treeSha,
-				parents: [parentSha],
-				headers: this.headers
-			});
-		return createdCommit.sha;
-	}
-
-	async updateRef(sha: string, ref = `heads/${this.branch}`): Promise<string> {
-		const { data:updatedRef } = await this.octokit.request(
-			`PATCH /repos/{owner}/{repo}/git/refs/{ref}`, {
-				owner: this.owner,
-				repo: this.repo,
-				ref,
-				sha,
-				headers: this.headers
-			});
-		return updatedRef.object.sha;
-	}
-
-	async getBlob(file_sha:string): Promise<string> {
-		const { data: blob } = await this.octokit.request(
-			`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
-				owner: this.owner,
-				repo: this.repo,
-				file_sha,
-				headers: this.headers
-			});
-		return blob.content;
-	}
-
 
 	/**
-     * Generate user-friendly error message from structured sync error
-     */
+	 * Create a tree node for a changed file.
+	 * Reads file content from LocalVault and creates blob on GitHub via RemoteGitHubVault.
+	 * Skips if file unchanged on remote (same blob SHA already exists).
+	 *
+	 * @param change - Local file change (path, status, extension)
+	 * @param remoteTree - Current remote tree nodes (for optimization)
+	 * @returns TreeNode to include in commit, or null if no change needed
+	 */
+	async createTreeNodeFromFile({path, status, extension}: LocalChange, remoteTree: Array<TreeNode>): Promise<TreeNode|null> {
+		// Read file content from local vault (null for deletions)
+		const content = status === "deleted"
+			? null
+			: await this.localVault.readFileContent(path);
+
+		// Determine encoding
+		const encoding = (extension && RECOGNIZED_BINARY_EXT.includes(extension)) ? "base64" : "utf-8";
+
+		// Delegate to RemoteGitHubVault to create tree node
+		return await this.remoteVault.createTreeNodeFromContent(path, content, remoteTree, encoding);
+	}
+
+	/**
+	 * Generate user-friendly error message from structured sync error
+	 */
 	getSyncErrorMessage(syncError: SyncError): string {
 		// Return user-friendly message based on error type
 		switch (syncError.type) {

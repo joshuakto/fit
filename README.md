@@ -44,9 +44,8 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
 
 ## Roadmap
-1. Improve user notification
-   - allow user to opt in to get list of file changes in Notice
-2. Enable integration of other git tools (e.g. gitlab, gitea)
+1. Enable integration of other git tools (e.g. gitlab, gitea)
+2. Performance optimizations for large vaults
 
 ## Relevant plugins
 There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out.
