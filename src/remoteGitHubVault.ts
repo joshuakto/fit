@@ -7,7 +7,7 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { IVault, FileState, RemoteNotFoundError } from "./vault";
+import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { EMPTY_TREE_SHA, RECOGNIZED_BINARY_EXT } from "./utils";
 
@@ -89,11 +89,69 @@ export class RemoteGitHubVault implements IVault {
 		return this.branch;
 	}
 
+	// ===== Error Handling =====
+
+	/**
+	 * Wrap octokit errors and convert to VaultError for consistent error handling.
+	 *
+	 * @param error - The error from octokit
+	 * @param notFoundStrategy - How to handle 404 errors:
+	 *   - 'repo': 404 means repository doesn't exist
+	 *   - 'repo-or-branch': 404 could be repo or branch (calls checkRepoExists to distinguish)
+	 *   - 'ignore': Don't treat 404 specially, re-throw as generic error
+	 */
+	private async wrapOctokitError(
+		error: unknown,
+		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore' = 'ignore'
+	): Promise<never> {
+		const errorObj = error as { status?: number | null; response?: unknown; message?: string };
+
+		// No status or no response indicates network/connectivity issue
+		if (errorObj.status === null || errorObj.status === undefined || !errorObj.response) {
+			throw VaultError.network(
+				errorObj.message || "Couldn't reach GitHub API",
+				{ originalError: error }
+			);
+		}
+
+		// 404: Resource not found - handle based on strategy
+		if (errorObj.status === 404 && notFoundStrategy !== 'ignore') {
+			let detailMessage: string;
+
+			if (notFoundStrategy === 'repo') {
+				detailMessage = `Repository '${this.owner}/${this.repo}' not found`;
+			} else {
+				// repo-or-branch: Try to distinguish
+				try {
+					detailMessage = await this.checkRepoExists()
+						? `Branch '${this.branch}' not found on repository '${this.owner}/${this.repo}'`
+						: `Repository '${this.owner}/${this.repo}' not found`;
+				} catch (_repoError) {
+					// checkRepoExists failed (403, network, etc.) - use generic message
+					detailMessage = `Repository '${this.owner}/${this.repo}' or branch '${this.branch}' not found`;
+				}
+			}
+
+			throw VaultError.remoteNotFound(detailMessage, { originalError: error });
+		}
+
+		// 401/403: Authentication/authorization failures
+		if (errorObj.status === 401 || errorObj.status === 403) {
+			throw VaultError.authentication(
+				errorObj.message || 'Authentication failed',
+				{ originalError: error }
+			);
+		}
+
+		// Other errors: re-throw as-is
+		throw error;
+	}
+
 	// ===== Read Operations =====
 
 	/**
 	 * Get reference SHA for the current branch.
-	 * Throws RemoteNotFoundError on 404 (repository or branch not found).
+	 * Throws VaultError (remote_not_found) on 404 (repository or branch not found).
 	 */
 	private async getRef(ref: string = `heads/${this.branch}`): Promise<string> {
 		try {
@@ -106,27 +164,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return response.object.sha;
 		} catch (error: unknown) {
-			// Convert 404 errors to RemoteNotFoundError for cleaner error handling upstream
-			if (error && typeof error === 'object' && 'status' in error && error.status === 404) {
-				// Branch ref not found - could be missing branch or missing repo
-				// Try to distinguish for better error messages
-				let detailMessage;
-				try {
-					detailMessage = await this.checkRepoExists() ?
-						`Branch '${this.branch}' not found on repository '${this.owner}/${this.repo}'`
-						: `Repository '${this.owner}/${this.repo}' not found`;
-				} catch (_repoError) {
-					// For checkRepoExists errors (403, network, etc.), fall back to generic message
-					detailMessage = `Repository '${this.owner}/${this.repo}' or branch '${this.branch}' not found`;
-				}
-				throw new RemoteNotFoundError(
-					detailMessage,
-					this.owner,
-					this.repo,
-					this.branch
-				);
-			}
-			throw error;
+			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
 	}
 
@@ -142,14 +180,18 @@ export class RemoteGitHubVault implements IVault {
 	 * Get full commit data from GitHub API
 	 */
 	private async getCommit(ref: string) {
-		const {data: commit} = await this.octokit.request(
-			`GET /repos/{owner}/{repo}/commits/{ref}`, {
-				owner: this.owner,
-				repo: this.repo,
-				ref,
-				headers: this.headers
-			});
-		return commit;
+		try {
+			const {data: commit} = await this.octokit.request(
+				`GET /repos/{owner}/{repo}/commits/{ref}`, {
+					owner: this.owner,
+					repo: this.repo,
+					ref,
+					headers: this.headers
+				});
+			return commit;
+		} catch (error) {
+			return await this.wrapOctokitError(error, 'repo-or-branch');
+		}
 	}
 
 	/**
@@ -164,15 +206,19 @@ export class RemoteGitHubVault implements IVault {
 	 * Get the git tree for a given tree SHA
 	 */
 	private async getTree(tree_sha: string): Promise<TreeNode[]> {
-		const { data: tree } = await this.octokit.request(
-			`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
-				owner: this.owner,
-				repo: this.repo,
-				tree_sha,
-				recursive: 'true',
-				headers: this.headers
-			});
-		return tree.tree as TreeNode[];
+		try {
+			const { data: tree } = await this.octokit.request(
+				`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
+					owner: this.owner,
+					repo: this.repo,
+					tree_sha,
+					recursive: 'true',
+					headers: this.headers
+				});
+			return tree.tree as TreeNode[];
+		} catch (error) {
+			return await this.wrapOctokitError(error, 'repo-or-branch');
+		}
 	}
 
 
@@ -180,14 +226,20 @@ export class RemoteGitHubVault implements IVault {
 	 * Read file content for a specific SHA from GitHub blobs
 	 */
 	async readFileContent(fileSha: string): Promise<string> {
-		const { data: blob } = await this.octokit.request(
-			`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
-				owner: this.owner,
-				repo: this.repo,
-				file_sha: fileSha,
-				headers: this.headers
-			});
-		return blob.content;
+		try {
+			const { data: blob } = await this.octokit.request(
+				`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
+					owner: this.owner,
+					repo: this.repo,
+					file_sha: fileSha,
+					headers: this.headers
+				});
+			return blob.content;
+		} catch (error) {
+			// Blob not found (404) is a data error, not a vault-level error
+			// Network/auth errors still converted to VaultError
+			return await this.wrapOctokitError(error, 'ignore');
+		}
 	}
 
 	// ===== Write Operations =====
@@ -196,15 +248,19 @@ export class RemoteGitHubVault implements IVault {
 	 * Create a blob on GitHub from content
 	 */
 	private async createBlob(content: string, encoding: string): Promise<string> {
-		const {data: blob} = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/blobs`, {
-				owner: this.owner,
-				repo: this.repo,
-				content,
-				encoding,
-				headers: this.headers
-			});
-		return blob.sha;
+		try {
+			const {data: blob} = await this.octokit.request(
+				`POST /repos/{owner}/{repo}/git/blobs`, {
+					owner: this.owner,
+					repo: this.repo,
+					content,
+					encoding,
+					headers: this.headers
+				});
+			return blob.sha;
+		} catch (error) {
+			return await this.wrapOctokitError(error);
+		}
 	}
 
 	/**
@@ -264,16 +320,20 @@ export class RemoteGitHubVault implements IVault {
 		treeNodes: TreeNode[],
 		base_tree_sha: string
 	): Promise<string> {
-		const {data: newTree} = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/trees`, {
-				owner: this.owner,
-				repo: this.repo,
-				tree: treeNodes,
-				base_tree: base_tree_sha,
-				headers: this.headers
-			}
-		);
-		return newTree.sha;
+		try {
+			const {data: newTree} = await this.octokit.request(
+				`POST /repos/{owner}/{repo}/git/trees`, {
+					owner: this.owner,
+					repo: this.repo,
+					tree: treeNodes,
+					base_tree: base_tree_sha,
+					headers: this.headers
+				}
+			);
+			return newTree.sha;
+		} catch (error) {
+			return await this.wrapOctokitError(error);
+		}
 	}
 
 	/**
@@ -281,31 +341,39 @@ export class RemoteGitHubVault implements IVault {
 	 */
 	private async createCommit(treeSha: string, parentSha: string): Promise<string> {
 		const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`;
-		const { data: createdCommit } = await this.octokit.request(
-			`POST /repos/{owner}/{repo}/git/commits`, {
-				owner: this.owner,
-				repo: this.repo,
-				message,
-				tree: treeSha,
-				parents: [parentSha],
-				headers: this.headers
-			});
-		return createdCommit.sha;
+		try {
+			const { data: createdCommit } = await this.octokit.request(
+				`POST /repos/{owner}/{repo}/git/commits`, {
+					owner: this.owner,
+					repo: this.repo,
+					message,
+					tree: treeSha,
+					parents: [parentSha],
+					headers: this.headers
+				});
+			return createdCommit.sha;
+		} catch (error: unknown) {
+			return await this.wrapOctokitError(error);
+		}
 	}
 
 	/**
 	 * Update branch reference to point to new commit
 	 */
 	private async updateRef(sha: string, ref: string = `heads/${this.branch}`): Promise<string> {
-		const { data: updatedRef } = await this.octokit.request(
-			`PATCH /repos/{owner}/{repo}/git/refs/{ref}`, {
-				owner: this.owner,
-				repo: this.repo,
-				ref,
-				sha,
-				headers: this.headers
-			});
-		return updatedRef.object.sha;
+		try {
+			const { data: updatedRef } = await this.octokit.request(
+				`PATCH /repos/{owner}/{repo}/git/refs/{ref}`, {
+					owner: this.owner,
+					repo: this.repo,
+					ref,
+					sha,
+					headers: this.headers
+				});
+			return updatedRef.object.sha;
+		} catch (error: unknown) {
+			return await this.wrapOctokitError(error);
+		}
 	}
 
 	/**
@@ -360,11 +428,15 @@ export class RemoteGitHubVault implements IVault {
 	 * Get authenticated user information
 	 */
 	async getUser(): Promise<{owner: string, avatarUrl: string}> {
-		const {data: response} = await this.octokit.request(
-			`GET /user`, {
-				headers: this.headers
-			});
-		return {owner: response.login, avatarUrl: response.avatar_url};
+		try {
+			const {data: response} = await this.octokit.request(
+				`GET /user`, {
+					headers: this.headers
+				});
+			return {owner: response.login, avatarUrl: response.avatar_url};
+		} catch (error) {
+			return await this.wrapOctokitError(error);
+		}
 	}
 
 	/**
@@ -377,19 +449,22 @@ export class RemoteGitHubVault implements IVault {
 
 		let hasMorePages = true;
 		while (hasMorePages) {
-			const { data: response } = await this.octokit.request(
-				`GET /user/repos`, {
-					affiliation: "owner",
-					headers: this.headers,
-					per_page: perPage,
-					page: page
+			try {
+				const { data: response } = await this.octokit.request(
+					`GET /user/repos`, {
+						affiliation: "owner",
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					}
+				);
+				allRepos.push(...response.map(r => r.name));
+				// Check if there are more pages
+				if (response.length < perPage) {
+					hasMorePages = false;
 				}
-			);
-			allRepos.push(...response.map(r => r.name));
-
-			// Check if there are more pages
-			if (response.length < perPage) {
-				hasMorePages = false;
+			} catch (error) {
+				return await this.wrapOctokitError(error);
 			}
 
 			page++;
@@ -400,7 +475,7 @@ export class RemoteGitHubVault implements IVault {
 
 	/**
 	 * Get list of branches for the repository.
-	 * Throws RemoteNotFoundError on 404 (repository not found).
+	 * Throws VaultError (remote_not_found) on 404 (repository not found).
 	 */
 	async getBranches(): Promise<string[]> {
 		try {
@@ -413,14 +488,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return response.map(r => r.name);
 		} catch (error: unknown) {
-			if (error && typeof error === 'object' && 'status' in error && error.status === 404) {
-				throw new RemoteNotFoundError(
-					`Repository '${this.owner}/${this.repo}' not found`,
-					this.owner,
-					this.repo
-				);
-			}
-			throw error;
+			return await this.wrapOctokitError(error);
 		}
 	}
 
@@ -428,7 +496,7 @@ export class RemoteGitHubVault implements IVault {
 	 * Check if repository exists and is accessible
 	 * Result is cached to avoid repeated API calls during error handling.
 	 * @returns true if repository exists, false if 404 (not found)
-	 * @throws OctokitHttpError for non-404 errors (auth, network, etc.)
+	 * @throws VaultError for non-404 errors (auth, network, etc.)
 	 */
 	private async checkRepoExists(): Promise<boolean> {
 		if (this.repoExistsCache !== null) {
@@ -444,12 +512,13 @@ export class RemoteGitHubVault implements IVault {
 			this.repoExistsCache = true;
 			return true;
 		} catch (error) {
-			if (error.status === 404) {
+			const errorObj = error as { status?: number };
+			if (errorObj.status === 404) {
 				this.repoExistsCache = false;
 				return false;
 			}
-			// Re-throw non-404 errors (don't cache)
-			throw error;
+			// Non-404 errors: wrap and throw
+			return await this.wrapOctokitError(error);
 		}
 	}
 

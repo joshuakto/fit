@@ -6,10 +6,7 @@ import { FitPush } from "./fitPush";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors } from "./syncResult";
-import { OctokitHttpError } from "./fit";
-import { RemoteNotFoundError } from "./vault";
-
-type FilesystemError = Error & { isFilesystemError: true };
+import { VaultError } from "./vault";
 
 /**
  * Interface for the sync orchestrator.
@@ -261,14 +258,7 @@ export class FitSync implements IFitSync {
 		syncNotice: FitNotice) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[]} | null> {
 		const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate;
 		let noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[];
-		try {
-			({noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha));
-		} catch (error) {
-			// Mark filesystem errors for proper classification in outer catch block
-			const fsError = error instanceof Error ? error : new Error(String(error));
-			(fsError as FilesystemError).isFilesystemError = true;
-			throw fsError;
-		}
+		({noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha));
 		let localChangesToPush: Array<LocalChange>;
 		let remoteChangesToWrite: Array<RemoteChange>;
 		if (noConflict) {
@@ -305,23 +295,16 @@ export class FitSync implements IFitSync {
 		}
 
 		let localFileOpsRecord: LocalChange[];
-		try {
-			localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+		localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-			// Update local vault state after applying changes
-			const newLocalState = await this.fit.localVault.readFromSource();
+		// Update local vault state after applying changes
+		const newLocalState = await this.fit.localVault.readFromSource();
 
-			await this.saveLocalStoreCallback({
-				lastFetchedRemoteSha,
-				lastFetchedCommitSha,
-				localSha: newLocalState
-			});
-		} catch (error) {
-			// Mark filesystem errors for proper classification in outer catch block
-			const fsError = error instanceof Error ? error : new Error(String(error));
-			(fsError as FilesystemError).isFilesystemError = true;
-			throw fsError;
-		}
+		await this.saveLocalStoreCallback({
+			lastFetchedRemoteSha,
+			lastFetchedCommitSha,
+			localSha: newLocalState
+		});
 		const ops = localFileOpsRecord.concat(fileOpsRecord);
 		if (unresolvedFiles.length === 0) {
 			syncNotice.setMessage(`Sync successful`);
@@ -354,16 +337,9 @@ export class FitSync implements IFitSync {
 
 			const remoteUpdate = preSyncCheckResult.remoteUpdate;
 			if (preSyncCheckResult.status === "onlyRemoteChanged") {
-				try {
-					const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
-					syncNotice.setMessage("Sync successful");
-					return { success: true, ops: [{ heading: "Local file updates:", ops: fileOpsRecord }], clash: [] };
-				} catch (error) {
-					// Mark filesystem errors for proper classification in outer catch block
-					const fsError = error instanceof Error ? error : new Error(String(error));
-					(fsError as FilesystemError).isFilesystemError = true;
-					throw fsError;
-				}
+				const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
+				syncNotice.setMessage("Sync successful");
+				return { success: true, ops: [{ heading: "Local file updates:", ops: fileOpsRecord }], clash: [] };
 			}
 
 			const {localChanges, localTreeSha} = preSyncCheckResult;
@@ -425,45 +401,13 @@ export class FitSync implements IFitSync {
 
 		} catch (error) {
 			// Handle unexpected errors that escape from individual sync operations.
-			// Ensures good meaningful detailMessage according to the guidelines documented on SyncError.detailMessage.
 
-			// Check if error came from filesystem operations
-			if ((error as FilesystemError)?.isFilesystemError) {
-				const message = error instanceof Error
-					? error.message
-					: (error && typeof error === 'object' && error.message)
-						? String(error.message)
-						: `File operation failed: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
-				return { success: false, error: SyncErrors.filesystem(message, { originalError: error }) };
+			// VaultError from vault operations (both LocalVault and RemoteGitHubVault)
+			if (error instanceof VaultError) {
+				return { success: false, error };
 			}
 
-			if (error instanceof OctokitHttpError) {
-				// Detect network connectivity issues - either no status or fake 500 without response
-				if (error.status === null || (error.status === 500 && (error as unknown as { response?: unknown }).response === undefined)) {
-					return { success: false, error: SyncErrors.network("Couldn't reach GitHub API", { source: error.source, originalError: error }) };
-				}
-
-				// GitHub API authentication/authorization errors
-				if (error.status === 401) {
-					return { success: false, error: SyncErrors.remoteAccess('Authentication failed (bad token?)', { source: error.source, originalError: error }) };
-				}
-
-				// Rate limiting is now handled automatically by @octokit/plugin-retry
-				if (error.status === 403) {
-					return { success: false, error: SyncErrors.remoteAccess('Access denied (token missing permissions?)', { source: error.source, originalError: error }) };
-				}
-
-				// All other GitHub API errors (rate limiting, server errors, etc.)
-				return { success: false, error: SyncErrors.apiError('GitHub API error', { source: error.source, originalError: error }) };
-			}
-
-			// Catch RemoteNotFoundError from RemoteGitHubVault (404 errors)
-			if (error instanceof RemoteNotFoundError) {
-				// The error message from RemoteGitHubVault is already user-friendly
-				return { success: false, error: SyncErrors.remoteNotFound(error.message, { originalError: error }) };
-			}
-
-			// All other errors - unknown type
+			// All other errors - sync orchestration failures
 			const errorMessage = error instanceof Error
 				? String(error) // Gets "ErrorType: message" which includes both type and message
 				: (error && typeof error === 'object' && error.message)

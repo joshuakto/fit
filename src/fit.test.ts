@@ -6,7 +6,8 @@ import { Fit } from './fit';
 import { FitSettings, LocalStores } from '../main';
 import { Vault } from 'obsidian';
 import FitNotice from './fitNotice';
-import { SyncErrors, SyncError } from './syncResult';
+import { SyncError } from './syncResult';
+import { VaultError } from './vault';
 
 // TODO: Consolidate more of these high-level tests into fitSync.realFit.test.ts.
 
@@ -257,7 +258,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Branch \'nonexistent-branch\' not found on repository \'testuser/valid-repo\'', { originalError: new Error('Branch not found') })
+				error: VaultError.remoteNotFound('Branch \'nonexistent-branch\' not found on repository \'testuser/valid-repo\'', { originalError: new Error('Branch not found') })
 			}
 		);
 
@@ -286,7 +287,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteNotFound('Repository \'testuser/nonexistent-repo\' not found', { originalError: new Error('Repository not found'), source: 'getTree' })
+				error: VaultError.remoteNotFound('Repository \'testuser/nonexistent-repo\' not found', { originalError: new Error('Repository not found') })
 			}
 		);
 
@@ -312,7 +313,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.remoteAccess('Authentication failed (bad token?)', { source: 'getUser', originalError: new Error('Bad credentials') })
+				error: VaultError.authentication('Authentication failed (bad token?)', { originalError: new Error('Bad credentials') })
 			}
 		);
 
@@ -336,7 +337,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.filesystem('EACCES: permission denied, open \'/vault/notes/important.md\'', { originalError: new Error('EACCES: permission denied, open \'/vault/notes/important.md\'') })
+				error: VaultError.filesystem('EACCES: permission denied, open \'/vault/notes/important.md\'', { originalError: new Error('EACCES: permission denied, open \'/vault/notes/important.md\'') })
 			}
 		);
 
@@ -362,7 +363,7 @@ describe('Fit Sync Error Scenarios', () => {
 			fit,
 			{
 				success: false,
-				error: SyncErrors.network("Couldn't reach GitHub API", { source: 'getUser', originalError: new Error('Failed to fetch') })
+				error: VaultError.network("Couldn't reach GitHub API", { originalError: new Error('Failed to fetch') })
 			}
 		);
 

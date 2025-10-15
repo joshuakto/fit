@@ -4,6 +4,7 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
+import { VaultError } from './vault';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -140,6 +141,7 @@ export class FakeOctokit {
 			if (!this.repoExists) {
 				const error: any = new Error(`Repository not found`);
 				error.status = 404;
+				error.response = {}; // Simulate response object for wrapOctokitError
 				throw error;
 			}
 			return { data: { name: this.repo, owner: { login: this.owner } } };
@@ -152,6 +154,7 @@ export class FakeOctokit {
 			if (!commitSha) {
 				const error: any = new Error(`Ref not found: ${refName}`);
 				error.status = 404;
+				error.response = {}; // Simulate response object for wrapOctokitError
 				throw error;
 			}
 			return { data: { object: { sha: commitSha } } };
@@ -308,7 +311,9 @@ export class FakeLocalVault {
 		if (this.shouldFail && this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
-			throw error;
+			// Wrap in VaultError.filesystem to match real LocalVault behavior
+			const message = error instanceof Error ? error.message : `Failed to read from source: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
 
 		const state: Record<string, string> = {};
@@ -324,7 +329,9 @@ export class FakeLocalVault {
 		if (this.shouldFail && this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
-			throw error;
+			// Wrap in VaultError.filesystem to match real LocalVault behavior
+			const message = error instanceof Error ? error.message : `Failed to read file content: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
 
 		const content = this.files.get(path);
@@ -341,7 +348,9 @@ export class FakeLocalVault {
 		if (this.shouldFail && this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
-			throw error;
+			// Wrap in VaultError.filesystem to match real LocalVault behavior
+			const message = error instanceof Error ? error.message : `Failed to apply changes: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
 
 		const ops: Array<{path: string, status: string}> = [];

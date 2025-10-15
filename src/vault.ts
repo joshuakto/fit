@@ -21,19 +21,48 @@ export type StateChange = LocalChange | RemoteChange;
 
 // ===== Vault Error Types =====
 
+export type VaultErrorType =
+  | 'network'           // General networking problem (request failure without HTTP status)
+  | 'remote_not_found'  // Remote repository, branch, or access issues (404)
+  | 'authentication'    // Authentication/authorization failures (401, 403)
+  | 'filesystem';       // Local file system errors
+
 /**
- * Thrown when a remote resource (repository or branch) is not found (HTTP 404).
+ * Vault-layer error with categorized error types.
+ * Use static factory methods (VaultError.network(), VaultError.remoteNotFound(), etc.) to construct.
+ *
+ * Message guidelines:
+ * - Should actually describe the error with specifics from the error context
+ * - Avoid redundant repetition of type name (e.g., not "Network error: network failed")
+ * - Include useful info from the original error when available
  */
-export class RemoteNotFoundError extends Error {
+export class VaultError extends Error {
 	constructor(
+		public type: VaultErrorType,
 		message: string,
-		public owner: string,
-		public repo: string,
-		public branch?: string
+		public details?: { originalError?: unknown }
 	) {
 		super(message);
-		this.name = 'RemoteNotFoundError';
+		this.name = 'VaultError';
 	}
+
+	// Generic factory helper
+	private static create(type: VaultErrorType) {
+		return (message: string, details?: { originalError?: unknown }) =>
+			new VaultError(type, message, details);
+	}
+
+	/** Network/connectivity error (no HTTP status, no response, or fetch failure) */
+	static network = VaultError.create('network');
+
+	/** Remote resource not found (404 - repository, branch, etc.) */
+	static remoteNotFound = VaultError.create('remote_not_found');
+
+	/** Authentication/authorization failure (401, 403) */
+	static authentication = VaultError.create('authentication');
+
+	/** Local file system error (EACCES, ENOENT, etc.) */
+	static filesystem = VaultError.create('filesystem');
 }
 
 /**
