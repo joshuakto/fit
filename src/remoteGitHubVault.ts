@@ -225,13 +225,14 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Read file content for a specific SHA from GitHub blobs
 	 */
-	async readFileContent(fileSha: string): Promise<string> {
+	async readFileContent(pathOrSha: string): Promise<string> {
+		// RemoteGitHubVault only uses blob SHAs (not paths)
 		try {
 			const { data: blob } = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
 					owner: this.owner,
 					repo: this.repo,
-					file_sha: fileSha,
+					file_sha: pathOrSha,
 					headers: this.headers
 				});
 			return blob.content;
@@ -374,52 +375,6 @@ export class RemoteGitHubVault implements IVault {
 		} catch (error: unknown) {
 			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
-	}
-
-	/**
-	 * Get remote tree as SHA map (path -> blob SHA), with optional filtering.
-	 * Accepts either tree SHA or ref/commit SHA.
-	 *
-	 * @param tree_or_ref_sha - Tree SHA or ref/commit SHA (e.g., "heads/main", commit SHA, or tree SHA)
-	 * @param shouldIncludePath - Optional filter function (path => boolean). If not provided, includes all paths.
-	 * @returns Map of path -> blob SHA for files matching the filter
-	 */
-	async getRemoteTreeSha(
-		tree_or_ref_sha: string,
-		shouldIncludePath?: (path: string) => boolean
-	): Promise<{[k:string]: string}> {
-		// Try to get commit info first (works if input is ref/commit SHA)
-		// This lets us check for empty tree before calling getTree (avoiding 404)
-		let treeSha;
-		try {
-			treeSha = await this.getCommitTreeSha(tree_or_ref_sha);
-		} catch (_error) {
-			// If getCommit fails, fall back to trying input as tree SHA directly.
-			// Any error will surface when we try getTree() below.
-			treeSha = tree_or_ref_sha;
-		}
-
-		// Check if this is the empty tree - if so, skip getTree() call (would return 404)
-		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
-			? []
-			: await this.getTree(treeSha);
-
-		const remoteSha = Object.fromEntries(remoteTree.map((node: TreeNode) : [string, string] | null=>{
-			// Currently ignoring directory changes, if you'd like to upload a new directory,
-			// a quick hack would be creating an empty file inside
-			if (node.type=="blob") {
-				if (!node.path || !node.sha) {
-					throw new Error("Path or sha not found for blob node in remote");
-				}
-				// Apply filter if provided
-				if (shouldIncludePath && !shouldIncludePath(node.path)) {
-					return null;
-				}
-				return [node.path, node.sha];
-			}
-			return null;
-		}).filter(Boolean) as [string, string][]);
-		return remoteSha;
 	}
 
 	// ===== GitHub Utility Operations (not part of IVault) =====

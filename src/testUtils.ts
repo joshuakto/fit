@@ -267,14 +267,12 @@ export class FakeOctokit {
  */
 export class FakeLocalVault {
 	private files: Map<string, string> = new Map(); // path -> content
-	private shouldFail: boolean = false;
 	private failureError: Error | null = null;
 
 	/**
 	 * Set the vault to fail on the next operation.
 	 */
 	setFailure(error: Error): void {
-		this.shouldFail = true;
 		this.failureError = error;
 	}
 
@@ -282,7 +280,6 @@ export class FakeLocalVault {
 	 * Clear any pending failure.
 	 */
 	clearFailure(): void {
-		this.shouldFail = false;
 		this.failureError = null;
 	}
 
@@ -308,7 +305,7 @@ export class FakeLocalVault {
 	}
 
 	async readFromSource(): Promise<Record<string, string>> {
-		if (this.shouldFail && this.failureError) {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
@@ -326,7 +323,7 @@ export class FakeLocalVault {
 	}
 
 	async readFileContent(path: string): Promise<string> {
-		if (this.shouldFail && this.failureError) {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
@@ -345,7 +342,7 @@ export class FakeLocalVault {
 		filesToWrite: Array<{path: string, content: string}>,
 		filesToDelete: Array<string>
 	): Promise<Array<{path: string, status: string}>> {
-		if (this.shouldFail && this.failureError) {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
@@ -391,15 +388,23 @@ export class FakeLocalVault {
  */
 export class FakeRemoteVault {
 	private files: Map<string, string> = new Map(); // path -> content
+	private blobShas: Map<string, string> = new Map(); // blob SHA -> content
 	private commitSha: string = 'initial-commit';
-	private shouldFail: boolean = false;
 	private failureError: Error | null = null;
+	private owner: string;
+	private repo: string;
+	private branch: string;
+
+	constructor(owner: string, repo: string, branch: string) {
+		this.owner = owner;
+		this.repo = repo;
+		this.branch = branch;
+	}
 
 	/**
 	 * Set the vault to fail on the next operation.
 	 */
 	setFailure(error: Error): void {
-		this.shouldFail = true;
 		this.failureError = error;
 	}
 
@@ -407,15 +412,17 @@ export class FakeRemoteVault {
 	 * Clear any pending failure.
 	 */
 	clearFailure(): void {
-		this.shouldFail = false;
 		this.failureError = null;
 	}
 
 	/**
 	 * Set file content directly (for test setup).
 	 */
-	setFile(path: string, content: string): void {
+	async setFile(path: string, content: string): Promise<void> {
 		this.files.set(path, content);
+		// Store blob SHA -> content mapping for readFileContent
+		const sha = await this.computeSha(content);
+		this.blobShas.set(sha, content);
 	}
 
 	/**
@@ -455,18 +462,6 @@ export class FakeRemoteVault {
 	}
 
 	/**
-	 * Get remote tree SHA (stub for RemoteGitHubVault compatibility).
-	 */
-	async getRemoteTreeSha(_treeOrRefSha: string): Promise<Record<string, string>> {
-		// Return current file state as tree SHA map
-		const state: Record<string, string> = {};
-		for (const [path, content] of this.files.entries()) {
-			state[path] = await this.computeSha(content);
-		}
-		return state;
-	}
-
-	/**
 	 * Get tree nodes (stub for RemoteGitHubVault compatibility).
 	 */
 	async getTree(_treeSha: string): Promise<any[]> {
@@ -475,24 +470,24 @@ export class FakeRemoteVault {
 	}
 
 	/**
-	 * Get owner (stub for RemoteGitHubVault compatibility).
+	 * Get owner (returns value from constructor).
 	 */
 	getOwner(): string {
-		return 'fake-owner';
+		return this.owner;
 	}
 
 	/**
-	 * Get repo (stub for RemoteGitHubVault compatibility).
+	 * Get repo (returns value from constructor).
 	 */
 	getRepo(): string {
-		return 'fake-repo';
+		return this.repo;
 	}
 
 	/**
-	 * Get branch (stub for RemoteGitHubVault compatibility).
+	 * Get branch (returns value from constructor).
 	 */
 	getBranch(): string {
-		return 'main';
+		return this.branch;
 	}
 
 	/**
@@ -502,11 +497,14 @@ export class FakeRemoteVault {
 	async createTreeNodeFromContent(path: string, content: string, _remoteTree: any[], _encoding?: string): Promise<any> {
 		// Store the file content so it persists in the fake vault
 		this.files.set(path, content);
-		return { path, sha: await this.computeSha(content), mode: '100644', type: 'blob' };
+		const sha = await this.computeSha(content);
+		// Store blob SHA -> content mapping for readFileContent
+		this.blobShas.set(sha, content);
+		return { path, sha, mode: '100644', type: 'blob' };
 	}
 
 	async readFromSource(): Promise<Record<string, string>> {
-		if (this.shouldFail && this.failureError) {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
@@ -515,7 +513,10 @@ export class FakeRemoteVault {
 		const state: Record<string, string> = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
-				state[path] = await this.computeSha(content);
+				const sha = await this.computeSha(content);
+				state[path] = sha;
+				// Store blob SHA -> content mapping for readFileContent
+				this.blobShas.set(sha, content);
 			}
 		}
 		return state;
@@ -529,25 +530,32 @@ export class FakeRemoteVault {
 		return this.readFromSource();
 	}
 
-	async readFileContent(path: string): Promise<string> {
-		if (this.shouldFail && this.failureError) {
+	async readFileContent(pathOrSha: string): Promise<string> {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		const content = this.files.get(path);
-		if (content === undefined) {
-			throw new Error(`File not found: ${path}`);
+		// Check if it's a blob SHA first (real RemoteGitHubVault uses blob SHAs)
+		const blobContent = this.blobShas.get(pathOrSha);
+		if (blobContent !== undefined) {
+			return blobContent;
 		}
-		return content;
+
+		// Fall back to path-based lookup (for backward compatibility)
+		const pathContent = this.files.get(pathOrSha);
+		if (pathContent === undefined) {
+			throw new Error(`File not found: ${pathOrSha}`);
+		}
+		return pathContent;
 	}
 
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: string}>,
 		filesToDelete: Array<string>
 	): Promise<Array<{path: string, status: string}>> {
-		if (this.shouldFail && this.failureError) {
+		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
@@ -558,6 +566,9 @@ export class FakeRemoteVault {
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
 			this.files.set(file.path, file.content);
+			// Store blob SHA -> content mapping for readFileContent
+			const sha = await this.computeSha(file.content);
+			this.blobShas.set(sha, file.content);
 			ops.push({ path: file.path, status: existed ? 'modified' : 'created' });
 		}
 

@@ -3,32 +3,15 @@
  *
  * This module coordinates access to both local vault (LocalVault) and remote repository
  * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
- *
- * Architecture Role:
- * - **Coordinator**: Bridges LocalVault and RemoteGitHubVault
- * - **State Manager**: Maintains cached file SHAs for efficient change detection
- * - **Used by**: FitSync (orchestrator), FitPull (pull operations), FitPush (push operations)
- * - **Uses**: LocalVault (local file operations), RemoteGitHubVault (GitHub API operations)
- *
- * Key Responsibilities:
- * - Delegates local operations to LocalVault
- * - Delegates remote operations to RemoteGitHubVault
- * - Maintains sync state (lastFetchedCommitSha)
- * - Change detection helpers (comparing local vs remote state)
- * - Vault operations throw VaultError (network, auth, remote_not_found)
- *
- * @see LocalVault - Local Obsidian vault file operations
- * @see RemoteGitHubVault - Remote GitHub repository operations (including Octokit, retry logic, etc.)
  */
 
 import { LocalStores, FitSettings } from "main";
-import { RECOGNIZED_BINARY_EXT, compareSha } from "./utils";
+import { compareSha } from "./utils";
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
 import { Vault } from "obsidian";
-import { SyncError } from "./syncResult";
 import { LocalVault } from "./localVault";
-import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
-import { FileState, VaultError } from "./vault";
+import { RemoteGitHubVault } from "./remoteGitHubVault";
+import { FileState } from "./vault";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -61,6 +44,7 @@ export class Fit {
 	loadSettings(setting: FitSettings) {
 		// Recreate remoteVault with new settings (preserves existing state)
 		// This is called when user changes settings in UI
+		// TODO: Use DI to pass the right impl from FitSync caller.
 		this.remoteVault = new RemoteGitHubVault(
 			setting.pat,
 			setting.owner,
@@ -169,62 +153,4 @@ export class Fit {
 	async getBranches(): Promise<string[]> {
 		return await this.remoteVault.getBranches();
 	}
-
-	/**
-	 * Get remote file state as SHA map (path -> content SHA).
-	 * Accepts either tree SHA or ref/commit SHA. Filters paths based on sync policy.
-	 * Returns format compatible with local store cache.
-	 * Delegates to RemoteGitHubVault.
-	 */
-	async getRemoteTreeSha(tree_or_ref_sha: string): Promise<{[k:string]: string}> {
-		return await this.remoteVault.getRemoteTreeSha(
-			tree_or_ref_sha,
-			(path) => this.shouldSyncPath(path)
-		);
-	}
-
-	/**
-	 * Create a tree node for a changed file.
-	 * Reads file content from LocalVault and creates blob on GitHub via RemoteGitHubVault.
-	 * Skips if file unchanged on remote (same blob SHA already exists).
-	 *
-	 * @param change - Local file change (path, status, extension)
-	 * @param remoteTree - Current remote tree nodes (for optimization)
-	 * @returns TreeNode to include in commit, or null if no change needed
-	 */
-	async createTreeNodeFromFile({path, status, extension}: LocalChange, remoteTree: Array<TreeNode>): Promise<TreeNode|null> {
-		// Read file content from local vault (null for deletions)
-		const content = status === "deleted"
-			? null
-			: await this.localVault.readFileContent(path);
-
-		// Determine encoding
-		const encoding = (extension && RECOGNIZED_BINARY_EXT.includes(extension)) ? "base64" : "utf-8";
-
-		// Delegate to RemoteGitHubVault to create tree node
-		return await this.remoteVault.createTreeNodeFromContent(path, content, remoteTree, encoding);
-	}
-
-	/**
-	 * Generate user-friendly error message from structured sync error
-	 */
-	getSyncErrorMessage(syncError: SyncError): string {
-		// Handle VaultError types
-		if (syncError instanceof VaultError) {
-			switch (syncError.type) {
-				case 'network':
-					return `${syncError.message}. Please check your internet connection.`;
-				case 'authentication':
-					return `${syncError.message}. Check your GitHub personal access token.`;
-				case 'remote_not_found':
-					return `${syncError.message}. Check your repo and branch settings.`;
-				case 'filesystem':
-					return `File system error: ${syncError.message}`;
-			}
-		}
-
-		// Handle sync orchestration errors (type === 'unknown')
-		return syncError.detailMessage;
-	}
-
 }

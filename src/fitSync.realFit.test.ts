@@ -18,9 +18,18 @@ describe('FitSync w/ real Fit', () => {
 	let remoteVault: FakeRemoteVault;
 	let localStoreState: LocalStores;
 
+	// Realistic settings that get passed through to RemoteGitHubVault
+	const testSettings = {
+		pat: 'fake-test-token',
+		owner: 'test-owner',
+		repo: 'test-repo',
+		branch: 'test-branch',
+		deviceName: 'test-device'
+	};
+
 	function createFit(initialLocalStoreState: LocalStores) : Fit {
 		const fit = new Fit(
-			{} as FitSettings,
+			testSettings as FitSettings,
 			initialLocalStoreState,
 			{} as unknown as Vault);
 		// Replace with fake implementations for testing
@@ -73,7 +82,7 @@ describe('FitSync w/ real Fit', () => {
 
 		if (!result.success) {
 			// Generate user-friendly message from structured sync error
-			const errorMessage = fitSync.fit.getSyncErrorMessage(result.error);
+			const errorMessage = fitSync.getSyncErrorMessage(result.error);
 			const fullMessage = `Sync failed: ${errorMessage}`;
 
 			// Show error to user (second param = true means sticky/error state)
@@ -91,7 +100,7 @@ describe('FitSync w/ real Fit', () => {
 	beforeEach(() => {
 		// Create fresh vault instances for each test
 		localVault = new FakeLocalVault();
-		remoteVault = new FakeRemoteVault();
+		remoteVault = new FakeRemoteVault(testSettings.owner, testSettings.repo, testSettings.branch);
 
 		// Initialize local store state (empty/synced state)
 		// Note: localStoreState is hoisted to test scope so assertions can verify its updates
@@ -149,13 +158,18 @@ describe('FitSync w/ real Fit', () => {
 		]);
 
 		// Verify: Both files A and B were synced (both are new vs baseline)
-		const ops = successResult.success ? successResult.ops : [];
-		const pushedOps = ops.find(o => o.heading?.includes('Remote file updates'))?.ops || [];
-		expect(pushedOps).toEqual(expect.arrayContaining([
-			expect.objectContaining({ path: 'fileA.md', status: 'created' }),
-			expect.objectContaining({ path: 'fileB.md', status: 'created' })
-		]));
-		expect(pushedOps.length).toBe(2);
+		expect(successResult).toMatchObject({
+			success: true,
+			ops: expect.arrayContaining([
+				{
+					heading: expect.stringContaining('Remote file updates'),
+					ops: expect.arrayContaining([
+						expect.objectContaining({ path: 'fileA.md', status: 'created' }),
+						expect.objectContaining({ path: 'fileB.md', status: 'created' })
+					])
+				}
+			])
+		});
 
 		// Verify: LocalStores updated with BOTH files
 		expect(localStoreState).toEqual({

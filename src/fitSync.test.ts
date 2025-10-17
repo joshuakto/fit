@@ -51,33 +51,23 @@ describe('FitSync', () => {
 			getClashedChanges(_localChanges: LocalChange[], _remoteChanges: RemoteChange[]) {
 				return [];
 			},
-			async createTreeNodeFromFile() {
-				return null;
-			},
 
-			// TODO: FitSync currently accesses vault internals directly - these shouldn't be needed
-			// once we refactor FitSync to use higher-level Fit methods instead
+			// Minimal vault stubs - only implement methods actually used by tests
 			localVault: {
-				async applyChanges(_toWrite: Array<{path: string, content: string}>, _toDelete: string[]) {
-					if (scenario.simulateApplyChangesError) {
-						throw scenario.simulateApplyChangesError;
-					}
-					// Return ops matching what was requested
-					return _toWrite.map(f => ({ path: f.path, status: 'created' as const }));
+				async applyChanges() {
+					if (scenario.simulateApplyChangesError) throw scenario.simulateApplyChangesError;
+					return [];
 				},
-				async updateFromSource() { return {}; },
+				async readFromSource() { return {}; },
 				async readFileContent() { return ''; },
-				async writeFile(path: string) { return { path, status: 'created' as const }; },
-			},
+				async writeFile() { return { path: '', status: 'created' as const }; },
+			} as any,
 			remoteVault: {
-				async getTree() { return []; },
-				async updateRef() { return 'newCommitSha'; },
 				async readFileContent() { return ''; },
-				getOwner() { return settings?.owner; },
-				getRepo() { return settings?.repo; },
-				getBranch() { return settings?.branch; },
-			},
-			async getRemoteTreeSha() { return {}; },
+				getOwner() { return settings?.owner || ''; },
+				getRepo() { return settings?.repo || ''; },
+				getBranch() { return settings?.branch || ''; },
+			} as any
 		};
 		return fakeFit as unknown as Fit;
 	}
@@ -279,6 +269,5 @@ describe('FitSync', () => {
 			expect(mockNotice.hide).not.toHaveBeenCalled(); // FitSync doesn't directly hide notices
 			expect(mockNotice.mute).not.toHaveBeenCalled(); // FitSync doesn't mute notices
 		});
-
 	});
 });
