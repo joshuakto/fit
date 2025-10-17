@@ -102,7 +102,7 @@ export class RemoteGitHubVault implements IVault {
 	 */
 	private async wrapOctokitError(
 		error: unknown,
-		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore' = 'ignore'
+		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore'
 	): Promise<never> {
 		const errorObj = error as { status?: number | null; response?: unknown; message?: string };
 
@@ -259,7 +259,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return blob.sha;
 		} catch (error) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
 
@@ -332,7 +332,7 @@ export class RemoteGitHubVault implements IVault {
 			);
 			return newTree.sha;
 		} catch (error) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
 
@@ -353,7 +353,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return createdCommit.sha;
 		} catch (error: unknown) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
 
@@ -372,7 +372,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return updatedRef.object.sha;
 		} catch (error: unknown) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
 	}
 
@@ -435,7 +435,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return {owner: response.login, avatarUrl: response.avatar_url};
 		} catch (error) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'ignore');
 		}
 	}
 
@@ -464,7 +464,7 @@ export class RemoteGitHubVault implements IVault {
 					hasMorePages = false;
 				}
 			} catch (error) {
-				return await this.wrapOctokitError(error);
+				return await this.wrapOctokitError(error, 'ignore');
 			}
 
 			page++;
@@ -488,7 +488,7 @@ export class RemoteGitHubVault implements IVault {
 				});
 			return response.map(r => r.name);
 		} catch (error: unknown) {
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
 
@@ -518,7 +518,7 @@ export class RemoteGitHubVault implements IVault {
 				return false;
 			}
 			// Non-404 errors: wrap and throw
-			return await this.wrapOctokitError(error);
+			return await this.wrapOctokitError(error, 'ignore');
 		}
 	}
 
