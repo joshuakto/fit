@@ -5,7 +5,7 @@
  */
 
 import { arrayBufferToBase64, base64ToArrayBuffer, TFile, Vault } from "obsidian";
-import { IVault, FileState } from "./vault";
+import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { RECOGNIZED_BINARY_EXT } from "./utils";
 
@@ -149,19 +149,28 @@ export class LocalVault implements IVault {
 	 * @returns Record of file operation performed
 	 */
 	async writeFile(path: string, content: string): Promise<FileOpRecord> {
-		const file = this.vault.getAbstractFileByPath(path);
-		// TODO: add capability for creating folder from remote
-		// TODO: Should this check extension and handle text case instead of assuming binary?
-		if (file && file instanceof TFile) {
-			await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
-			return {path, status: "changed"};
-		} else if (!file) {
-			// TODO: Await this to avoid race condition
-			this.ensureFolderExists(path);
-			await this.vault.createBinary(path, base64ToArrayBuffer(content));
-			return {path, status: "created"};
+		try {
+			const file = this.vault.getAbstractFileByPath(path);
+			// TODO: add capability for creating folder from remote
+			// TODO: Should this check extension and handle text case instead of assuming binary?
+			if (file && file instanceof TFile) {
+				await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
+				return {path, status: "changed"};
+			} else if (!file) {
+				// TODO: Await this to avoid race condition
+				this.ensureFolderExists(path);
+				await this.vault.createBinary(path, base64ToArrayBuffer(content));
+				return {path, status: "created"};
+			}
+			throw new Error(`${path} writeFile operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
+		} catch (error) {
+			// Re-throw VaultError as-is (don't double-wrap)
+			if (error instanceof VaultError) {
+				throw error;
+			}
+			const message = error instanceof Error ? error.message : `Failed to write file: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
-		throw new Error(`${path} writeFile operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
 	}
 
 	/**
@@ -170,12 +179,21 @@ export class LocalVault implements IVault {
 	 * @returns Record of file operation performed
 	 */
 	async deleteFile(path: string): Promise<FileOpRecord> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (file && file instanceof TFile) {
-			await this.vault.delete(file);
-			return {path, status: "deleted"};
+		try {
+			const file = this.vault.getAbstractFileByPath(path);
+			if (file && file instanceof TFile) {
+				await this.vault.delete(file);
+				return {path, status: "deleted"};
+			}
+			throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
+		} catch (error) {
+			// Re-throw VaultError as-is (don't double-wrap)
+			if (error instanceof VaultError) {
+				throw error;
+			}
+			const message = error instanceof Error ? error.message : `Failed to delete file: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
-		throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
 	}
 
 	/**
@@ -203,24 +221,33 @@ export class LocalVault implements IVault {
 	 * Create a copy of a file in a specified directory (typically _fit/)
 	 */
 	async createCopyInDir(path: string, copyDir = "_fit"): Promise<void> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (file && file instanceof TFile) {
-			const copy = await this.vault.readBinary(file);
-			const copyPath = `${copyDir}/${path}`;
-			// TODO: Await this to avoid race condition
-			this.ensureFolderExists(copyPath);
-			const copyFile = this.vault.getAbstractFileByPath(copyPath);
-			if (copyFile && copyFile instanceof TFile) {
-				await this.vault.modifyBinary(copyFile, copy);
-			} else if (!copyFile) {
-				await this.vault.createBinary(copyPath, copy);
+		try {
+			const file = this.vault.getAbstractFileByPath(path);
+			if (file && file instanceof TFile) {
+				const copy = await this.vault.readBinary(file);
+				const copyPath = `${copyDir}/${path}`;
+				// TODO: Await this to avoid race condition
+				this.ensureFolderExists(copyPath);
+				const copyFile = this.vault.getAbstractFileByPath(copyPath);
+				if (copyFile && copyFile instanceof TFile) {
+					await this.vault.modifyBinary(copyFile, copy);
+				} else if (!copyFile) {
+					await this.vault.createBinary(copyPath, copy);
+				} else {
+					// TODO: This was probably supposed to await the delete.
+					this.vault.delete(copyFile, true); // TODO add warning to let user know files in _fit will be overwritten
+					await this.vault.createBinary(copyPath, copy);
+				}
 			} else {
-				// TODO: This was probably supposed to await the delete.
-				this.vault.delete(copyFile, true); // TODO add warning to let user know files in _fit will be overwritten
-				await this.vault.createBinary(copyPath, copy);
+				throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
 			}
-		} else {
-			throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
+		} catch (error) {
+			// Re-throw VaultError as-is (don't double-wrap)
+			if (error instanceof VaultError) {
+				throw error;
+			}
+			const message = error instanceof Error ? error.message : `Failed to create copy of file: ${String(error)}`;
+			throw VaultError.filesystem(message, { originalError: error });
 		}
 	}
 }

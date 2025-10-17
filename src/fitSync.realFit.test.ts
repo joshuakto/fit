@@ -7,10 +7,11 @@
  */
 
 import { FitSync } from './fitSync';
-import { Fit, OctokitHttpError } from './fit';
+import { Fit } from './fit';
 import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { FitSettings, LocalStores } from '../main';
+import { VaultError } from './vault';
 
 describe('FitSync w/ real Fit', () => {
 	let localVault: FakeLocalVault;
@@ -109,12 +110,8 @@ describe('FitSync w/ real Fit', () => {
 		localVault.setFile('fileA.md', 'Content of file A');
 
 		// === STEP 2: Attempt sync - FAILS during push (network error) ===
-		// Simulate OctokitHttpError with status=null (network connectivity issue)
-		const networkError = new OctokitHttpError(
-			"Couldn't reach GitHub API",
-			null,  // null status indicates network error
-			'getRemoteTreeSha'
-		);
+		// Simulate VaultError with network type (network connectivity issue)
+		const networkError = VaultError.network("Couldn't reach GitHub API");
 		remoteVault.setFailure(networkError);
 
 		// Verify: Sync failed and error was shown to user
@@ -176,5 +173,97 @@ describe('FitSync w/ real Fit', () => {
 		// Verify: Remote has new commit and both files
 		expect(remoteVault.getAllPaths().sort()).toEqual(['fileA.md', 'fileB.md']);
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
+	});
+
+	describe('Error Handling', () => {
+		it('should handle network errors with user-friendly message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			const networkError = VaultError.network("Couldn't reach GitHub API");
+			remoteVault.setFailure(networkError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify user-friendly error message
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: [
+					"Sync failed: Couldn't reach GitHub API. Please check your internet connection.",
+					true
+				]}
+			]);
+		});
+
+		it('should handle authentication errors with user-friendly message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			const authError = VaultError.authentication('Bad credentials');
+			remoteVault.setFailure(authError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify user-friendly error message
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: [
+					"Sync failed: Bad credentials. Check your GitHub personal access token.",
+					true
+				]}
+			]);
+		});
+
+		it('should handle remote not found errors with user-friendly message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			const notFoundError = VaultError.remoteNotFound("Repository 'owner/repo' not found");
+			remoteVault.setFailure(notFoundError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify user-friendly error message
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: [
+					"Sync failed: Repository 'owner/repo' not found. Check your repo and branch settings.",
+					true
+				]}
+			]);
+		});
+
+		it('should handle filesystem errors with user-friendly message', async () => {
+			// Arrange - simulate a pull scenario where applying changes fails
+			const fitSync = createFitSync();
+			remoteVault.setFile('test.md', 'remote content');
+
+			// Make localVault.applyChanges throw a filesystem error
+			const fsError = new Error("EACCES: permission denied, write 'test.md'");
+			localVault.setFailure(fsError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify user-friendly error message
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: [
+					"Sync failed: File system error: EACCES: permission denied, write 'test.md'",
+					true
+				]}
+			]);
+		});
 	});
 });

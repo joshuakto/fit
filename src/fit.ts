@@ -15,7 +15,7 @@
  * - Delegates remote operations to RemoteGitHubVault
  * - Maintains sync state (lastFetchedCommitSha)
  * - Change detection helpers (comparing local vs remote state)
- * - Wraps errors in OctokitHttpError for consistent error handling
+ * - Vault operations throw VaultError (network, auth, remote_not_found)
  *
  * @see LocalVault - Local Obsidian vault file operations
  * @see RemoteGitHubVault - Remote GitHub repository operations (including Octokit, retry logic, etc.)
@@ -28,40 +28,7 @@ import { Vault } from "obsidian";
 import { SyncError } from "./syncResult";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
-import { FileState } from "./vault";
-
-// TODO: Rename/reorganize this "Octokit" error handling.
-type OctokitCallMethods = {
-	getUser: () => Promise<{owner: string, avatarUrl: string}>
-	getRepos: () => Promise<string[]>
-	getBranches: () => Promise<string[]>
-	getRemoteTreeSha: (tree_or_ref_sha: string) => Promise<{[k:string]: string}>
-	createTreeNodeFromFile: ({path, status, extension}: LocalChange, remoteTree: TreeNode[]) => Promise<TreeNode|null>
-};
-
-/**
- * HTTP error from GitHub API operations.
- *
- * Thrown by Fit methods when RemoteGitHubVault operations fail.
- * Contains the HTTP status code (or null for network errors) and the source
- * method name for debugging.
- *
- * @property status - HTTP status code, or null if network error (couldn't reach GitHub)
- * @property source - Name of the method that failed (matches IFit method names)
- *
- * @see FitSync.sync() - Catches and categorizes these errors for user-friendly messages
- */
-export class OctokitHttpError extends Error {
-	status: number | null;
-	source: keyof OctokitCallMethods;
-
-	constructor(message: string, status: number | null, source: keyof OctokitCallMethods) {
-		super(message);
-		this.name = 'HttpError';
-		this.status = status;
-		this.source = source;
-	}
-}
+import { FileState, VaultError } from "./vault";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -70,16 +37,14 @@ export class OctokitHttpError extends Error {
  * - **LocalVault**: Obsidian vault file operations
  * - **RemoteGitHubVault**: GitHub repository operations
  *
- * Maintains sync state for efficient change detection
- *
- * All GitHub-specific operations (Octokit, retry logic, API details) are delegated
- * to RemoteGitHubVault. Fit wraps these in OctokitHttpError for consistent error handling.
+ * Maintains sync state for efficient change detection.
+ * All vault operations throw VaultError on failure (network, auth, remote not found).
  *
  * @see FitSync - The high-level orchestrator that coordinates sync operations
  * @see LocalVault - Local Obsidian vault file operations
  * @see RemoteGitHubVault - Remote GitHub repository operations
  */
-export class Fit implements OctokitCallMethods {
+export class Fit {
 	localSha: Record<string, string>;              // Cache of local file SHAs
 	lastFetchedCommitSha: string | null;           // Last synced commit SHA
 	lastFetchedRemoteSha: Record<string, string>;  // Cache of remote file SHAs
@@ -183,38 +148,26 @@ export class Fit implements OctokitCallMethods {
 
 	/**
 	 * Get authenticated user info from GitHub.
-	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
 	 */
 	async getUser(): Promise<{owner: string, avatarUrl: string}> {
-		try {
-			return await this.remoteVault.getUser();
-		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status ?? null, "getUser");
-		}
+		return await this.remoteVault.getUser();
 	}
 
 	/**
 	 * List repositories owned by authenticated user.
-	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
 	 */
 	async getRepos(): Promise<string[]> {
-		try {
-			return await this.remoteVault.getRepos();
-		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status ?? null, "getRepos");
-		}
+		return await this.remoteVault.getRepos();
 	}
 
 	/**
 	 * List branches in repository.
-	 * Delegates to RemoteGitHubVault, wraps errors in OctokitHttpError.
+	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
 	 */
 	async getBranches(): Promise<string[]> {
-		try {
-			return await this.remoteVault.getBranches();
-		} catch (error) {
-			throw new OctokitHttpError(error.message, error.status ?? null, "getBranches");
-		}
+		return await this.remoteVault.getBranches();
 	}
 
 	/**
@@ -256,26 +209,22 @@ export class Fit implements OctokitCallMethods {
 	 * Generate user-friendly error message from structured sync error
 	 */
 	getSyncErrorMessage(syncError: SyncError): string {
-		// Return user-friendly message based on error type
-		switch (syncError.type) {
-			case 'network':
-				return `${syncError.detailMessage}. Please check your internet connection.`;
-
-			case 'remote_access':
-				return `${syncError.detailMessage}. Check your GitHub personal access token.`;
-
-			case 'remote_not_found':
-				return `${syncError.detailMessage}. Check your repo and branch settings.`;
-
-			case 'filesystem': {
-				return `File system error: ${syncError.detailMessage}`;
+		// Handle VaultError types
+		if (syncError instanceof VaultError) {
+			switch (syncError.type) {
+				case 'network':
+					return `${syncError.message}. Please check your internet connection.`;
+				case 'authentication':
+					return `${syncError.message}. Check your GitHub personal access token.`;
+				case 'remote_not_found':
+					return `${syncError.message}. Check your repo and branch settings.`;
+				case 'filesystem':
+					return `File system error: ${syncError.message}`;
 			}
-
-			case 'unknown':
-			case 'api_error':
-			default:
-				return syncError.detailMessage;
 		}
+
+		// Handle sync orchestration errors (type === 'unknown')
+		return syncError.detailMessage;
 	}
 
 }
