@@ -272,6 +272,7 @@ export class FakeOctokit {
 export class FakeLocalVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
 	private failureError: Error | null = null;
+	private statLog: string[] = []; // Track all stat operations for performance testing
 
 	/**
 	 * Set the vault to fail on the next operation.
@@ -356,6 +357,50 @@ export class FakeLocalVault implements IVault {
 			throw new Error(`File not found: ${path}`);
 		}
 		return content;
+	}
+
+	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
+		// Track all stat operations (including duplicates) for performance testing
+		this.statLog.push(...paths);
+
+		const stats = await Promise.all(
+			paths.map(async (path) => {
+				// Is it a file?
+				if (this.files.has(path)) {
+					return [path, 'file' as const] as const;
+				}
+				// Is it a folder? (any file starts with "path/")
+				for (const filePath of this.files.keys()) {
+					if (filePath.startsWith(path + '/')) {
+						return [path, 'folder' as const] as const;
+					}
+				}
+				return [path, null] as const;
+			})
+		);
+		return new Map(stats);
+	}
+
+	/**
+	 * Get the log of all stat operations performed (for performance testing).
+	 */
+	getStatLog(): string[] {
+		return [...this.statLog];
+	}
+
+	/**
+	 * Clear the stat log (useful between test phases).
+	 */
+	clearStatLog(): void {
+		this.statLog = [];
+	}
+
+	/**
+	 * Clear all files from the vault (useful for test setup).
+	 */
+	clear(): void {
+		this.files.clear();
+		this.statLog = [];
 	}
 
 	async applyChanges(
@@ -450,6 +495,15 @@ export class FakeRemoteVault implements IVault {
 	}
 
 	/**
+	 * Clear all files from the vault (useful for test setup).
+	 */
+	clear(): void {
+		this.files.clear();
+		this.blobShas.clear();
+		// Don't reset commitSha - it auto-increments
+	}
+
+	/**
 	 * Set file content directly (for test setup).
 	 */
 	async setFile(path: string, content: string | FileContent): Promise<void> {
@@ -473,10 +527,11 @@ export class FakeRemoteVault implements IVault {
 	}
 
 	/**
-	 * Get all file paths (for test assertions).
+	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */
-	getAllPaths(): string[] {
-		return Array.from(this.files.keys());
+	getAllFilesAsRaw(): Record<string, Base64Content | PlainTextContent> {
+		return Object.fromEntries([...this.files].map(
+			([path, content]) => [path, content.toRaw().content]));
 	}
 
 	/**

@@ -209,7 +209,7 @@ describe('FitSync', () => {
 		});
 
 		// Verify: Remote not updated
-		expect(remoteVault.getAllPaths()).toEqual([]); // Still empty
+		expect(remoteVault.getAllFilesAsRaw()).toEqual({}); // Still empty
 
 		// === STEP 3: Add file B locally (A still exists) ===
 		localVault.setFile('fileB.md', 'Content of file B');
@@ -253,7 +253,10 @@ describe('FitSync', () => {
 		});
 
 		// Verify: Remote has new commit and both files
-		expect(remoteVault.getAllPaths().sort()).toEqual(['fileA.md', 'fileB.md']);
+		expect(remoteVault.getAllFilesAsRaw()).toEqual({
+			'fileA.md': expect.anything(),
+			'fileB.md': expect.anything()
+		});
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
 
 		// Verify: Logger was called with appropriate tags during sync
@@ -295,7 +298,7 @@ describe('FitSync', () => {
 		});
 
 		// Verify: Remote does NOT have _fit/ files
-		expect(remoteVault.getAllPaths()).toEqual(['normal.md']);
+		expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['normal.md']);
 
 		// === STEP 3: Simulate another device pushing files (including _fit/ edge case) ===
 		// Manually add files and trigger commit SHA update by calling applyChanges
@@ -354,6 +357,12 @@ describe('FitSync', () => {
 			expect.anything()
 		);
 		expect(consoleLogSpy).toHaveBeenCalled();
+
+		// Verify stat performance: Multiple files with nested paths
+		const statLog = localVault.getStatLog();
+		// No redundant stats - each path appears at most once
+		const uniquePaths = new Set(statLog);
+		expect(statLog.length).toBe(uniquePaths.size);
 	});
 
 	describe('Hidden file handling (💾 shouldTrackState filtering)', () => {
@@ -381,7 +390,7 @@ describe('FitSync', () => {
 			});
 
 			// Verify: Remote does NOT have hidden file
-			expect(remoteVault.getAllPaths()).toEqual(['visible.md']);
+			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
 
 			// Verify: LocalStores only track visible file
 			expect(Object.keys(localStoreState.localSha)).toEqual(['visible.md']);
@@ -401,7 +410,10 @@ describe('FitSync', () => {
 			}));
 
 			// Verify: Remote still only has visible file
-			expect(remoteVault.getAllPaths()).toEqual(['visible.md']);
+			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
+
+			// Verify stat performance: No stats when no remote changes
+			expect(localVault.getStatLog()).toEqual([]);
 		});
 
 		it('should save conflicting remote hidden file to _fit/ directory', async () => {
@@ -650,6 +662,12 @@ describe('FitSync', () => {
 				// Remote .gitignore version saved to _fit/ (conflict resolution)
 				'_fit/.gitignore': remoteGitignoreContent
 			});
+
+			// Verify stat performance: README.md already in localSha (no stat), .gitignore not in localSha (needs stat)
+			// Note: .gitignore gets stat checked because it's not in localSha (was missing from cache)
+			const statLog = localVault.getStatLog();
+			// Should not stat README.md (already tracked in localSha)
+			expect(statLog).not.toContain('README.md');
 		});
 
 		it('must never delete untracked local files', async () => {

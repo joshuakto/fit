@@ -78,6 +78,24 @@ export class LocalVault implements IVault {
 	}
 
 	/**
+	 * Batch stat operation for multiple paths.
+	 * Returns the type of each path in parallel for performance.
+	 *
+	 * @param paths - Paths to check
+	 * @returns Map of path to type ('file' | 'folder'), or null if path doesn't exist
+	 */
+	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
+		const stats = await Promise.all(
+			paths.map(async (path) => {
+				const stat = await this.vault.adapter.stat(path);
+				const type = stat ? stat.type : null;
+				return [path, type] as const;
+			})
+		);
+		return new Map(stats);
+	}
+
+	/**
 	 * Scan vault, update latest known state, and return it
 	 */
 	async readFromSource(): Promise<FileState> {

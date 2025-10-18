@@ -330,11 +330,9 @@ export class FitSync implements IFitSync {
 		syncNotice.setMessage("Writing remote changes to local");
 		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
 			plan.remoteChangesToPull);
-		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-		// TODO: Phase 2.5: Detect late-stage conflicts (e.g., remote file vs local folder)
-		// This is where we could check for path conflicts that weren't detected upfront
-		const newConflicts: ClashStatus[] = [];
+		// Apply changes (prepareChangesToExecute already filtered to save conflicts to _fit/)
+		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
 		// Phase 3: Read new local state and persist everything atomically
 		const newLocalState = await this.fit.localVault.readFromSource();
@@ -359,7 +357,7 @@ export class FitSync implements IFitSync {
 		return {
 			localOps: localFileOpsRecord,
 			remoteOps: pushedChanges,
-			conflicts: newConflicts
+			conflicts: [] // Conflicts are saved to _fit/ during prepareChangesToExecute
 		};
 	}
 
