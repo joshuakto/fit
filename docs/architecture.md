@@ -55,7 +55,7 @@ A "vault" represents a complete collection of synced files, whether stored local
 - **Fit**: Coordinator between vaults with clean abstractions
   - Owns 💾 LocalVault and ☁️ RemoteVault instances (currently RemoteGitHubVault)
   - Provides `getLocalChanges()` / `getRemoteChanges()` abstractions
-  - Implements sync policy via `shouldSyncPath()` (ignores paths like 📁 `_fit/`)
+  - Implements sync policy via `shouldSyncPath()` (ignores paths like 📁 `_fit/` and `.obsidian/`)
 
 - **FitSync**: High-level sync workflow and 🔀 conflict resolution
   - Uses `Fit.getLocalChanges()` / `getRemoteChanges()` for change detection

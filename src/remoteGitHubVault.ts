@@ -554,7 +554,7 @@ export class RemoteGitHubVault implements IVault {
 	 * RemoteGitHubVault can track all paths - no storage limitations.
 	 * Always returns true since GitHub can store any file.
 	 *
-	 * Note: Sync policy filtering (e.g., excluding _fit/) is handled
+	 * Note: Sync policy filtering (e.g., excluding _fit/, .obsidian/) is handled
 	 * by the caller (Fit), not by the vault.
 	 */
 	shouldTrackState(path: string): boolean {

@@ -135,7 +135,8 @@ export class FitSync implements IFitSync {
 	async performPreSyncChecks(): Promise<PreSyncCheckResult> {
 		// Scan local vault and update its cache
 		const {changes: localChanges, state: localState} = await this.fit.getLocalChanges();
-		// Filter changes based on sync policy (e.g., exclude _fit/)
+		// Filter LOCAL changes based on sync policy (e.g., exclude _fit/, .obsidian/)
+		// We don't want to push protected paths to remote
 		const filteredLocalChanges = localChanges.filter(change => this.fit.shouldSyncPath(change.path));
 
 		const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
@@ -145,19 +146,27 @@ export class FitSync implements IFitSync {
 
 		// Scan remote vault (pass commitSha to avoid duplicate API call)
 		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
-		// Filter changes based on sync policy (e.g., exclude _fit/)
-		const filteredRemoteChanges = remoteChanges.filter(change => this.fit.shouldSyncPath(change.path));
+		// NOTE: We do NOT filter remote changes here by shouldSyncPath
+		// Protected paths from remote (like .obsidian/, _fit/) will be handled in
+		// prepareChangesToExecute() and saved to _fit/ for user safety and transparency
 
 		let clashes: ClashStatus[] = [];
 		let status: PreSyncCheckResultType;
 		if (filteredLocalChanges.length > 0 && !remoteUpdated) {
 			status = "onlyLocalChanged";
-		} else if (remoteUpdated && filteredLocalChanges.length === 0 && filteredRemoteChanges.length === 0) {
+		} else if (remoteUpdated && filteredLocalChanges.length === 0 && remoteChanges.length === 0) {
 			status = "onlyRemoteCommitShaChanged";
 		} else if (filteredLocalChanges.length === 0 && remoteUpdated) {
-			status = "onlyRemoteChanged";
+			// Check for clashes even when there are no local changes
+			// (protected/hidden files from remote are always treated as clashes)
+			clashes = this.fit.getClashedChanges(filteredLocalChanges, remoteChanges);
+			if (clashes.length === 0) {
+				status = "onlyRemoteChanged";
+			} else {
+				status = "localAndRemoteChangesClashed";
+			}
 		} else {
-			clashes = this.fit.getClashedChanges(filteredLocalChanges, filteredRemoteChanges);
+			clashes = this.fit.getClashedChanges(filteredLocalChanges, remoteChanges);
 			if (clashes.length === 0) {
 				status = "localAndRemoteChangesCompatible";
 			} else {
@@ -182,7 +191,7 @@ export class FitSync implements IFitSync {
 		return {
 			status,
 			remoteUpdate: {
-				remoteChanges: filteredRemoteChanges,
+				remoteChanges: remoteChanges,
 				remoteTreeSha,
 				latestRemoteCommitSha: remoteCommitSha,
 				clashedFiles: clashes
@@ -235,6 +244,18 @@ export class FitSync implements IFitSync {
 			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
 			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
+		} else if (clash.localStatus === "untracked") {
+			// File is protected path or hidden - can't verify local state
+			if (clash.remoteStatus === "REMOVED") {
+				// Remote deleted, local untracked - can't verify if safe to delete locally
+				// Do nothing (don't delete local file, don't save to _fit/)
+				return {path: clash.path, noDiff: true};
+			} else {
+				// Remote added/modified, local untracked - save remote version to _fit/
+				const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
+				const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
+				return {path: clash.path, noDiff: false, fileOp: fileOp};
+			}
 		}
 
 		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
@@ -418,9 +439,9 @@ export class FitSync implements IFitSync {
 		);
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha,
+			lastFetchedRemoteSha: this.fit.filterSyncedState(lastFetchedRemoteSha),
 			lastFetchedCommitSha,
-			localSha: newLocalState
+			localSha: this.fit.filterSyncedState(newLocalState)
 		});
 		const ops = localFileOpsRecord.concat(fileOpsRecord);
 		if (unresolvedFiles.length === 0) {

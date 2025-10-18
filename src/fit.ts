@@ -89,6 +89,7 @@ export class Fit {
 	 *
 	 * Excludes paths based on sync policy:
 	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
+	 * - `.obsidian/`: Obsidian workspace settings and plugin code
 	 *
 	 * Future: Will also respect .gitignore patterns when implemented.
 	 *
@@ -101,6 +102,11 @@ export class Fit {
 	shouldSyncPath(path: string): boolean {
 		// Exclude _fit/ directory (conflict resolution area)
 		if (path.startsWith("_fit/")) {
+			return false;
+		}
+
+		// Exclude .obsidian/ directory (Obsidian workspace settings and plugins)
+		if (path.startsWith(".obsidian/")) {
 			return false;
 		}
 
@@ -161,28 +167,37 @@ export class Fit {
 	}
 
 	getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {
-		// TODO: Also treat remote changes to untrackable paths as potential clashes.
-		// Example: Remote has .gitignore change, but if .gitignore exists locally it's not
-		// indexed, so we don't know if it has local changes.
-		const localChangePaths = localChanges.map(c=>c.path);
-		const remoteChangePaths = remoteChanges.map(c=>c.path);
-		const clashedFiles = localChangePaths.map(
-			(path, localIndex) => {
-				const remoteIndex = remoteChangePaths.indexOf(path);
-				if (remoteIndex !== -1) {
-					return {path, localIndex, remoteIndex};
-				}
-				return null;
-			}).filter(Boolean) as Array<{path: string, localIndex: number, remoteIndex:number}>;
+		const clashes: Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> = [];
 
-		const clashes = clashedFiles.map(
-			({path, localIndex, remoteIndex}) => {
-				return {
-					path,
-					localStatus: localChanges[localIndex].status,
-					remoteStatus: remoteChanges[remoteIndex].status
-				};
-			});
+		// Step 1: Filter out remote changes to untracked/unsynced paths and treat as clashes.
+		const trackedRemoteChanges: RemoteChange[] = [];
+
+		for (const remoteChange of remoteChanges) {
+			if (this.shouldSyncPath(remoteChange.path) && this.localVault.shouldTrackState(remoteChange.path)) {
+				trackedRemoteChanges.push(remoteChange);
+			} else {
+				clashes.push({
+					path: remoteChange.path,
+					localStatus: 'untracked' as LocalFileStatus,
+					remoteStatus: remoteChange.status
+				});
+			}
+		}
+
+		// Step 2: Find tracked paths that changed on both sides
+		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.status]));
+
+		for (const remoteChange of trackedRemoteChanges) {
+			const localStatus = localChangesByPath.get(remoteChange.path);
+			if (localStatus !== undefined) {
+				// Both sides changed this tracked path
+				clashes.push({
+					path: remoteChange.path,
+					localStatus,
+					remoteStatus: remoteChange.status
+				});
+			}
+		}
 
 		// Log clashes for debugging sync conflicts
 		if (clashes.length > 0) {
