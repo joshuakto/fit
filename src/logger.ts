@@ -61,14 +61,17 @@ export class FitLogger {
 	}
 
 	private async flushToFile() {
-		this.writeScheduled = false;
+		// The writeScheduled flag acts as a lock for the entire async operation.
+		// It is only reset when the flush is complete and no more logs are pending.
 
 		if (!this.vault || this.logBuffer.length === 0) {
+			this.writeScheduled = false; // No work to do, release the lock.
 			return;
 		}
 
 		const logPath = this.getLogPath();
 		if (!logPath) {
+			this.writeScheduled = false; // Can't get path, release the lock.
 			return; // Plugin dir not set yet
 		}
 
@@ -106,6 +109,15 @@ export class FitLogger {
 		} catch (error) {
 			// Fail silently - don't break sync if logging fails
 			console.error('[FitLogger] Failed to write log file:', error);
+		} finally {
+			// After the async operation, check if new logs have been buffered.
+			if (this.logBuffer.length > 0) {
+				// If so, schedule another flush. The lock remains held.
+				setTimeout(() => this.flushToFile(), 100);
+			} else {
+				// If the buffer is empty, the work is done. Release the lock.
+				this.writeScheduled = false;
+			}
 		}
 	}
 }
