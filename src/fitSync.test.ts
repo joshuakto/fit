@@ -11,6 +11,8 @@ import { LocalChange, RemoteChange } from './fitTypes';
 // Simple test doubles focused on behavior
 describe('FitSync', () => {
 	let saveLocalStoreCallback: jest.MockedFunction<(localStore: Partial<LocalStores>) => Promise<void>>;
+	let consoleLogSpy: jest.SpyInstance;
+	let consoleErrorSpy: jest.SpyInstance;
 
 	function createFakeFit(
 		scenario: {
@@ -81,6 +83,16 @@ describe('FitSync', () => {
 
 	beforeEach(() => {
 		saveLocalStoreCallback = jest.fn().mockResolvedValue(undefined);
+
+		// Suppress console noise during tests
+		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+	});
+
+	afterEach(() => {
+		// Restore console
+		consoleLogSpy.mockRestore();
+		consoleErrorSpy.mockRestore();
 	});
 
 	describe('sync', () => {

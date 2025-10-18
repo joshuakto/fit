@@ -12,11 +12,16 @@ import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { FitSettings, LocalStores } from '../main';
 import { VaultError } from './vault';
+import { fitLogger } from './logger';
 
 describe('FitSync w/ real Fit', () => {
 	let localVault: FakeLocalVault;
 	let remoteVault: FakeRemoteVault;
 	let localStoreState: LocalStores;
+	let consoleLogSpy: jest.SpyInstance;
+	let consoleErrorSpy: jest.SpyInstance;
+	let fitLoggerLogSpy: jest.SpyInstance;
+	let fitLoggerFlushSpy: jest.SpyInstance;
 
 	// Realistic settings that get passed through to RemoteGitHubVault
 	const testSettings = {
@@ -109,6 +114,23 @@ describe('FitSync w/ real Fit', () => {
 			lastFetchedRemoteSha: {},
 			lastFetchedCommitSha: 'commit-initial'
 		};
+
+		// Suppress console noise during tests
+		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+
+		// Spy on fitLogger to verify logging behavior
+		fitLoggerLogSpy = jest.spyOn(fitLogger, 'log');
+		// Spy on flushToFile but don't mock it - let it run to verify file write attempts
+		fitLoggerFlushSpy = jest.spyOn(fitLogger as any, 'flushToFile');
+	});
+
+	afterEach(() => {
+		// Restore console and logger
+		consoleLogSpy.mockRestore();
+		consoleErrorSpy.mockRestore();
+		fitLoggerLogSpy.mockRestore();
+		fitLoggerFlushSpy.mockRestore();
 	});
 
 	it('should only sync accumulated changes after failed sync, not report stale changes', async () => {
@@ -187,6 +209,19 @@ describe('FitSync w/ real Fit', () => {
 		// Verify: Remote has new commit and both files
 		expect(remoteVault.getAllPaths().sort()).toEqual(['fileA.md', 'fileB.md']);
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
+
+		// Verify: Logger was called with appropriate tags during sync
+		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
+			expect.stringContaining('[Fit]'),
+			expect.anything()
+		);
+		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
+			expect.stringContaining('[FitSync]'),
+			expect.anything()
+		);
+
+		// Verify: Console.log was called (fitLogger.log always logs to console)
+		expect(consoleLogSpy).toHaveBeenCalled();
 	});
 
 	it('should exclude _fit/ directory from sync operations', async () => {
@@ -249,6 +284,75 @@ describe('FitSync w/ real Fit', () => {
 		// Verify: LocalStores only track synced files (no _fit/ paths)
 		expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
 		expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
+
+		// Verify: Logger was called during sync operations
+		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
+			expect.stringContaining('[FitSync]'),
+			expect.anything()
+		);
+		expect(consoleLogSpy).toHaveBeenCalled();
+	});
+
+	describe('Logger', () => {
+		it('should log to console but not write to file when logging is disabled (default)', async () => {
+			// Ensure logging is disabled (default state)
+			fitLogger.setEnabled(false);
+
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+
+			const mockNotice = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Verify: Console.log was called (fitLogger.log always logs to console)
+			expect(consoleLogSpy).toHaveBeenCalled();
+
+			// Verify: fitLogger.log was called
+			expect(fitLoggerLogSpy).toHaveBeenCalled();
+
+			// Verify: flushToFile was NOT scheduled (logging disabled)
+			// Wait a bit to ensure any debounced flush would have been called
+			await new Promise(resolve => setTimeout(resolve, 150));
+			expect(fitLoggerFlushSpy).not.toHaveBeenCalled();
+		});
+
+		it('should write to file when logging is enabled', async () => {
+			// Enable logging
+			fitLogger.setEnabled(true);
+			// Mock vault adapter for file operations
+			const mockVault = {
+				adapter: {
+					exists: jest.fn().mockResolvedValue(false),
+					read: jest.fn().mockResolvedValue(''),
+					write: jest.fn().mockResolvedValue(undefined)
+				}
+			};
+			fitLogger.setVault(mockVault as any);
+			fitLogger.setPluginDir('.obsidian/plugins/fit');
+
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+
+			const mockNotice = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Verify: Console.log was called
+			expect(consoleLogSpy).toHaveBeenCalled();
+
+			// Verify: fitLogger.log was called
+			expect(fitLoggerLogSpy).toHaveBeenCalled();
+
+			// Verify: flushToFile was called (logging enabled)
+			// Wait for debounced flush (100ms + buffer)
+			await new Promise(resolve => setTimeout(resolve, 150));
+			expect(fitLoggerFlushSpy).toHaveBeenCalled();
+
+			// Verify: vault.adapter.write was called with log file path
+			expect(mockVault.adapter.write).toHaveBeenCalledWith(
+				'.obsidian/plugins/fit/debug.log',
+				expect.stringContaining('[FitSync]')
+			);
+		});
 	});
 
 	describe('Error Handling', () => {
@@ -272,6 +376,10 @@ describe('FitSync w/ real Fit', () => {
 					true
 				]}
 			]);
+
+			// Verify: Logger was called even during failed sync
+			expect(fitLoggerLogSpy).toHaveBeenCalled();
+			expect(consoleLogSpy).toHaveBeenCalled();
 		});
 
 		it('should handle authentication errors with user-friendly message', async () => {

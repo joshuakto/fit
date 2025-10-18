@@ -6,7 +6,53 @@ import { FitPush } from "./fitPush";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
+import { fitLogger } from "./logger";
 import { VaultError } from "./vault";
+
+// Helper to log SHA cache updates with provenance tracking
+function logCacheUpdate(
+	source: string,
+	oldLocalSha: Record<string, string>,
+	newLocalSha: Record<string, string>,
+	oldRemoteSha: Record<string, string>,
+	newRemoteSha: Record<string, string>,
+	oldCommitSha: string | null | undefined,
+	newCommitSha: string,
+	extraContext?: Record<string, unknown>
+) {
+	const oldLocalCount = Object.keys(oldLocalSha).length;
+	const newLocalCount = Object.keys(newLocalSha).length;
+	const localShaAdded = Object.keys(newLocalSha).filter(k => !oldLocalSha[k]);
+	const localShaRemoved = Object.keys(oldLocalSha).filter(k => !newLocalSha[k]);
+	const warnings: string[] = [];
+
+	// Warn if cache went from non-empty to empty (possible data loss)
+	if (oldLocalCount > 0 && newLocalCount === 0) {
+		warnings.push(`Local SHA cache dropped from ${oldLocalCount} to 0 files - possible data corruption`);
+	}
+
+	// Warn if large number of files suddenly appeared (possible cache was cleared then repopulated)
+	if (oldLocalCount === 0 && newLocalCount > 10) {
+		warnings.push(`Local SHA cache jumped from 0 to ${newLocalCount} files - possible recovery from empty cache or first sync`);
+	}
+
+	fitLogger.log('[FitSync] Updating local store after ' + source, {
+		source,
+		oldLocalShaCount: oldLocalCount,
+		newLocalShaCount: newLocalCount,
+		oldRemoteShaCount: Object.keys(oldRemoteSha).length,
+		newRemoteShaCount: Object.keys(newRemoteSha).length,
+		localShaAdded,
+		localShaRemoved,
+		remoteShaAdded: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]),
+		remoteShaRemoved: Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]),
+		commitShaChanged: oldCommitSha !== newCommitSha,
+		oldCommitSha,
+		newCommitSha,
+		...(warnings.length > 0 && { warnings }),
+		...extraContext
+	});
+}
 
 /**
  * Interface for the sync orchestrator.
@@ -118,6 +164,21 @@ export class FitSync implements IFitSync {
 				status =  "localAndRemoteChangesClashed";
 			}
 		}
+
+		// Log sync decision to diagnose incorrect create/delete behaviors
+		fitLogger.log('[FitSync] Pre-sync check complete', {
+			status,
+			localChangesCount: localChanges.length,
+			remoteChangesCount: remoteChanges.length,
+			clashesCount: clashes.length,
+			remoteUpdated,
+			// Critical: Track files that will be pushed/pulled
+			filesPendingRemoteDeletion: localChanges.filter(c => c.status === 'deleted').map(c => c.path),
+			filesPendingLocalCreation: remoteChanges.filter(c => c.status === 'ADDED').map(c => c.path),
+			filesPendingLocalDeletion: remoteChanges.filter(c => c.status === 'REMOVED').map(c => c.path),
+			filesPendingRemoteCreation: localChanges.filter(c => c.status === 'created').map(c => c.path)
+		});
+
 		return {
 			status,
 			remoteUpdate: {
@@ -200,14 +261,44 @@ export class FitSync implements IFitSync {
 	async resolveConflicts(
 		clashedFiles: Array<ClashStatus>, latestRemoteTreeSha: Record<string, string>)
 		: Promise<{noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[]}> {
+		fitLogger.log('[FitSync] Resolving conflicts', {
+			clashCount: clashedFiles.length,
+			clashes: clashedFiles.map(c => ({ path: c.path, local: c.localStatus, remote: c.remoteStatus }))
+		});
+
 		const fileResolutions = await Promise.all(
-			clashedFiles.map(clash=>{return this.resolveFileConflict(clash, latestRemoteTreeSha[clash.path]);}));
+			clashedFiles.map(async (clash) => {
+				try {
+					return await this.resolveFileConflict(clash, latestRemoteTreeSha[clash.path]);
+				} catch (error) {
+					fitLogger.log('[FitSync] Error resolving conflict for file', {
+						path: clash.path,
+						localStatus: clash.localStatus,
+						remoteStatus: clash.remoteStatus,
+						error: error instanceof Error ? error.message : String(error)
+					});
+					throw error;
+				}
+			}));
+
+		fitLogger.log('[FitSync] Conflicts resolved', {
+			totalResolutions: fileResolutions.length,
+			successfulResolutions: fileResolutions.filter(r => r.noDiff).length
+		});
+
 		const unresolvedFiles = fileResolutions.map((res, i)=> {
 			if (!res.noDiff) {
 				return clashedFiles[i];
 			}
 			return null;
 		}).filter(Boolean) as Array<ClashStatus>;
+
+		fitLogger.log('[FitSync] Conflict resolution complete', {
+			noConflict: fileResolutions.every(res=>res.noDiff),
+			unresolvedCount: unresolvedFiles.length,
+			fileOpsCount: fileResolutions.filter(r => r.fileOp).length
+		});
+
 		return {
 			noConflict: fileResolutions.every(res=>res.noDiff),
 			unresolvedFiles,
@@ -245,6 +336,17 @@ export class FitSync implements IFitSync {
 
 		// Update local vault state after applying changes
 		const newLocalState = await this.fit.localVault.readFromSource();
+
+		logCacheUpdate(
+			'sync',
+			this.fit.localSha || {},
+			newLocalState,
+			this.fit.lastFetchedRemoteSha || {},
+			latestRemoteTreeSha,
+			this.fit.lastFetchedCommitSha,
+			latestCommitSha,
+			{ localOpsApplied: localFileOpsRecord.length, remoteOpsPushed: pushedChanges.length }
+		);
 
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: this.fit.filterSyncedState(latestRemoteTreeSha),
@@ -304,10 +406,21 @@ export class FitSync implements IFitSync {
 		// Update local vault state after applying changes
 		const newLocalState = await this.fit.localVault.readFromSource();
 
-		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha: this.fit.filterSyncedState(lastFetchedRemoteSha),
+		logCacheUpdate(
+			'conflict sync',
+			this.fit.localSha || {},
+			newLocalState,
+			this.fit.lastFetchedRemoteSha || {},
+			lastFetchedRemoteSha,
+			this.fit.lastFetchedCommitSha,
 			lastFetchedCommitSha,
-			localSha: this.fit.filterSyncedState(newLocalState)
+			{ unresolvedConflicts: unresolvedFiles.length, localOpsApplied: localFileOpsRecord.length, remoteOpsPushed: pushedChanges.length }
+		);
+
+		await this.saveLocalStoreCallback({
+			lastFetchedRemoteSha,
+			lastFetchedCommitSha,
+			localSha: newLocalState
 		});
 		const ops = localFileOpsRecord.concat(fileOpsRecord);
 		if (unresolvedFiles.length === 0) {
@@ -356,7 +469,17 @@ export class FitSync implements IFitSync {
 				const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
 				syncNotice.setMessage("Sync successful");
 				if (pushResult) {
-					// Vault caches already updated in pre-sync checks, just save to persistent storage
+					logCacheUpdate(
+						'push',
+						this.fit.localSha || {},
+						localTreeSha,
+						this.fit.lastFetchedRemoteSha || {},
+						pushResult.lastFetchedRemoteSha,
+						this.fit.lastFetchedCommitSha,
+						pushResult.lastFetchedCommitSha,
+						{ pushedChanges: pushResult.pushedChanges.length }
+					);
+
 					await this.saveLocalStoreCallback({
 						localSha: this.fit.filterSyncedState(localTreeSha),
 						lastFetchedRemoteSha: this.fit.filterSyncedState(pushResult.lastFetchedRemoteSha),
