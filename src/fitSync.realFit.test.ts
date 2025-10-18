@@ -189,6 +189,68 @@ describe('FitSync w/ real Fit', () => {
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
 	});
 
+	it('should exclude _fit/ directory from sync operations', async () => {
+		// === SETUP: Initial synced state ===
+		const fitSync = createFitSync();
+
+		// === STEP 1: Create files in _fit/ directory locally ===
+		localVault.setFile('_fit/conflict.md', 'Remote version saved locally');
+		localVault.setFile('_fit/nested/file.md', 'Another conflict');
+		localVault.setFile('normal.md', 'Normal file content');
+
+		// === STEP 2: Attempt sync - should push normal.md but exclude _fit/ files ===
+		const mockNotice1 = createMockNotice();
+		const result1 = await syncAndHandleResult(fitSync, mockNotice1);
+
+		// Verify: Only normal.md was pushed, _fit/ files excluded
+		expect(result1).toMatchObject({
+			success: true,
+			ops: expect.arrayContaining([
+				{
+					heading: expect.stringContaining('Remote file updates'),
+					ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+				}
+			])
+		});
+
+		// Verify: Remote does NOT have _fit/ files
+		expect(remoteVault.getAllPaths()).toEqual(['normal.md']);
+
+		// === STEP 3: Simulate another device pushing files (including _fit/ edge case) ===
+		// Manually add files and trigger commit SHA update by calling applyChanges
+		await remoteVault.applyChanges([
+			{ path: '_fit/remote-conflict.md', content: 'Should not sync down' },
+			{ path: 'remote-normal.md', content: 'Normal remote file' }
+		], []);
+
+		// === STEP 4: Attempt sync - should pull remote-normal.md but exclude _fit/ files ===
+		const mockNotice2 = createMockNotice();
+		const result2 = await syncAndHandleResult(fitSync, mockNotice2);
+
+		// Verify: Only remote-normal.md was pulled, _fit/ file excluded
+		expect(result2).toMatchObject({
+			success: true,
+			ops: [
+				{
+					heading: expect.stringContaining('Local file updates'),
+					ops: [expect.objectContaining({ path: 'remote-normal.md', status: 'created' })]
+				},
+			]
+		});
+
+		// Verify: Local does NOT have the remote _fit/ file
+		expect(localVault.getFile('_fit/remote-conflict.md')).toBeUndefined();
+		// But local still has its original _fit/ files (those are local-only)
+		expect(localVault.getFile('_fit/conflict.md')).toBe('Remote version saved locally');
+		expect(localVault.getFile('_fit/nested/file.md')).toBe('Another conflict');
+		// And has the normal remote file
+		expect(localVault.getFile('remote-normal.md')).toBe('Normal remote file');
+
+		// Verify: LocalStores only track synced files (no _fit/ paths)
+		expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
+		expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
+	});
+
 	describe('Error Handling', () => {
 		it('should handle network errors with user-friendly message', async () => {
 			// Arrange
