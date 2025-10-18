@@ -18,6 +18,11 @@ export class TFile {
 	basename!: string;
 }
 
+export class TFolder {
+	path!: string;
+	children: any[] = [];
+}
+
 export class Vault {
 	readBinary = jest.fn();
 }

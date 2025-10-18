@@ -8,7 +8,7 @@
  */
 
 import { LocalVault } from './localVault';
-import { TFile, Vault } from 'obsidian';
+import { TFile, TFolder, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
 import { Content, FileContent } from './contentEncoding';
 import { arrayBufferToContent } from './obsidianHelpers';
@@ -263,6 +263,65 @@ describe('LocalVault', () => {
 
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
 			expect(mockVault.createBinary).toHaveBeenCalled();
+		});
+
+		it('should throw error when trying to write file where folder exists', async () => {
+			// Scenario: Try to write file "notes" but folder "notes/" already exists
+			// Expected: Should throw error because getAbstractFileByPath returns a folder (not TFile, not null)
+
+			// Use the mocked TFolder class
+			const mockFolder = new TFolder();
+			mockFolder.path = 'notes';
+			mockVault.getAbstractFileByPath.mockReturnValue(mockFolder as any);
+
+			const localVault = new LocalVault(mockVault);
+
+			// The code checks instanceof TFolder
+			await expect(localVault.writeFile('notes', Content.encodeToBase64('content'))).rejects.toThrow(
+				/Cannot write file to notes: a folder with that name already exists/
+			);
+		});
+
+		it('should fail when parent path is a file instead of folder', async () => {
+			// Scenario: Try to write "config/settings.json" but "config" is a file, not a folder
+			// Current behavior: ensureFolderExists finds "config" exists (as file) and skips createFolder
+			// Then vault.createBinary fails with error when trying to create file with invalid parent
+			// IMPROVEMENT: Could detect earlier in ensureFolderExists by checking instanceof TFolder
+
+			const mockFile = StubTFile.ofPath('config');
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				if (path === 'config') {
+					return mockFile as TFile;  // Returns a file, not a folder
+				}
+				if (path === 'config/settings.json') {
+					return null;  // File doesn't exist yet
+				}
+				return null;
+			});
+
+			// Mock createBinary to fail for paths under 'config/' (parent is a file, not a folder)
+			mockVault.createBinary = jest.fn().mockImplementation((path: string) => {
+				if (path.startsWith('config/')) {
+					throw new Error('Folder already exists as file: config');
+				}
+				return Promise.resolve(undefined);
+			});
+
+			const localVault = new LocalVault(mockVault);
+
+			// Should throw VaultError.filesystem from createBinary
+			await expect(localVault.writeFile('config/settings.json', Content.encodeToBase64('content')))
+				.rejects.toMatchObject({
+					name: 'VaultError',
+					type: 'filesystem',
+					message: expect.stringContaining('config')
+				});
+
+			// ensureFolderExists did NOT call createFolder because "config" exists (as file, but check doesn't verify type)
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+
+			// createBinary was attempted and failed
+			expect(mockVault.createBinary).toHaveBeenCalledWith('config/settings.json', expect.any(ArrayBuffer));
 		});
 	});
 
