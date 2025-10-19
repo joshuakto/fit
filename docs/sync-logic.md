@@ -8,14 +8,12 @@ This document explains the detailed sync logic in FIT - the nuts and bolts of ho
 - 📊 Reading debug logs to diagnose problems
 - 🛠️ Contributing to sync logic improvements
 
-## Table of Contents
-- [SHA Cache System](#sha-cache-system)
-- [Change Detection](#change-detection)
-- [Sync Decision Tree](#sync-decision-tree)
-- [Conflict Resolution](#conflict-resolution)
-- [Edge Cases](#edge-cases)
+**Emoji Key:**
+- **Components:** 💾 Local Vault • ☁️ Remote Vault • 📦 Cache/Storage • 📁 `_fit/` Directory
+- **Operations:** ⬆️ Push • ⬇️ Pull • 🔀 Conflict
+- **File Status:** 🟢 Created/Added • ✏️ Modified • ❌ Deleted
 
-## SHA Cache System
+## 📦 SHA Cache System
 
 FIT uses SHA-based change detection to maintain **baseline state** versions (`LocalStores` - persisted to disk):
 
@@ -47,30 +45,37 @@ FIT uses SHA-based change detection to maintain **baseline state** versions (`Lo
 
 ```mermaid
 sequenceDiagram
-    participant Storage as Plugin Data
+    participant Storage as 📦 Plugin Data
     participant Fit as Fit Engine
-    participant Vault as Local Vault
-    participant GitHub as GitHub API
+    participant Local as 💾 Local Vault
+    participant Remote as ☁️ Remote Vault
 
-    Note over Storage,GitHub: Plugin Load
+    Note over Storage,Remote: Plugin Load
     Storage->>Fit: Load SHA caches
     Note over Fit: localSha, lastFetchedRemoteSha,<br/>lastFetchedCommitSha
 
-    Note over Storage,GitHub: Sync Operation
-    Fit->>Vault: Read current file SHAs
-    Note over Fit: currentLocalSha
-    Fit->>GitHub: Fetch remote tree SHAs
-    Note over Fit: currentRemoteTreeSha
+    Note over Storage,Remote: Sync Operation
+    par Read States (from Local/Remote in parallel)
+        Fit->>Local: Read current file SHAs
+        Note over Local: Scan vault files
+        Fit->>Remote: Read current tree SHAs
+        Note over Remote: Fetch repository tree
+    end
+
+    Note over Fit: currentLocalSha, currentRemoteTreeSha
 
     Fit->>Fit: Compare current vs cached
     Note over Fit: Detect changes
 
-    Fit->>Vault: Apply remote changes
-    Fit->>GitHub: Push local changes
+    par Apply Changes (to Local/Remote in parallel)
+        Fit->>Local: Apply remote changes
+        Note over Local: Write/delete files
+        Fit->>Remote: Apply local changes
+        Note over Remote: Create commit
+    end
 
-    Fit->>Fit: Compute new localSha
-    Fit->>GitHub: Fetch new remoteTreeSha
     Fit->>Storage: Save updated caches
+    Note over Storage: Updated SHA caches
 ```
 
 ### Why SHA Comparison?
@@ -88,7 +93,7 @@ sequenceDiagram
 
 ## Change Detection
 
-### Local Change Detection
+### 💾 Local Change Detection
 
 FIT compares current local file SHAs against the cached `localSha` to detect changes since the last sync.
 
@@ -97,12 +102,12 @@ flowchart TD
     Start[Scan Vault Files] --> ComputeSHA[Compute SHA for each file]
     ComputeSHA --> Compare{Compare with<br/>cached localSha}
 
-    Compare -->|File in cache,<br/>SHA differs| Modified[Status: MODIFIED]
-    Compare -->|File not in cache| Created[Status: CREATED]
-    Compare -->|Cached file<br/>not in vault| Deleted[Status: DELETED]
+    Compare -->|File in cache,<br/>SHA differs| Modified[✏️ MODIFIED]
+    Compare -->|File not in cache| Created[🟢 CREATED]
+    Compare -->|Cached file<br/>not in vault| Deleted[❌ DELETED]
     Compare -->|File in cache,<br/>SHA matches| NoChange[No change]
 
-    Modified --> Result[Local Changes]
+    Modified --> Result[💾 Local Changes]
     Created --> Result
     Deleted --> Result
     NoChange --> End[Done]
@@ -125,9 +130,25 @@ cachedLocalSha = {
 // Result: file2.md detected as DELETED
 ```
 
-### Remote Change Detection
+### ☁️ Remote Change Detection
 
 Same logic applies for remote changes, comparing `currentRemoteTreeSha` against `lastFetchedRemoteSha`.
+
+**How the remote vault provides file states:**
+
+The remote vault fetches the **current snapshot** of all files from the repository tree, not deltas. We then compare this snapshot to our cached state to detect changes.
+
+```json
+// Simplified GitHub API response from GET /repos/{owner}/{repo}/git/trees/{sha}
+{
+  "tree": [
+    {"path": "file1.md", "sha": "abc123", "type": "blob"},
+    {"path": "file3.md", "sha": "new789", "type": "blob"}
+  ]
+}
+```
+
+We transform this into a `FileState` object (path → SHA mapping) and compare:
 
 ```typescript
 // Example remote change detection
@@ -141,7 +162,7 @@ lastFetchedRemoteSha = {
   "file2.md": "def456"   // No longer exists remotely
 }
 
-// Results:
+// Results from compareSha():
 // - file1.md: MODIFIED (SHA changed)
 // - file3.md: ADDED (not in cache)
 // - file2.md: REMOVED (not in current remote)
@@ -175,25 +196,18 @@ Before syncing, FIT determines what type of sync operation is needed:
 
 ```mermaid
 flowchart TD
-    Start[Start Sync] --> CheckLocal{Local<br/>changes?}
-    CheckLocal -->|No| CheckRemote{Remote<br/>updated?}
-    CheckLocal -->|Yes| CheckRemote
+    Start[Start Sync] --> CheckChanges{Check for<br/>💾 local & ☁️ remote changes}
 
-    CheckRemote -->|No local,<br/>no remote| InSync[✓ In Sync]
-    CheckRemote -->|Only local| LocalOnly[Only Local Changed]
-    CheckRemote -->|Only remote| RemoteOnly[Only Remote Changed]
-    CheckRemote -->|Only commit SHA| CommitOnly[Only Commit SHA Changed]
-    CheckRemote -->|Both changed| CheckClash{Changes<br/>clash?}
+    CheckChanges -->|No changes| InSync[✓ In Sync]
+    CheckChanges -->|💾 Local only| Push[⬆️ Push to Remote]
+    CheckChanges -->|☁️ Remote only| Pull[⬇️ Pull to Local]
+    CheckChanges -->|Commit SHA only| UpdateCache[Update 📦 Cache]
+    CheckChanges -->|Both changed| CheckClash{Same files<br/>modified?}
 
-    CheckClash -->|No overlap| Compatible[Compatible Changes]
-    CheckClash -->|Overlap| Clashed[Clashed Changes]
+    CheckClash -->|Different files| BothSync[⬆️⬇️ Push & Pull]
+    CheckClash -->|Same files| Resolve[🔀 Conflict Resolution]
 
     InSync --> Done[Done]
-    LocalOnly --> Push[Push to Remote]
-    RemoteOnly --> Pull[Pull from Remote]
-    CommitOnly --> UpdateCache[Update Commit SHA]
-    Compatible --> BothSync[Push and Pull]
-    Clashed --> Resolve[Conflict Resolution]
 ```
 
 **Implementation:** [`performPreSyncChecks()` in fitSync.ts](../src/fitSync.ts)
@@ -252,7 +266,7 @@ remoteChanges = [
 // No overlap → compatible changes
 ```
 
-#### 6. Clashed Changes (Conflicts)
+#### 6. Clashed Changes (🔀 Conflicts)
 **Changes detected:** Both local and remote changes
 **Conflict status:** Changes affect the same file(s)
 
@@ -260,11 +274,11 @@ remoteChanges = [
 1. Identify clashed files
 2. For each clash, check if content actually differs
 3. If no actual difference, treat as compatible
-4. If real conflict, save remote version to `_fit/`
+4. If real 🔀 conflict, save remote version to 📁 `_fit/`
 5. Push local changes (including conflicted files)
 6. Pull non-conflicted remote changes
 
-## Conflict Resolution
+## 🔀 Conflict Resolution
 
 ### Clash Detection
 
@@ -274,77 +288,52 @@ Files clash when BOTH local and remote have changes to the same path.
 
 **Logic:** For each file changed locally, check if there's also a remote change to the same path. If yes, it's a clash.
 
-### Conflict Resolution Decision Tree
+### 🔀 Conflict Resolution Decision Tree
 
 ```mermaid
 flowchart TD
-    Start[File Clashed] --> CheckBoth{Both deleted?}
-    CheckBoth -->|Yes| NoDiff[No Diff - Resolved]
-    CheckBoth -->|No| LocalDel{Local deleted?}
+    Start[File Clashed:<br/>Same file modified<br/>💾 locally & ☁️ remotely] --> CheckScenario{What happened<br/>to the file?}
 
-    LocalDel -->|Yes| SaveRemote[Save remote to _fit/]
-    LocalDel -->|No| RemoteDel{Remote deleted?}
+    CheckScenario -->|✏️ Both modified,<br/>different content| SaveBoth[⬇️📁 Pull remote to _fit/<br/>Keep local in place]
+    CheckScenario -->|💾❌ vs ☁️✏️<br/>Deleted vs Modified| SaveRemote[⬇️📁 Pull remote to _fit/<br/>Keep local deleted]
+    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Deleted| KeepLocal[⬆️ Push local<br/>Restore on remote]
 
-    RemoteDel -->|Yes| KeepLocal[Keep local, no _fit copy]
-    RemoteDel -->|No| CompareContent{Content differs?}
+    CheckScenario -->|✏️ Both modified,<br/>same content| AutoResolve2[✓ Auto-resolved<br/>Content identical]
+    CheckScenario -->|❌ Both deleted| AutoResolve1[✓ Auto-resolved<br/>Both sides agree]
 
-    CompareContent -->|No| NoDiff
-    CompareContent -->|Yes| DetectType{File type?}
-
-    DetectType -->|Binary| BinaryConflict[Save to _fit/ as binary]
-    DetectType -->|Text| TextConflict[Save to _fit/ as text]
-
-    SaveRemote --> Unresolved[Unresolved Conflict]
-    BinaryConflict --> Unresolved
-    TextConflict --> Unresolved
-    KeepLocal --> Unresolved
+    SaveRemote --> Manual[🔀 Manual resolution needed]
+    KeepLocal --> Manual
+    SaveBoth --> Manual
 ```
 
-### Conflict Types
+### 🔀 Conflict Types
 
-#### Both Deleted
-**Local:** Deleted
-**Remote:** Deleted
+#### Auto-Resolved (No Manual Action Needed)
 
-**Resolution:** No conflict - both sides agree on deletion
+**Both sides deleted the file:**
+- **Resolution:** ✓ Automatically resolved - both sides agree
 
-#### Local Deleted, Remote Modified/Added
-**Local:** User deleted file
-**Remote:** File modified or added by another device
+**Both sides modified, but content is identical:**
+- **Example:** Line ending differences, whitespace changes
+- **Resolution:** ✓ Automatically resolved - SHA differs but content effectively the same
 
-**Resolution:**
-- Save remote version to `_fit/path/to/file.md`
-- Keep local version deleted
-- User can manually restore from `_fit/` if needed
+#### Manual Resolution Required
 
-#### Remote Deleted, Local Modified
-**Local:** User modified file
-**Remote:** File deleted by another device
+**💾 Local deleted, ☁️ remote modified/added:**
+- Save remote version → 📁 `_fit/path/to/file.md`
+- Keep local deleted (file stays deleted in vault)
+- User can manually restore from 📁 `_fit/` if needed
 
-**Resolution:**
-- Keep local version in place
-- Push local version to remote (restores the file remotely)
-- No `_fit/` copy needed
-
-#### Both Modified (Content Differs)
-**Local:** User modified file
-**Remote:** File modified by another device
-
-**Resolution:**
+**☁️ Remote deleted, 💾 local modified:**
 - Keep local version in original location
-- Save remote version to `_fit/path/to/file.md`
-- User manually merges changes
+- Push to remote (restores the file remotely)
+- Local version wins automatically
 
-**File type detection:**
-- **Binary files** (`.png`, `.jpg`, `.pdf`): Saved as-is to `_fit/`
-- **Text files**: Saved to `_fit/` for manual merge
-
-#### Both Modified (Content Same)
-**Local:** Modified
-**Remote:** Modified
-**SHAs differ but content identical** (e.g., line ending differences)
-
-**Resolution:** No conflict - content is effectively the same
+**Both sides modified (different content):**
+- Keep 💾 local version in original location
+- Save ☁️ remote version → 📁 `_fit/path/to/file.md`
+- User manually merges the two versions
+- Binary files (`.png`, `.jpg`, `.pdf`) saved as-is to 📁 `_fit/`
 
 ## Edge Cases
 

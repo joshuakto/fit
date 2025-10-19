@@ -4,35 +4,27 @@ High-level system design for the FIT (File gIT) Obsidian plugin.
 
 ## System Overview
 
-FIT enables bidirectional sync between Obsidian vaults and GitHub repositories with conflict resolution and cross-platform support.
+FIT enables bidirectional sync between Obsidian vaults and remote git repositories (currently GitHub) with conflict resolution and cross-platform support.
 
 ```mermaid
 graph TB
-    User[User] --> Obsidian[Obsidian UI]
+    User[👤 User] --> Obsidian[Obsidian UI]
     Obsidian --> FitPlugin[FIT Plugin]
 
     FitPlugin --> Sync[Sync Engine]
     FitPlugin --> Settings[Settings Manager]
     FitPlugin --> AutoSync[Auto Sync Timer]
 
-    Sync --> GitHub[GitHub API]
-    Sync --> Vault[Local Vault]
+    Sync --> Remote[☁️ Remote Vault]
+    Sync --> Vault[💾 Local Vault]
 
-    Vault --> ConflictDir[_fit/ Directory]
-
-    classDef core fill:#e1f5fe
-    classDef external fill:#f3e5f5
-    classDef storage fill:#e8f5e8
-
-    class FitPlugin,Sync core
-    class Obsidian,GitHub external
-    class Vault,ConflictDir storage
+    Vault --> ConflictDir[📁 _fit/ Directory]
 ```
 
 ## Core Components
 
 ### FitPlugin (main.ts)
-**Purpose**: Plugin orchestrator and lifecycle manager
+**Purpose**: Plugin orchestrator and lifecycle manager (interfaces with 👤 user)
 - Manages plugin loading, settings persistence, auto-sync scheduling
 - Coordinates between sync engine and Obsidian UI
 - Handles error recovery and user notifications
@@ -47,12 +39,12 @@ A "vault" represents a complete collection of synced files, whether stored local
   - **Write operations**: `applyChanges(filesToWrite, filesToDelete)` - batch operations
   - **Metadata**: `shouldTrackState(path)` - filter paths during sync
 
-- **LocalVault**: Obsidian vault implementation
+- **💾 LocalVault**: Obsidian vault implementation
   - Computes SHA-1 hashes from vault files
   - Owns local state
   - Batch file operations via `applyChanges()`
 
-- **RemoteGitHubVault**: GitHub repository implementation
+- **☁️ RemoteGitHubVault**: GitHub repository implementation
   - Fetches remote tree state via GitHub API
   - Owns remote state
   - Creates commits via `applyChanges()` (creates blobs, builds trees, creates commits, updates refs)
@@ -61,20 +53,20 @@ A "vault" represents a complete collection of synced files, whether stored local
 ### Sync Engine (fit.ts, fitSync.ts, fitPull.ts, fitPush.ts)
 **Purpose**: Core synchronization logic
 - **Fit**: Coordinator between vaults with clean abstractions
-  - Owns LocalVault and RemoteGitHubVault instances
+  - Owns 💾 LocalVault and ☁️ RemoteVault instances (currently RemoteGitHubVault)
   - Provides `getLocalChanges()` / `getRemoteChanges()` abstractions
-  - Implements sync policy via `shouldSyncPath()` (ignores paths like `_fit/`)
+  - Implements sync policy via `shouldSyncPath()` (ignores paths like 📁 `_fit/`)
 
-- **FitSync**: High-level sync workflow and conflict resolution
+- **FitSync**: High-level sync workflow and 🔀 conflict resolution
   - Uses `Fit.getLocalChanges()` / `getRemoteChanges()` for change detection
-  - Orchestrates bidirectional sync with conflict handling
+  - Orchestrates bidirectional sync with 🔀 conflict handling
 
 - **FitPull/FitPush**: Pull-only / push-only operations
   - Uses same abstractions for consistency
 
-**GitHub API Integration**:
-- RemoteGitHubVault encapsulates all GitHub API calls
-- Uses `@octokit/core` with automatic retry handling
+**Remote Backend Integration**:
+- Current implementation: RemoteGitHubVault using `@octokit/core` with automatic retry handling
+- Architecture supports adding RemoteGitLabVault, RemoteGiteaVault, etc. via IVault interface
 
 ### Support Systems
 - **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log`)
@@ -87,25 +79,27 @@ A "vault" represents a complete collection of synced files, whether stored local
 
 ```mermaid
 sequenceDiagram
-    participant User
+    participant User as 👤 User
     participant Plugin as FitPlugin
     participant Sync as Sync Engine
-    participant GitHub as GitHub API
-    participant Vault as Local Vault
+    participant Local as 💾 Local Vault
+    participant Remote as ☁️ Remote Vault
 
     User->>Plugin: Trigger Sync
     Plugin->>Sync: Initiate sync workflow
 
-    Sync->>Vault: Scan local files
-    Sync->>GitHub: Fetch remote changes
+    par Read States (from Local/Remote in parallel)
+        Sync->>Local: Scan local files
+        Sync->>Remote: Fetch remote state
+    end
 
     Sync->>Sync: Detect conflicts
 
     alt No Conflicts
-        Sync->>Vault: Apply remote changes
-        Sync->>GitHub: Push local changes
+        Sync->>Local: Apply remote changes
+        Sync->>Remote: Push local changes
     else Conflicts Found
-        Sync->>Vault: Save conflicts to _fit/
+        Sync->>Local: Save conflicts to 📁 _fit/
     end
 
     Sync-->>Plugin: Sync result
@@ -128,11 +122,11 @@ sequenceDiagram
 
 ## Storage Architecture
 
-### Plugin Data
+### 📦 Plugin Data
 ```
 .obsidian/plugins/fit/data.json (plain text):
 ├── settings
-│   ├── pat (GitHub Personal Access Token)
+│   ├── 🔒 pat (GitHub Personal Access Token)
 │   ├── owner, repo, branch
 │   ├── deviceName, avatarUrl
 │   ├── autoSync preferences
@@ -146,29 +140,29 @@ sequenceDiagram
 └── Debug logs (when enabled in settings)
 ```
 
-### Vault Structure
+### 💾 Vault Structure
 ```
 Obsidian Vault:
 ├── [user files and folders]
-└── _fit/                    # Conflict resolution directory
+└── 📁 _fit/                 # Conflict resolution directory
     ├── conflicted-file.md   # Remote version of conflicted files
     └── subfolder/
         └── another-conflict.md
 ```
 
-**Note**: Conflicted files are saved directly in `_fit/` with the same path structure as the original, containing the remote version. The local version remains in the original location.
+**Note**: Conflicted files are saved directly in 📁 `_fit/` with the same path structure as the original, containing the remote version. The local version remains in the original location.
 
-## Security Model
+## 🔒 Security Model
 
 ### Data Protection
-- **Credentials**: GitHub PAT stored in plugin data (currently in plain text)
-- **API Security**: All GitHub API calls use HTTPS with proper authentication
+- **Credentials**: GitHub PAT stored in 📦 plugin data (currently in plain text)
+- **API Security**: All remote API calls use HTTPS with proper authentication
 - **Local Storage**: No sensitive data in logs or temporary files
 
-### Conflict Handling
+### 🔀 Conflict Handling
 - **Non-destructive**: Original files never overwritten during conflicts
 - **User Control**: All conflict resolution is manual and user-directed
-- **Audit Trail**: Conflicted files preserved with timestamps
+- **Audit Trail**: Conflicted files preserved in 📁 `_fit/` with timestamps
 
 ## Performance Characteristics
 
@@ -231,7 +225,7 @@ Extend notification system for:
 - Graceful degradation when network/API issues occur
 - Error scenarios should clearly communicate problems to users so they can resolve problems
 
-### User Agency
+### 👤 User Agency
 - Users maintain full control over conflict resolution
 - Clear feedback about what changes will occur
 - Easy rollback through git history
