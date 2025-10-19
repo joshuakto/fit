@@ -12,6 +12,7 @@ import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { FileState } from "./vault";
+import { fitLogger } from "./logger";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -58,6 +59,29 @@ export class Fit {
 		this.localSha = localStore.localSha;
 		this.lastFetchedCommitSha = localStore.lastFetchedCommitSha;
 		this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha;
+		// Detect potentially corrupted/suspicious cache states
+		const localCount = Object.keys(this.localSha).length;
+		const remoteCount = Object.keys(this.lastFetchedRemoteSha).length;
+		const warnings: string[] = [];
+
+		// Warn if caches are empty but commit SHA exists (possible cache corruption)
+		if (localCount === 0 && remoteCount === 0 && this.lastFetchedCommitSha) {
+			warnings.push('Empty SHA caches but commit SHA exists - possible cache corruption or first sync after data loss');
+		}
+
+		// Warn if local cache is empty but remote cache has files (asymmetric state)
+		if (localCount === 0 && remoteCount > 0) {
+			warnings.push('Local SHA cache empty but remote cache has files - may incorrectly pull files as "new" that were deleted locally');
+		}
+
+		// Log SHA cache provenance for debugging
+		fitLogger.log('[Fit] SHA caches loaded from storage', {
+			source: 'plugin data.json',
+			localShaCount: localCount,
+			remoteShaCount: remoteCount,
+			lastCommit: this.lastFetchedCommitSha,
+			...(warnings.length > 0 && { warnings })
+		});
 	}
 
 	/**
@@ -120,6 +144,19 @@ export class Fit {
 	async getRemoteChanges(commitSha: string): Promise<{changes: RemoteChange[], state: FileState}> {
 		const currentState = await this.remoteVault.readFromSourceAtCommit(commitSha);
 		const changes = compareSha(currentState, this.lastFetchedRemoteSha, "remote");
+
+		// Diagnostic logging for tracking remote cache state
+		if (changes.length > 0) {
+			fitLogger.log('[Fit] Remote changes detected', {
+				changeCount: changes.length,
+				changes: changes.map(c => ({ path: c.path, status: c.status })),
+				currentRemoteFilesCount: Object.keys(currentState).length,
+				cachedRemoteFilesCount: Object.keys(this.lastFetchedRemoteSha).length,
+				filesOnlyInRemote: Object.keys(currentState).filter(p => !this.lastFetchedRemoteSha[p]),
+				filesOnlyInCache: Object.keys(this.lastFetchedRemoteSha).filter(p => !currentState[p])
+			});
+		}
+
 		return { changes, state: currentState };
 	}
 
@@ -137,7 +174,8 @@ export class Fit {
 				}
 				return null;
 			}).filter(Boolean) as Array<{path: string, localIndex: number, remoteIndex:number}>;
-		return clashedFiles.map(
+
+		const clashes = clashedFiles.map(
 			({path, localIndex, remoteIndex}) => {
 				return {
 					path,
@@ -145,6 +183,20 @@ export class Fit {
 					remoteStatus: remoteChanges[remoteIndex].status
 				};
 			});
+
+		// Log clashes for debugging sync conflicts
+		if (clashes.length > 0) {
+			fitLogger.log('[Fit] File clashes detected', {
+				clashCount: clashes.length,
+				clashes: clashes.map(c => ({
+					path: c.path,
+					localStatus: c.localStatus,
+					remoteStatus: c.remoteStatus
+				}))
+			});
+		}
+
+		return clashes;
 	}
 
 	/**

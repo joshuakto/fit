@@ -13,6 +13,8 @@ import { StubTFile } from './testUtils';
 
 describe('LocalVault', () => {
 	let mockVault: jest.Mocked<Vault>;
+	let consoleLogSpy: jest.SpyInstance;
+	let consoleErrorSpy: jest.SpyInstance;
 
 	beforeEach(() => {
 		mockVault = {
@@ -21,6 +23,16 @@ describe('LocalVault', () => {
 			readBinary: jest.fn(),
 			getAbstractFileByPath: jest.fn()
 		} as unknown as jest.Mocked<Vault>;
+
+		// Suppress console noise during tests
+		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+	});
+
+	afterEach(() => {
+		// Restore console
+		consoleLogSpy.mockRestore();
+		consoleErrorSpy.mockRestore();
 	});
 
 	describe('shouldTrackState', () => {

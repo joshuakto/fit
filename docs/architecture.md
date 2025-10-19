@@ -77,6 +77,7 @@ A "vault" represents a complete collection of synced files, whether stored local
 - Uses `@octokit/core` with automatic retry handling
 
 ### Support Systems
+- **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log`)
 - **Settings UI**: GitHub authentication and configuration management
 - **Notifications**: User feedback during sync operations
 
@@ -140,6 +141,9 @@ sequenceDiagram
     ├── localSha (file path -> SHA map)
     ├── lastFetchedCommitSha
     └── lastFetchedRemoteSha (remote file path -> SHA map)
+
+.obsidian/plugins/fit/debug.log:
+└── Debug logs (when enabled in settings)
 ```
 
 ### Vault Structure

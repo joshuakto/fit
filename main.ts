@@ -10,6 +10,7 @@ import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
 import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
+import { fitLogger } from 'src/logger';
 
 /**
  * Plugin configuration interface
@@ -26,6 +27,7 @@ export interface FitSettings {
 	autoSync: "on" | "off" | "muted" | "remind"
 	notifyChanges: boolean
 	notifyConflicts: boolean
+	enableDebugLogging: boolean
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
@@ -38,7 +40,8 @@ const DEFAULT_SETTINGS: FitSettings = {
 	checkEveryXMinutes: 5,
 	autoSync: "off",
 	notifyChanges: true,
-	notifyConflicts: true
+	notifyConflicts: true,
+	enableDebugLogging: true
 };
 
 
@@ -143,9 +146,22 @@ export default class FitPlugin extends Plugin {
 	sync = async (syncNotice: FitNotice): Promise<boolean> => {
 		if (!this.checkSettingsConfigured()) { return false; }
 		await this.loadLocalStore();
+
+		fitLogger.log('[Plugin] Sync initiated', {
+			timestamp: new Date().toISOString(),
+			triggerType: this.syncing ? 'manual' : (this.autoSyncing ? 'auto' : 'unknown')
+		});
+
 		const syncResult = await this.fitSync.sync(syncNotice);
 
 		if (syncResult.success) {
+			fitLogger.log('[Plugin] Sync completed successfully', {
+				fileOpsCount: syncResult.ops.length,
+				unresolvedConflictsCount: syncResult.clash.length,
+				operations: syncResult.ops,
+				unresolvedConflicts: syncResult.clash
+			});
+
 			if (this.settings.notifyConflicts) {
 				showUnappliedConflicts(syncResult.clash);
 			}
@@ -158,7 +174,14 @@ export default class FitPlugin extends Plugin {
 			const errorMessage = this.fitSync.getSyncErrorMessage(syncResult.error);
 			const fullMessage = `Sync failed: ${errorMessage}`;
 
-			// Log detailed error information for debugging
+			// Log detailed error information for debugging AND to file
+			fitLogger.log('[Plugin] Sync failed', {
+				errorType: syncResult.error.type,
+				errorMessage: errorMessage,
+				errorDetails: syncResult.error.details || {},
+				fullMessage: fullMessage
+			});
+
 			console.error(fullMessage, {
 				type: syncResult.error.type,
 				...(syncResult.error.details || {})
@@ -173,6 +196,7 @@ export default class FitPlugin extends Plugin {
 	performManualSync = async (): Promise<void> => {
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.syncing = true;
+		fitLogger.log('[Plugin] Manual sync requested', { timestamp: new Date().toISOString() });
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 		const syncSuccess = await this.sync(syncNotice);
@@ -196,6 +220,10 @@ export default class FitPlugin extends Plugin {
 	async autoSync() {
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.autoSyncing = true;
+		fitLogger.log('[Plugin] Auto-sync triggered', {
+			timestamp: new Date().toISOString(),
+			mode: this.settings.autoSync
+		});
 		const syncNotice = new FitNotice(
 			this.fit,
 			["loading"],
@@ -244,6 +272,14 @@ export default class FitPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		await this.loadLocalStore();
+
+		// Initialize logger with vault and plugin directory for cross-platform diagnostics
+		fitLogger.setVault(this.app.vault);
+		if (this.manifest.dir) {
+			fitLogger.setPluginDir(this.manifest.dir);
+		}
+		fitLogger.setEnabled(this.settings.enableDebugLogging);
+
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault);
 		this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
 		this.syncing = false;
@@ -281,7 +317,7 @@ export default class FitPlugin extends Plugin {
 					if (key == "checkEveryXMinutes") {
 						obj[key] = Number(settings[key]);
 					}
-					else if (key === "notifyChanges" || key === "notifyConflicts") {
+					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging") {
 						obj[key] = Boolean(settings[key]);
 					}
 					else {
