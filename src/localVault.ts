@@ -173,8 +173,7 @@ export class LocalVault implements IVault {
 				await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
 				return {path, status: "changed"};
 			} else if (!file) {
-				// TODO: Await this to avoid race condition
-				this.ensureFolderExists(path);
+				await this.ensureFolderExists(path);
 				await this.vault.createBinary(path, base64ToArrayBuffer(content));
 				return {path, status: "created"};
 			}
