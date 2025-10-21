@@ -849,6 +849,51 @@ describe('FitSync', () => {
 				}
 			);
 		});
+
+		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {
+			// Scenario: Plugin version changes filtering rules (e.g., starts ignoring certain file types)
+			// Expected: Deletion NOT pushed to remote (file exists on filesystem but filtered from scan)
+
+			const hiddenFileContent = 'hidden content';
+			localVault.setFile('.hidden', hiddenFileContent);
+			remoteVault.setFile('.hidden', hiddenFileContent);
+
+			// Simulate v1 tracking the file (before filtering rule change)
+			const originalShouldTrackState = localVault.shouldTrackState.bind(localVault);
+			localVault.shouldTrackState = () => true; // v1: track all files
+
+			const initialRemoteState = await remoteVault.readFromSource();
+			const initialLocalState = await localVault.readFromSource();
+
+			localStoreState = {
+				localSha: {
+					'.hidden': initialLocalState['.hidden']
+				},
+				lastFetchedRemoteSha: {
+					'.hidden': initialRemoteState['.hidden']
+				},
+				lastFetchedCommitSha: remoteVault.getCommitSha()
+			};
+
+			// Simulate v2: filtering rule changed (now excludes hidden files)
+			localVault.shouldTrackState = originalShouldTrackState;
+
+			// Sync after filtering rule change
+			const fitSync = createFitSync();
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			expect(result).toMatchObject({success: true});
+
+			// File should still exist locally (not deleted)
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({'.hidden': hiddenFileContent});
+
+			// File should NOT be deleted from remote (safeguard prevents data loss)
+			expect(remoteVault.getFile('.hidden')).toBe(hiddenFileContent);
+
+			// localSha should exclude .hidden (new filtering rules)
+			expect(localStoreState.localSha).not.toHaveProperty('.hidden');
+		});
 	});
 
 	describe('Logger', () => {

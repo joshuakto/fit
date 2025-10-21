@@ -155,7 +155,7 @@ export class FitSync implements IFitSync {
 		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
-	async resolveFileConflict(
+	private async resolveFileConflict(
 		clash: ClashStatus,
 		latestRemoteFileSha: string,
 		existenceMap?: Map<string, 'file' | 'folder' | 'nonexistent'>
@@ -488,33 +488,12 @@ export class FitSync implements IFitSync {
 	 * @returns Map of path → existence state, plus any stat error encountered
 	 */
 	private async collectFilesystemState(
-		clashes: ClashStatus[],
-		addToLocalNonClashed: Array<{path: string, content: FileContent}>,
-		deleteFromLocalNonClashed: string[]
+		paths: string[]
 	): Promise<{existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>, statError: unknown}> {
-		// Collect paths that need stat checking from non-clashed remote changes
-		const addPathsToCheck = addToLocalNonClashed
-			.filter(c => this.fit.shouldSyncPath(c.path))
-			.filter(c => !this.fit.localSha.hasOwnProperty(c.path))
-			.map(c => c.path);
-
-		const deletePathsToCheck = deleteFromLocalNonClashed
-			.filter(p => this.fit.shouldSyncPath(p))
-			.filter(p => !this.fit.localSha.hasOwnProperty(p));
-
-		// Also collect paths from clashes (untracked files need stat checking)
-		const clashPathsToCheck = clashes
-			.filter(c => c.localStatus === 'untracked')
-			.map(c => c.path);
-
-		// Combine ALL paths that need stat checking
-		const allPathsToCheck = Array.from(new Set([...clashPathsToCheck, ...addPathsToCheck, ...deletePathsToCheck]));
-
-		// Batch stat all paths at once
 		let existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>;
 		let statError: unknown = null;
 		try {
-			const rawStatMap = await this.fit.localVault.statPaths(allPathsToCheck);
+			const rawStatMap = await this.fit.localVault.statPaths(paths);
 			existenceMap = new Map(
 				Array.from(rawStatMap.entries()).map(([path, stat]) =>
 					[path, stat === null ? 'nonexistent' : stat] as const
@@ -560,12 +539,29 @@ export class FitSync implements IFitSync {
 
 		const addToLocalNonClashed = await this.getRemoteNonDeletionChangesContent(changesToProcess);
 
-		// Batch stat all paths that need existence checking
-		const {existenceMap, statError} = await this.collectFilesystemState(
-			clashes,
-			addToLocalNonClashed,
-			deleteFromLocalNonClashed
-		);
+		// Collect all paths that need filesystem existence checking across all phases
+		const pathsToStat = new Set<string>();
+
+		// From clashes: untracked files need stat checking
+		clashes.filter(c => c.localStatus === 'untracked').forEach(c => pathsToStat.add(c.path));
+
+		// From remote changes: files not in localSha need stat checking
+		addToLocalNonClashed
+			.filter(c => this.fit.shouldSyncPath(c.path))
+			.filter(c => !this.fit.localSha.hasOwnProperty(c.path))
+			.forEach(c => pathsToStat.add(c.path));
+		deleteFromLocalNonClashed
+			.filter(p => this.fit.shouldSyncPath(p))
+			.filter(p => !this.fit.localSha.hasOwnProperty(p))
+			.forEach(p => pathsToStat.add(p));
+
+		// From local changes: deletions need verification (version migration safety)
+		localChangesToPush
+			.filter(c => c.status === 'deleted')
+			.forEach(c => pathsToStat.add(c.path));
+
+		// Batch stat all paths at once
+		const {existenceMap, statError} = await this.collectFilesystemState(Array.from(pathsToStat));
 
 		// Phase 3: Resolve all clashes (writes to _fit/ if needed)
 		const {
@@ -581,7 +577,7 @@ export class FitSync implements IFitSync {
 			localChanges: localChangesToPush,
 			parentCommitSha: remoteUpdate.latestRemoteCommitSha
 		};
-		const pushResult = await this.pushChangedFilesToRemote(pushUpdate);
+		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
 
 		let latestRemoteTreeSha: Record<string, string>;
 		let latestCommitSha: string;
@@ -733,8 +729,9 @@ export class FitSync implements IFitSync {
 		return await Promise.all(remoteChanges);
 	}
 
-	async pushChangedFilesToRemote(
+	private async pushChangedFilesToRemote(
 		localUpdate: LocalUpdate,
+		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
 	): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, string>, lastFetchedCommitSha: string}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
@@ -746,25 +743,22 @@ export class FitSync implements IFitSync {
 
 		for (const change of localUpdate.localChanges) {
 			if (change.status === 'deleted') {
-				// TODO: CRITICAL SAFEGUARD - Version Migration Safety
-				// Before pushing deletion, verify file is physically absent from filesystem.
-				// This prevents data loss when filtering rules change between versions.
-				//
-				// Realistic scenario (DANGEROUS without this check):
-				// - v2 implements full hidden file tracking via DataAdapter → localSha has ".gitignore"
-				// - v3 reverts feature (performance regression) OR user disables "Sync hidden files" setting
-				// - v3/disabled scan can't read hidden files → compareSha reports ".gitignore" as "deleted"
-				// - Without check: Plugin deletes from remote → DATA LOSS
-				//
-				// Solution: Use vault.adapter.exists() to check raw filesystem:
-				//   const physicallyExists = await this.fit.localVault.vault.adapter.exists(change.path);
-				//   if (physicallyExists) {
-				//     fitLogger.log('[FitSync] Skipping deletion - file exists but filtered', {
-				//       path: change.path,
-				//       reason: 'File present on filesystem but absent from scan (likely filtering rule change)'
-				//     });
-				//     continue; // Don't delete from remote
-				//   }
+				// SAFEGUARD: Verify file physically absent before deleting from remote
+				// Prevents data loss when filtering rules change between versions
+				const existence = existenceMap.get(change.path);
+
+				// Only proceed with deletion if we KNOW the file doesn't exist
+				// If stat failed (undefined) or file exists, skip deletion (fail-safe)
+				if (existence !== 'nonexistent') {
+					fitLogger.log('[FitSync] Skipping deletion - couldn\'t confirm local file actually deleted', {
+						path: change.path,
+						existence,
+						reason: existence === undefined
+							? 'Could not verify file absence (stat failed or path not checked)'
+							: 'File present on filesystem but absent from state cache (likely filtering rule change)'
+					});
+					continue; // Don't delete from remote
+				}
 				filesToDelete.push(change.path);
 			} else {
 				const content = await this.fit.localVault.readFileContent(change.path);
