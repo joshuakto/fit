@@ -50,6 +50,25 @@ export class FitPush {
 
 		for (const change of localUpdate.localChanges) {
 			if (change.status === 'deleted') {
+				// TODO: CRITICAL SAFEGUARD - Version Migration Safety
+				// Before pushing deletion, verify file is physically absent from filesystem.
+				// This prevents data loss when filtering rules change between versions.
+				//
+				// Realistic scenario (DANGEROUS without this check):
+				// - v2 implements full hidden file tracking via DataAdapter → localSha has ".gitignore"
+				// - v3 reverts feature (performance regression) OR user disables "Sync hidden files" setting
+				// - v3/disabled scan can't read hidden files → compareSha reports ".gitignore" as "deleted"
+				// - Without check: Plugin deletes from remote → DATA LOSS
+				//
+				// Solution: Use vault.adapter.exists() to check raw filesystem:
+				//   const physicallyExists = await this.fit.localVault.vault.adapter.exists(change.path);
+				//   if (physicallyExists) {
+				//     fitLogger.log('[FitPush] Skipping deletion - file exists but filtered', {
+				//       path: change.path,
+				//       reason: 'File present on filesystem but absent from scan (likely filtering rule change)'
+				//     });
+				//     continue; // Don't delete from remote
+				//   }
 				filesToDelete.push(change.path);
 			} else {
 				// Read file content from local vault

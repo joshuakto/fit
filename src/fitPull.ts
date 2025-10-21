@@ -166,6 +166,45 @@ export class FitPull {
 		return {addToLocal: resolvedChanges, deleteFromLocal: safeDeleteFromLocal};
 	}
 
+	// TODO: File/folder conflict handling
+	//
+	// ISSUE: LocalVault.applyChanges() can fail with VaultError.filesystem when:
+	// - Trying to create file "foo" when folder "foo/" already exists
+	// - Trying to create file "foo/bar" when file "foo" already exists
+	//
+	// Currently, these errors propagate up and fail the sync. FakeLocalVault
+	// correctly simulates this behavior in tests, so tests fail when this occurs.
+	//
+	// APPROACHES TO FIX:
+	//
+	// 1. Add wrapper method in FitPull (try/catch around applyChanges):
+	//    - Catch VaultError.filesystem errors
+	//    - Check if error is file/folder conflict by examining vault state
+	//    - If conflict: save remote file to _fit/ instead
+	//    - If other error: re-throw
+	//    - PROS: Keeps conflict handling logic in FitPull layer
+	//    - CONS: Must be called from ALL sync paths (currently 3 places):
+	//      * pullRemoteToLocal() (only remote changed) - line 215
+	//      * syncCompatibleChanges() (compatible changes) - fitSync.ts:356
+	//      * syncWithConflicts() (clashed changes) - fitSync.ts:425
+	//
+	// 2. Move detection/handling into LocalVault.applyChanges():
+	//    - Pre-check for file/folder conflicts before applying changes
+	//    - Return special status in FileOpRecord for conflicts
+	//    - Caller decides where to save conflicted files
+	//    - PROS: Centralized, handles all sync paths automatically
+	//    - CONS: Violates separation of concerns (LocalVault shouldn't know about _fit/)
+	//
+	// 3. Consolidate sync paths first, then add wrapper:
+	//    - Refactor syncCompatibleChanges() and syncWithConflicts() to share code
+	//    - Reduce duplication so only ONE place calls applyChanges()
+	//    - Then add wrapper at that single call site
+	//    - PROS: Fixes underlying duplication problem
+	//    - CONS: Larger refactor, higher risk
+	//
+	// RECOMMENDATION: Option 3 (consolidate code paths first)
+	// See detailed code path duplication analysis in fitSync.ts above syncCompatibleChanges().
+
 	async pullRemoteToLocal(
 		remoteUpdate: RemoteUpdate,
 		saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): Promise<FileOpRecord[]> {
