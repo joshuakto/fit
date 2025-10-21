@@ -136,10 +136,23 @@ export class LocalVault implements IVault {
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
 		const folderPath = path.match(/^(.*)\//)?.[1] || '';
-		if (folderPath != "") {
+		if (folderPath === '') {
+			// At root, no parent to create
+			return;
+		}
+		const checkExists = () => {
 			const folder = this.vault.getAbstractFileByPath(folderPath);
-			if (!folder) {
+			return !!folder;
+		};
+		if (!checkExists()) {
+			try {
 				await this.vault.createFolder(folderPath);
+			} catch (error) {
+				// Race condition safeguard: if folder already exists, ignore error and treat as
+				// success. This can happen if a concurrent operation created the same folder.
+				if (!checkExists()) {
+					throw error;
+				}
 			}
 		}
 	}
@@ -173,8 +186,7 @@ export class LocalVault implements IVault {
 				await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
 				return {path, status: "changed"};
 			} else if (!file) {
-				// TODO: Await this to avoid race condition
-				this.ensureFolderExists(path);
+				await this.ensureFolderExists(path);
 				await this.vault.createBinary(path, base64ToArrayBuffer(content));
 				return {path, status: "created"};
 			}
