@@ -370,7 +370,7 @@ export class FitSync implements IFitSync {
 		);
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha: this.fit.filterSyncedState(latestRemoteTreeSha),
+			lastFetchedRemoteSha: latestRemoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha: latestCommitSha,
 			localSha: this.fit.filterSyncedState(newLocalState)
 		});
@@ -439,7 +439,7 @@ export class FitSync implements IFitSync {
 		);
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha: this.fit.filterSyncedState(lastFetchedRemoteSha),
+			lastFetchedRemoteSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha,
 			localSha: this.fit.filterSyncedState(newLocalState)
 		});
@@ -503,7 +503,7 @@ export class FitSync implements IFitSync {
 
 					await this.saveLocalStoreCallback({
 						localSha: this.fit.filterSyncedState(localTreeSha),
-						lastFetchedRemoteSha: this.fit.filterSyncedState(pushResult.lastFetchedRemoteSha),
+						lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha, // Unfiltered - must track ALL remote files to detect changes
 						lastFetchedCommitSha: pushResult.lastFetchedCommitSha
 					});
 					return { success: true, ops: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], clash: [] };

@@ -286,9 +286,15 @@ describe('FitSync', () => {
 		});
 		// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
 
-		// Verify: LocalStores only track synced files (no _fit/ paths)
+		// Verify: LocalStores track different files:
+		// - localSha: Only synced files (excludes _fit/ and other protected paths)
+		// - lastFetchedRemoteSha: ALL remote files (unfiltered to detect changes correctly)
 		expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
-		expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
+		expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual([
+			'_fit/remote-conflict.md',  // Protected path - tracked in remote cache but not local cache
+			'normal.md',
+			'remote-normal.md'
+		]);
 
 		// Verify: Logger was called during sync operations
 		expect(fitLoggerLogSpy).toHaveBeenCalledWith(

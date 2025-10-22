@@ -231,9 +231,9 @@ export class FitPull {
 		});
 
 		await saveLocalStoreCallback({
-			lastFetchedRemoteSha: this.fit.filterSyncedState(remoteTreeSha),
+			lastFetchedRemoteSha: remoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha: latestRemoteCommitSha,
-			localSha: newLocalSha
+			localSha: newLocalSha // Filtered - excludes protected paths and untracked files
 		});
 		return fileOpsRecord;
 	}
