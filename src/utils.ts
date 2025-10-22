@@ -88,7 +88,8 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
 		const fileChanges = {
 			created: [] as Array<string>,
 			changed: [] as Array<string>,
-			deleted: [] as Array<string>
+			deleted: [] as Array<string>,
+			untracked: [] as Array<string>
 		};
 		for (const op of recordSet.ops) {
 			fileChanges[op.status].push(op.path);
@@ -114,7 +115,8 @@ export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
 	const localStatusMap = {
 		created: "create",
 		changed: "change",
-		deleted: "delete"
+		deleted: "delete",
+		untracked: "untracked"
 	};
 	const remoteStatusMap = {
 		ADDED:  "create",

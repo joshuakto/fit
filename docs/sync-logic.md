@@ -188,6 +188,115 @@ currentLocalSha = {}  // File doesn't exist
 // File on remote won't be deleted - BUG
 ```
 
+## Path Filtering and Safety
+
+FIT implements two layers of filtering to protect critical files and handle untrackable files safely:
+
+### 1. Protected Paths (`shouldSyncPath`) - Never Sync
+
+- **Filtered by:** `Fit.shouldSyncPath()`
+- **Applied to:** Both ⬆️ local→remote and ⬇️ remote→local
+- **Reason:** Protect critical system directories
+
+**Protected paths:**
+- `.obsidian/` - Obsidian workspace settings, plugins, themes
+- `_fit/` - Conflict resolution directory
+
+**Behavior:**
+- **⬆️ Local→Remote:** Never push protected paths to remote
+- **⬇️ Remote→Local:** Save to 📁 `_fit/` for user transparency (e.g., `_fit/.obsidian/app.json`)
+- **📦 SHA Caches:** Excluded from both `localSha` and `lastFetchedRemoteSha`
+
+**Why save remote protected paths to `_fit/`?**
+- User can see what exists on remote without risk
+- Prevents silent data loss
+- Consistent behavior: all !shouldSyncPath files go to `_fit/`, even `_fit/` files themselves (→ `_fit/_fit/`)
+
+**Example:**
+```typescript
+// Remote has .obsidian/app.json
+remoteChanges = [
+  { path: ".obsidian/app.json", content: "{\"theme\":\"dark\"}" }
+]
+
+// Filtering applied in FitPull.prepareChangesToExecute():
+if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
+  // Save to _fit/.obsidian/app.json instead of .obsidian/app.json
+  resolvedChanges.push({
+    path: "_fit/.obsidian/app.json",
+    content: "{\"theme\":\"dark\"}"
+  });
+}
+```
+
+### 2. Hidden Files (`shouldTrackState`) - Track Conservatively
+
+- **Filtered by:** `LocalVault.shouldTrackState()`
+- **Applied to:** 💾 Local vault only (Obsidian can't read hidden files)
+- **Reason:** Obsidian Vault API cannot read hidden files/directories
+
+**Hidden files:** Any path component starting with `.` (e.g., `.gitignore`, `.hidden-config.json`)
+
+**Behavior:**
+- **💾 Local tracking:** Excluded from `localSha` (can't reliably scan)
+- **☁️ Remote tracking:** Included in `lastFetchedRemoteSha` (can read from GitHub API)
+- **⬇️ Remote→Local:** Save to 📁 `_fit/` for safety (can't verify local state)
+- **⬆️ Local→Remote:** Silently ignored (never synced)
+
+**Why asymmetric tracking?**
+- We CAN read hidden files from remote (GitHub API)
+- We CANNOT read hidden files from local (Obsidian Vault API limitation)
+- Conservative approach: assume potential conflict, save to `_fit/`
+
+**Safety implication:**
+```typescript
+// Remote has .gitignore, local also has .gitignore (different content)
+// We can't read local .gitignore to compare
+// Solution: Save remote version to _fit/.gitignore (no overwrite risk)
+
+localSha = {}  // .gitignore not tracked
+lastFetchedRemoteSha = { ".gitignore": "abc123" }
+
+// On sync:
+// - Remote .gitignore saved to _fit/.gitignore
+// - Local .gitignore preserved (untouched)
+// - User manually resolves if needed
+```
+
+### Combined Filtering: `.obsidian/` Files
+
+Files in `.obsidian/` are filtered by BOTH:
+1. **Protected path:** `!shouldSyncPath(".obsidian/...")`
+2. **Hidden path:** `!shouldTrackState(".obsidian/...")` (starts with `.`)
+
+**Result:**
+- Never synced in either direction
+- Remote `.obsidian/` files saved to `_fit/.obsidian/` for transparency
+- Excluded from both `localSha` and `lastFetchedRemoteSha`
+
+### Implementation Locations
+
+**Path filtering:**
+- [`Fit.shouldSyncPath()`](../src/fit.ts) - Protected path check
+- [`LocalVault.shouldTrackState()`](../src/localVault.ts) - Hidden file check
+- [`FitSync.performPreSyncChecks()`](../src/fitSync.ts) - Filters local changes only
+- [`FitPull.prepareChangesToExecute()`](../src/fitPull.ts) - Handles remote protected/hidden files
+
+**Decision flow:**
+```mermaid
+flowchart TD
+    Start[File from Remote] --> Protected{shouldSyncPath?}
+    Protected -->|No| SaveProtected[📁 Save to _fit/path]
+    Protected -->|Yes| Trackable{shouldTrackState?}
+
+    Trackable -->|No| SaveHidden[📁 Save to _fit/path]
+    Trackable -->|Yes| Normal[Apply normally]
+
+    SaveProtected --> End[Done]
+    SaveHidden --> End
+    Normal --> End
+```
+
 ## Sync Decision Tree
 
 ### Pre-Sync Checks
@@ -334,6 +443,55 @@ flowchart TD
 - Save ☁️ remote version → 📁 `_fit/path/to/file.md`
 - User manually merges the two versions
 - Binary files (`.png`, `.jpg`, `.pdf`) saved as-is to 📁 `_fit/`
+
+## Initial Sync
+
+### First-Time Setup
+
+**Scenario:** User connects FIT to an existing vault with an existing GitHub repository for the first time.
+
+**State:**
+```typescript
+localSha = {}  // No baseline yet
+lastFetchedRemoteSha = {}  // No baseline yet
+lastFetchedCommitSha = "initial"
+```
+
+**Behavior:**
+1. **All local files** appear as "CREATED" (not in `localSha` cache)
+2. **All remote files** appear as "ADDED" (not in `lastFetchedRemoteSha` cache)
+3. **Files existing both locally and remotely** are detected as conflicts
+4. **Conflict resolution applies:**
+   - If content is identical → Auto-resolved (no action needed)
+   - If content differs → Save remote version to `_fit/`, keep local version in place
+
+**Example:**
+```typescript
+// Local vault
+local files = {
+  "README.md": "Local version",
+  "notes.md": "My notes"
+}
+
+// Remote repository
+remote files = {
+  "README.md": "Remote version",  // Different content
+  "config.md": "Config"
+}
+
+// Initial sync result:
+// 1. notes.md → Pushed to remote (only local)
+// 2. config.md → Pulled to local (only remote)
+// 3. README.md → Conflict detected:
+//    - Local version stays in place
+//    - Remote version saved to _fit/README.md
+//    - User manually resolves
+```
+
+**Why this is safe:**
+- No data loss: Both versions are preserved
+- User maintains control: Local files are never overwritten
+- Clear conflict markers: Remote versions in `_fit/` are easy to identify
 
 ## Edge Cases
 

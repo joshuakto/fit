@@ -83,16 +83,127 @@ export class FitPull {
 	}
 
 	async prepareChangesToExecute(remoteChanges: RemoteChange[]) {
-		const deleteFromLocal = remoteChanges.filter(c=>c.status=="REMOVED").map(c=>c.path);
-		const changesToProcess = remoteChanges.filter(c=>c.status!="REMOVED").reduce(
+		const deleteFromLocal = remoteChanges.filter(c=>c.status==="REMOVED").map(c=>c.path);
+		const changesToProcess = remoteChanges.filter(c=>c.status!=="REMOVED").reduce(
 			(acc, change) => {
 				acc[change.path] = change.currentSha as string;
 				return acc;
 			}, {} as Record<string, string>);
 
 		const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess);
-		return {addToLocal, deleteFromLocal};
+
+		// Check for files that should be saved to _fit/ instead of directly applied
+		const resolvedChanges: Array<{path: string, content: string}> = [];
+		for (const change of addToLocal) {
+			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
+			// These paths should never be written directly to the vault to avoid:
+			// - Overwriting critical Obsidian settings/plugins (.obsidian/)
+			// - Conflicting with our conflict resolution area (_fit/)
+			// - User confusion from inconsistent behavior (_fit/_fit/ for remote _fit/ files)
+			if (!this.fit.shouldSyncPath(change.path)) {
+				fitLogger.log('[FitPull] Protected path - saving to _fit/ for safety', {
+					path: change.path,
+					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
+				});
+				resolvedChanges.push({
+					path: `_fit/${change.path}`,
+					content: change.content
+				});
+				continue; // Don't write to protected path
+			}
+
+			// SAFETY: Save untracked files to _fit/ (e.g., hidden files)
+			// We can't trust that we've detected all local changes because:
+			// 1. The file isn't in localSha (not tracked by LocalVault.shouldTrackState)
+			// 2. Even fileExists() check may not be reliable for all hidden file types
+			// 3. Conservative approach: assume potential conflict, let user verify
+			//
+			// TODO: Improve this by:
+			// - Actually reading and comparing content when file is detected
+			// - Auto-applying if content matches exactly
+			// - Only saving to _fit/ if content differs or can't be read
+			if (!this.fit.localVault.shouldTrackState(change.path)) {
+				fitLogger.log('[FitPull] Untracked file - saving to _fit/ for safety', {
+					path: change.path,
+					reason: 'file not tracked in localSha, cannot verify safety'
+				});
+				resolvedChanges.push({
+					path: `_fit/${change.path}`,
+					content: change.content
+				});
+				continue; // Don't risk overwriting local version
+			}
+
+			// Normal file or no conflict - add as-is
+			resolvedChanges.push(change);
+		}
+
+		// SAFETY: Never delete protected or untracked files from local
+		const safeDeleteFromLocal = deleteFromLocal.filter(path => {
+			// Skip deletion of protected paths (shouldn't exist locally, but be safe)
+			if (!this.fit.shouldSyncPath(path)) {
+				fitLogger.log('[FitPull] Skipping deletion of protected path', {
+					path,
+					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
+				});
+				return false; // Skip deletion
+			}
+
+			// Skip deletion of untracked files
+			// We cannot verify if the file exists locally or has local changes because
+			// it's not in localSha. Attempting to delete could cause data loss.
+			if (!this.fit.localVault.shouldTrackState(path)) {
+				fitLogger.log('[FitPull] Skipping deletion of untracked file', {
+					path,
+					reason: 'file not tracked in localSha, cannot verify safe to delete'
+				});
+				return false; // Skip deletion
+			}
+
+			return true; // Safe to delete
+		});
+
+		return {addToLocal: resolvedChanges, deleteFromLocal: safeDeleteFromLocal};
 	}
+
+	// TODO: File/folder conflict handling
+	//
+	// ISSUE: LocalVault.applyChanges() can fail with VaultError.filesystem when:
+	// - Trying to create file "foo" when folder "foo/" already exists
+	// - Trying to create file "foo/bar" when file "foo" already exists
+	//
+	// Currently, these errors propagate up and fail the sync. FakeLocalVault
+	// correctly simulates this behavior in tests, so tests fail when this occurs.
+	//
+	// APPROACHES TO FIX:
+	//
+	// 1. Add wrapper method in FitPull (try/catch around applyChanges):
+	//    - Catch VaultError.filesystem errors
+	//    - Check if error is file/folder conflict by examining vault state
+	//    - If conflict: save remote file to _fit/ instead
+	//    - If other error: re-throw
+	//    - PROS: Keeps conflict handling logic in FitPull layer
+	//    - CONS: Must be called from ALL sync paths (currently 3 places):
+	//      * pullRemoteToLocal() (only remote changed) - line 215
+	//      * syncCompatibleChanges() (compatible changes) - fitSync.ts:356
+	//      * syncWithConflicts() (clashed changes) - fitSync.ts:425
+	//
+	// 2. Move detection/handling into LocalVault.applyChanges():
+	//    - Pre-check for file/folder conflicts before applying changes
+	//    - Return special status in FileOpRecord for conflicts
+	//    - Caller decides where to save conflicted files
+	//    - PROS: Centralized, handles all sync paths automatically
+	//    - CONS: Violates separation of concerns (LocalVault shouldn't know about _fit/)
+	//
+	// 3. Consolidate sync paths first, then add wrapper:
+	//    - Refactor syncCompatibleChanges() and syncWithConflicts() to share code
+	//    - Reduce duplication so only ONE place calls applyChanges()
+	//    - Then add wrapper at that single call site
+	//    - PROS: Fixes underlying duplication problem
+	//    - CONS: Larger refactor, higher risk
+	//
+	// RECOMMENDATION: Option 3 (consolidate code paths first)
+	// See detailed code path duplication analysis in fitSync.ts above syncCompatibleChanges().
 
 	async pullRemoteToLocal(
 		remoteUpdate: RemoteUpdate,
@@ -120,9 +231,9 @@ export class FitPull {
 		});
 
 		await saveLocalStoreCallback({
-			lastFetchedRemoteSha: this.fit.filterSyncedState(remoteTreeSha),
+			lastFetchedRemoteSha: remoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha: latestRemoteCommitSha,
-			localSha: newLocalSha
+			localSha: newLocalSha // Filtered - excludes protected paths and untracked files
 		});
 		return fileOpsRecord;
 	}

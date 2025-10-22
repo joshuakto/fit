@@ -5,6 +5,7 @@
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { VaultError } from './vault';
+import { FileOpRecord } from './fitTypes';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -290,6 +291,13 @@ export class FakeLocalVault {
 		this.files.set(path, content);
 	}
 
+	async writeFile(path: string, content: string): Promise<FileOpRecord> {
+		// Simple implementation for testing - content is already in correct format (base64 for binary)
+		const exists = this.files.has(path);
+		this.files.set(path, content);
+		return {path, status: exists ? "changed" : "created"};
+	}
+
 	/**
 	 * Get file content directly (for test assertions).
 	 */
@@ -338,10 +346,34 @@ export class FakeLocalVault {
 		return content;
 	}
 
+	/**
+	 * Check if file exists (simulates vault.adapter.exists())
+	 */
+	async fileExists(path: string): Promise<boolean> {
+		return this.files.has(path);
+	}
+
+	/**
+	 * Read file content via adapter (works for hidden files too).
+	 * Returns content as base64 for consistency.
+	 */
+	async readFileContentViaAdapter(path: string): Promise<string> {
+		const content = this.files.get(path);
+		if (content === undefined) {
+			throw new Error(`File not found: ${path}`);
+		}
+		// Content is already stored as plain text in fake vault
+		// Convert to base64 to match real LocalVault behavior
+		const encoder = new TextEncoder();
+		const bytes = encoder.encode(content);
+		// Simple base64 encode
+		return btoa(String.fromCharCode(...bytes));
+	}
+
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: string}>,
 		filesToDelete: Array<string>
-	): Promise<Array<{path: string, status: string}>> {
+	): Promise<FileOpRecord[]> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
@@ -350,12 +382,33 @@ export class FakeLocalVault {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const ops: Array<{path: string, status: string}> = [];
+		const ops: FileOpRecord[] = [];
 
 		for (const file of filesToWrite) {
+			// Simulate file/folder conflicts that occur in real filesystems:
+			// 1. Can't create file "foo" if folder "foo/" exists (has files like "foo/bar")
+			// 2. Can't create file "foo/bar" if file "foo" exists (would need folder "foo/")
+
+			const existingPaths = Array.from(this.files.keys());
+
+			// Check #1: File path conflicts with existing folder
+			if (existingPaths.some(p => p.startsWith(file.path + '/'))) {
+				throw VaultError.filesystem(
+					`Cannot create file "${file.path}" - a folder with this name already exists`
+				);
+			}
+
+			// Check #2: Parent folder path conflicts with existing file
+			const parentFolder = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : null;
+			if (parentFolder && this.files.has(parentFolder)) {
+				throw VaultError.filesystem(
+					`Cannot create folder "${parentFolder}" for file "${file.path}" - a file with this name already exists`
+				);
+			}
+
 			const existed = this.files.has(file.path);
 			this.files.set(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'modified' : 'created' });
+			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {

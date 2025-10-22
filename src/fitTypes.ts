@@ -1,4 +1,4 @@
-export type LocalFileStatus = "deleted" | "created" | "changed";
+export type LocalFileStatus = "deleted" | "created" | "changed" | "untracked";
 export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED";
 
 export type LocalChange = {
