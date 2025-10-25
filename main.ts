@@ -213,7 +213,8 @@ export default class FitPlugin extends Plugin {
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
-		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Fit Sync', this.performManualSync);
+		// TODO: Update title from "GitHub" to selected remote service when other services are supported.
+		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Sync to GitHub', this.performManualSync);
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 	}
 
