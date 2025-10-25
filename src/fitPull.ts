@@ -94,6 +94,20 @@ export class FitPull {
 		const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess);
 
 		// Check for files that should be saved to _fit/ instead of directly applied
+		// Batch-check existence for all files not in cache (both adds and deletes)
+		const addPathsToCheck = addToLocal
+			.filter(c => this.fit.shouldSyncPath(c.path)) // Skip protected paths
+			.filter(c => !this.fit.localSha.hasOwnProperty(c.path))
+			.map(c => c.path);
+
+		const deletePathsToCheck = deleteFromLocal
+			.filter(p => this.fit.shouldSyncPath(p)) // Skip protected paths
+			.filter(p => !this.fit.localSha.hasOwnProperty(p));
+
+		// Combine and deduplicate paths to check
+		const allPathsToCheck = Array.from(new Set([...addPathsToCheck, ...deletePathsToCheck]));
+		const existenceMap = await this.fit.localVault.statPaths(allPathsToCheck);
+
 		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
 		for (const change of addToLocal) {
 			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
@@ -113,26 +127,33 @@ export class FitPull {
 				continue; // Don't write to protected path
 			}
 
-			// SAFETY: Save untracked files to _fit/ (e.g., hidden files)
-			// We can't trust that we've detected all local changes because:
-			// 1. The file isn't in localSha (not tracked by LocalVault.shouldTrackState)
-			// 2. Even fileExists() check may not be reliable for all hidden file types
-			// 3. Conservative approach: assume potential conflict, let user verify
+			// SAFETY: Check filesystem for files not in localSha cache
+			// This protects against:
+			// 1. Version migrations where tracking rules changed
+			// 2. Bugs where shouldTrackState returns wrong value
+			// 3. Hidden files that weren't tracked but exist locally
 			//
-			// TODO: Improve this by:
-			// - Actually reading and comparing content when file is detected
-			// - Auto-applying if content matches exactly
-			// - Only saving to _fit/ if content differs or can't be read
-			if (!this.fit.localVault.shouldTrackState(change.path)) {
-				fitLogger.log('[FitPull] Untracked file - saving to _fit/ for safety', {
-					path: change.path,
-					reason: 'file not tracked in localSha, cannot verify safety'
+			// If file not in cache but exists on disk → treat as clash, save to _fit/
+			// If file not in cache and doesn't exist → safe to write directly
+			if (!this.fit.localSha.hasOwnProperty(change.path)) {
+				// Not in cache - check if file exists using statPaths result
+				const stat = existenceMap.get(change.path);
+				if (stat !== null) {
+					// File exists - treat as clash
+					fitLogger.log('[FitPull] File exists locally but not in cache - saving to _fit/ for safety', {
+						path: change.path,
+						reason: 'Possible tracking state inconsistency (version migration or bug)'
+					});
+					resolvedChanges.push({
+						path: `_fit/${change.path}`,
+						content: change.content
+					});
+					continue; // Don't risk overwriting local version
+				}
+				// File doesn't exist locally - safe to write directly
+				fitLogger.log('[FitPull] File not in cache but also not on disk - writing directly', {
+					path: change.path
 				});
-				resolvedChanges.push({
-					path: `_fit/${change.path}`,
-					content: change.content
-				});
-				continue; // Don't risk overwriting local version
 			}
 
 			// Normal file or no conflict - add as-is
@@ -140,29 +161,41 @@ export class FitPull {
 		}
 
 		// SAFETY: Never delete protected or untracked files from local
-		const safeDeleteFromLocal = deleteFromLocal.filter(path => {
+		const safeDeleteFromLocal = [];
+		for (const path of deleteFromLocal) {
 			// Skip deletion of protected paths (shouldn't exist locally, but be safe)
 			if (!this.fit.shouldSyncPath(path)) {
 				fitLogger.log('[FitPull] Skipping deletion of protected path', {
 					path,
 					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
 				});
-				return false; // Skip deletion
+				continue; // Skip deletion
 			}
 
-			// Skip deletion of untracked files
-			// We cannot verify if the file exists locally or has local changes because
-			// it's not in localSha. Attempting to delete could cause data loss.
-			if (!this.fit.localVault.shouldTrackState(path)) {
-				fitLogger.log('[FitPull] Skipping deletion of untracked file', {
-					path,
-					reason: 'file not tracked in localSha, cannot verify safe to delete'
-				});
-				return false; // Skip deletion
+			// SAFETY: Check if file is in cache before deleting
+			// If not in cache, we cannot verify it's safe to delete
+			if (!this.fit.localSha.hasOwnProperty(path)) {
+				// Not in cache - check if file actually exists to determine appropriate action
+				// Use the existenceMap we already computed above
+				const stat = existenceMap.get(path);
+				if (stat !== null) {
+					// File exists but not tracked - warn user, don't delete
+					fitLogger.log('[FitPull] Skipping deletion - file exists but not in cache', {
+						path,
+						reason: 'Cannot verify safe to delete (possible tracking state inconsistency)'
+					});
+				} else {
+					// File doesn't exist - deletion already done, no action needed
+					fitLogger.log('[FitPull] File already deleted locally', {
+						path,
+						reason: 'Not in cache and not on disk'
+					});
+				}
+				continue; // Skip deletion in both cases
 			}
 
-			return true; // Safe to delete
-		});
+			safeDeleteFromLocal.push(path); // Safe to delete
+		}
 
 		return {addToLocal: resolvedChanges, deleteFromLocal: safeDeleteFromLocal};
 	}

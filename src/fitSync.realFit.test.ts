@@ -273,100 +273,147 @@ describe('FitSync', () => {
 		expect(consoleLogSpy).toHaveBeenCalled();
 	});
 
-	it('should exclude 📁 _fit/ directory from sync operations', async () => {
-		// === SETUP: Initial synced state ===
-		const fitSync = createFitSync();
+	describe('Protected path handling (📁 shouldSyncPath filtering)', () => {
+		it('should save remote 📁 .obsidian/ files to _fit/ (both protected and hidden)', async () => {
+			// === SETUP: Initial synced state ===
+			const fitSync = createFitSync();
 
-		// === STEP 1: Create files in _fit/ directory locally ===
-		localVault.setFile('_fit/conflict.md', 'Remote version saved locally');
-		localVault.setFile('_fit/nested/file.md', 'Another conflict');
-		localVault.setFile('normal.md', 'Normal file content');
+			// === STEP 1: Remote has files in .obsidian/ directory ===
+			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
+				{ path: '.obsidian/app.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+			], []);
 
-		// === STEP 2: Attempt sync - should push normal.md but exclude _fit/ files ===
-		const mockNotice1 = createMockNotice();
-		const result1 = await syncAndHandleResult(fitSync, mockNotice1);
+			// === STEP 2: Attempt sync ===
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-		// Verify: Only normal.md was pushed, _fit/ files excluded
-		expect(result1).toMatchObject({
-			success: true,
-			ops: expect.arrayContaining([
-				{
-					heading: expect.stringContaining('Remote file updates'),
-					ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+			// Verify: Sync succeeded with protected files treated as clashes
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			// Protected/hidden files are now treated as clashes and get appropriate messaging
+			expect(mockNotice._calls).toContainEqual({
+				method: 'setMessage',
+				args: ['Synced with remote, unresolved conflicts written to _fit']
+			});
+
+			// Verify: .obsidian/ files saved to _fit/ for safety, normal file pulled directly
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// .obsidian/ files saved to _fit/ (protected path - never write directly to .obsidian/)
+				'_fit/.obsidian/app.json': '{"theme":"dark"}',
+				'_fit/.obsidian/plugins/plugin1/main.js': 'Plugin code',
+				// Normal file pulled directly
+				'normal.md': 'Normal file'
+			});
+
+			// Verify: LocalStores - .obsidian/ files NOT tracked (filtered by shouldSyncPath)
+			// Protected paths (.obsidian/, _fit/) are excluded from both local and remote caches
+			expect(localStoreState).toMatchObject({
+				localSha: {
+					'normal.md': expect.any(String)  // Only normal file
+				},
+				lastFetchedRemoteSha: {
+					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
 				}
-			])
+			});
 		});
 
-		// Verify: Remote does NOT have _fit/ files
-		expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['normal.md']);
+		it('should exclude 📁 _fit/ directory from sync operations', async () => {
+			// === SETUP: Initial synced state ===
+			const fitSync = createFitSync();
 
-		// === STEP 3: Simulate another device pushing files (including _fit/ edge case) ===
-		// Manually add files and trigger commit SHA update by calling applyChanges
-		await remoteVault.applyChanges([
-			{ path: '_fit/remote-conflict.md', content: FileContent.fromPlainText('Remote _fit file content') },
-			{ path: 'remote-normal.md', content: FileContent.fromPlainText('Normal remote file') }
-		], []);
+			// === STEP 1: Create files in _fit/ directory locally ===
+			localVault.setFile('_fit/conflict.md', 'Remote version saved locally');
+			localVault.setFile('_fit/nested/file.md', 'Another conflict');
+			localVault.setFile('normal.md', 'Normal file content');
 
-		// === STEP 4: Attempt sync - should pull both files, but save _fit/ to _fit/_fit/ ===
-		const mockNotice2 = createMockNotice();
-		const result2 = await syncAndHandleResult(fitSync, mockNotice2);
+			// === STEP 2: Attempt sync - should push normal.md but exclude _fit/ files ===
+			const mockNotice1 = createMockNotice();
+			const result1 = await syncAndHandleResult(fitSync, mockNotice1);
 
-		// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
-		expect(result2).toEqual({
-			success: true,
-			ops: expect.arrayContaining([
-				{
-					heading: expect.stringContaining('Local file updates'),
-					ops: expect.arrayContaining([
-						expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', status: 'created' }),
-						expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
-					])
-				}
-			]),
-			clash: [{
-				path: '_fit/remote-conflict.md',
-				localStatus: 'untracked',
-				remoteStatus: 'ADDED'
-			}]
+			// Verify: Only normal.md was pushed, _fit/ files excluded
+			expect(result1).toMatchObject({
+				success: true,
+				ops: expect.arrayContaining([
+					{
+						heading: expect.stringContaining('Remote file updates'),
+						ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+					}
+				])
+			});
+
+			// Verify: Remote does NOT have _fit/ files
+			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['normal.md']);
+
+			// === STEP 3: Simulate another device pushing files (including _fit/ edge case) ===
+			// Manually add files and trigger commit SHA update by calling applyChanges
+			await remoteVault.applyChanges([
+				{ path: '_fit/remote-conflict.md', content: FileContent.fromPlainText('Remote _fit file content') },
+				{ path: 'remote-normal.md', content: FileContent.fromPlainText('Normal remote file') }
+			], []);
+
+			// === STEP 4: Attempt sync - should pull both files, but save _fit/ to _fit/_fit/ ===
+			const mockNotice2 = createMockNotice();
+			const result2 = await syncAndHandleResult(fitSync, mockNotice2);
+
+			// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
+			expect(result2).toEqual({
+				success: true,
+				ops: expect.arrayContaining([
+					{
+						heading: expect.stringContaining('Local file updates'),
+						ops: expect.arrayContaining([
+							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', status: 'created' }),
+							expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
+						])
+					}
+				]),
+				clash: [{
+					path: '_fit/remote-conflict.md',
+					localStatus: 'untracked',
+					remoteStatus: 'ADDED'
+				}]
+			});
+
+			// Verify: Final local vault state
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'_fit/conflict.md': 'Remote version saved locally', // Local-only (created in step 1)
+				'_fit/nested/file.md': 'Another conflict',          // Local-only (created in step 1)
+				// Remote _fit/ saved to _fit/_fit/ (protected path)
+				'_fit/_fit/remote-conflict.md': 'Remote _fit file content',
+				'normal.md': 'Normal file content',                 // Synced (created in step 1)
+				'remote-normal.md': 'Normal remote file'            // Pulled from remote (step 4)
+			});
+			// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
+
+			// Verify: LocalStores track different files:
+			// - localSha: Only synced files (excludes _fit/ and other protected paths)
+			// - lastFetchedRemoteSha: ALL remote files (unfiltered to detect changes correctly)
+			expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
+			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual([
+				'_fit/remote-conflict.md',  // Protected path - tracked in remote cache but not local cache
+				'normal.md',
+				'remote-normal.md'
+			]);
+
+			// Verify: Logger was called during sync operations
+			expect(fitLoggerLogSpy).toHaveBeenCalledWith(
+				expect.stringContaining('[FitSync]'),
+				expect.anything()
+			);
+			expect(consoleLogSpy).toHaveBeenCalled();
+
+			// Verify stat performance: Multiple files with nested paths
+			const statLog = localVault.getStatLog();
+			// No redundant stats - each path appears at most once
+			const uniquePaths = new Set(statLog);
+			expect(statLog.length).toBe(uniquePaths.size);
 		});
-
-		// Verify: Final local vault state
-		expect(localVault.getAllFilesAsRaw()).toEqual({
-			'_fit/conflict.md': 'Remote version saved locally', // Local-only (created in step 1)
-			'_fit/nested/file.md': 'Another conflict',          // Local-only (created in step 1)
-			// Remote _fit/ saved to _fit/_fit/ (protected path)
-			'_fit/_fit/remote-conflict.md': 'Remote _fit file content',
-			'normal.md': 'Normal file content',                 // Synced (created in step 1)
-			'remote-normal.md': 'Normal remote file'            // Pulled from remote (step 4)
-		});
-		// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
-
-		// Verify: LocalStores track different files:
-		// - localSha: Only synced files (excludes _fit/ and other protected paths)
-		// - lastFetchedRemoteSha: ALL remote files (unfiltered to detect changes correctly)
-		expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
-		expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual([
-			'_fit/remote-conflict.md',  // Protected path - tracked in remote cache but not local cache
-			'normal.md',
-			'remote-normal.md'
-		]);
-
-		// Verify: Logger was called during sync operations
-		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
-			expect.stringContaining('[FitSync]'),
-			expect.anything()
-		);
-		expect(consoleLogSpy).toHaveBeenCalled();
-
-		// Verify stat performance: Multiple files with nested paths
-		const statLog = localVault.getStatLog();
-		// No redundant stats - each path appears at most once
-		const uniquePaths = new Set(statLog);
-		expect(statLog.length).toBe(uniquePaths.size);
 	});
 
-	describe('Hidden file handling (💾 shouldTrackState filtering)', () => {
-		it('should silently ignore local hidden file changes (not synced to remote)', async () => {
+	describe('👻 Hidden file handling', () => {
+		it('should not push local hidden file modifications to remote', async () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
@@ -416,7 +463,7 @@ describe('FitSync', () => {
 			expect(localVault.getStatLog()).toEqual([]);
 		});
 
-		it('should save conflicting remote hidden file to _fit/ directory', async () => {
+		it('should save remote hidden file to _fit/ when local has different content (⚔️ conflict)', async () => {
 			// === SETUP: Initial synced state with normal file ===
 			localVault.setFile('normal.md', 'Normal content');
 			await remoteVault.setFile('normal.md', 'Normal content');
@@ -465,7 +512,7 @@ describe('FitSync', () => {
 			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['.hidden-config.json', 'normal.md']);
 		});
 
-		it('should conservatively save remote hidden files to _fit/', async () => {
+		it('should conservatively save remote hidden files to _fit/ even when no local version exists', async () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
@@ -508,84 +555,131 @@ describe('FitSync', () => {
 		});
 	});
 
-	describe('Protected path handling (📁 shouldSyncPath filtering)', () => {
-		it('should save remote 📁 .obsidian/ files to _fit/ (both protected and hidden)', async () => {
-			// === SETUP: Initial synced state ===
-			const fitSync = createFitSync();
+	describe('🚨 Data loss prevention (safety nets for bugs/migrations)', () => {
+		it('should never overwrite local file when remote modified but file missing from localSha', async () => {
+			// === CRITICAL DATA LOSS SCENARIO ===
+			// This simulates TWO dangerous scenarios:
+			//
+			// SCENARIO 1 (future risk): Future plugin version adds full hidden file tracking via DataAdapter.
+			//   - shouldTrackState() returns true for hidden files
+			//   - But during version upgrade, localSha doesn't have the file yet (not in baseline)
+			//   - Remote has modifications to the hidden file
+			//   - Plugin thinks file is tracked but has no SHA to compare against
+			//   - Could blindly overwrite local file with remote version → DATA LOSS
+			//
+			// SCENARIO 2 (current risk): Bug where we misunderstand Obsidian's Vault API contract.
+			//   - We think a path type is trackable and call shouldTrackState(path) → true
+			//   - But Vault API actually filters/hides it, so it never appears in localSha
+			//   - Remote has modifications to the file
+			//   - Same result: no SHA to compare, blind overwrite → DATA LOSS
+			//
+			// PROTECTION REQUIRED: Before overwriting local file, verify it doesn't exist
+			// using vault.adapter.exists() (bypasses Vault API filtering, sees ALL files).
 
-			// === STEP 1: Remote has files in .obsidian/ directory ===
-			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
+			// === SETUP: Simulate state mismatch ===
+			// Remote has a hidden file (exists in lastFetchedRemoteSha)
+			localStoreState.lastFetchedRemoteSha = {
+				'.env': 'fake-sha-for-old-remote-value'
+			};
+			localStoreState.localSha = {}; // File NOT in localSha (not tracked during scan)
+
+			// Local vault has the file with user modifications (exists on filesystem)
+			localVault.setFile('.env', 'API_KEY=local-secret-data');
+
+			// Remote now has a different version
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
-				{ path: '.obsidian/app.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
-				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+				{ path: '.env', content: FileContent.fromPlainText('API_KEY=new-remote-value') }
 			], []);
 
-			// === STEP 2: Attempt sync ===
+			// === CRITICAL TEST ===
+			// Current behavior: shouldTrackState('.env') → false (filters hidden files)
+			// This test simulates: shouldTrackState('.env') → true (future support OR bug)
+			//
+			// We can't easily override shouldTrackState without modifying production code,
+			// but we can verify current protection works, which would also protect the
+			// simulated scenarios.
+			//
+			// The key protection is: FitPull.prepareChangesToExecute() checks shouldTrackState()
+			// before applying remote changes. If shouldTrackState returns false, it treats
+			// as a clash and saves to _fit/ instead of overwriting.
+
+			const fitSync = createFitSync();
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Sync succeeded with protected files treated as clashes
-			expect(result).toEqual(expect.objectContaining({ success: true }));
-			// Protected/hidden files are now treated as clashes and get appropriate messaging
-			expect(mockNotice._calls).toContainEqual({
-				method: 'setMessage',
-				args: ['Synced with remote, unresolved conflicts written to _fit']
+			// Verify: Sync succeeded
+			expect(result).toMatchObject({
+				success: true
 			});
 
-			// Verify: .obsidian/ files saved to _fit/ for safety, normal file pulled directly
-			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// .obsidian/ files saved to _fit/ (protected path - never write directly to .obsidian/)
-				'_fit/.obsidian/app.json': '{"theme":"dark"}',
-				'_fit/.obsidian/plugins/plugin1/main.js': 'Plugin code',
-				// Normal file pulled directly
-				'normal.md': 'Normal file'
+			// Verify: remote changes saved to _fit
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				// ✅ CRITICAL: Local file MUST still have user's modifications (not blindly overwritten)
+				'.env': 'API_KEY=local-secret-data',
+				// ✅ CRITICAL: Remote version should be saved to _fit/ as a clash
+				// (Because shouldTrackState filters it, pull logic treats as untracked → clash)
+				'_fit/.env': 'API_KEY=new-remote-value'
 			});
 
-			// Verify: LocalStores - .obsidian/ files NOT tracked (filtered by shouldSyncPath)
-			// Protected paths (.obsidian/, _fit/) are excluded from both local and remote caches
-			expect(localStoreState).toMatchObject({
-				localSha: {
-					'normal.md': expect.any(String)  // Only normal file
-				},
-				lastFetchedRemoteSha: {
-					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
-				}
-			});
+			// Verify: Remote file unchanged
+			expect(remoteVault.getFile('.env')).toBe('API_KEY=new-remote-value');
+
+			// NOTE: Current protection works because shouldTrackState correctly returns false
+			// for hidden files, triggering the clash detection logic in FitPull.prepareChangesToExecute().
+			//
+			// However, the DANGEROUS scenarios (future hidden file tracking OR API misunderstanding)
+			// where shouldTrackState returns TRUE but file is not in localSha would BYPASS this protection.
+			// In those cases, FitPull.prepareChangesToExecute() would think the file is trackable,
+			// see it's not in localSha, and blindly overwrite local file with remote version.
+			//
+			// REQUIRED ADDITIONAL PROTECTION:
+			// Before applying remote changes in FitPull.prepareChangesToExecute():
+			//   if (change.status === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
+			//     // File modified remotely but not in localSha - could be version migration issue
+			//     const exists = await vault.adapter.exists(path);
+			//     if (exists) {
+			//       fitLogger.log('[FitPull] File exists locally but not in localSha - treating as clash');
+			//       // Save to _fit/ instead of overwriting
+			//       return false; // Skip overwrite
+			//     }
+			//   }
+			//
+			// This test currently verifies the CURRENT protection works. Once ADDITIONAL protection
+			// is implemented, this test would also verify it prevents data loss in the dangerous scenarios.
 		});
-	});
 
-	describe('🔒 Data integrity', () => {
-		it('must detect clash conservatively for local files missing from cache', async () => {
-			// Scenario: Remote modifies .gitignore, which exists locally but wasn't tracked (hidden file)
-			// Expected: Should detect conflict and save remote version to _fit/.gitignore instead of overwriting
+		it('should never delete local file when remote deleted but file missing from localSha', async () => {
+			// Scenario: Hidden file exists locally, gets deleted from remote
+			// Expected: Local file preserved (not deleted) because we can't verify it's safe to delete
+			// This prevents data loss when a file isn't tracked in localSha
 
-			// === SETUP: .gitignore exists locally but not in tracking caches ===
-			const localGitignoreContent = 'local-only-ignore-rule';
-			const remoteGitignoreOld = 'remote-old-ignore-rule';
-			const remoteGitignoreNew = 'remote-new-ignore-rule';
+			// === SETUP: Initial synced state with hidden file ===
+			const hiddenFileContent = 'important local config';
+			localVault.setFile('.gitignore', hiddenFileContent);
+			localVault.setFile('README.md', 'readme v1');
 
-			// Local: .gitignore exists but won't be tracked (hidden file)
-			localVault.setFile('.gitignore', localGitignoreContent);
+			remoteVault.setFile('.gitignore', 'remote version');
+			remoteVault.setFile('README.md', 'readme v1');
 
-			// Remote: .gitignore exists with old content
-			remoteVault.setFile('.gitignore', remoteGitignoreOld);
-
-			// Simulate state where .gitignore was never tracked locally (cache is empty)
-			// This represents the old buggy behavior where hidden files weren't indexed
 			const initialRemoteState = await remoteVault.readFromSource();
+			const initialLocalState = await localVault.readFromSource();
 			localStoreState = {
-				localSha: {},  // Empty - .gitignore never tracked locally
+				// localSha: .gitignore NOT tracked (hidden file)
+				localSha: {
+					'README.md': initialLocalState['README.md']
+				},
+				// lastFetchedRemoteSha: .gitignore IS tracked (asymmetric)
 				lastFetchedRemoteSha: {
 					'.gitignore': initialRemoteState['.gitignore'],
+					'README.md': initialRemoteState['README.md']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};
 
-			// === STEP 1: Remote modifies .gitignore ===
+			// === STEP 1: Remote deletes .gitignore ===
 			await remoteVault.applyChanges(
-				[{ path: '.gitignore', content: FileContent.fromPlainText(remoteGitignoreNew) }],
-				[]);
+				[],
+				['.gitignore']);
 
 			// === STEP 2: Sync (pull) ===
 			const fitSync = createFitSync();
@@ -595,16 +689,17 @@ describe('FitSync', () => {
 			// === VERIFY: Sync succeeded ===
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// === VERIFY: Final local vault state ===
+			// === VERIFY: Local .gitignore NOT deleted (safety - can't verify it's safe) ===
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// Local .gitignore preserved (conflict - different content)
-				'.gitignore': localGitignoreContent,
-				// Remote .gitignore version saved to _fit/ (conflict resolution)
-				'_fit/.gitignore': remoteGitignoreNew
+				'.gitignore': hiddenFileContent,  // Preserved (untracked, deletion skipped)
+				'README.md': 'readme v1'          // Unchanged
 			});
+
+			// === VERIFY: Remote state updated ===
+			expect(remoteVault.getFile('.gitignore')).toBeUndefined();
 		});
 
-		it('must handle newly tracked remote file safely', async () => {
+		it('should treat remote file as new when missing from lastFetchedRemoteSha cache', async () => {
 			// Scenario: File exists on remote but wasn't in lastFetchedRemoteSha due to tracking bug
 			// Then a DIFFERENT file changes remotely, triggering a sync
 			// The previously-missed file now appears as "newly created" remotely but conflicts with existing local version
@@ -668,55 +763,6 @@ describe('FitSync', () => {
 			const statLog = localVault.getStatLog();
 			// Should not stat README.md (already tracked in localSha)
 			expect(statLog).not.toContain('README.md');
-		});
-
-		it('must never delete untracked local files', async () => {
-			// Scenario: Hidden file exists locally, gets deleted from remote
-			// Expected: Local file preserved (not deleted) because we can't verify it's safe to delete
-			// This prevents data loss when a file isn't tracked in localSha
-
-			// === SETUP: Initial synced state with hidden file ===
-			const hiddenFileContent = 'important local config';
-			localVault.setFile('.gitignore', hiddenFileContent);
-			localVault.setFile('README.md', 'readme v1');
-
-			remoteVault.setFile('.gitignore', 'remote version');
-			remoteVault.setFile('README.md', 'readme v1');
-
-			const initialRemoteState = await remoteVault.readFromSource();
-			const initialLocalState = await localVault.readFromSource();
-			localStoreState = {
-				// localSha: .gitignore NOT tracked (hidden file)
-				localSha: {
-					'README.md': initialLocalState['README.md']
-				},
-				// lastFetchedRemoteSha: .gitignore IS tracked (asymmetric)
-				lastFetchedRemoteSha: {
-					'.gitignore': initialRemoteState['.gitignore'],
-					'README.md': initialRemoteState['README.md']
-				},
-				lastFetchedCommitSha: remoteVault.getCommitSha()
-			};
-
-			// === STEP 1: Remote DELETES .gitignore ===
-			await remoteVault.applyChanges([], ['.gitignore']);
-
-			// === STEP 2: Sync (pull) ===
-			const fitSync = createFitSync();
-			const mockNotice = createMockNotice();
-			const result = await syncAndHandleResult(fitSync, mockNotice);
-
-			// === VERIFY: Sync succeeded ===
-			expect(result).toEqual(expect.objectContaining({ success: true }));
-
-			// === VERIFY: Local .gitignore NOT deleted (safety - can't verify it's safe) ===
-			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.gitignore': hiddenFileContent,  // Preserved (untracked, deletion skipped)
-				'README.md': 'readme v1'          // Unchanged
-			});
-
-			// === VERIFY: Remote state updated ===
-			expect(remoteVault.getFile('.gitignore')).toBeUndefined();
 		});
 	});
 
