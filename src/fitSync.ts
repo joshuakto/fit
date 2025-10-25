@@ -68,30 +68,29 @@ export interface IFitSync {
 	fit: Fit
 }
 
-type PreSyncCheckResult =  {
-	status: "inSync"
-} | {
-	status: Exclude<PreSyncCheckResultType, "inSync">
-	remoteUpdate: RemoteUpdate
-	localChanges: LocalChange[]
-	localTreeSha: Record<string, string>
+/**
+ * Result of sync execution including operations applied and any conflicts.
+ * Used by both low-level execution (executeSyncPlan) and high-level coordination (executeSync).
+ *
+ * The `conflicts` field may contain:
+ * - Newly discovered conflicts (when returned from executeSyncPlan)
+ * - All unresolved conflicts, both upfront and newly discovered (when returned from executeSync)
+ */
+type SyncExecutionResult = {
+	/** Operations applied to local vault (from remote changes) */
+	localOps: LocalChange[];
+	/** Operations applied to remote (from local changes) */
+	remoteOps: LocalChange[];
+	/** Unresolved conflicts (context-dependent: new conflicts or all conflicts) */
+	conflicts: ClashStatus[];
 };
-
-type PreSyncCheckResultType = (
-    "inSync" |
-    "onlyLocalChanged" |
-    "onlyRemoteChanged" |
-    "onlyRemoteCommitShaChanged" |
-    "localAndRemoteChangesCompatible" |
-    "localAndRemoteChangesClashed"
-);
 
 /**
  * Sync orchestrator - coordinates all sync operations between local and remote.
  *
  * FitSync is the **main entry point** for synchronization. It:
- * - Analyzes current state to determine what type of sync is needed
- * - Coordinates conflict resolution when local and remote both changed
+ * - Detects local and remote changes
+ * - Coordinates conflict resolution when both sides changed the same files
  * - Delegates to FitPull for remote→local operations
  * - Delegates to FitPush for local→remote operations
  * - Categorizes errors into user-friendly messages
@@ -102,17 +101,11 @@ type PreSyncCheckResultType = (
  * - **Uses**: Fit (data access), FitPull (pull ops), FitPush (push ops)
  *
  * Key responsibilities:
- * - Pre-sync analysis: Determine if changes are compatible or conflicting
- * - Conflict resolution: Decide how to handle clashes, write to _fit/ when needed
+ * - Change detection: Scan local and remote for changes
+ * - Conflict detection: Identify files changed on both sides
+ * - Conflict resolution: Write conflicting files to _fit/ for user review
  * - Error handling: Catch all errors and categorize them (network, auth, filesystem, etc.)
  * - State updates: Update cached SHAs after successful sync
- *
- * Sync strategies (determined by performPreSyncChecks):
- * - **inSync**: No changes, nothing to do
- * - **onlyLocalChanged**: Push local changes to remote
- * - **onlyRemoteChanged**: Pull remote changes to local
- * - **localAndRemoteChangesCompatible**: Both changed different files, merge them
- * - **localAndRemoteChangesClashed**: Both changed same files, resolve conflicts
  *
  * @see sync() - The main entry point method
  * @see Fit - Data access layer for local and remote storage
@@ -131,75 +124,6 @@ export class FitSync implements IFitSync {
 		this.fitPull = new FitPull(fit);
 		this.fitPush = new FitPush(fit);
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
-	}
-
-	async performPreSyncChecks(): Promise<PreSyncCheckResult> {
-		// Scan local vault and update its cache
-		const {changes: localChanges, state: localState} = await this.fit.getLocalChanges();
-		// Filter LOCAL changes based on sync policy (e.g., exclude _fit/, .obsidian/)
-		// We don't want to push protected paths to remote
-		const filteredLocalChanges = localChanges.filter(change => this.fit.shouldSyncPath(change.path));
-
-		const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
-		if (filteredLocalChanges.length === 0 && !remoteUpdated) {
-			return {status: "inSync"};
-		}
-
-		// Scan remote vault (pass commitSha to avoid duplicate API call)
-		const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
-		// NOTE: We do NOT filter remote changes here by shouldSyncPath
-		// Protected paths from remote (like .obsidian/, _fit/) will be handled in
-		// prepareChangesToExecute() and saved to _fit/ for user safety and transparency
-
-		let clashes: ClashStatus[] = [];
-		let status: PreSyncCheckResultType;
-		if (filteredLocalChanges.length > 0 && !remoteUpdated) {
-			status = "onlyLocalChanged";
-		} else if (remoteUpdated && filteredLocalChanges.length === 0 && remoteChanges.length === 0) {
-			status = "onlyRemoteCommitShaChanged";
-		} else if (filteredLocalChanges.length === 0 && remoteUpdated) {
-			// Check for clashes even when there are no local changes
-			// (protected/hidden files from remote are always treated as clashes)
-			clashes = this.fit.getClashedChanges(filteredLocalChanges, remoteChanges);
-			if (clashes.length === 0) {
-				status = "onlyRemoteChanged";
-			} else {
-				status = "localAndRemoteChangesClashed";
-			}
-		} else {
-			clashes = this.fit.getClashedChanges(filteredLocalChanges, remoteChanges);
-			if (clashes.length === 0) {
-				status = "localAndRemoteChangesCompatible";
-			} else {
-				status =  "localAndRemoteChangesClashed";
-			}
-		}
-
-		// Log sync decision to diagnose incorrect create/delete behaviors
-		fitLogger.log('[FitSync] Pre-sync check complete', {
-			status,
-			localChangesCount: localChanges.length,
-			remoteChangesCount: remoteChanges.length,
-			clashesCount: clashes.length,
-			remoteUpdated,
-			// Critical: Track files that will be pushed/pulled
-			filesPendingRemoteDeletion: localChanges.filter(c => c.status === 'deleted').map(c => c.path),
-			filesPendingLocalCreation: remoteChanges.filter(c => c.status === 'ADDED').map(c => c.path),
-			filesPendingLocalDeletion: remoteChanges.filter(c => c.status === 'REMOVED').map(c => c.path),
-			filesPendingRemoteCreation: localChanges.filter(c => c.status === 'created').map(c => c.path)
-		});
-
-		return {
-			status,
-			remoteUpdate: {
-				remoteChanges: remoteChanges,
-				remoteTreeSha,
-				latestRemoteCommitSha: remoteCommitSha,
-				clashedFiles: clashes
-			},
-			localChanges: filteredLocalChanges,
-			localTreeSha: localState
-		};
 	}
 
 	generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content): ConflictReport {
@@ -335,35 +259,84 @@ export class FitSync implements IFitSync {
 		};
 	}
 
-	async syncCompatibleChanges(
+	/**
+	 * Plan for what changes to sync, separating changes that can be applied
+	 * from those that are in conflict.
+	 */
+	private prepareSyncPlan(
+		localChanges: LocalChange[],
+		remoteChanges: RemoteChange[],
+		knownConflicts: ClashStatus[]
+	): { localChangesToPush: LocalChange[], remoteChangesToPull: RemoteChange[] } {
+		const conflictPaths = new Set(knownConflicts.map(c => c.path));
+
+		if (knownConflicts.length === 0) {
+			// No conflicts - can sync all changes
+			return {
+				localChangesToPush: localChanges,
+				remoteChangesToPull: remoteChanges
+			};
+		}
+
+		// Has conflicts - filter out conflicted files from remote pull
+		// but still push local changes (so remote has record for later resolution)
+		const remoteChangesToPull = remoteChanges.filter(c => !conflictPaths.has(c.path));
+		const localChangesToPush = localChanges; // Push all, including conflicted
+
+		return { localChangesToPush, remoteChangesToPull };
+	}
+
+	/**
+	 * Execute a sync plan: push local changes, pull remote changes, and persist state.
+	 * This is the unified execution path for both compatible and conflicted syncs.
+	 *
+	 * The operation is atomic: if any step fails, no state is persisted.
+	 *
+	 * @returns The operations that were applied and any conflicts discovered during execution
+	 */
+	private async executeSyncPlan(
+		plan: { localChangesToPush: LocalChange[], remoteChangesToPull: RemoteChange[] },
 		localUpdate: LocalUpdate,
 		remoteUpdate: RemoteUpdate,
-		syncNotice: FitNotice): Promise<{localOps: LocalChange[], remoteOps: FileOpRecord[]}> {
-		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
-			remoteUpdate.remoteChanges);
+		syncNotice: FitNotice
+	): Promise<SyncExecutionResult> {
+		// Phase 1: Push local changes to remote
 		syncNotice.setMessage("Uploading local changes");
-		// Push local changes to remote
-		const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
+		const pushUpdate = {
+			localChanges: plan.localChangesToPush,
+			parentCommitSha: localUpdate.parentCommitSha
+		};
+		const pushResult = await this.fitPush.pushChangedFilesToRemote(pushUpdate);
+
 		let latestRemoteTreeSha: Record<string, string>;
 		let latestCommitSha: string;
 		let pushedChanges: Array<LocalChange>;
+
 		if (pushResult) {
 			latestRemoteTreeSha = pushResult.lastFetchedRemoteSha;
 			latestCommitSha = pushResult.lastFetchedCommitSha;
 			pushedChanges = pushResult.pushedChanges;
 		} else {
 			// No changes were pushed
-			// TODO: Abort the sync if there were local changes detected but nothing pushed?
-			// Otherwise we may record them as synced below and incorrectly overwrite them from remote later.
+			// TODO: Should we abort the sync if plan.localChangesToPush had changes but nothing was pushed?
+			// This could indicate a push failure that we're silently ignoring. If we continue and persist
+			// the new remote state, we might incorrectly mark those local changes as synced.
 			latestRemoteTreeSha = remoteUpdate.remoteTreeSha;
 			latestCommitSha = remoteUpdate.latestRemoteCommitSha;
 			pushedChanges = [];
 		}
 
+		// Phase 2: Pull remote changes to local
 		syncNotice.setMessage("Writing remote changes to local");
+		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
+			plan.remoteChangesToPull);
 		const localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-		// Update local vault state after applying changes
+		// TODO: Phase 2.5: Detect late-stage conflicts (e.g., remote file vs local folder)
+		// This is where we could check for path conflicts that weren't detected upfront
+		const newConflicts: ClashStatus[] = [];
+
+		// Phase 3: Read new local state and persist everything atomically
 		const newLocalState = await this.fit.localVault.readFromSource();
 
 		logCacheUpdate(
@@ -382,178 +355,152 @@ export class FitSync implements IFitSync {
 			lastFetchedCommitSha: latestCommitSha,
 			localSha: this.fit.filterSyncedState(newLocalState)
 		});
-		syncNotice.setMessage("Sync successful");
-		return {localOps: localFileOpsRecord, remoteOps: pushedChanges};
+
+		return {
+			localOps: localFileOpsRecord,
+			remoteOps: pushedChanges,
+			conflicts: newConflicts
+		};
 	}
 
-
-	async syncWithConflicts(
+	/**
+	 * Execute a sync with local and remote changes, handling any conflicts.
+	 *
+	 * This is the unified sync execution path that works regardless of whether
+	 * conflicts are known upfront or discovered during execution.
+	 *
+	 * @param localChanges All local changes detected
+	 * @param remoteUpdate All remote changes and state
+	 * @param upfrontConflicts Conflicts detected during pre-sync checks (may be empty)
+	 * @param syncNotice UI notification to update with progress
+	 * @returns Complete sync result with all operations and conflicts
+	 */
+	private async executeSync(
 		localChanges: LocalChange[],
 		remoteUpdate: RemoteUpdate,
-		syncNotice: FitNotice) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[]} | null> {
-		const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate;
-		let noConflict: boolean, unresolvedFiles: ClashStatus[], fileOpsRecord: FileOpRecord[];
-		({noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha));
-		let localChangesToPush: Array<LocalChange>;
-		let remoteChangesToWrite: Array<RemoteChange>;
-		if (noConflict) {
-			// no conflict detected among clashed files, just pull changes only made on remote and push changes only made on local
-			remoteChangesToWrite = remoteUpdate.remoteChanges.filter(c => !localChanges.some(l => l.path === c.path));
-			localChangesToPush = localChanges.filter(c => !remoteUpdate.remoteChanges.some(r => r.path === c.path));
+		upfrontConflicts: ClashStatus[],
+		syncNotice: FitNotice
+	): Promise<SyncExecutionResult> {
+		// Step 1: Resolve any upfront conflicts (writes to _fit/ if needed)
+		let resolvedConflictOps: FileOpRecord[] = [];
+		let unresolvedUpfrontConflicts: ClashStatus[] = [];
 
-		} else {
-			syncNotice.setMessage(`Change conflicts detected`);
-			// do not modify unresolved files locally
-			remoteChangesToWrite = remoteUpdate.remoteChanges.filter(c => !unresolvedFiles.some(l => l.path === c.path));
-			// push change even if they are in unresolved files, so remote has a record of them,
-			// so user can resolve later by modifying local and push again
-			localChangesToPush = localChanges;
-		}
-		const {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(remoteChangesToWrite);
-		const syncLocalUpdate = {
-			localChanges: localChangesToPush,
-			parentCommitSha: latestRemoteCommitSha
-		};
-		const pushResult = await this.fitPush.pushChangedFilesToRemote(syncLocalUpdate);
-		let pushedChanges: LocalChange[];
-		let lastFetchedCommitSha: string;
-		let lastFetchedRemoteSha: Record<string, string>;
-		if (pushResult) {
-			pushedChanges = pushResult.pushedChanges;
-			lastFetchedCommitSha = pushResult.lastFetchedCommitSha;
-			lastFetchedRemoteSha = pushResult.lastFetchedRemoteSha;
-		} else {
-			// did not push any changes
-			pushedChanges = [];
-			lastFetchedCommitSha = remoteUpdate.latestRemoteCommitSha;
-			lastFetchedRemoteSha = remoteUpdate.remoteTreeSha;
+		if (upfrontConflicts.length > 0) {
+			const {noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(
+				upfrontConflicts,
+				remoteUpdate.remoteTreeSha
+			);
+			resolvedConflictOps = fileOpsRecord;
+			unresolvedUpfrontConflicts = unresolvedFiles;
+
+			if (!noConflict) {
+				syncNotice.setMessage(`Change conflicts detected`);
+			}
 		}
 
-		let localFileOpsRecord: LocalChange[];
-		localFileOpsRecord = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
-
-		// Update local vault state after applying changes
-		const newLocalState = await this.fit.localVault.readFromSource();
-
-		logCacheUpdate(
-			'conflict sync',
-			this.fit.localSha || {},
-			newLocalState,
-			this.fit.lastFetchedRemoteSha || {},
-			lastFetchedRemoteSha,
-			this.fit.lastFetchedCommitSha,
-			lastFetchedCommitSha,
-			{ unresolvedConflicts: unresolvedFiles.length, localOpsApplied: localFileOpsRecord.length, remoteOpsPushed: pushedChanges.length }
+		// Step 2: Prepare sync plan (filter out unresolved conflicts)
+		const plan = this.prepareSyncPlan(
+			localChanges,
+			remoteUpdate.remoteChanges,
+			unresolvedUpfrontConflicts
 		);
 
-		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha, // Unfiltered - must track ALL remote files to detect changes
-			lastFetchedCommitSha,
-			localSha: this.fit.filterSyncedState(newLocalState)
-		});
-		const ops = localFileOpsRecord.concat(fileOpsRecord);
-		if (unresolvedFiles.length === 0) {
+		// Step 3: Execute the plan (push, pull, persist)
+		const localUpdate = {
+			localChanges: plan.localChangesToPush,
+			parentCommitSha: remoteUpdate.latestRemoteCommitSha
+		};
+
+		const { localOps, remoteOps, conflicts: newConflicts } = await this.executeSyncPlan(
+			plan,
+			localUpdate,
+			remoteUpdate,
+			syncNotice
+		);
+
+		// Step 4: Combine all conflicts and operations
+		const allConflicts = [...unresolvedUpfrontConflicts, ...newConflicts];
+		const allLocalOps = localOps.concat(resolvedConflictOps);
+
+		// Step 5: Set appropriate success message
+		if (allConflicts.length === 0) {
 			syncNotice.setMessage(`Sync successful`);
-		} else if (unresolvedFiles.some(f => f.remoteStatus !== "REMOVED")) {
-			// let user knows remote file changes have been written to _fit if non-deletion change on remote clashed with local changes
+		} else if (allConflicts.some(f => f.remoteStatus !== "REMOVED")) {
 			syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
 		} else {
 			syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
 		}
-		return {unresolvedFiles, localOps: ops, remoteOps: pushedChanges};
+
+		return {
+			localOps: allLocalOps,
+			remoteOps,
+			conflicts: allConflicts
+		};
 	}
 
 	async sync(syncNotice: FitNotice): Promise<SyncResult> {
 		try {
-			syncNotice.setMessage("Performing pre sync checks.");
-			const preSyncCheckResult = await this.performPreSyncChecks();
+			syncNotice.setMessage("Checking for changes...");
 
-			// convert to switch statement later on for better maintainability
-			if (preSyncCheckResult.status === "inSync") {
+			// Get local changes
+			const {changes: localChanges} = await this.fit.getLocalChanges();
+			const filteredLocalChanges = localChanges.filter(c => this.fit.shouldSyncPath(c.path));
+
+			// Check if remote updated
+			const {remoteCommitSha, updated: remoteUpdated} = await this.fit.remoteUpdated();
+
+			// Early exit if nothing to sync
+			if (filteredLocalChanges.length === 0 && !remoteUpdated) {
 				syncNotice.setMessage("Sync successful");
 				return { success: true, ops: [], clash: [] };
 			}
 
-			if (preSyncCheckResult.status === "onlyRemoteCommitShaChanged") {
-				const { latestRemoteCommitSha } = preSyncCheckResult.remoteUpdate;
-				await this.saveLocalStoreCallback({ lastFetchedCommitSha: latestRemoteCommitSha });
+			// Get remote changes
+			const {changes: remoteChanges, state: remoteTreeSha} = await this.fit.getRemoteChanges(remoteCommitSha);
+
+			// Special case: only commit SHA changed, no actual file changes
+			if (filteredLocalChanges.length === 0 && remoteChanges.length === 0) {
+				await this.saveLocalStoreCallback({ lastFetchedCommitSha: remoteCommitSha });
 				syncNotice.setMessage("Sync successful");
 				return { success: true, ops: [], clash: [] };
 			}
 
-			const remoteUpdate = preSyncCheckResult.remoteUpdate;
-			if (preSyncCheckResult.status === "onlyRemoteChanged") {
-				const fileOpsRecord = await this.fitPull.pullRemoteToLocal(remoteUpdate, this.saveLocalStoreCallback);
-				syncNotice.setMessage("Sync successful");
-				return { success: true, ops: [{ heading: "Local file updates:", ops: fileOpsRecord }], clash: [] };
-			}
+			// Detect conflicts upfront
+			const upfrontConflicts = this.fit.getClashedChanges(filteredLocalChanges, remoteChanges);
 
-			const {localChanges, localTreeSha} = preSyncCheckResult;
-			const localUpdate = {
-				localChanges,
-				parentCommitSha: remoteUpdate.latestRemoteCommitSha
+			// Log sync decision for diagnostics
+			fitLogger.log('[FitSync] Starting sync', {
+				localChangesCount: filteredLocalChanges.length,
+				remoteChangesCount: remoteChanges.length,
+				upfrontConflictsCount: upfrontConflicts.length,
+				remoteUpdated,
+				filesPendingRemoteDeletion: filteredLocalChanges.filter(c => c.status === 'deleted').map(c => c.path),
+				filesPendingLocalCreation: remoteChanges.filter(c => c.status === 'ADDED').map(c => c.path),
+				filesPendingLocalDeletion: remoteChanges.filter(c => c.status === 'REMOVED').map(c => c.path),
+				filesPendingRemoteCreation: filteredLocalChanges.filter(c => c.status === 'created').map(c => c.path)
+			});
+
+			// Execute sync (handles push, pull, and conflicts all in one unified path)
+			const {localOps, remoteOps, conflicts} = await this.executeSync(
+				filteredLocalChanges,
+				{
+					remoteChanges,
+					remoteTreeSha,
+					latestRemoteCommitSha: remoteCommitSha,
+					clashedFiles: upfrontConflicts
+				},
+				upfrontConflicts,
+				syncNotice
+			);
+
+			return {
+				success: true,
+				ops: [
+					{heading: "Local file updates:", ops: localOps},
+					{heading: "Remote file updates:", ops: remoteOps},
+				],
+				clash: conflicts
 			};
-			if (preSyncCheckResult.status === "onlyLocalChanged") {
-				syncNotice.setMessage("Uploading local changes");
-				const pushResult = await this.fitPush.pushChangedFilesToRemote(localUpdate);
-				syncNotice.setMessage("Sync successful");
-				if (pushResult) {
-					logCacheUpdate(
-						'push',
-						this.fit.localSha || {},
-						localTreeSha,
-						this.fit.lastFetchedRemoteSha || {},
-						pushResult.lastFetchedRemoteSha,
-						this.fit.lastFetchedCommitSha,
-						pushResult.lastFetchedCommitSha,
-						{ pushedChanges: pushResult.pushedChanges.length }
-					);
-
-					await this.saveLocalStoreCallback({
-						localSha: this.fit.filterSyncedState(localTreeSha),
-						lastFetchedRemoteSha: pushResult.lastFetchedRemoteSha, // Unfiltered - must track ALL remote files to detect changes
-						lastFetchedCommitSha: pushResult.lastFetchedCommitSha
-					});
-					return { success: true, ops: [{ heading: "Local file updates:", ops: pushResult.pushedChanges }], clash: [] };
-				}
-				return { success: false, error: SyncErrors.unknown("Failed to push local changes") };
-			}
-
-			// do both pull and push (orders of execution different from pullRemoteToLocal and
-			// pushChangedFilesToRemote to make this more transaction like, i.e. maintain original
-			// state if the transaction failed) If you have ideas on how to make this more transaction-like,
-			// please open an issue on the fit repo
-			if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-				const {localOps, remoteOps} = await this.syncCompatibleChanges(
-					localUpdate, remoteUpdate, syncNotice);
-				return {
-					success: true,
-					ops: [
-						{heading: "Local file updates:", ops: localOps},
-						{heading: "Remote file updates:", ops: remoteOps},
-					],
-					clash: []
-				};
-			}
-
-			if (preSyncCheckResult.status === "localAndRemoteChangesClashed") {
-				const conflictResolutionResult = await this.syncWithConflicts(
-					localUpdate.localChanges, remoteUpdate, syncNotice);
-				if (conflictResolutionResult) {
-					const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult;
-					return {
-						success: true,
-						ops: [
-							{heading: "Local file updates:", ops: localOps},
-							{heading: "Remote file updates:", ops: remoteOps},
-						],
-						clash: unresolvedFiles
-					};
-				}
-			}
-
-			// Fallback case - shouldn't reach here
-			return { success: false, error: SyncErrors.unknown("Unknown sync status") };
 
 		} catch (error) {
 			// Handle unexpected errors that escape from individual sync operations.

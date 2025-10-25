@@ -116,9 +116,19 @@ describe('FitSync', () => {
 			lastFetchedCommitSha: 'commit-initial'
 		};
 
-		// Suppress console noise during tests
-		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+		// Capture console output for debugging failed tests
+		const consoleLogCapture: any[] = [];
+		const consoleErrorCapture: any[] = [];
+
+		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation((...args) => {
+			consoleLogCapture.push(['log', args]);
+		});
+		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args) => {
+			consoleErrorCapture.push(['error', args]);
+		});
+
+		// Store captures for afterEach to access
+		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
 
 		// Spy on fitLogger to verify logging behavior
 		fitLoggerLogSpy = jest.spyOn(fitLogger, 'log');
@@ -127,9 +137,43 @@ describe('FitSync', () => {
 	});
 
 	afterEach(() => {
-		// Restore console and logger
-		consoleLogSpy.mockRestore();
-		consoleErrorSpy.mockRestore();
+		// Check if test failed - if so, replay captured console output
+		const testState = (expect as any).getState();
+		const testFailed = testState.currentTestName && testState.assertionCalls > testState.numPassingAsserts;
+
+		if (testFailed) {
+			const captures = (global as any).__testConsoleCapture;
+			if (captures && (captures.log.length > 0 || captures.error.length > 0)) {
+				// Restore console first so we can actually output
+				consoleLogSpy.mockRestore();
+				consoleErrorSpy.mockRestore();
+
+				console.log('\n==================== CAPTURED CONSOLE OUTPUT (TEST FAILED) ====================');
+
+				// Replay all captured logs in order
+				for (const [, args] of captures.log) {
+					console.log('[LOG]', ...args);
+				}
+				for (const [, args] of captures.error) {
+					console.error('[ERROR]', ...args);
+				}
+
+				console.log('================================================================================\n');
+			} else {
+				// No captures, just restore
+				consoleLogSpy.mockRestore();
+				consoleErrorSpy.mockRestore();
+			}
+		} else {
+			// Test passed, just restore silently
+			consoleLogSpy.mockRestore();
+			consoleErrorSpy.mockRestore();
+		}
+
+		// Clean up global
+		delete (global as any).__testConsoleCapture;
+
+		// Restore logger spies
 		fitLoggerLogSpy.mockRestore();
 		fitLoggerFlushSpy.mockRestore();
 	});
@@ -150,7 +194,7 @@ describe('FitSync', () => {
 		const mockNotice1 = createMockNotice();
 		await syncAndHandleResult(fitSync, mockNotice1);
 		expect(mockNotice1._calls).toEqual([
-			{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+			{ method: 'setMessage', args: ['Checking for changes...'] },
 			{ method: 'setMessage', args: [
 				"Sync failed: Couldn't reach GitHub API. Please check your internet connection.",
 				true  // isError - sticky/error state
@@ -174,7 +218,7 @@ describe('FitSync', () => {
 		const mockNotice2 = createMockNotice();
 		const successResult = await syncAndHandleResult(fitSync, mockNotice2);
 		expect(mockNotice2._calls).toEqual([
-			{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+			{ method: 'setMessage', args: ['Checking for changes...'] },
 			{ method: 'setMessage', args: ['Uploading local changes'] },
 			{ method: 'setMessage', args: ['Writing remote changes to local'] },
 			{ method: 'setMessage', args: ['Sync successful'] }
@@ -735,7 +779,7 @@ describe('FitSync', () => {
 
 			// Assert - Verify user-friendly error message
 			expect(mockNotice._calls).toEqual([
-				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: [
 					"Sync failed: Couldn't reach GitHub API. Please check your internet connection.",
 					true
@@ -761,7 +805,7 @@ describe('FitSync', () => {
 
 			// Assert - Verify user-friendly error message
 			expect(mockNotice._calls).toEqual([
-				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: [
 					"Sync failed: Bad credentials. Check your GitHub personal access token.",
 					true
@@ -783,7 +827,7 @@ describe('FitSync', () => {
 
 			// Assert - Verify user-friendly error message
 			expect(mockNotice._calls).toEqual([
-				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: [
 					"Sync failed: Repository 'owner/repo' not found. Check your repo and branch settings.",
 					true
@@ -807,7 +851,7 @@ describe('FitSync', () => {
 
 			// Assert - Verify user-friendly error message
 			expect(mockNotice._calls).toEqual([
-				{ method: 'setMessage', args: ['Performing pre sync checks.'] },
+				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: [
 					"Sync failed: File system error: EACCES: permission denied, write 'test.md'",
 					true
