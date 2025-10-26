@@ -13,6 +13,7 @@ import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { FitSettings, LocalStores } from '../main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
+import { FileContent } from './contentEncoding';
 
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
@@ -180,7 +181,7 @@ describe('FitSync', () => {
 		]);
 
 		// Verify: Both files A and B were synced (both are new vs baseline)
-		expect(successResult).toMatchObject({
+		expect(successResult).toEqual({
 			success: true,
 			ops: expect.arrayContaining([
 				{
@@ -190,7 +191,8 @@ describe('FitSync', () => {
 						expect.objectContaining({ path: 'fileB.md', status: 'created' })
 					])
 				}
-			])
+			]),
+			clash: []
 		});
 
 		// Verify: LocalStores updated with BOTH files
@@ -254,8 +256,8 @@ describe('FitSync', () => {
 		// === STEP 3: Simulate another device pushing files (including _fit/ edge case) ===
 		// Manually add files and trigger commit SHA update by calling applyChanges
 		await remoteVault.applyChanges([
-			{ path: '_fit/remote-conflict.md', content: 'Remote _fit file content' },
-			{ path: 'remote-normal.md', content: 'Normal remote file' }
+			{ path: '_fit/remote-conflict.md', content: FileContent.fromPlainText('Remote _fit file content') },
+			{ path: 'remote-normal.md', content: FileContent.fromPlainText('Normal remote file') }
 		], []);
 
 		// === STEP 4: Attempt sync - should pull both files, but save _fit/ to _fit/_fit/ ===
@@ -263,7 +265,7 @@ describe('FitSync', () => {
 		const result2 = await syncAndHandleResult(fitSync, mockNotice2);
 
 		// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
-		expect(result2).toMatchObject({
+		expect(result2).toEqual({
 			success: true,
 			ops: expect.arrayContaining([
 				{
@@ -273,16 +275,22 @@ describe('FitSync', () => {
 						expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
 					])
 				}
-			])
+			]),
+			clash: [{
+				path: '_fit/remote-conflict.md',
+				localStatus: 'untracked',
+				remoteStatus: 'ADDED'
+			}]
 		});
 
 		// Verify: Final local vault state
-		expect(Object.fromEntries((localVault as any).files)).toEqual({
-			'_fit/conflict.md': 'Remote version saved locally',         // Local-only (created in step 1)
-			'_fit/nested/file.md': 'Another conflict',                  // Local-only (created in step 1)
-			'_fit/_fit/remote-conflict.md': 'Remote _fit file content', // Remote _fit/ saved to _fit/_fit/ (protected path)
-			'normal.md': 'Normal file content',                         // Synced (created in step 1)
-			'remote-normal.md': 'Normal remote file'                    // Pulled from remote (step 4)
+		expect(localVault.getAllFilesAsRaw()).toEqual({
+			'_fit/conflict.md': 'Remote version saved locally', // Local-only (created in step 1)
+			'_fit/nested/file.md': 'Another conflict',          // Local-only (created in step 1)
+			// Remote _fit/ saved to _fit/_fit/ (protected path)
+			'_fit/_fit/remote-conflict.md': 'Remote _fit file content',
+			'normal.md': 'Normal file content',                 // Synced (created in step 1)
+			'remote-normal.md': 'Normal remote file'            // Pulled from remote (step 4)
 		});
 		// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
 
@@ -343,10 +351,10 @@ describe('FitSync', () => {
 			const result2 = await syncAndHandleResult(fitSync, mockNotice2);
 
 			// Verify: No changes detected (hidden file ignored)
-			expect(result2).toMatchObject({
+			expect(result2).toEqual(expect.objectContaining({
 				success: true,
 				ops: [] // No operations
-			});
+			}));
 
 			// Verify: Remote still only has visible file
 			expect(remoteVault.getAllPaths()).toEqual(['visible.md']);
@@ -369,7 +377,7 @@ describe('FitSync', () => {
 
 			// === STEP 2: Another device pushes the same hidden file to remote ===
 			await remoteVault.applyChanges([
-				{ path: '.hidden-config.json', content: 'Remote version' }
+				{ path: '.hidden-config.json', content: FileContent.fromPlainText('Remote version') }
 			], []);
 
 			// === STEP 3: Attempt sync - should succeed and save hidden file clash to _fit/ ===
@@ -377,19 +385,19 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Sync succeeds with clash detected (hidden file treated as untracked conflict)
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(mockNotice._calls).toContainEqual({
 				method: 'setMessage',
 				args: ['Synced with remote, unresolved conflicts written to _fit']
 			});
 
-			// Verify: Local hidden file NOT overwritten (kept local version)
-			expect(localVault.getFile('.hidden-config.json')).toBe('Local version');
-
-			// Verify: Remote version saved to _fit/ directory
-			expect(localVault.getFile('_fit/.hidden-config.json')).toBe('Remote version');
+			// Verify: Local vault wrote as clash
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				// Local hidden file NOT overwritten (kept local version)
+				'.hidden-config.json': 'Local version',
+				// Remote version saved to _fit/ directory
+				'_fit/.hidden-config.json': 'Remote version',
+			});
 
 			// Verify: Remote still has the remote version
 			expect(remoteVault.getFile('.hidden-config.json')).toBe('Remote version');
@@ -407,8 +415,11 @@ describe('FitSync', () => {
 
 			// === STEP 1: Remote has a hidden file ===
 			await remoteVault.applyChanges([
-				{ path: '.hidden-config.json', content: 'Remote hidden content' },
-				{ path: 'visible.md', content: 'Visible content' }
+				{
+					path: '.hidden-config.json',
+					content: FileContent.fromPlainText('Remote hidden content')
+				},
+				{ path: 'visible.md', content: FileContent.fromPlainText('Visible content') }
 			], []);
 
 			// === STEP 2: Attempt sync ===
@@ -416,14 +427,12 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Sync succeeded
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// Verify: Visible file pulled normally, hidden file saved to _fit/ for safety
 			// SAFETY: We can't verify hidden file doesn't exist locally (not tracked in localSha)
 			// so we conservatively save to _fit/ to avoid data loss
-			expect(Object.fromEntries((localVault as any).files)).toEqual({
+			expect(localVault.getAllFilesAsRaw()).toEqual({
 				// Hidden file saved to _fit/ (conservative - can't verify no local changes)
 				'_fit/.hidden-config.json': 'Remote hidden content',
 				// Normal file pulled directly
@@ -451,9 +460,9 @@ describe('FitSync', () => {
 			// === STEP 1: Remote has files in .obsidian/ directory ===
 			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/plugins/plugin1/main.js', content: 'Plugin code' },
-				{ path: '.obsidian/app.json', content: '{"theme":"dark"}' },
-				{ path: 'normal.md', content: 'Normal file' }
+				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
+				{ path: '.obsidian/app.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
 
 			// === STEP 2: Attempt sync ===
@@ -461,9 +470,7 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Sync succeeded with protected files treated as clashes
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 			// Protected/hidden files are now treated as clashes and get appropriate messaging
 			expect(mockNotice._calls).toContainEqual({
 				method: 'setMessage',
@@ -471,7 +478,7 @@ describe('FitSync', () => {
 			});
 
 			// Verify: .obsidian/ files saved to _fit/ for safety, normal file pulled directly
-			expect(Object.fromEntries((localVault as any).files)).toEqual({
+			expect(localVault.getAllFilesAsRaw()).toEqual({
 				// .obsidian/ files saved to _fit/ (protected path - never write directly to .obsidian/)
 				'_fit/.obsidian/app.json': '{"theme":"dark"}',
 				'_fit/.obsidian/plugins/plugin1/main.js': 'Plugin code',
@@ -520,7 +527,9 @@ describe('FitSync', () => {
 			};
 
 			// === STEP 1: Remote modifies .gitignore ===
-			await remoteVault.applyChanges([{path: '.gitignore', content: remoteGitignoreNew}], []);
+			await remoteVault.applyChanges(
+				[{ path: '.gitignore', content: FileContent.fromPlainText(remoteGitignoreNew) }],
+				[]);
 
 			// === STEP 2: Sync (pull) ===
 			const fitSync = createFitSync();
@@ -528,12 +537,10 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// === VERIFY: Sync succeeded ===
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// === VERIFY: Final local vault state ===
-			expect(Object.fromEntries((localVault as any).files)).toEqual({
+			expect(localVault.getAllFilesAsRaw()).toEqual({
 				// Local .gitignore preserved (conflict - different content)
 				'.gitignore': localGitignoreContent,
 				// Remote .gitignore version saved to _fit/ (conflict resolution)
@@ -578,7 +585,9 @@ describe('FitSync', () => {
 
 			// === STEP 1: Remote modifies README.md (triggers sync) ===
 			// This also causes us to re-scan remote and discover .gitignore
-			await remoteVault.applyChanges([{path: 'README.md', content: 'readme v2'}], []);
+			await remoteVault.applyChanges(
+				[{ path: 'README.md', content: FileContent.fromPlainText('readme v2') }],
+				[]);
 
 			// === STEP 2: Sync (pull) ===
 			const fitSync = createFitSync();
@@ -586,12 +595,10 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// === VERIFY: Sync succeeded ===
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// === VERIFY: Final local vault state ===
-			expect(Object.fromEntries((localVault as any).files)).toMatchObject({
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
 				// Local .gitignore preserved (conflict - remote ADDED, local exists with different content)
 				'.gitignore': localGitignoreContent,
 				// README.md updated (was tracked, remote changed, no conflict)
@@ -638,12 +645,10 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// === VERIFY: Sync succeeded ===
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// === VERIFY: Local .gitignore NOT deleted (safety - can't verify it's safe) ===
-			expect(Object.fromEntries((localVault as any).files)).toEqual({
+			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.gitignore': hiddenFileContent,  // Preserved (untracked, deletion skipped)
 				'README.md': 'readme v1'          // Unchanged
 			});

@@ -9,7 +9,8 @@ import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
-import { EMPTY_TREE_SHA, RECOGNIZED_BINARY_EXT } from "./utils";
+import { EMPTY_TREE_SHA } from "./utils";
+import { FileContent, isBinaryExtension } from "./contentEncoding";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -224,9 +225,11 @@ export class RemoteGitHubVault implements IVault {
 
 	/**
 	 * Read file content for a specific SHA from GitHub blobs
+	 * GitHub API ALWAYS returns content as base64, regardless of file type
 	 */
-	async readFileContent(pathOrSha: string): Promise<string> {
+	async readFileContent(pathOrSha: string): Promise<FileContent> {
 		// RemoteGitHubVault only uses blob SHAs (not paths)
+		// GitHub API ALWAYS returns content as base64, regardless of file type
 		try {
 			const { data: blob } = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
@@ -235,7 +238,7 @@ export class RemoteGitHubVault implements IVault {
 					file_sha: pathOrSha,
 					headers: this.headers
 				});
-			return blob.content;
+			return FileContent.fromBase64(blob.content);
 		} catch (error) {
 			// Blob not found (404) is a data error, not a vault-level error
 			// Network/auth errors still converted to VaultError
@@ -270,11 +273,30 @@ export class RemoteGitHubVault implements IVault {
 	 *
 	 * @param path - File path
 	 * @param content - File content (base64 for binary, raw text otherwise) or null for deletion
-	 * @param encoding - "base64" or "utf-8" (if not provided, determined from file extension)
 	 * @param remoteTree - Current remote tree nodes (for optimization - skip if unchanged)
 	 * @returns TreeNode to include in commit, or null if no change needed
 	 */
 	async createTreeNodeFromContent(
+		path: string,
+		content: FileContent | null,
+		remoteTree: TreeNode[]
+	): Promise<TreeNode | null> {
+		let rawContent = null;
+		let encoding: 'base64' | 'utf-8' | undefined;
+		if (content !== null) {
+			const rawContentObj = content.toRaw();
+			rawContent = rawContentObj.content;
+			encoding = rawContentObj.encoding === 'base64' ? 'base64' : 'utf-8';
+		}
+		return this.oldCreateTreeNodeFromContent(
+			path,
+			rawContent,
+			remoteTree,
+			encoding);
+	}
+
+	// FIXME: Inline this
+	private async oldCreateTreeNodeFromContent(
 		path: string,
 		content: string | null,
 		remoteTree: TreeNode[],
@@ -297,7 +319,7 @@ export class RemoteGitHubVault implements IVault {
 		// Addition/modification case
 		if (!encoding) {
 			const extension = path.split('.').pop() || '';
-			encoding = RECOGNIZED_BINARY_EXT.includes(extension) ? "base64" : "utf-8";
+			encoding = isBinaryExtension(extension) ? "base64" : "utf-8";
 		}
 		const blobSha = await this.createBlob(content, encoding);
 
@@ -482,9 +504,10 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Apply a batch of changes to remote (creates commit and pushes)
 	 * This is the primary write operation - creates a single commit with all changes
+	 * Accepts PlainTextContent for text files or Base64Content for binary files
 	 */
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: string}>,
+		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
 		// Get current commit and tree

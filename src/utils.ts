@@ -50,8 +50,6 @@ export function compareSha<Env extends "remote" | "local">(
 	});
 }
 
-export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"];
-
 /**
  * Git's well-known empty tree SHA - represents a tree with no files
  * This is a constant in Git that always represents an empty tree

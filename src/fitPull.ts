@@ -2,6 +2,7 @@ import { Fit } from "./fit";
 import { LocalStores } from "main";
 import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
 import { fitLogger } from "./logger";
+import { FileContent } from "./contentEncoding";
 
 type PrePullCheckResultType = (
     "localCopyUpToDate" |
@@ -74,7 +75,7 @@ export class FitPull {
 	}
 
 	// Get changes from remote, pathShaMap is coupled to the Fit plugin design
-	async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>) {
+	async getRemoteNonDeletionChangesContent(pathShaMap: Record<string, string>): Promise<Array<{path: string, content: FileContent}>> {
 		const remoteChanges = Object.entries(pathShaMap).map(async ([path, file_sha]) => {
 			const content = await this.fit.remoteVault.readFileContent(file_sha);
 			return {path, content};
@@ -93,7 +94,7 @@ export class FitPull {
 		const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess);
 
 		// Check for files that should be saved to _fit/ instead of directly applied
-		const resolvedChanges: Array<{path: string, content: string}> = [];
+		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
 		for (const change of addToLocal) {
 			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
 			// These paths should never be written directly to the vault to avoid:
@@ -135,7 +136,7 @@ export class FitPull {
 			}
 
 			// Normal file or no conflict - add as-is
-			resolvedChanges.push(change);
+			resolvedChanges.push({path: change.path, content: change.content});
 		}
 
 		// SAFETY: Never delete protected or untracked files from local

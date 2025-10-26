@@ -1,6 +1,6 @@
 import { Fit } from "./fit";
 import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteChange, RemoteUpdate } from "./fitTypes";
-import { RECOGNIZED_BINARY_EXT, extractExtension, removeLineEndingsFromBase64String } from "./utils";
+import { extractExtension, removeLineEndingsFromBase64String } from "./utils";
 import { FitPull } from "./fitPull";
 import { FitPush } from "./fitPush";
 import { LocalStores } from "main";
@@ -8,6 +8,7 @@ import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { VaultError } from "./vault";
+import { Base64Content, isBinaryExtension } from "./contentEncoding";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -201,9 +202,9 @@ export class FitSync implements IFitSync {
 		};
 	}
 
-	generateConflictReport(path: string, localContent: string, remoteContent: string): ConflictReport {
+	generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content): ConflictReport {
 		const detectedExtension = extractExtension(path);
-		if (detectedExtension && RECOGNIZED_BINARY_EXT.includes(detectedExtension)) {
+		if (detectedExtension && isBinaryExtension(detectedExtension)) {
 			return {
 				path,
 				resolutionStrategy: "binary",
@@ -211,6 +212,9 @@ export class FitSync implements IFitSync {
 			};
 		}
 		// assume file encoding is utf8 if extension is not known
+		// Note: Both localContent and remoteContent are Base64Content
+		// For local: if it's a text file, localVault returns PlainTextContent, but we need to handle that upstream
+		// For remote: remoteVault ALWAYS returns Base64Content
 		return {
 			path,
 			resolutionStrategy: "utf-8",
@@ -219,19 +223,19 @@ export class FitSync implements IFitSync {
 		};
 	}
 
-	async handleBinaryConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
+	async handleBinaryConflict(path: string, remoteContent: Base64Content): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
 		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
 	}
 
-	async handleUTF8Conflict(path: string, localContent: string, remoteConent: string): Promise<FileOpRecord> {
+	async handleUTF8Conflict(path: string, localContent: Base64Content, remoteConent: Base64Content): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
 		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteConent);
 	}
 
-	async handleLocalDeletionConflict(path: string, remoteContent: string): Promise<FileOpRecord> {
+	async handleLocalDeletionConflict(path: string, remoteContent: Base64Content): Promise<FileOpRecord> {
 		const conflictResolutionFolder = "_fit";
 		const conflictResolutionPath = `${conflictResolutionFolder}/${path}`;
 		return await this.fit.localVault.writeFile(conflictResolutionPath, remoteContent);
@@ -242,7 +246,7 @@ export class FitSync implements IFitSync {
 			return {path: clash.path, noDiff: true};
 		} else if (clash.localStatus === "deleted") {
 			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
-			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
+			const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent.toBase64());
 			return {path: clash.path, noDiff: false, fileOp: fileOp};
 		} else if (clash.localStatus === "untracked") {
 			// File is protected path or hidden - can't verify local state
@@ -253,7 +257,7 @@ export class FitSync implements IFitSync {
 			} else {
 				// Remote added/modified, local untracked - save remote version to _fit/
 				const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
-				const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent);
+				const fileOp = await this.handleLocalDeletionConflict(clash.path, remoteContent.toBase64());
 				return {path: clash.path, noDiff: false, fileOp: fileOp};
 			}
 		}
@@ -262,8 +266,12 @@ export class FitSync implements IFitSync {
 
 		if (latestRemoteFileSha) {
 			const remoteContent = await this.fit.remoteVault.readFileContent(latestRemoteFileSha);
-			if (removeLineEndingsFromBase64String(remoteContent) !== removeLineEndingsFromBase64String(localFileContent)) {
-				const report = this.generateConflictReport(clash.path, localFileContent, remoteContent);
+			// TODO: Should we really need to force to base64 to compare, even if hypothetically both were already plaintext?
+			const localBase64 = localFileContent.toBase64();
+			const remoteBase64 = remoteContent.toBase64();
+
+			if (removeLineEndingsFromBase64String(remoteBase64) !== removeLineEndingsFromBase64String(localBase64)) {
+				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64);
 				let fileOp: FileOpRecord;
 				if (report.resolutionStrategy === "binary") {
 					fileOp = await this.handleBinaryConflict(clash.path, report.remoteContent);
