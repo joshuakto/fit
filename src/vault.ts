@@ -134,11 +134,11 @@ export interface IVault {
 	 * Apply a batch of changes (writes and deletes)
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
-	 *   - Expects Base64Content for ALL content (from GitHub API)
+	 *   - Converts FileContent to base64 and writes via Obsidian API
 	 *
 	 * For RemoteGitHubVault: Creates a single commit with all changes
-	 *   - Accepts PlainTextContent for text files or Base64Content for binary files
-	 *   - Detects encoding based on file extension and tells GitHub API
+	 *   - Uses FileContent's existing encoding (plaintext or base64)
+	 *   - Tells GitHub API the appropriate encoding
 	 *
 	 * @param filesToWrite - Files to write or update with their content
 	 * @param filesToDelete - Files to delete

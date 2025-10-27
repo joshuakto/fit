@@ -4,7 +4,7 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { VaultError } from './vault';
+import { IVault, VaultError } from './vault';
 import { FileOpRecord } from './fitTypes';
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './contentEncoding';
 import { extractExtension } from './utils';
@@ -268,7 +268,7 @@ export class FakeOctokit {
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
-export class FakeLocalVault {
+export class FakeLocalVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
 	private failureError: Error | null = null;
 
@@ -290,13 +290,17 @@ export class FakeLocalVault {
 	 * Set file content directly (for test setup).
 	 */
 	setFile(path: string, content: string | PlainTextContent | FileContent): void {
-		let fileContent;
+		// Normalize to logical encoding based on path (for convenient test assertions).
+		const detectedExtension = extractExtension(path);
+		const isBinary = detectedExtension && isBinaryExtension(detectedExtension);
+
+		let fileContent: FileContent;
 		if (content instanceof FileContent) {
-			fileContent = content;
+			// Normalize: binary files stay as-is, text files convert to plaintext
+			fileContent = isBinary ? content : FileContent.fromPlainText(content.toPlainText());
 		} else {
-			// Force to logical encoding based on path (for convenient assertions).
-			const detectedExtension = extractExtension(path);
-			fileContent = (detectedExtension && isBinaryExtension(detectedExtension))
+			// Create FileContent from string: binary → base64, text → plaintext
+			fileContent = isBinary
 				? FileContent.fromBase64(Content.encodeToBase64(content))
 				: FileContent.fromPlainText(content);
 		}
@@ -390,7 +394,7 @@ export class FakeLocalVault {
 			}
 
 			const existed = this.files.has(file.path);
-			this.setFile(file.path, file.content.toPlainText());
+			this.setFile(file.path, file.content);
 			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
@@ -426,7 +430,7 @@ export class FakeLocalVault {
  * Fake implementation of IVault for remote testing.
  * Simulates a remote vault (like GitHub) with in-memory file storage and commit tracking.
  */
-export class FakeRemoteVault {
+export class FakeRemoteVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
 	private blobShas: Map<string, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: string = 'initial-commit';
@@ -604,19 +608,19 @@ export class FakeRemoteVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<Array<{path: string, status: string}>> {
+	): Promise<FileOpRecord[]> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		const ops: Array<{path: string, status: string}> = [];
+		const ops: FileOpRecord[] = [];
 
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'modified' : 'created' });
+			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {

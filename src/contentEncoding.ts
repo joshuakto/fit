@@ -167,8 +167,20 @@ export function isBinaryExtension(extension: string): boolean {
  * 1. Reading files correctly from Obsidian (prefer readBinary for these)
  * 2. User-facing decisions (don't show diffs, treat conflicts as opaque)
  *
- * TODO: If the "how to read from Obsidian API" logic needs to diverge from
- * "what's semantically binary for users", split the technical reading logic
- * into obsidianHelpers.ts (e.g., UTF-8 validation-based detection).
+ * CURRENT LIMITATIONS:
+ * - Small hardcoded list means unknown binary types (.zip, .sqlite, .webp, etc.)
+ *   are mishandled as text, which can cause corruption
+ * - Extension-based detection is inherently limited (files without extensions,
+ *   misnamed files, etc.)
+ *
+ * TODO: Implement content-based binary detection instead of extension guessing:
+ * 1. Technical reading (Obsidian API):
+ *    - Try vault.read() first, catch UTF-8 decode errors
+ *    - Fall back to vault.readBinary() if decode fails
+ *    - Or always use readBinary() and decode as UTF-8, checking for invalid sequences
+ * 2. Semantic binary detection (user-facing):
+ *    - Detect actual binary content (null bytes, high ratio of non-printable chars)
+ *    - Use for conflict resolution UI (show diffs vs "binary file changed")
+ * 3. Alternative: Use mime-type library for better extension coverage as interim solution
  */
 const RECOGNIZED_BINARY_EXT = new Set(["png", "jpg", "jpeg", "pdf"]);
