@@ -55,19 +55,27 @@ export const Content = {
 
 	/**
 	 * Convert PlainTextContent to Base64Content
-	 * Uses browser's btoa() for encoding
+	 * Handles multi-byte UTF-8 characters (emojis, Chinese, etc.)
+	 * @see https://developer.mozilla.org/en-US/docs/Web/API/btoa#unicode_strings
 	 */
 	encodeToBase64: (plainText: string | PlainTextContent): Base64Content => {
-		return btoa(plainText) as Base64Content;
+		// Convert UTF-8 string to bytes, then to base64
+		const utf8Bytes = new TextEncoder().encode(plainText);
+		const binaryString = String.fromCodePoint(...utf8Bytes);
+		return btoa(binaryString) as Base64Content;
 	},
 
 	/**
 	 * Convert Base64Content to PlainTextContent
-	 * Uses browser's atob() for decoding
-	 * Throws error if content is not valid base64
+	 * Handles multi-byte UTF-8 characters (emojis, Chinese, etc.)
+	 * @throws {DOMException} If content is not valid base64
+	 * @see https://developer.mozilla.org/en-US/docs/Web/API/atob#unicode_strings
 	 */
 	decodeFromBase64: (base64: string | Base64Content): PlainTextContent => {
-		return atob(base64) as PlainTextContent;
+		// Decode base64 to bytes, then decode UTF-8
+		const binaryString = atob(base64);
+		const utf8Bytes = Uint8Array.from(binaryString, char => char.charCodeAt(0));
+		return new TextDecoder().decode(utf8Bytes) as PlainTextContent;
 	},
 };
 
