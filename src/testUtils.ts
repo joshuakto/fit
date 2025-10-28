@@ -7,7 +7,8 @@ import { TreeNode } from './remoteGitHubVault';
 import { IVault, VaultError } from './vault';
 import { FileOpRecord } from './fitTypes';
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './contentEncoding';
-import { extractExtension } from './utils';
+import { extractExtension, computeSha1 } from './utils';
+import { LocalVault } from './localVault';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -335,7 +336,7 @@ export class FakeLocalVault implements IVault {
 		const state: Record<string, string> = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
-				state[path] = await this.computeSha(content.toBase64());
+				state[path] = await LocalVault.fileSha1(path, content);
 			}
 		}
 		return state;
@@ -413,17 +414,6 @@ export class FakeLocalVault implements IVault {
 		const parts = path.split('/');
 		return !parts.some(part => part.startsWith('.'));
 	}
-
-	/**
-	 * Compute SHA-1 hash of arbitrary string content.
-	 * Used for both blob SHAs (from base64 content) and tree/commit SHAs (from serialized state).
-	 */
-	private async computeSha(content: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-	}
 }
 
 /**
@@ -471,7 +461,7 @@ export class FakeRemoteVault implements IVault {
 		}
 		this.files.set(path, fileContent);
 		// Store blob SHA -> content mapping for readFileContent
-		const sha = await this.computeSha(fileContent.toBase64());
+		const sha = await computeSha1(path + fileContent.toBase64());
 		this.blobShas.set(sha, fileContent.toBase64());
 	}
 
@@ -508,7 +498,7 @@ export class FakeRemoteVault implements IVault {
 	 */
 	async getCommitTreeSha(_ref: string): Promise<string> {
 		// Return a fake tree SHA based on current state
-		return await this.computeSha(JSON.stringify(Array.from(this.files.keys())));
+		return await computeSha1(JSON.stringify(Array.from(this.files.keys())));
 	}
 
 	/**
@@ -551,7 +541,7 @@ export class FakeRemoteVault implements IVault {
 		}
 		// Store the file content so it persists in the fake vault
 		this.setFile(path, content);
-		const sha = await this.computeSha(content.toBase64());
+		const sha = await computeSha1(path + content.toBase64());
 		return { path, sha, mode: '100644', type: 'blob' };
 	}
 
@@ -566,7 +556,7 @@ export class FakeRemoteVault implements IVault {
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				const base64Content = content.toBase64();
-				const sha = await this.computeSha(base64Content);
+				const sha = await computeSha1(path + base64Content);
 				state[path] = sha;
 				// Store blob SHA -> content mapping for readFileContent
 				this.blobShas.set(sha, base64Content);
@@ -632,7 +622,7 @@ export class FakeRemoteVault implements IVault {
 
 		// Update commit SHA to simulate a new commit
 		// Compute stable hash from sorted file paths and their base64 content
-		this.commitSha = await this.computeSha(
+		this.commitSha = await computeSha1(
 			Array.from(this.files.entries())
 				.map(([path, content]) => `${path}:${content.toBase64()}`)
 				.join('\n')
@@ -644,16 +634,5 @@ export class FakeRemoteVault implements IVault {
 	shouldTrackState(_path: string): boolean {
 		// No filtering for remote vault
 		return true;
-	}
-
-	/**
-	 * Compute SHA-1 hash of arbitrary string content.
-	 * Used for both blob SHAs (from base64 content) and tree/commit SHAs (from serialized state).
-	 */
-	private async computeSha(content: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	}
 }

@@ -91,7 +91,14 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const state = await localVault.readFromSource();
 
-			expect(Object.keys(state).sort()).toEqual(['note1.md', 'note2.txt']);
+			expect(state).toMatchObject({
+				'note1.md': expect.anything(),
+				'note2.txt': expect.anything()
+			});
+			// Frozen SHA behavior: Non-binary files use path + plaintext
+			// Binary files (png, jpg, jpeg, pdf) use path + base64
+			expect(state['note1.md']).toMatchInlineSnapshot(
+				`"b8b1b70958bbc0b6f0305f4bc57a8393ba333130"`);
 		});
 
 		it('should exclude ignored paths from state', async () => {
@@ -117,7 +124,8 @@ describe('LocalVault', () => {
 		it('should handle binary files', async () => {
 			const mockFiles = [
 				StubTFile.ofPath('image.png'),
-				StubTFile.ofPath('doc.pdf')
+				StubTFile.ofPath('doc.pdf'),
+				StubTFile.ofPath('archive.zip')
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
@@ -129,7 +137,17 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const state = await localVault.readFromSource();
 
-			expect(Object.keys(state).sort()).toEqual(['doc.pdf', 'image.png']);
+			expect(state).toMatchObject({
+				'doc.pdf': expect.anything(),
+				'image.png': expect.anything(),
+				'archive.zip': expect.anything()
+			});
+			expect(state['doc.pdf']).toMatchInlineSnapshot(
+				`"acf8daf266d952b03fb02280dc5c92d8e4e51ad7"`);
+			expect(state['image.png']).toMatchInlineSnapshot(
+				`"fe954d839c04f84471b6dd90c945e55a6035de80"`);
+			expect(state['archive.zip']).toMatchInlineSnapshot(
+				`"e67146506d2b18d3414a28ddc204c9dda6267080"`);
 		});
 
 		it('should handle empty vault', async () => {

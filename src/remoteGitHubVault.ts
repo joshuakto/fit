@@ -281,29 +281,16 @@ export class RemoteGitHubVault implements IVault {
 		content: FileContent | null,
 		remoteTree: TreeNode[]
 	): Promise<TreeNode | null> {
-		let rawContent = null;
+		let rawContent: string | null = null;
 		let encoding: 'base64' | 'utf-8' | undefined;
 		if (content !== null) {
 			const rawContentObj = content.toRaw();
 			rawContent = rawContentObj.content;
 			encoding = rawContentObj.encoding === 'base64' ? 'base64' : 'utf-8';
 		}
-		return this.oldCreateTreeNodeFromContent(
-			path,
-			rawContent,
-			remoteTree,
-			encoding);
-	}
 
-	// FIXME: Inline this
-	private async oldCreateTreeNodeFromContent(
-		path: string,
-		content: string | null,
-		remoteTree: TreeNode[],
-		encoding?: "base64" | "utf-8"
-	): Promise<TreeNode | null> {
 		// Deletion case (content is null)
-		if (content === null) {
+		if (rawContent === null) {
 			// Skip deletion if file doesn't exist on remote
 			if (remoteTree.every(node => node.path !== path)) {
 				return null;
@@ -321,7 +308,7 @@ export class RemoteGitHubVault implements IVault {
 			const extension = path.split('.').pop() || '';
 			encoding = isBinaryExtension(extension) ? "base64" : "utf-8";
 		}
-		const blobSha = await this.createBlob(content, encoding);
+		const blobSha = await this.createBlob(rawContent, encoding);
 
 		// Skip if file on remote is identical
 		if (remoteTree.some(node => node.path === path && node.sha === blobSha)) {

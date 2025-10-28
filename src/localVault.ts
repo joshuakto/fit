@@ -10,6 +10,28 @@ import { FileOpRecord } from "./fitTypes";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./obsidianHelpers";
+import { computeSha1 } from "./utils";
+
+/**
+ * Frozen list of binary file extensions for SHA calculation consistency.
+ * IMPORTANT: This list is FROZEN to ensure SHA calculations remain stable even if
+ * contentEncoding.ts adds new binary extensions in the future. Adding new extensions
+ * there should NOT change how we compute SHAs for existing files.
+ *
+ * DO NOT modify this list unless you implement a SHA migration strategy.
+ */
+const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
+
+/**
+ * Check if a file extension is considered binary for SHA calculation purposes.
+ * Uses FROZEN_BINARY_EXT_FOR_SHA to ensure SHA consistency.
+ *
+ * @param extension - File extension WITHOUT leading dot (e.g., "png", not ".png")
+ */
+function isBinaryExtensionForSha(extension: string): boolean {
+	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
+	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
+}
 
 /**
  * Local vault implementation for Obsidian.
@@ -76,7 +98,9 @@ export class LocalVault implements IVault {
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
 			trackedPaths.map(async (path): Promise<[string, string]> => {
-				return [path, await this.computeFileLocalSha(path)];
+				const sha = await LocalVault.fileSha1(
+					path, await readFileContent(this.vault, path));
+				return [path, sha];
 			})
 		);
 
@@ -95,12 +119,15 @@ export class LocalVault implements IVault {
 	 * Compute SHA-1 hash of file path + content
 	 * (Matches GitHub's blob SHA format)
 	 */
-	private async fileSha1(fileContent: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		return hashHex;
+	// NOTE: Public visibility for tests.
+	static fileSha1(path: string, fileContent: FileContent): Promise<string> {
+		const extension = path.split('.').pop() || '';
+		const contentToHash = (extension && isBinaryExtensionForSha(extension))
+			// Use base64 representation for consistent hashing
+			? fileContent.toBase64()
+			// Preserve plaintext SHA logic for non-binary case.
+			: fileContent.toPlainText();
+		return computeSha1(path + contentToHash);
 	}
 
 	/**
@@ -113,16 +140,6 @@ export class LocalVault implements IVault {
 		} else {
 			throw new Error(`Attempting to read ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
 		}
-	}
-
-	/**
-	 * Compute SHA for a single file in the vault
-	 */
-	private async computeFileLocalSha(path: string): Promise<string> {
-		const fileContent = await readFileContent(this.vault, path);
-		// Use base64 representation for consistent hashing
-		const content = fileContent.toBase64();
-		return await this.fileSha1(path + content);
 	}
 
 	/**
