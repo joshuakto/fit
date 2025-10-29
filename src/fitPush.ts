@@ -1,5 +1,6 @@
 import { Fit } from "./fit";
 import { LocalChange, LocalUpdate } from "./fitTypes";
+import { FileContent } from "./contentEncoding";
 
 
 /**
@@ -45,7 +46,7 @@ export class FitPush {
 		}
 
 		// Prepare files to write and delete by reading content from local vault
-		const filesToWrite: Array<{path: string, content: string}> = [];
+		const filesToWrite: Array<{path: string, content: FileContent}> = [];
 		const filesToDelete: Array<string> = [];
 
 		for (const change of localUpdate.localChanges) {
@@ -71,7 +72,6 @@ export class FitPush {
 				//   }
 				filesToDelete.push(change.path);
 			} else {
-				// Read file content from local vault
 				const content = await this.fit.localVault.readFileContent(change.path);
 				filesToWrite.push({ path: change.path, content });
 			}

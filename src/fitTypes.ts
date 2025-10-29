@@ -1,3 +1,5 @@
+import { Base64Content } from "./contentEncoding";
+
 export type LocalFileStatus = "deleted" | "created" | "changed" | "untracked";
 export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED";
 
@@ -35,12 +37,12 @@ export type ClashStatus = {
 export type ConflictReport = {
 	path: string
 	resolutionStrategy: "utf-8"
-	localContent: string
-	remoteContent: string
+	localContent: Base64Content
+	remoteContent: Base64Content
 } | {
 	resolutionStrategy: "binary",
 	path: string,
-	remoteContent: string
+	remoteContent: Base64Content
 };
 
 export type ConflictResolutionResult = {

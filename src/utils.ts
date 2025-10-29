@@ -50,8 +50,6 @@ export function compareSha<Env extends "remote" | "local">(
 	});
 }
 
-export const RECOGNIZED_BINARY_EXT = ["png", "jpg", "jpeg", "pdf"];
-
 /**
  * Git's well-known empty tree SHA - represents a tree with no files
  * This is a constant in Git that always represents an empty tree
@@ -154,4 +152,22 @@ export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
 		.setText("Remote changes in _fit");
 	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
 		.setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.");
+}
+
+/**
+ * Compute SHA-1 hash of content.
+ * Generic SHA-1 helper used for git-like blob hashing and file content comparison.
+ *
+ * NOTE: this content hashing doesn't exactly match git's and doesn't need to. It just needs to
+ * remain consistent with previous hashes of the same file/content.
+ *
+ * @param content - String content to hash
+ * @returns Hex-encoded SHA-1 hash
+ */
+export async function computeSha1(content: string): Promise<string> {
+	const enc = new TextEncoder();
+	const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));
+	const hashArray = Array.from(new Uint8Array(hashBuf));
+	const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+	return hashHex;
 }

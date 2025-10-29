@@ -184,10 +184,13 @@ Implement the `IVault` interface to support additional remote backends:
 interface IVault {
     // Read operations
     readFromSource(): Promise<FileState>;
-    readFileContent(path: string): Promise<string>;
+    readFileContent(pathOrSha: string): Promise<FileContent>;
 
     // Write operations
-    applyChanges(filesToWrite: FileToWrite[], filesToDelete: string[]): Promise<FileOpRecord[]>;
+    applyChanges(
+        filesToWrite: Array<{path: string, content: FileContent}>,
+        filesToDelete: Array<string>
+    ): Promise<FileOpRecord[]>;
 
     // Metadata
     shouldTrackState(path: string): boolean;
