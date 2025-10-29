@@ -4,7 +4,7 @@
  * Implements IVault for Obsidian vault files.
  */
 
-import { TFile, Vault } from "obsidian";
+import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { fitLogger } from "./logger";
@@ -199,7 +199,12 @@ export class LocalVault implements IVault {
 				await this.vault.createBinary(path, contentToArrayBuffer(content));
 				return {path, status: "created"};
 			}
-			throw new Error(`${path} writeFile operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
+			// File exists but is not a TFile - check if it's a folder
+			if (file instanceof TFolder) {
+				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+			}
+			// Unknown type - future-proof for new Obsidian abstract file types
+			throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
