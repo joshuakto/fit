@@ -266,26 +266,38 @@ export class FakeOctokit {
 }
 
 /**
+ * Scenarios where FakeLocalVault can be configured to fail.
+ * Used for testing error handling.
+ */
+type FailureScenario = 'read' | 'stat' | 'write';
+
+/**
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
 export class FakeLocalVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
-	private failureError: Error | null = null;
+	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
 
 	/**
-	 * Set the vault to fail on the next operation.
+	 * Configure the vault to fail on a specific operation.
+	 * @param scenario - Which operation should fail ('read', 'stat', 'write')
+	 * @param error - The error to throw when that operation is attempted
 	 */
-	setFailure(error: Error): void {
-		this.failureError = error;
+	seedFailureScenario(scenario: FailureScenario, error: Error): void {
+		this.failureScenarios.set(scenario, error);
 	}
 
 	/**
-	 * Clear any pending failure.
+	 * Clear a specific failure scenario or all failures if no scenario specified.
 	 */
-	clearFailure(): void {
-		this.failureError = null;
+	clearFailure(scenario?: FailureScenario): void {
+		if (scenario) {
+			this.failureScenarios.delete(scenario);
+		} else {
+			this.failureScenarios.clear();
+		}
 	}
 
 	/**
@@ -326,9 +338,9 @@ export class FakeLocalVault implements IVault {
 	}
 
 	async readFromSource(): Promise<Record<string, string>> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+		const error = this.failureScenarios.get('read');
+		if (error) {
+			this.clearFailure('read');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read from source: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
@@ -344,9 +356,9 @@ export class FakeLocalVault implements IVault {
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+		const error = this.failureScenarios.get('read');
+		if (error) {
+			this.clearFailure('read');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read file content: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
@@ -362,6 +374,12 @@ export class FakeLocalVault implements IVault {
 	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
 		// Track all stat operations (including duplicates) for performance testing
 		this.statLog.push(...paths);
+
+		// Check for seeded 'stat' failure scenario
+		const statFailure = this.failureScenarios.get('stat');
+		if (statFailure) {
+			throw statFailure;
+		}
 
 		const stats = await Promise.all(
 			paths.map(async (path) => {
@@ -407,9 +425,9 @@ export class FakeLocalVault implements IVault {
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+		const error = this.failureScenarios.get('write');
+		if (error) {
+			this.clearFailure('write');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to apply changes: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });

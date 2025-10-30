@@ -1,9 +1,9 @@
 /**
  * Tests to cover behaviors in the FitSync + real Fit components.
  *
- * These cover orchestration behaviors at the FitSync level but using the real impls of
- * Fit/FitPush/FitPull instead of test doubles, only swapping out lower-level IVault deps to avoid
- * overcomplicating them with non-orchestration details and keep them remote-agnostic.
+ * These cover orchestration behaviors at the FitSync level using the real impl of Fit instead of
+ * test doubles, only swapping out lower-level IVault deps to avoid overcomplicating them with
+ * non-orchestration details and keep them remote-agnostic.
  */
 
 import { FitSync } from './fitSync';
@@ -103,6 +103,28 @@ describe('FitSync', () => {
 		return result;
 	}
 
+	/**
+	 * Helper to find and verify a specific fitLogger.log() call.
+	 * Shows a clear diff if the message is found but metadata doesn't match.
+	 */
+	function expectLoggerCalledWith(message: string, expectedMetadata: any) {
+		const allCalls = fitLoggerLogSpy.mock.calls;
+		const matchingCall = allCalls.find(call => call[0] === message);
+
+		if (!matchingCall) {
+			// Message not found - show which messages were logged
+			const loggedMessages = allCalls.map(call => call[0]);
+			throw new Error(
+				`Expected logger to be called with message:\n  "${message}"\n\n` +
+				`But it was never called with that message. Logged messages:\n  ${loggedMessages.map(m => `"${m}"`).join('\n  ')}`
+			);
+		}
+
+		// Message found - check metadata
+		const actualMetadata = matchingCall[1];
+		expect(actualMetadata).toMatchObject(expectedMetadata);
+	}
+
 	beforeEach(() => {
 		// Create fresh vault instances for each test
 		localVault = new FakeLocalVault();
@@ -141,33 +163,22 @@ describe('FitSync', () => {
 		const testState = (expect as any).getState();
 		const testFailed = testState.currentTestName && testState.assertionCalls > testState.numPassingAsserts;
 
-		if (testFailed) {
-			const captures = (global as any).__testConsoleCapture;
-			if (captures && (captures.log.length > 0 || captures.error.length > 0)) {
-				// Restore console first so we can actually output
-				consoleLogSpy.mockRestore();
-				consoleErrorSpy.mockRestore();
+		const captures = (global as any).__testConsoleCapture;
+		// Restore console first (otherwise console.log won't work)
+		consoleLogSpy.mockRestore();
+		consoleErrorSpy.mockRestore();
+		if (testFailed && captures && (captures.log.length > 0 || captures.error.length > 0)) {
+			console.log('\n==================== CAPTURED CONSOLE OUTPUT (TEST FAILED) ====================');
 
-				console.log('\n==================== CAPTURED CONSOLE OUTPUT (TEST FAILED) ====================');
-
-				// Replay all captured logs in order
-				for (const [, args] of captures.log) {
-					console.log('[LOG]', ...args);
-				}
-				for (const [, args] of captures.error) {
-					console.error('[ERROR]', ...args);
-				}
-
-				console.log('================================================================================\n');
-			} else {
-				// No captures, just restore
-				consoleLogSpy.mockRestore();
-				consoleErrorSpy.mockRestore();
+			// Replay all captured logs in order
+			for (const [, args] of captures.log) {
+				console.log('[LOG]', ...args);
 			}
-		} else {
-			// Test passed, just restore silently
-			consoleLogSpy.mockRestore();
-			consoleErrorSpy.mockRestore();
+			for (const [, args] of captures.error) {
+				console.error('[ERROR]', ...args);
+			}
+
+			console.log('================================================================================\n');
 		}
 
 		// Clean up global
@@ -532,13 +543,9 @@ describe('FitSync', () => {
 			// Verify: Sync succeeded
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// Verify: Visible file pulled normally, hidden file saved to _fit/ for safety
-			// SAFETY: We can't verify hidden file doesn't exist locally (not tracked in localSha)
-			// so we conservatively save to _fit/ to avoid data loss
+			// Verify: Both files pulled normally (hidden file doesn't exist locally, so safe to write)
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// Hidden file saved to _fit/ (conservative - can't verify no local changes)
-				'_fit/.hidden-config.json': 'Remote hidden content',
-				// Normal file pulled directly
+				'.hidden-config.json': 'Remote hidden content',
 				'visible.md': 'Visible content'
 			});
 
@@ -599,7 +606,7 @@ describe('FitSync', () => {
 			// but we can verify current protection works, which would also protect the
 			// simulated scenarios.
 			//
-			// The key protection is: FitPull.prepareChangesToExecute() checks shouldTrackState()
+			// The key protection is: FitSync.applyRemoteChanges() checks shouldTrackState()
 			// before applying remote changes. If shouldTrackState returns false, it treats
 			// as a clash and saves to _fit/ instead of overwriting.
 
@@ -625,20 +632,20 @@ describe('FitSync', () => {
 			expect(remoteVault.getFile('.env')).toBe('API_KEY=new-remote-value');
 
 			// NOTE: Current protection works because shouldTrackState correctly returns false
-			// for hidden files, triggering the clash detection logic in FitPull.prepareChangesToExecute().
+			// for hidden files, triggering the clash detection logic in FitSync.applyRemoteChanges().
 			//
 			// However, the DANGEROUS scenarios (future hidden file tracking OR API misunderstanding)
 			// where shouldTrackState returns TRUE but file is not in localSha would BYPASS this protection.
-			// In those cases, FitPull.prepareChangesToExecute() would think the file is trackable,
+			// In those cases, FitSync.applyRemoteChanges() would think the file is trackable,
 			// see it's not in localSha, and blindly overwrite local file with remote version.
 			//
 			// REQUIRED ADDITIONAL PROTECTION:
-			// Before applying remote changes in FitPull.prepareChangesToExecute():
+			// Before applying remote changes in FitSync.applyRemoteChanges():
 			//   if (change.status === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
 			//     // File modified remotely but not in localSha - could be version migration issue
 			//     const exists = await vault.adapter.exists(path);
 			//     if (exists) {
-			//       fitLogger.log('[FitPull] File exists locally but not in localSha - treating as clash');
+			//       fitLogger.log('[FitSync] File exists locally but not in localSha - treating as clash');
 			//       // Save to _fit/ instead of overwriting
 			//       return false; // Skip overwrite
 			//     }
@@ -763,6 +770,84 @@ describe('FitSync', () => {
 			const statLog = localVault.getStatLog();
 			// Should not stat README.md (already tracked in localSha)
 			expect(statLog).not.toContain('README.md');
+		});
+
+		it('should save remote file to _fit/ when stat fails to check local existence (addition)', async () => {
+			// Hidden files aren't in localSha but DO pass shouldSyncPath(), so we stat() them.
+			// If stat() fails, conservatively treat file as "may exist" → save to _fit/.
+
+			// === SETUP: Empty initial state ===
+			const fitSync = createFitSync();
+
+			// === STEP 1: Remote adds a hidden file ===
+			remoteVault.setFile('.envrc', 'export PATH=$PWD/bin:$PATH');
+
+			// === STEP 2: Simulate stat() failing for this path ===
+			const statError = new Error('EACCES: permission denied');
+			// When stat is called for '.envrc', it should throw an error
+			localVault.seedFailureScenario('stat', statError);
+
+			// === STEP 3: Sync (pull) ===
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// === VERIFY: Sync succeeded (didn't crash on stat error) ===
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// === VERIFY: File saved to _fit/ (conservative fallback) ===
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				// File should be in _fit/ because we couldn't verify it doesn't exist
+				'_fit/.envrc': 'export PATH=$PWD/bin:$PATH'
+				// .envrc is NOT written directly (could be overwriting existing file)
+			});
+
+			// Verify consolidated stat failure logging
+			expectLoggerCalledWith(
+				'[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash',
+				{
+					error: statError,
+					filesMovedToFit: ['.envrc']
+				}
+			);
+		});
+
+		it('should skip deletion when stat fails to check local existence (deletion)', async () => {
+			// If stat() fails, deletion is skipped. Main observable difference is in logging
+			// (logs consolidated stat failure rather than "already deleted").
+
+			const fitSync = createFitSync();
+
+			// Remote has a hidden file initially
+			await remoteVault.setFile('.editorconfig', '# Config\n');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Remote deletes the hidden file
+			await remoteVault.applyChanges([], ['.editorconfig']);
+
+			// Simulate stat() failing
+			const statError = new Error('EIO: input/output error');
+			localVault.seedFailureScenario('stat', statError);
+
+			// Sync (pull)
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// Verify sync succeeded (didn't crash on stat error)
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Verify deletion was skipped (file still exists from first sync)
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'.editorconfig': '# Config\n'
+			});
+
+			// Verify consolidated stat failure logging
+			expectLoggerCalledWith(
+				'[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash',
+				{
+					error: statError,
+					deletionsSkipped: ['.editorconfig']
+				}
+			);
 		});
 	});
 
@@ -906,7 +991,7 @@ describe('FitSync', () => {
 
 			// Make localVault.applyChanges throw a filesystem error
 			const fsError = new Error("EACCES: permission denied, write 'test.md'");
-			localVault.setFailure(fsError);
+			localVault.seedFailureScenario('read', fsError);
 
 			const mockNotice = createMockNotice();
 
