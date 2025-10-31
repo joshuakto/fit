@@ -50,19 +50,19 @@ A "vault" represents a complete collection of synced files, whether stored local
   - Creates commits via `applyChanges()` (creates blobs, builds trees, creates commits, updates refs)
   - Handles empty repository case
 
-### Sync Engine (fit.ts, fitSync.ts, fitPull.ts, fitPush.ts)
+### Sync Engine (fitSync.ts, fit.ts)
 **Purpose**: Core synchronization logic
 - **Fit**: Coordinator between vaults with clean abstractions
   - Owns 💾 LocalVault and ☁️ RemoteVault instances (currently RemoteGitHubVault)
   - Provides `getLocalChanges()` / `getRemoteChanges()` abstractions
   - Implements sync policy via `shouldSyncPath()` (ignores paths like 📁 `_fit/` and `.obsidian/`)
+  - Detects clashes between local and remote changes via `getClashedChanges()`
 
 - **FitSync**: High-level sync workflow and 🔀 conflict resolution
-  - Uses `Fit.getLocalChanges()` / `getRemoteChanges()` for change detection
-  - Orchestrates bidirectional sync with 🔀 conflict handling
-
-- **FitPull/FitPush**: Pull-only / push-only operations
-  - Uses same abstractions for consistency
+  - Orchestrates unified bidirectional sync with 🔀 conflict handling
+  - All clash detection happens inline at the start of sync
+  - Phases: detect clashes → batch stat filesystem → resolve conflicts → push → pull → persist
+  - Handles both sync and push-only operations
 
 **Remote Backend Integration**:
 - Current implementation: RemoteGitHubVault using `@octokit/core` with automatic retry handling
@@ -184,10 +184,13 @@ Implement the `IVault` interface to support additional remote backends:
 interface IVault {
     // Read operations
     readFromSource(): Promise<FileState>;
-    readFileContent(path: string): Promise<string>;
+    readFileContent(pathOrSha: string): Promise<FileContent>;
 
     // Write operations
-    applyChanges(filesToWrite: FileToWrite[], filesToDelete: string[]): Promise<FileOpRecord[]>;
+    applyChanges(
+        filesToWrite: Array<{path: string, content: FileContent}>,
+        filesToDelete: Array<string>
+    ): Promise<FileOpRecord[]>;
 
     // Metadata
     shouldTrackState(path: string): boolean;

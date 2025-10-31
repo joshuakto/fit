@@ -4,8 +4,11 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { VaultError } from './vault';
+import { IVault, VaultError } from './vault';
 import { FileOpRecord } from './fitTypes';
+import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './contentEncoding';
+import { extractExtension, computeSha1 } from './utils';
+import { LocalVault } from './localVault';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -263,59 +266,81 @@ export class FakeOctokit {
 }
 
 /**
+ * Scenarios where FakeLocalVault can be configured to fail.
+ * Used for testing error handling.
+ */
+type FailureScenario = 'read' | 'stat' | 'write';
+
+/**
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
-export class FakeLocalVault {
-	private files: Map<string, string> = new Map(); // path -> content
-	private failureError: Error | null = null;
+export class FakeLocalVault implements IVault {
+	private files: Map<string, FileContent> = new Map();
+	private failureScenarios: Map<FailureScenario, Error> = new Map();
+	private statLog: string[] = []; // Track all stat operations for performance testing
 
 	/**
-	 * Set the vault to fail on the next operation.
+	 * Configure the vault to fail on a specific operation.
+	 * @param scenario - Which operation should fail ('read', 'stat', 'write')
+	 * @param error - The error to throw when that operation is attempted
 	 */
-	setFailure(error: Error): void {
-		this.failureError = error;
+	seedFailureScenario(scenario: FailureScenario, error: Error): void {
+		this.failureScenarios.set(scenario, error);
 	}
 
 	/**
-	 * Clear any pending failure.
+	 * Clear a specific failure scenario or all failures if no scenario specified.
 	 */
-	clearFailure(): void {
-		this.failureError = null;
+	clearFailure(scenario?: FailureScenario): void {
+		if (scenario) {
+			this.failureScenarios.delete(scenario);
+		} else {
+			this.failureScenarios.clear();
+		}
 	}
 
 	/**
 	 * Set file content directly (for test setup).
 	 */
-	setFile(path: string, content: string): void {
-		this.files.set(path, content);
+	setFile(path: string, content: string | PlainTextContent | FileContent): void {
+		// Normalize to logical encoding based on path (for convenient test assertions).
+		const detectedExtension = extractExtension(path);
+		const isBinary = detectedExtension && isBinaryExtension(detectedExtension);
+
+		let fileContent: FileContent;
+		if (content instanceof FileContent) {
+			// Normalize: binary files stay as-is, text files convert to plaintext
+			fileContent = isBinary ? content : FileContent.fromPlainText(content.toPlainText());
+		} else {
+			// Create FileContent from string: binary → base64, text → plaintext
+			fileContent = isBinary
+				? FileContent.fromBase64(Content.encodeToBase64(content))
+				: FileContent.fromPlainText(content);
+		}
+		this.files.set(path, fileContent);
 	}
 
-	async writeFile(path: string, content: string): Promise<FileOpRecord> {
-		// Simple implementation for testing - content is already in correct format (base64 for binary)
+	async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
+		// FakeLocalVault receives Base64Content (matching real LocalVault signature)
+		// Decode to plain text for storage in fake vault
 		const exists = this.files.has(path);
-		this.files.set(path, content);
+		this.setFile(path, Content.decodeFromBase64(content));
 		return {path, status: exists ? "changed" : "created"};
 	}
 
 	/**
-	 * Get file content directly (for test assertions).
+	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */
-	getFile(path: string): string | undefined {
-		return this.files.get(path);
-	}
-
-	/**
-	 * Get all file paths (for test assertions).
-	 */
-	getAllPaths(): string[] {
-		return Array.from(this.files.keys());
+	getAllFilesAsRaw(): Record<string, Base64Content | PlainTextContent> {
+		return Object.fromEntries([...this.files].map(
+			([path, content]) => [path, content.toRaw().content]));
 	}
 
 	async readFromSource(): Promise<Record<string, string>> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+		const error = this.failureScenarios.get('read');
+		if (error) {
+			this.clearFailure('read');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read from source: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
@@ -324,16 +349,16 @@ export class FakeLocalVault {
 		const state: Record<string, string> = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
-				state[path] = await this.computeSha(content);
+				state[path] = await LocalVault.fileSha1(path, content);
 			}
 		}
 		return state;
 	}
 
-	async readFileContent(path: string): Promise<string> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+	async readFileContent(path: string): Promise<FileContent> {
+		const error = this.failureScenarios.get('read');
+		if (error) {
+			this.clearFailure('read');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read file content: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
@@ -346,37 +371,63 @@ export class FakeLocalVault {
 		return content;
 	}
 
-	/**
-	 * Check if file exists (simulates vault.adapter.exists())
-	 */
-	async fileExists(path: string): Promise<boolean> {
-		return this.files.has(path);
+	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
+		// Track all stat operations (including duplicates) for performance testing
+		this.statLog.push(...paths);
+
+		// Check for seeded 'stat' failure scenario
+		const statFailure = this.failureScenarios.get('stat');
+		if (statFailure) {
+			throw statFailure;
+		}
+
+		const stats = await Promise.all(
+			paths.map(async (path) => {
+				// Is it a file?
+				if (this.files.has(path)) {
+					return [path, 'file' as const] as const;
+				}
+				// Is it a folder? (any file starts with "path/")
+				for (const filePath of this.files.keys()) {
+					if (filePath.startsWith(path + '/')) {
+						return [path, 'folder' as const] as const;
+					}
+				}
+				return [path, null] as const;
+			})
+		);
+		return new Map(stats);
 	}
 
 	/**
-	 * Read file content via adapter (works for hidden files too).
-	 * Returns content as base64 for consistency.
+	 * Get the log of all stat operations performed (for performance testing).
 	 */
-	async readFileContentViaAdapter(path: string): Promise<string> {
-		const content = this.files.get(path);
-		if (content === undefined) {
-			throw new Error(`File not found: ${path}`);
-		}
-		// Content is already stored as plain text in fake vault
-		// Convert to base64 to match real LocalVault behavior
-		const encoder = new TextEncoder();
-		const bytes = encoder.encode(content);
-		// Simple base64 encode
-		return btoa(String.fromCharCode(...bytes));
+	getStatLog(): string[] {
+		return [...this.statLog];
+	}
+
+	/**
+	 * Clear the stat log (useful between test phases).
+	 */
+	clearStatLog(): void {
+		this.statLog = [];
+	}
+
+	/**
+	 * Clear all files from the vault (useful for test setup).
+	 */
+	clear(): void {
+		this.files.clear();
+		this.statLog = [];
 	}
 
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: string}>,
+		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
+		const error = this.failureScenarios.get('write');
+		if (error) {
+			this.clearFailure('write');
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to apply changes: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
@@ -407,7 +458,7 @@ export class FakeLocalVault {
 			}
 
 			const existed = this.files.has(file.path);
-			this.files.set(file.path, file.content);
+			this.setFile(file.path, file.content);
 			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
@@ -426,22 +477,15 @@ export class FakeLocalVault {
 		const parts = path.split('/');
 		return !parts.some(part => part.startsWith('.'));
 	}
-
-	private async computeSha(content: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-	}
 }
 
 /**
  * Fake implementation of IVault for remote testing.
  * Simulates a remote vault (like GitHub) with in-memory file storage and commit tracking.
  */
-export class FakeRemoteVault {
-	private files: Map<string, string> = new Map(); // path -> content
-	private blobShas: Map<string, string> = new Map(); // blob SHA -> content
+export class FakeRemoteVault implements IVault {
+	private files: Map<string, FileContent> = new Map();
+	private blobShas: Map<string, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: string = 'initial-commit';
 	private failureError: Error | null = null;
 	private owner: string;
@@ -469,27 +513,43 @@ export class FakeRemoteVault {
 	}
 
 	/**
+	 * Clear all files from the vault (useful for test setup).
+	 */
+	clear(): void {
+		this.files.clear();
+		this.blobShas.clear();
+		// Don't reset commitSha - it auto-increments
+	}
+
+	/**
 	 * Set file content directly (for test setup).
 	 */
-	async setFile(path: string, content: string): Promise<void> {
-		this.files.set(path, content);
+	async setFile(path: string, content: string | FileContent): Promise<void> {
+		let fileContent;
+		if (content instanceof FileContent) {
+			fileContent = content;
+		} else {
+			fileContent = FileContent.fromPlainText(content);
+		}
+		this.files.set(path, fileContent);
 		// Store blob SHA -> content mapping for readFileContent
-		const sha = await this.computeSha(content);
-		this.blobShas.set(sha, content);
+		const sha = await computeSha1(path + fileContent.toBase64());
+		this.blobShas.set(sha, fileContent.toBase64());
 	}
 
 	/**
 	 * Get file content directly (for test assertions).
 	 */
 	getFile(path: string): string | undefined {
-		return this.files.get(path);
+		return this.files.get(path)?.toPlainText();
 	}
 
 	/**
-	 * Get all file paths (for test assertions).
+	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */
-	getAllPaths(): string[] {
-		return Array.from(this.files.keys());
+	getAllFilesAsRaw(): Record<string, Base64Content | PlainTextContent> {
+		return Object.fromEntries([...this.files].map(
+			([path, content]) => [path, content.toRaw().content]));
 	}
 
 	/**
@@ -511,7 +571,7 @@ export class FakeRemoteVault {
 	 */
 	async getCommitTreeSha(_ref: string): Promise<string> {
 		// Return a fake tree SHA based on current state
-		return await this.computeSha(JSON.stringify(Array.from(this.files.keys())));
+		return await computeSha1(JSON.stringify(Array.from(this.files.keys())));
 	}
 
 	/**
@@ -547,12 +607,14 @@ export class FakeRemoteVault {
 	 * Create tree node from content (stub for RemoteGitHubVault compatibility).
 	 * This method stores the content in the fake vault.
 	 */
-	async createTreeNodeFromContent(path: string, content: string, _remoteTree: any[], _encoding?: string): Promise<any> {
+	async createTreeNodeFromContent(path: string, content: FileContent | null, _remoteTree: any[], _encoding?: string): Promise<any> {
+		if (content === null) {
+			this.files.delete(path);
+			return null;
+		}
 		// Store the file content so it persists in the fake vault
-		this.files.set(path, content);
-		const sha = await this.computeSha(content);
-		// Store blob SHA -> content mapping for readFileContent
-		this.blobShas.set(sha, content);
+		this.setFile(path, content);
+		const sha = await computeSha1(path + content.toBase64());
 		return { path, sha, mode: '100644', type: 'blob' };
 	}
 
@@ -566,10 +628,11 @@ export class FakeRemoteVault {
 		const state: Record<string, string> = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
-				const sha = await this.computeSha(content);
+				const base64Content = content.toBase64();
+				const sha = await computeSha1(path + base64Content);
 				state[path] = sha;
 				// Store blob SHA -> content mapping for readFileContent
-				this.blobShas.set(sha, content);
+				this.blobShas.set(sha, base64Content);
 			}
 		}
 		return state;
@@ -583,7 +646,7 @@ export class FakeRemoteVault {
 		return this.readFromSource();
 	}
 
-	async readFileContent(pathOrSha: string): Promise<string> {
+	async readFileContent(pathOrSha: string): Promise<FileContent> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
@@ -593,7 +656,7 @@ export class FakeRemoteVault {
 		// Check if it's a blob SHA first (real RemoteGitHubVault uses blob SHAs)
 		const blobContent = this.blobShas.get(pathOrSha);
 		if (blobContent !== undefined) {
-			return blobContent;
+			return FileContent.fromBase64(blobContent);
 		}
 
 		// Fall back to path-based lookup (for backward compatibility)
@@ -601,28 +664,26 @@ export class FakeRemoteVault {
 		if (pathContent === undefined) {
 			throw new Error(`File not found: ${pathOrSha}`);
 		}
-		return pathContent;
+		// Convert to base64 to match GitHub API behavior.
+		return FileContent.fromBase64(pathContent.toBase64());
 	}
 
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: string}>,
+		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<Array<{path: string, status: string}>> {
+	): Promise<FileOpRecord[]> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		const ops: Array<{path: string, status: string}> = [];
+		const ops: FileOpRecord[] = [];
 
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
-			this.files.set(file.path, file.content);
-			// Store blob SHA -> content mapping for readFileContent
-			const sha = await this.computeSha(file.content);
-			this.blobShas.set(sha, file.content);
-			ops.push({ path: file.path, status: existed ? 'modified' : 'created' });
+			this.setFile(file.path, file.content);
+			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {
@@ -633,9 +694,10 @@ export class FakeRemoteVault {
 		}
 
 		// Update commit SHA to simulate a new commit
-		this.commitSha = await this.computeSha(
+		// Compute stable hash from sorted file paths and their base64 content
+		this.commitSha = await computeSha1(
 			Array.from(this.files.entries())
-				.map(([path, content]) => `${path}:${content}`)
+				.map(([path, content]) => `${path}:${content.toBase64()}`)
 				.join('\n')
 		);
 
@@ -645,12 +707,5 @@ export class FakeRemoteVault {
 	shouldTrackState(_path: string): boolean {
 		// No filtering for remote vault
 		return true;
-	}
-
-	private async computeSha(content: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	}
 }

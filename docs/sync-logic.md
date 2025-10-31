@@ -219,7 +219,7 @@ remoteChanges = [
   { path: ".obsidian/app.json", content: "{\"theme\":\"dark\"}" }
 ]
 
-// Filtering applied in FitPull.prepareChangesToExecute():
+// Filtering applied in FitSync.applyRemoteChanges():
 if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
   // Save to _fit/.obsidian/app.json instead of .obsidian/app.json
   resolvedChanges.push({
@@ -279,47 +279,54 @@ Files in `.obsidian/` are filtered by BOTH:
 **Path filtering:**
 - [`Fit.shouldSyncPath()`](../src/fit.ts) - Protected path check
 - [`LocalVault.shouldTrackState()`](../src/localVault.ts) - Hidden file check
-- [`FitSync.performPreSyncChecks()`](../src/fitSync.ts) - Filters local changes only
-- [`FitPull.prepareChangesToExecute()`](../src/fitPull.ts) - Handles remote protected/hidden files
+- [`FitSync.sync()`](../src/fitSync.ts) - Filters local changes before sync
+- [`FitSync.applyRemoteChanges()`](../src/fitSync.ts) - Handles remote protected/hidden files with safety checks
 
 **Decision flow:**
 ```mermaid
 flowchart TD
     Start[File from Remote] --> Protected{shouldSyncPath?}
-    Protected -->|No| SaveProtected[📁 Save to _fit/path]
+    Protected -->|No| SaveClash[📁 Save to _fit/path]
     Protected -->|Yes| Trackable{shouldTrackState?}
 
-    Trackable -->|No| SaveHidden[📁 Save to _fit/path]
+    Trackable -->|No| SaveClash
     Trackable -->|Yes| Normal[Apply normally]
 
-    SaveProtected --> End[Done]
-    SaveHidden --> End
+    SaveClash --> End[Done]
     Normal --> End
 ```
 
 ## Sync Decision Tree
 
-### Pre-Sync Checks
+### Unified Sync Flow
 
-Before syncing, FIT determines what type of sync operation is needed:
+FIT uses a unified sync flow that handles all scenarios in one consistent path:
 
 ```mermaid
 flowchart TD
-    Start[Start Sync] --> CheckChanges{Check for<br/>💾 local & ☁️ remote changes}
+    Start[Start Sync] --> Gather[Gather local & remote changes]
+    Gather --> EarlyExit{Any changes?}
 
-    CheckChanges -->|No changes| InSync[✓ In Sync]
-    CheckChanges -->|💾 Local only| Push[⬆️ Push to Remote]
-    CheckChanges -->|☁️ Remote only| Pull[⬇️ Pull to Local]
-    CheckChanges -->|Commit SHA only| UpdateCache[Update 📦 Cache]
-    CheckChanges -->|Both changed| CheckClash{Same files<br/>modified?}
+    EarlyExit -->|No| InSync[✓ In Sync]
+    EarlyExit -->|Yes| DetectClashes[Detect ALL clashes upfront]
 
-    CheckClash -->|Different files| BothSync[⬆️⬇️ Push & Pull]
-    CheckClash -->|Same files| Resolve[🔀 Conflict Resolution]
+    DetectClashes --> BatchStat[Batch stat filesystem<br/>for safety verification]
+    BatchStat --> ResolveConflicts[Resolve conflicts<br/>📁 Write to _fit/]
+
+    ResolveConflicts --> Push[⬆️ Push local changes]
+    Push --> Pull[⬇️ Pull remote changes<br/>with safety checks]
+    Pull --> Persist[Persist state atomically]
 
     InSync --> Done[Done]
+    Persist --> Done
 ```
 
-**Implementation:** [`performPreSyncChecks()` in fitSync.ts](../src/fitSync.ts)
+**Key improvements:**
+- **Single execution path**: Compatible changes and conflicts handled in unified flow
+- **Batch operations**: All filesystem stat checks done in one batch for efficiency
+- **Atomic persistence**: State only updated on successful completion
+
+**Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
 
 ### Sync Operation Types
 

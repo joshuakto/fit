@@ -4,11 +4,34 @@
  * Implements IVault for Obsidian vault files.
  */
 
-import { arrayBufferToBase64, base64ToArrayBuffer, TFile, Vault } from "obsidian";
+import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, FileState, VaultError } from "./vault";
 import { FileOpRecord } from "./fitTypes";
-import { RECOGNIZED_BINARY_EXT } from "./utils";
 import { fitLogger } from "./logger";
+import { Base64Content, FileContent } from "./contentEncoding";
+import { contentToArrayBuffer, readFileContent } from "./obsidianHelpers";
+import { computeSha1 } from "./utils";
+
+/**
+ * Frozen list of binary file extensions for SHA calculation consistency.
+ * IMPORTANT: This list is FROZEN to ensure SHA calculations remain stable even if
+ * contentEncoding.ts adds new binary extensions in the future. Adding new extensions
+ * there should NOT change how we compute SHAs for existing files.
+ *
+ * DO NOT modify this list unless you implement a SHA migration strategy.
+ */
+const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
+
+/**
+ * Check if a file extension is considered binary for SHA calculation purposes.
+ * Uses FROZEN_BINARY_EXT_FOR_SHA to ensure SHA consistency.
+ *
+ * @param extension - File extension WITHOUT leading dot (e.g., "png", not ".png")
+ */
+function isBinaryExtensionForSha(extension: string): boolean {
+	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
+	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
+}
 
 /**
  * Local vault implementation for Obsidian.
@@ -55,6 +78,24 @@ export class LocalVault implements IVault {
 	}
 
 	/**
+	 * Batch stat operation for multiple paths.
+	 * Returns the type of each path in parallel for performance.
+	 *
+	 * @param paths - Paths to check
+	 * @returns Map of path to type ('file' | 'folder'), or null if path doesn't exist
+	 */
+	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
+		const stats = await Promise.all(
+			paths.map(async (path) => {
+				const stat = await this.vault.adapter.stat(path);
+				const type = stat ? stat.type : null;
+				return [path, type] as const;
+			})
+		);
+		return new Map(stats);
+	}
+
+	/**
 	 * Scan vault, update latest known state, and return it
 	 */
 	async readFromSource(): Promise<FileState> {
@@ -75,7 +116,9 @@ export class LocalVault implements IVault {
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
 			trackedPaths.map(async (path): Promise<[string, string]> => {
-				return [path, await this.computeFileLocalSha(path)];
+				const sha = await LocalVault.fileSha1(
+					path, await readFileContent(this.vault, path));
+				return [path, sha];
 			})
 		);
 
@@ -94,12 +137,15 @@ export class LocalVault implements IVault {
 	 * Compute SHA-1 hash of file path + content
 	 * (Matches GitHub's blob SHA format)
 	 */
-	private async fileSha1(fileContent: string): Promise<string> {
-		const enc = new TextEncoder();
-		const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(fileContent));
-		const hashArray = Array.from(new Uint8Array(hashBuf));
-		const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-		return hashHex;
+	// NOTE: Public visibility for tests.
+	static fileSha1(path: string, fileContent: FileContent): Promise<string> {
+		const extension = path.split('.').pop() || '';
+		const contentToHash = (extension && isBinaryExtensionForSha(extension))
+			// Use base64 representation for consistent hashing
+			? fileContent.toBase64()
+			// Preserve plaintext SHA logic for non-binary case.
+			: fileContent.toPlainText();
+		return computeSha1(path + contentToHash);
 	}
 
 	/**
@@ -112,22 +158,6 @@ export class LocalVault implements IVault {
 		} else {
 			throw new Error(`Attempting to read ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
 		}
-	}
-
-	/**
-	 * Compute SHA for a single file in the vault
-	 */
-	private async computeFileLocalSha(path: string): Promise<string> {
-		const file = await this.getTFile(path);
-		let content: string;
-
-		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
-			content = arrayBufferToBase64(await this.vault.readBinary(file));
-		} else {
-			content = await this.vault.read(file);
-		}
-
-		return await this.fileSha1(path + content);
 	}
 
 	/**
@@ -159,38 +189,40 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Read file content for a specific path
+	 *
+	 * Returns content in format expected by RemoteGitHubVault.applyChanges():
+	 * - Binary files: Base64Content (GitHub expects base64)
+	 * - Text files: PlainTextContent (GitHub accepts utf-8)
 	 */
-	async readFileContent(pathOrSha: string): Promise<string> {
+	async readFileContent(pathOrSha: string): Promise<FileContent> {
 		// LocalVault only uses paths (not blob SHAs)
-		const file = await this.getTFile(pathOrSha);
-
-		if (RECOGNIZED_BINARY_EXT.includes(file.extension)) {
-			return arrayBufferToBase64(await this.vault.readBinary(file));
-		} else {
-			return await this.vault.read(file);
-		}
+		return readFileContent(this.vault, pathOrSha);
 	}
 
 	/**
 	 * Write or update a file
 	 * @param path - File path to write
-	 * @param content - File content (base64 encoded for binary files)
+	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
 	 * @returns Record of file operation performed
 	 */
-	async writeFile(path: string, content: string): Promise<FileOpRecord> {
+	async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
-			// TODO: add capability for creating folder from remote
-			// TODO: Should this check extension and handle text case instead of assuming binary?
+
 			if (file && file instanceof TFile) {
-				await this.vault.modifyBinary(file, base64ToArrayBuffer(content));
+				await this.vault.modifyBinary(file, contentToArrayBuffer(content));
 				return {path, status: "changed"};
 			} else if (!file) {
 				await this.ensureFolderExists(path);
-				await this.vault.createBinary(path, base64ToArrayBuffer(content));
+				await this.vault.createBinary(path, contentToArrayBuffer(content));
 				return {path, status: "created"};
 			}
-			throw new Error(`${path} writeFile operation unsuccessful, vault abstractFile on ${path} is of type ${typeof file}`);
+			// File exists but is not a TFile - check if it's a folder
+			if (file instanceof TFolder) {
+				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+			}
+			// Unknown type - future-proof for new Obsidian abstract file types
+			throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
@@ -226,15 +258,16 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Apply a batch of changes (writes and deletes)
+	 * Expects all content to be Base64Content (from GitHub API)
 	 */
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: string}>,
+		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
 		// Process file additions or updates
 		const writeOperations = filesToWrite.map(async ({path, content}) => {
 			try {
-				return await this.writeFile(path, content);
+				return await this.writeFile(path, content.toBase64());
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				throw new Error(`Failed to write to ${path}: ${message}`);

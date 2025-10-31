@@ -6,6 +6,7 @@ import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
 import { EMPTY_TREE_SHA } from "./utils";
 import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
+import { FileContent } from "./contentEncoding";
 
 describe("RemoteGitHubVault", () => {
 	let fakeOctokit: FakeOctokit;
@@ -99,7 +100,7 @@ describe("RemoteGitHubVault", () => {
 
 				const content = await vault.readFileContent("sha123");
 
-				expect(content).toBe("base64content");
+				expect(content).toEqual(FileContent.fromBase64("base64content"));
 			});
 		});
 	});
@@ -110,7 +111,7 @@ describe("RemoteGitHubVault", () => {
 				fakeOctokit.setupInitialState("parent123", "tree456", []);
 
 				const fileOps = await vault.applyChanges(
-					[{ path: "newfile.md", content: "Hello World" }],
+					[{ path: "newfile.md", content: FileContent.fromPlainText("Hello World") }],
 					[]
 				);
 
@@ -137,7 +138,7 @@ describe("RemoteGitHubVault", () => {
 				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
 
 				const fileOps = await vault.applyChanges(
-					[{ path: "existing.md", content: "Updated content" }],
+					[{ path: "existing.md", content: FileContent.fromPlainText("Updated content") }],
 					[]
 				);
 
@@ -171,7 +172,7 @@ describe("RemoteGitHubVault", () => {
 				fakeOctokit.setupInitialState("parent123", "tree456", []);
 
 				const fileOps = await vault.applyChanges(
-					[{ path: "image.png", content: "iVBORw0KGgo=" }],
+					[{ path: "image.png", content: FileContent.fromBase64("iVBORw0KGgo=") }],
 					[]
 				);
 
@@ -189,7 +190,7 @@ describe("RemoteGitHubVault", () => {
 				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
 
 				const fileOps = await vault.applyChanges(
-					[{ path: "file.md", content: "Same content" }],
+					[{ path: "file.md", content: FileContent.fromPlainText("Same content") }],
 					[]
 				);
 
@@ -223,8 +224,8 @@ describe("RemoteGitHubVault", () => {
 
 				const fileOps = await vault.applyChanges(
 					[
-						{ path: "new.md", content: "New file" },
-						{ path: "existing.md", content: "Updated" }
+						{ path: "new.md", content: FileContent.fromPlainText("New file") },
+						{ path: "existing.md", content: FileContent.fromPlainText("Updated") }
 					],
 					["todelete.md"]
 				);

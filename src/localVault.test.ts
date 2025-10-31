@@ -8,8 +8,10 @@
  */
 
 import { LocalVault } from './localVault';
-import { TFile, Vault } from 'obsidian';
+import { TFile, TFolder, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
+import { Content, FileContent } from './contentEncoding';
+import { arrayBufferToContent } from './obsidianHelpers';
 
 describe('LocalVault', () => {
 	let mockVault: jest.Mocked<Vault>;
@@ -89,7 +91,14 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const state = await localVault.readFromSource();
 
-			expect(Object.keys(state).sort()).toEqual(['note1.md', 'note2.txt']);
+			expect(state).toMatchObject({
+				'note1.md': expect.anything(),
+				'note2.txt': expect.anything()
+			});
+			// Frozen SHA behavior: Non-binary files use path + plaintext
+			// Binary files (png, jpg, jpeg, pdf) use path + base64
+			expect(state['note1.md']).toMatchInlineSnapshot(
+				`"b8b1b70958bbc0b6f0305f4bc57a8393ba333130"`);
 		});
 
 		it('should exclude ignored paths from state', async () => {
@@ -115,7 +124,8 @@ describe('LocalVault', () => {
 		it('should handle binary files', async () => {
 			const mockFiles = [
 				StubTFile.ofPath('image.png'),
-				StubTFile.ofPath('doc.pdf')
+				StubTFile.ofPath('doc.pdf'),
+				StubTFile.ofPath('archive.zip')
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
@@ -127,7 +137,17 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const state = await localVault.readFromSource();
 
-			expect(Object.keys(state).sort()).toEqual(['doc.pdf', 'image.png']);
+			expect(state).toMatchObject({
+				'doc.pdf': expect.anything(),
+				'image.png': expect.anything(),
+				'archive.zip': expect.anything()
+			});
+			expect(state['doc.pdf']).toMatchInlineSnapshot(
+				`"acf8daf266d952b03fb02280dc5c92d8e4e51ad7"`);
+			expect(state['image.png']).toMatchInlineSnapshot(
+				`"fe954d839c04f84471b6dd90c945e55a6035de80"`);
+			expect(state['archive.zip']).toMatchInlineSnapshot(
+				`"e67146506d2b18d3414a28ddc204c9dda6267080"`);
 		});
 
 		it('should handle empty vault', async () => {
@@ -157,7 +177,7 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const content = await localVault.readFileContent('note.md');
 
-			expect(content).toBe(expectedContent);
+			expect(content).toEqual(FileContent.fromPlainText(expectedContent));
 			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
 		});
 
@@ -171,7 +191,7 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const content = await localVault.readFileContent('image.png');
 
-			expect(typeof content).toBe('string'); // Should be base64 encoded
+			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
 		});
 
@@ -181,7 +201,7 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
-				'Attempting to read missing.md from local drive as TFile but not successful'
+				'File not found: missing.md'
 			);
 		});
 	});
@@ -199,7 +219,7 @@ describe('LocalVault', () => {
 			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
 
 			const localVault = new LocalVault(mockVault);
-			const result = await localVault.writeFile('new.md', 'content');
+			const result = await localVault.writeFile('new.md', Content.encodeToBase64('content'));
 
 			expect(result).toEqual({ path: 'new.md', status: 'created' });
 			expect(mockVault.createBinary).toHaveBeenCalled();
@@ -211,7 +231,7 @@ describe('LocalVault', () => {
 			(mockVault.modifyBinary as jest.Mock).mockResolvedValue(undefined);
 
 			const localVault = new LocalVault(mockVault);
-			const result = await localVault.writeFile('existing.md', 'new content');
+			const result = await localVault.writeFile('existing.md', Content.encodeToBase64('new content'));
 
 			expect(result).toEqual({ path: 'existing.md', status: 'changed' });
 			expect(mockVault.modifyBinary).toHaveBeenCalledWith(mockFile, expect.anything());
@@ -228,7 +248,7 @@ describe('LocalVault', () => {
 			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
 
 			const localVault = new LocalVault(mockVault);
-			await localVault.writeFile('folder/subfolder/new.md', 'content');
+			await localVault.writeFile('folder/subfolder/new.md', Content.encodeToBase64('content'));
 
 			expect(mockVault.createFolder).toHaveBeenCalledWith('folder/subfolder');
 			expect(mockVault.createBinary).toHaveBeenCalled();
@@ -239,10 +259,69 @@ describe('LocalVault', () => {
 			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
 
 			const localVault = new LocalVault(mockVault);
-			await localVault.writeFile('root.md', 'content');
+			await localVault.writeFile('root.md', Content.encodeToBase64('content'));
 
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
 			expect(mockVault.createBinary).toHaveBeenCalled();
+		});
+
+		it('should throw error when trying to write file where folder exists', async () => {
+			// Scenario: Try to write file "notes" but folder "notes/" already exists
+			// Expected: Should throw error because getAbstractFileByPath returns a folder (not TFile, not null)
+
+			// Use the mocked TFolder class
+			const mockFolder = new TFolder();
+			mockFolder.path = 'notes';
+			mockVault.getAbstractFileByPath.mockReturnValue(mockFolder as any);
+
+			const localVault = new LocalVault(mockVault);
+
+			// The code checks instanceof TFolder
+			await expect(localVault.writeFile('notes', Content.encodeToBase64('content'))).rejects.toThrow(
+				/Cannot write file to notes: a folder with that name already exists/
+			);
+		});
+
+		it('should fail when parent path is a file instead of folder', async () => {
+			// Scenario: Try to write "config/settings.json" but "config" is a file, not a folder
+			// Current behavior: ensureFolderExists finds "config" exists (as file) and skips createFolder
+			// Then vault.createBinary fails with error when trying to create file with invalid parent
+			// IMPROVEMENT: Could detect earlier in ensureFolderExists by checking instanceof TFolder
+
+			const mockFile = StubTFile.ofPath('config');
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				if (path === 'config') {
+					return mockFile as TFile;  // Returns a file, not a folder
+				}
+				if (path === 'config/settings.json') {
+					return null;  // File doesn't exist yet
+				}
+				return null;
+			});
+
+			// Mock createBinary to fail for paths under 'config/' (parent is a file, not a folder)
+			mockVault.createBinary = jest.fn().mockImplementation((path: string) => {
+				if (path.startsWith('config/')) {
+					throw new Error('Folder already exists as file: config');
+				}
+				return Promise.resolve(undefined);
+			});
+
+			const localVault = new LocalVault(mockVault);
+
+			// Should throw VaultError.filesystem from createBinary
+			await expect(localVault.writeFile('config/settings.json', Content.encodeToBase64('content')))
+				.rejects.toMatchObject({
+					name: 'VaultError',
+					type: 'filesystem',
+					message: expect.stringContaining('config')
+				});
+
+			// ensureFolderExists did NOT call createFolder because "config" exists (as file, but check doesn't verify type)
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+
+			// createBinary was attempted and failed
+			expect(mockVault.createBinary).toHaveBeenCalledWith('config/settings.json', expect.any(ArrayBuffer));
 		});
 	});
 
@@ -298,8 +377,8 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault);
 			const results = await localVault.applyChanges(
 				[
-					{ path: 'new.md', content: 'new content' },
-					{ path: 'existing.md', content: 'updated content' }
+					{ path: 'new.md', content: FileContent.fromPlainText('new content') },
+					{ path: 'existing.md', content: FileContent.fromPlainText('updated content') }
 				],
 				['delete.md']
 			);
@@ -343,7 +422,7 @@ describe('LocalVault', () => {
 			});
 
 			await localVault.applyChanges(
-				[{ path: 'file1.md', content: 'content' }],
+				[{ path: 'file1.md', content: FileContent.fromPlainText('content') }],
 				['file2.md']
 			);
 

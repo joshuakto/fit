@@ -7,6 +7,7 @@
  */
 
 import { LocalChange, RemoteChange, FileOpRecord } from "./fitTypes";
+import { FileContent } from "./contentEncoding";
 
 /**
  * Represents a snapshot of file states at a point in time.
@@ -113,12 +114,19 @@ export interface IVault {
 	 * Read file content for a specific path or SHA
 	 *
 	 * For LocalVault: pathOrSha is a file path in the vault
+	 *   - Returns FileContent wrapping Base64Content for binary file extensions (.png, .pdf)
+	 *   - Returns FileContent wrapping PlainTextContent for everything else (.md, .txt, no extension)
+	 *
 	 * For RemoteGitHubVault: pathOrSha is a blob SHA (GitHub stores content by hash)
+	 *   - ALWAYS returns FileContent wrapping Base64Content (GitHub API returns all blobs as base64)
+	 *
+	 * Callers can use FileContent's toBase64() or toPlainText() helpers to get the content
+	 * in the desired format without worrying about the source encoding.
 	 *
 	 * @param pathOrSha - File path (LocalVault) or blob SHA (RemoteGitHubVault)
-	 * @returns File content (base64 encoded for binary files)
+	 * @returns File content with runtime encoding tag
 	 */
-	readFileContent(pathOrSha: string): Promise<string>;
+	readFileContent(pathOrSha: string): Promise<FileContent>;
 
 	// ===== Write Operations (Applying Changes) =====
 
@@ -126,14 +134,18 @@ export interface IVault {
 	 * Apply a batch of changes (writes and deletes)
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
-	 * For RemoteGitHubVault: Creates a single commit with all changes
+	 *   - Converts FileContent to base64 and writes via Obsidian API
 	 *
-	 * @param filesToWrite - Files to write or update
+	 * For RemoteGitHubVault: Creates a single commit with all changes
+	 *   - Uses FileContent's existing encoding (plaintext or base64)
+	 *   - Tells GitHub API the appropriate encoding
+	 *
+	 * @param filesToWrite - Files to write or update with their content
 	 * @param filesToDelete - Files to delete
 	 * @returns Records of all file operations performed
 	 */
 	applyChanges(
-		filesToWrite: Array<{path: string, content: string}>,
+		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]>;
 
