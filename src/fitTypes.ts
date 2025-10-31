@@ -24,8 +24,7 @@ export type RemoteChange = {
 export type RemoteUpdate = {
 	remoteChanges: RemoteChange[],
 	remoteTreeSha: Record<string, string>,
-	latestRemoteCommitSha: string,
-	clashedFiles: Array<ClashStatus>
+	latestRemoteCommitSha: string
 };
 
 export type ClashStatus = {
