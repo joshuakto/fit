@@ -1,4 +1,4 @@
-import { Base64Content } from "./contentEncoding";
+import { Base64Content, FileContent } from "./contentEncoding";
 
 export type LocalFileStatus = "deleted" | "created" | "changed" | "untracked";
 export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED";
@@ -47,7 +47,7 @@ export type ConflictReport = {
 export type ConflictResolutionResult = {
 	path: string
 	noDiff: boolean
-	fileOp?: FileOpRecord
+	conflictFile?: { path: string, content: FileContent }  // File to write to _fit/ (if noDiff=false)
 };
 
 export type FileOpRecord = {

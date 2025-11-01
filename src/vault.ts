@@ -16,6 +16,17 @@ import { FileContent } from "./contentEncoding";
 export type FileState = Record<string, string>;
 
 /**
+ * Result of reading vault state, including vault-specific metadata.
+ *
+ * For RemoteGitHubVault: Includes the commit SHA of the fetched state
+ * For LocalVault: May be extended in future for other metadata
+ */
+export type VaultReadResult = {
+	state: FileState;
+	commitSha?: string; // Present for RemoteGitHubVault (GitHub commit SHA)
+};
+
+/**
  * Generic change representation (can be local or remote)
  */
 export type StateChange = LocalChange | RemoteChange;
@@ -101,32 +112,27 @@ export interface IVault {
 	// ===== Read Operations =====
 
 	/**
-	 * Scan source and return the current scanned state.
+	 * Scan source and return the current scanned state with vault-specific metadata.
 	 *
 	 * For LocalVault: Scans all files in Obsidian vault
-	 * For RemoteGitHubVault: Fetches tree from GitHub API
+	 * For RemoteGitHubVault: Fetches tree from GitHub API and includes commit SHA
 	 *
-	 * @returns The new scanned state
+	 * @returns The scanned state and vault-specific metadata
 	 */
-	readFromSource(): Promise<FileState>;
+	readFromSource(): Promise<VaultReadResult>;
 
 	/**
-	 * Read file content for a specific path or SHA
+	 * Read file content for a specific path
 	 *
-	 * For LocalVault: pathOrSha is a file path in the vault
-	 *   - Returns FileContent wrapping Base64Content for binary file extensions (.png, .pdf)
-	 *   - Returns FileContent wrapping PlainTextContent for everything else (.md, .txt, no extension)
-	 *
-	 * For RemoteGitHubVault: pathOrSha is a blob SHA (GitHub stores content by hash)
-	 *   - ALWAYS returns FileContent wrapping Base64Content (GitHub API returns all blobs as base64)
+	 * For RemoteGitHubVault, returns content as of last readFromSource() for performance (does NOT force fresh remote fetch).
 	 *
 	 * Callers can use FileContent's toBase64() or toPlainText() helpers to get the content
 	 * in the desired format without worrying about the source encoding.
 	 *
-	 * @param pathOrSha - File path (LocalVault) or blob SHA (RemoteGitHubVault)
+	 * @param path - File path
 	 * @returns File content with runtime encoding tag
 	 */
-	readFileContent(pathOrSha: string): Promise<FileContent>;
+	readFileContent(path: string): Promise<FileContent>;
 
 	// ===== Write Operations (Applying Changes) =====
 
