@@ -246,8 +246,8 @@ export default class FitPlugin extends Plugin {
 			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
 				await this.autoSync();
 			} else if (this.settings.autoSync === "remind") {
-				const { updated } = await this.fit.remoteUpdated();
-				if (updated) {
+				const { changes } = await this.fit.getRemoteChanges();
+				if (changes.length > 0) {
 					const initialMessage = "Remote update detected, please pull the latest changes.";
 					const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
 					intervalNotice.remove("static");

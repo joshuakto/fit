@@ -183,8 +183,8 @@ Implement the `IVault` interface to support additional remote backends:
 ```typescript
 interface IVault {
     // Read operations
-    readFromSource(): Promise<FileState>;
-    readFileContent(pathOrSha: string): Promise<FileContent>;
+    readFromSource(): Promise<VaultReadResult>;
+    readFileContent(path: string): Promise<FileContent>;
 
     // Write operations
     applyChanges(

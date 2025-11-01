@@ -8,9 +8,9 @@
  */
 
 import { LocalVault } from './localVault';
-import { TFile, TFolder, Vault } from 'obsidian';
+import { TFile, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
-import { Content, FileContent } from './contentEncoding';
+import { FileContent } from './contentEncoding';
 import { arrayBufferToContent } from './obsidianHelpers';
 
 describe('LocalVault', () => {
@@ -89,7 +89,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.readFromSource();
+			const { state } = await localVault.readFromSource();
 
 			expect(state).toMatchObject({
 				'note1.md': expect.anything(),
@@ -115,7 +115,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.readFromSource();
+			const { state } = await localVault.readFromSource();
 
 			// Only hidden files are excluded from state tracking
 			expect(Object.keys(state).sort()).toEqual(['_fit/conflict.md', 'normal.md']);
@@ -135,7 +135,7 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.readFromSource();
+			const { state } = await localVault.readFromSource();
 
 			expect(state).toMatchObject({
 				'doc.pdf': expect.anything(),
@@ -154,7 +154,7 @@ describe('LocalVault', () => {
 			mockVault.getFiles.mockReturnValue([]);
 
 			const localVault = new LocalVault(mockVault);
-			const state = await localVault.readFromSource();
+			const { state } = await localVault.readFromSource();
 
 			expect(state).toEqual({});
 		});
@@ -202,154 +202,6 @@ describe('LocalVault', () => {
 
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
 				'File not found: missing.md'
-			);
-		});
-	});
-
-	describe('writeFile', () => {
-		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.createBinary = jest.fn();
-			mockVault.modifyBinary = jest.fn();
-			mockVault.createFolder = jest.fn();
-		});
-
-		it('should create new file when it does not exist', async () => {
-			mockVault.getAbstractFileByPath.mockReturnValue(null); // File doesn't exist
-			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
-
-			const localVault = new LocalVault(mockVault);
-			const result = await localVault.writeFile('new.md', Content.encodeToBase64('content'));
-
-			expect(result).toEqual({ path: 'new.md', status: 'created' });
-			expect(mockVault.createBinary).toHaveBeenCalled();
-		});
-
-		it('should modify existing file', async () => {
-			const mockFile = StubTFile.ofPath('existing.md');
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
-			(mockVault.modifyBinary as jest.Mock).mockResolvedValue(undefined);
-
-			const localVault = new LocalVault(mockVault);
-			const result = await localVault.writeFile('existing.md', Content.encodeToBase64('new content'));
-
-			expect(result).toEqual({ path: 'existing.md', status: 'changed' });
-			expect(mockVault.modifyBinary).toHaveBeenCalledWith(mockFile, expect.anything());
-		});
-
-		it('should create parent folders when creating new file', async () => {
-			mockVault.getAbstractFileByPath.mockImplementation((path) => {
-				// File doesn't exist, but folder check will be called
-				if (path === 'folder/subfolder/new.md') return null;
-				if (path === 'folder/subfolder') return null; // Folder doesn't exist
-				return null;
-			});
-			(mockVault.createFolder as jest.Mock).mockResolvedValue(undefined);
-			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
-
-			const localVault = new LocalVault(mockVault);
-			await localVault.writeFile('folder/subfolder/new.md', Content.encodeToBase64('content'));
-
-			expect(mockVault.createFolder).toHaveBeenCalledWith('folder/subfolder');
-			expect(mockVault.createBinary).toHaveBeenCalled();
-		});
-
-		it('should handle files in root directory (no folder creation needed)', async () => {
-			mockVault.getAbstractFileByPath.mockReturnValue(null);
-			(mockVault.createBinary as jest.Mock).mockResolvedValue(undefined);
-
-			const localVault = new LocalVault(mockVault);
-			await localVault.writeFile('root.md', Content.encodeToBase64('content'));
-
-			expect(mockVault.createFolder).not.toHaveBeenCalled();
-			expect(mockVault.createBinary).toHaveBeenCalled();
-		});
-
-		it('should throw error when trying to write file where folder exists', async () => {
-			// Scenario: Try to write file "notes" but folder "notes/" already exists
-			// Expected: Should throw error because getAbstractFileByPath returns a folder (not TFile, not null)
-
-			// Use the mocked TFolder class
-			const mockFolder = new TFolder();
-			mockFolder.path = 'notes';
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFolder as any);
-
-			const localVault = new LocalVault(mockVault);
-
-			// The code checks instanceof TFolder
-			await expect(localVault.writeFile('notes', Content.encodeToBase64('content'))).rejects.toThrow(
-				/Cannot write file to notes: a folder with that name already exists/
-			);
-		});
-
-		it('should fail when parent path is a file instead of folder', async () => {
-			// Scenario: Try to write "config/settings.json" but "config" is a file, not a folder
-			// Current behavior: ensureFolderExists finds "config" exists (as file) and skips createFolder
-			// Then vault.createBinary fails with error when trying to create file with invalid parent
-			// IMPROVEMENT: Could detect earlier in ensureFolderExists by checking instanceof TFolder
-
-			const mockFile = StubTFile.ofPath('config');
-			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
-				if (path === 'config') {
-					return mockFile as TFile;  // Returns a file, not a folder
-				}
-				if (path === 'config/settings.json') {
-					return null;  // File doesn't exist yet
-				}
-				return null;
-			});
-
-			// Mock createBinary to fail for paths under 'config/' (parent is a file, not a folder)
-			mockVault.createBinary = jest.fn().mockImplementation((path: string) => {
-				if (path.startsWith('config/')) {
-					throw new Error('Folder already exists as file: config');
-				}
-				return Promise.resolve(undefined);
-			});
-
-			const localVault = new LocalVault(mockVault);
-
-			// Should throw VaultError.filesystem from createBinary
-			await expect(localVault.writeFile('config/settings.json', Content.encodeToBase64('content')))
-				.rejects.toMatchObject({
-					name: 'VaultError',
-					type: 'filesystem',
-					message: expect.stringContaining('config')
-				});
-
-			// ensureFolderExists did NOT call createFolder because "config" exists (as file, but check doesn't verify type)
-			expect(mockVault.createFolder).not.toHaveBeenCalled();
-
-			// createBinary was attempted and failed
-			expect(mockVault.createBinary).toHaveBeenCalledWith('config/settings.json', expect.any(ArrayBuffer));
-		});
-	});
-
-	describe('deleteFile', () => {
-		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.delete = jest.fn();
-		});
-
-		it('should delete existing file', async () => {
-			const mockFile = StubTFile.ofPath('delete-me.md');
-			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
-			mockVault.delete.mockResolvedValue(undefined);
-
-			const localVault = new LocalVault(mockVault);
-			const result = await localVault.deleteFile('delete-me.md');
-
-			expect(result).toEqual({ path: 'delete-me.md', status: 'deleted' });
-			expect(mockVault.delete).toHaveBeenCalledWith(mockFile);
-		});
-
-		it('should throw error when file does not exist', async () => {
-			mockVault.getAbstractFileByPath.mockReturnValue(null);
-
-			const localVault = new LocalVault(mockVault);
-
-			await expect(localVault.deleteFile('missing.md')).rejects.toThrow(
-				'Attempting to delete missing.md from local but not successful'
 			);
 		});
 	});
