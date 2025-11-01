@@ -296,6 +296,64 @@ flowchart TD
     Normal --> End
 ```
 
+### Version Migration Safety
+
+**Critical Risk:** When tracking capabilities change (version upgrade or setting toggle), cached state can become inconsistent with new scan behavior.
+
+**Most dangerous scenario:** **Tracking REMOVED** (hidden file tracking reverted/disabled)
+
+**Realistic example:** v2 implements full hidden file tracking via DataAdapter, then either v3 reverts it (performance regression) or user disables "Sync hidden files" setting.
+
+```typescript
+// v2 tracked .gitignore via DataAdapter, cache state:
+localSha = { ".gitignore": "abc123" }  // v2 tracked it
+lastFetchedRemoteSha = { ".gitignore": "abc123" }
+
+// After v3 upgrade or setting disabled:
+newScan = {}  // Reverted to Vault API (can't read hidden files)
+compareSha(newScan, localSha) → reports ".gitignore" as DELETED
+// ⚠️ Risk: Plugin pushes deletion to remote → DATA LOSS
+```
+
+**Solution:** Before pushing ANY deletion, verify file is physically absent from filesystem:
+
+```typescript
+// In FitSync.performSync()
+// Phase 2: Batch stat all paths needing verification (including deletions)
+const pathsToStat = new Set<string>();
+localChangesToPush
+  .filter(c => c.status === 'deleted')
+  .forEach(c => pathsToStat.add(c.path));
+const {existenceMap} = await this.collectFilesystemState(Array.from(pathsToStat));
+
+// Phase 4: Push local changes with safeguard
+for (const change of localChanges) {
+  if (change.status === 'deleted') {
+    const existence = existenceMap.get(change.path);
+    const physicallyExists = existence === 'file' || existence === 'folder';
+    if (physicallyExists) {
+      // File exists but filtered - NOT a real deletion
+      continue; // Don't push to remote
+    }
+    filesToDelete.push(change.path);
+  }
+}
+```
+
+**Why this works:**
+- `vault.adapter.exists()` (via batched `statPaths`) bypasses Obsidian's Vault API filters
+- Can see ALL files (hidden, protected, everything)
+- Definitively answers: "Did user delete this or did filtering rules change?"
+- Batched for efficiency: checks all deletions in one operation
+- Self-correcting: No schema versioning needed
+
+**Other scenarios:** (all safe with current implementation)
+- **Tracking ADDED**: Files appear as new on both sides → clash detection → saved to `_fit/`
+- **Protection ADDED**: Local filtered before push, remote saved to `_fit/`
+- **Protection REMOVED**: Files appear as new on both sides → clash detection handles it
+
+**Implementation:** [src/fitSync.ts:564-586](../src/fitSync.ts#L564-L586) (path collection), [src/fitSync.ts:756-769](../src/fitSync.ts#L756-L769) (safeguard check)
+
 ## Sync Decision Tree
 
 ### Unified Sync Flow
