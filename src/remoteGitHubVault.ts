@@ -7,7 +7,7 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { IVault, FileState, VaultError } from "./vault";
+import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { EMPTY_TREE_SHA } from "./utils";
 import { FileContent, isBinaryExtension } from "./contentEncoding";
@@ -47,6 +47,11 @@ export class RemoteGitHubVault implements IVault {
 	private headers: {[k: string]: string};
 	private deviceName: string;
 	private repoExistsCache: boolean | null = null;
+
+	// Internal cache for remote state optimization
+	// Avoids redundant API calls when remote hasn't changed
+	private latestKnownCommitSha: string | null = null;
+	private latestKnownState: FileState | null = null;
 
 	constructor(
 		pat: string,
@@ -171,9 +176,8 @@ export class RemoteGitHubVault implements IVault {
 
 	/**
 	 * Get the latest commit SHA from the current branch
-	 * TODO: Make private after Fit.remoteUpdated stops using this
 	 */
-	async getLatestCommitSha(): Promise<string> {
+	private async getLatestCommitSha(): Promise<string> {
 		return await this.getRef(`heads/${this.branch}`);
 	}
 
@@ -224,18 +228,40 @@ export class RemoteGitHubVault implements IVault {
 
 
 	/**
-	 * Read file content for a specific SHA from GitHub blobs
-	 * GitHub API ALWAYS returns content as base64, regardless of file type
+	 * Read file content from GitHub by path.
+	 *
+	 * Note: Returns file content as of the last readFromSource() call. Does NOT force a
+	 * fresh remote fetch. Caller should call readFromSource() first if they need the
+	 * latest remote state.
+	 *
+	 * @param path - File path to read
+	 * @throws Error if remote state not yet fetched or file not found in remote state
 	 */
-	async readFileContent(pathOrSha: string): Promise<FileContent> {
-		// RemoteGitHubVault only uses blob SHAs (not paths)
+	async readFileContent(path: string): Promise<FileContent> {
+		// Look up blob SHA from cached state
+		if (this.latestKnownState === null) {
+			throw new Error(
+				`Remote repository state not yet loaded. Cannot read file '${path}'. ` +
+				`Sync operation should call readFromSource() first.`
+			);
+		}
+
+		const blobSha = this.latestKnownState[path];
+		if (!blobSha) {
+			throw new Error(
+				`File '${path}' does not exist in remote repository ` +
+				`(commit ${this.latestKnownCommitSha || 'unknown'} on ${this.owner}/${this.repo}).`
+			);
+		}
+
+		// Fetch blob content from GitHub
 		// GitHub API ALWAYS returns content as base64, regardless of file type
 		try {
 			const { data: blob } = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
 					owner: this.owner,
 					repo: this.repo,
-					file_sha: pathOrSha,
+					file_sha: blobSha,
 					headers: this.headers
 				});
 			return FileContent.fromBase64(blob.content);
@@ -276,7 +302,7 @@ export class RemoteGitHubVault implements IVault {
 	 * @param remoteTree - Current remote tree nodes (for optimization - skip if unchanged)
 	 * @returns TreeNode to include in commit, or null if no change needed
 	 */
-	async createTreeNodeFromContent(
+	private async createTreeNodeFromContent(
 		path: string,
 		content: FileContent | null,
 		remoteTree: TreeNode[]
@@ -572,26 +598,23 @@ export class RemoteGitHubVault implements IVault {
 	}
 
 	/**
-	 * Fetch tree from GitHub at the latest commit and return it.
+	 * Fetch tree from GitHub at the latest commit and return it with commit SHA.
 	 * Implements IVault.readFromSource().
 	 *
-	 * For optimized usage when you already have the commit SHA, use readFromSourceAtCommit() instead.
+	 * Uses internal caching to avoid redundant API calls when remote hasn't changed.
+	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
+	 * Uses internal caching to avoid redundant API calls when remote hasn't changed.
+	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
 	 */
-	async readFromSource(): Promise<FileState> {
+	async readFromSource(): Promise<VaultReadResult> {
 		const commitSha = await this.getLatestCommitSha();
-		return await this.readFromSourceAtCommit(commitSha);
-	}
 
-	/**
-	 * Fetch tree from GitHub at a specific commit and return it.
-	 * Use this when you already have a commit SHA to avoid duplicate getLatestCommitSha() calls.
-	 *
-	 * @param commitSha - Commit SHA to read from
-	 * TODO: Better solution - move state caching into vault. Initialize vault with lastFetchedRemoteSha,
-	 *       then vault maintains latestKnownState cache. readFromSource() checks if commit changed - if
-	 *       not, return cached state (skip tree/blob fetches). See CLAUDE.md Medium Priority section.
-	 */
-	async readFromSourceAtCommit(commitSha: string): Promise<FileState> {
+		// Return cached state if remote hasn't changed
+		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
+			return { state: { ...this.latestKnownState }, commitSha };
+		}
+
+		// Fetch fresh state from GitHub
 		const treeSha = await this.getCommitTreeSha(commitSha);
 
 		// Check if this is the empty tree - skip getTree() call (would return 404)
@@ -608,6 +631,11 @@ export class RemoteGitHubVault implements IVault {
 			}
 		}
 
-		return { ...newState };
+		// Update cache
+		this.latestKnownCommitSha = commitSha;
+		this.latestKnownState = newState;
+
+		return { state: { ...newState }, commitSha };
 	}
+
 }

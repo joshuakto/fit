@@ -5,7 +5,7 @@
  */
 
 import { TFile, TFolder, Vault } from "obsidian";
-import { IVault, FileState, VaultError } from "./vault";
+import { IVault, VaultError, VaultReadResult } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./contentEncoding";
@@ -98,7 +98,7 @@ export class LocalVault implements IVault {
 	/**
 	 * Scan vault, update latest known state, and return it
 	 */
-	async readFromSource(): Promise<FileState> {
+	async readFromSource(): Promise<VaultReadResult> {
 		const allFiles = this.vault.getFiles();
 
 		// Filter to only tracked paths
@@ -130,7 +130,7 @@ export class LocalVault implements IVault {
 			fileCount: Object.keys(newState).length
 		});
 
-		return { ...newState };
+		return { state: { ...newState } };
 	}
 
 	/**
@@ -146,18 +146,6 @@ export class LocalVault implements IVault {
 			// Preserve plaintext SHA logic for non-binary case.
 			: fileContent.toPlainText();
 		return computeSha1(path + contentToHash);
-	}
-
-	/**
-	 * Get TFile for a given path, throwing error if not found or not a file
-	 */
-	private async getTFile(path: string): Promise<TFile> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (file && file instanceof TFile) {
-			return file;
-		} else {
-			throw new Error(`Attempting to read ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
-		}
 	}
 
 	/**
@@ -189,23 +177,17 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Read file content for a specific path
-	 *
-	 * Returns content in format expected by RemoteGitHubVault.applyChanges():
-	 * - Binary files: Base64Content (GitHub expects base64)
-	 * - Text files: PlainTextContent (GitHub accepts utf-8)
 	 */
-	async readFileContent(pathOrSha: string): Promise<FileContent> {
-		// LocalVault only uses paths (not blob SHAs)
-		return readFileContent(this.vault, pathOrSha);
+	async readFileContent(path: string): Promise<FileContent> {
+		return readFileContent(this.vault, path);
 	}
 
 	/**
 	 * Write or update a file
-	 * @param path - File path to write
 	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
 	 * @returns Record of file operation performed
 	 */
-	async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
+	private async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 
@@ -235,10 +217,9 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Delete a file
-	 * @param path - File path to delete
 	 * @returns Record of file operation performed
 	 */
-	async deleteFile(path: string): Promise<FileOpRecord> {
+	private async deleteFile(path: string): Promise<FileOpRecord> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {

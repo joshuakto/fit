@@ -478,10 +478,11 @@ describe('FitSync', () => {
 			// === SETUP: Initial synced state with normal file ===
 			localVault.setFile('normal.md', 'Normal content');
 			await remoteVault.setFile('normal.md', 'Normal content');
+			const remoteResult = await remoteVault.readFromSource();
 			localStoreState = {
-				localSha: await localVault.readFromSource(),
-				lastFetchedRemoteSha: await remoteVault.readFromSource(),
-				lastFetchedCommitSha: remoteVault.getCommitSha()
+				localSha: (await localVault.readFromSource()).state,
+				lastFetchedRemoteSha: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha ?? null
 			};
 			const fitSync = createFitSync();
 
@@ -668,8 +669,8 @@ describe('FitSync', () => {
 			remoteVault.setFile('.gitignore', 'remote version');
 			remoteVault.setFile('README.md', 'readme v1');
 
-			const initialRemoteState = await remoteVault.readFromSource();
-			const initialLocalState = await localVault.readFromSource();
+			const { state: initialRemoteState } = await remoteVault.readFromSource();
+			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
 				// localSha: .gitignore NOT tracked (hidden file)
 				localSha: {
@@ -726,8 +727,8 @@ describe('FitSync', () => {
 
 			// Simulate state where README.md is tracked but .gitignore is missing from cache
 			// This represents old buggy behavior where hidden files weren't indexed
-			const initialRemoteState = await remoteVault.readFromSource();
-			const initialLocalState = await localVault.readFromSource();
+			const { state: initialRemoteState } = await remoteVault.readFromSource();
+			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
 				localSha: {
 					// README.md IS tracked locally (so it won't appear as "created")
@@ -867,10 +868,10 @@ describe('FitSync', () => {
 
 			localStoreState = {
 				localSha: {
-					'.hidden': initialLocalState['.hidden']
+					'.hidden': initialLocalState.state['.hidden']
 				},
 				lastFetchedRemoteSha: {
-					'.hidden': initialRemoteState['.hidden']
+					'.hidden': initialRemoteState.state['.hidden']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};

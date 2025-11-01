@@ -29,6 +29,7 @@ import { fitLogger } from "./logger";
  * @see RemoteGitHubVault - Remote GitHub repository operations
  */
 export class Fit {
+	// TODO: Rename these for clarity: localFileShas, remoteCommitSha, remoteFileShas
 	localSha: Record<string, string>;              // Cache of local file SHAs
 	lastFetchedCommitSha: string | null;           // Last synced commit SHA
 	lastFetchedRemoteSha: Record<string, string>;  // Cache of remote file SHAs
@@ -130,13 +131,9 @@ export class Fit {
 		return filtered;
 	}
 
-	async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {
-		const remoteCommitSha = await this.remoteVault.getLatestCommitSha();
-		return {remoteCommitSha, updated: remoteCommitSha !== this.lastFetchedCommitSha};
-	}
-
 	async getLocalChanges(): Promise<{changes: LocalChange[], state: FileState}> {
-		const currentState = await this.localVault.readFromSource();
+		const readResult = await this.localVault.readFromSource();
+		const currentState = readResult.state;
 		const changes = compareSha(currentState, this.localSha, "local");
 		return { changes, state: currentState };
 	}
@@ -144,26 +141,31 @@ export class Fit {
 	/**
 	 * Get remote changes since last sync.
 	 *
-	 * @param commitSha - Commit SHA to read from (should be obtained from remoteUpdated())
-	 * @returns Remote changes and current state
+	 * Uses RemoteGitHubVault's internal caching - vault will only fetch from GitHub
+	 * if the latest commit SHA differs from its cached commit SHA.
+	 *
+	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(commitSha: string): Promise<{changes: RemoteChange[], state: FileState}> {
-		const currentState = await this.remoteVault.readFromSourceAtCommit(commitSha);
-		const changes = compareSha(currentState, this.lastFetchedRemoteSha, "remote");
+	async getRemoteChanges(): Promise<{changes: RemoteChange[], state: FileState, commitSha: string}> {
+		const { state, commitSha } = await this.remoteVault.readFromSource();
+		if (!commitSha) {
+			throw new Error("Expected RemoteGitHubVault to provide commitSha");
+		}
+		const changes = compareSha(state, this.lastFetchedRemoteSha, "remote");
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
 			fitLogger.log('[Fit] Remote changes detected', {
 				changeCount: changes.length,
 				changes: changes.map(c => ({ path: c.path, status: c.status })),
-				currentRemoteFilesCount: Object.keys(currentState).length,
+				currentRemoteFilesCount: Object.keys(state).length,
 				cachedRemoteFilesCount: Object.keys(this.lastFetchedRemoteSha).length,
-				filesOnlyInRemote: Object.keys(currentState).filter(p => !this.lastFetchedRemoteSha[p]),
-				filesOnlyInCache: Object.keys(this.lastFetchedRemoteSha).filter(p => !currentState[p])
+				filesOnlyInRemote: Object.keys(state).filter(p => !this.lastFetchedRemoteSha[p]),
+				filesOnlyInCache: Object.keys(this.lastFetchedRemoteSha).filter(p => !state[p])
 			});
 		}
 
-		return { changes, state: currentState };
+		return { changes, state, commitSha };
 	}
 
 	getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {

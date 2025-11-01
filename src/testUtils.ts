@@ -4,7 +4,7 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { IVault, VaultError } from './vault';
+import { IVault, VaultError, VaultReadResult } from './vault';
 import { FileOpRecord } from './fitTypes';
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './contentEncoding';
 import { extractExtension, computeSha1 } from './utils';
@@ -337,7 +337,7 @@ export class FakeLocalVault implements IVault {
 			([path, content]) => [path, content.toRaw().content]));
 	}
 
-	async readFromSource(): Promise<Record<string, string>> {
+	async readFromSource(): Promise<VaultReadResult> {
 		const error = this.failureScenarios.get('read');
 		if (error) {
 			this.clearFailure('read');
@@ -352,7 +352,7 @@ export class FakeLocalVault implements IVault {
 				state[path] = await LocalVault.fileSha1(path, content);
 			}
 		}
-		return state;
+		return { state };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -603,22 +603,7 @@ export class FakeRemoteVault implements IVault {
 		return this.branch;
 	}
 
-	/**
-	 * Create tree node from content (stub for RemoteGitHubVault compatibility).
-	 * This method stores the content in the fake vault.
-	 */
-	async createTreeNodeFromContent(path: string, content: FileContent | null, _remoteTree: any[], _encoding?: string): Promise<any> {
-		if (content === null) {
-			this.files.delete(path);
-			return null;
-		}
-		// Store the file content so it persists in the fake vault
-		this.setFile(path, content);
-		const sha = await computeSha1(path + content.toBase64());
-		return { path, sha, mode: '100644', type: 'blob' };
-	}
-
-	async readFromSource(): Promise<Record<string, string>> {
+	async readFromSource(): Promise<VaultReadResult> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
@@ -635,18 +620,10 @@ export class FakeRemoteVault implements IVault {
 				this.blobShas.set(sha, base64Content);
 			}
 		}
-		return state;
+		return { state, commitSha: this.commitSha };
 	}
 
-	/**
-	 * Read from source at a specific commit (for compatibility with RemoteGitHubVault).
-	 * For fake vault, just delegate to readFromSource (ignore commit SHA).
-	 */
-	async readFromSourceAtCommit(_commitSha: string): Promise<Record<string, string>> {
-		return this.readFromSource();
-	}
-
-	async readFileContent(pathOrSha: string): Promise<FileContent> {
+	async readFileContent(path: string): Promise<FileContent> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
@@ -654,15 +631,15 @@ export class FakeRemoteVault implements IVault {
 		}
 
 		// Check if it's a blob SHA first (real RemoteGitHubVault uses blob SHAs)
-		const blobContent = this.blobShas.get(pathOrSha);
+		const blobContent = this.blobShas.get(path);
 		if (blobContent !== undefined) {
 			return FileContent.fromBase64(blobContent);
 		}
 
 		// Fall back to path-based lookup (for backward compatibility)
-		const pathContent = this.files.get(pathOrSha);
+		const pathContent = this.files.get(path);
 		if (pathContent === undefined) {
-			throw new Error(`File not found: ${pathOrSha}`);
+			throw new Error(`File not found: ${path}`);
 		}
 		// Convert to base64 to match GitHub API behavior.
 		return FileContent.fromBase64(pathContent.toBase64());

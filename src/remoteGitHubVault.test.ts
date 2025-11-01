@@ -41,7 +41,7 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
 
-				const state = await vault.readFromSource();
+				const { state } = await vault.readFromSource();
 
 				expect(state).toEqual({
 					"file1.md": "sha1",
@@ -58,7 +58,7 @@ describe("RemoteGitHubVault", () => {
 				notFoundError.status = 404;
 				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", notFoundError);
 
-				const state = await vault.readFromSource();
+				const { state } = await vault.readFromSource();
 
 				expect(state).toEqual({});
 			});
@@ -72,7 +72,7 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
 
-				const state = await vault.readFromSource();
+				const { state } = await vault.readFromSource();
 
 				// RemoteGitHubVault returns all paths - caller is responsible for filtering
 				expect(state).toEqual({
@@ -95,10 +95,19 @@ describe("RemoteGitHubVault", () => {
 		});
 
 		describe("readFileContent", () => {
-			it("should fetch blob content", async () => {
+			it("should fetch blob content by path", async () => {
+				// Setup: readFromSource() to populate cache
+				const mockTree: TreeNode[] = [
+					{ path: "test.md", mode: "100644", type: "blob", sha: "sha123" }
+				];
+				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
 				fakeOctokit.addBlob("sha123", "base64content");
 
-				const content = await vault.readFileContent("sha123");
+				// Populate cache
+				await vault.readFromSource();
+
+				// Read file content by path
+				const content = await vault.readFileContent("test.md");
 
 				expect(content).toEqual(FileContent.fromBase64("base64content"));
 			});
