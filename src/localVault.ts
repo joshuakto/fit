@@ -8,9 +8,9 @@ import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, VaultError, VaultReadResult } from "./vault";
 import { FileOpRecord } from "./fitTypes";
 import { fitLogger } from "./logger";
-import { Base64Content, FileContent } from "./contentEncoding";
-import { contentToArrayBuffer, readFileContent } from "./obsidianHelpers";
-import { computeSha1 } from "./utils";
+import { Base64Content, FileContent } from "./util/contentEncoding";
+import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
+import { BlobSha, computeSha1 } from "./util/hashing";
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
@@ -115,7 +115,7 @@ export class LocalVault implements IVault {
 
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
-			trackedPaths.map(async (path): Promise<[string, string]> => {
+			trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
 				const sha = await LocalVault.fileSha1(
 					path, await readFileContent(this.vault, path));
 				return [path, sha];
@@ -138,14 +138,14 @@ export class LocalVault implements IVault {
 	 * (Matches GitHub's blob SHA format)
 	 */
 	// NOTE: Public visibility for tests.
-	static fileSha1(path: string, fileContent: FileContent): Promise<string> {
+	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
 		const extension = path.split('.').pop() || '';
 		const contentToHash = (extension && isBinaryExtensionForSha(extension))
 			// Use base64 representation for consistent hashing
 			? fileContent.toBase64()
 			// Preserve plaintext SHA logic for non-binary case.
 			: fileContent.toPlainText();
-		return computeSha1(path + contentToHash);
+		return computeSha1(path + contentToHash) as Promise<BlobSha>;
 	}
 
 	/**

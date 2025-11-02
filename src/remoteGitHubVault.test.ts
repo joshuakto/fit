@@ -3,10 +3,19 @@
  */
 
 import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
-import { EMPTY_TREE_SHA } from "./utils";
+import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
-import { FileContent } from "./contentEncoding";
+import { FileContent } from "./util/contentEncoding";
+
+const COMMIT123_SHA = "commit123" as CommitSha;
+const COMMIT456_SHA = "commit456" as CommitSha;
+const PARENTCOMMIT123_SHA = "parent123" as CommitSha;
+const TREE456_SHA = "tree456" as TreeSha;
+const BLOB123_SHA = "sha123" as BlobSha;
+const BLOB1_SHA = "sha1" as BlobSha;
+const BLOB2_SHA = "sha2" as BlobSha;
+const BLOB3_SHA = "sha3" as BlobSha;
 
 describe("RemoteGitHubVault", () => {
 	let fakeOctokit: FakeOctokit;
@@ -34,27 +43,27 @@ describe("RemoteGitHubVault", () => {
 		describe("readFromSource", () => {
 			it("should fetch and update state from non-empty tree", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "file1.md", type: "blob", mode: "100644", sha: "sha1" },
-					{ path: "dir", type: "tree", mode: "040000", sha: "sha2" },
-					{ path: "file2.txt", type: "blob", mode: "100644", sha: "sha3" }
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA },
+					{ path: "dir", type: "tree", mode: "040000", sha: TREE456_SHA },
+					{ path: "file2.txt", type: "blob", mode: "100644", sha: BLOB3_SHA }
 				];
 
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const result = await vault.readFromSource();
 
 				expect(result).toEqual({
 					state: {
-						"file1.md": "sha1",
-						"file2.txt": "sha3"
+						"file1.md": BLOB1_SHA,
+						"file2.txt": BLOB3_SHA
 						// Note: directory is excluded
 					},
-					commitSha: "commit123"
+					commitSha: COMMIT123_SHA
 				});
 			});
 
 			it("should handle empty tree", async () => {
-				fakeOctokit.setupInitialState("commit123", EMPTY_TREE_SHA, []);
+				fakeOctokit.setupInitialState(COMMIT123_SHA, EMPTY_TREE_SHA, []);
 				// GitHub weirdly returns a 404 error when fetching tree for empty tree SHA.
 				// Simulated error is actually skipped and unused if there's no bug.
 				const notFoundError: any = new Error("Not found");
@@ -65,31 +74,31 @@ describe("RemoteGitHubVault", () => {
 
 				expect(result).toEqual({
 					state: {},
-					commitSha: "commit123"
+					commitSha: COMMIT123_SHA
 				});
 			});
 
 			it("should return all paths without filtering", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "file1.md", type: "blob", mode: "100644", sha: "sha1" },
-					{ path: "_fit/file2.md", type: "blob", mode: "100644", sha: "sha2" },
-					{ path: "file3.md", type: "blob", mode: "100644", sha: "sha3" }
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA },
+					{ path: "_fit/file2.md", type: "blob", mode: "100644", sha: BLOB2_SHA },
+					{ path: "file3.md", type: "blob", mode: "100644", sha: BLOB3_SHA }
 				];
 
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const { state } = await vault.readFromSource();
 
 				// RemoteGitHubVault returns all paths - caller is responsible for filtering
 				expect(state).toEqual({
-					"file1.md": "sha1",
-					"_fit/file2.md": "sha2",
-					"file3.md": "sha3"
+					"file1.md": BLOB1_SHA,
+					"_fit/file2.md": BLOB2_SHA,
+					"file3.md": BLOB3_SHA
 				});
 			});
 
 			it("should propagate errors from getCommitTreeSha", async () => {
-				fakeOctokit.setupInitialState("commit123", "tree456", []);
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, []);
 
 				// Simulate 401 auth error
 				const authError: any = new Error("Bad credentials");
@@ -104,10 +113,10 @@ describe("RemoteGitHubVault", () => {
 			it("should fetch blob content by path", async () => {
 				// Setup: readFromSource() to populate cache
 				const mockTree: TreeNode[] = [
-					{ path: "test.md", mode: "100644", type: "blob", sha: "sha123" }
+					{ path: "test.md", mode: "100644", type: "blob", sha: BLOB123_SHA }
 				];
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
-				fakeOctokit.addBlob("sha123", "base64content");
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				fakeOctokit.addBlob(BLOB123_SHA, "base64content");
 
 				// Populate cache
 				await vault.readFromSource();
@@ -121,10 +130,10 @@ describe("RemoteGitHubVault", () => {
 			it("should return content only from last FETCHED readFromSource", async () => {
 				// Setup: Initial state with file1
 				const mockTree1: TreeNode[] = [
-					{ path: "file1.md", mode: "100644", type: "blob", sha: "sha1" }
+					{ path: "file1.md", mode: "100644", type: "blob", sha: BLOB1_SHA }
 				];
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree1);
-				fakeOctokit.addBlob("sha1", "content1");
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree1);
+				fakeOctokit.addBlob(BLOB1_SHA, "content1");
 
 				// First fetch - populates cache
 				await vault.readFromSource();
@@ -135,11 +144,11 @@ describe("RemoteGitHubVault", () => {
 
 				// Simulate remote change - add file2
 				const mockTree2: TreeNode[] = [
-					{ path: "file1.md", mode: "100644", type: "blob", sha: "sha1" },
-					{ path: "file2.md", mode: "100644", type: "blob", sha: "sha2" }
+					{ path: "file1.md", mode: "100644", type: "blob", sha: BLOB1_SHA },
+					{ path: "file2.md", mode: "100644", type: "blob", sha: BLOB2_SHA }
 				];
-				fakeOctokit.setupInitialState("commit456", "tree789", mockTree2);
-				fakeOctokit.addBlob("sha2", "content2");
+				fakeOctokit.setupInitialState(COMMIT456_SHA, "tree789" as TreeSha, mockTree2);
+				fakeOctokit.addBlob(BLOB2_SHA, "content2");
 
 				// WITHOUT calling readFromSource(), try to read file2
 				// Should fail because cache only has file1
@@ -157,10 +166,10 @@ describe("RemoteGitHubVault", () => {
 		describe("Caching", () => {
 			it("should return from cache when commit SHA hasn't changed", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "test.md", mode: "100644", type: "blob", sha: "sha123" }
+					{ path: "test.md", mode: "100644", type: "blob", sha: BLOB123_SHA }
 				];
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree);
-				fakeOctokit.addBlob("sha123", "base64content");
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				fakeOctokit.addBlob(BLOB123_SHA, "base64content");
 
 				// Read once to populate cache.
 				await vault.readFromSource();
@@ -171,40 +180,40 @@ describe("RemoteGitHubVault", () => {
 				const result = await vault.readFromSource();
 
 				expect(result).toEqual({
-					state: { "test.md": "sha123" },
-					commitSha: "commit123"
+					state: { "test.md": BLOB123_SHA },
+					commitSha: COMMIT123_SHA
 				});
 			});
 
 			it("should fetch latest content when remote tree SHA changed", async () => {
 				// Initial state
 				const mockTree1: TreeNode[] = [
-					{ path: "file1.md", type: "blob", mode: "100644", sha: "sha1" }
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
 				];
-				fakeOctokit.setupInitialState("commit123", "tree456", mockTree1);
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree1);
 
 				// First read - populates cache
 				const result1 = await vault.readFromSource();
 				expect(result1).toEqual({
-					state: { "file1.md": "sha1" },
-					commitSha: "commit123"
+					state: { "file1.md": BLOB1_SHA },
+					commitSha: COMMIT123_SHA
 				});
 
 				// Simulate remote change - new commit with different tree
 				const mockTree2: TreeNode[] = [
-					{ path: "file1.md", type: "blob", mode: "100644", sha: "sha2" },
-					{ path: "file2.md", type: "blob", mode: "100644", sha: "sha3" }
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB2_SHA },
+					{ path: "file2.md", type: "blob", mode: "100644", sha: BLOB3_SHA }
 				];
-				fakeOctokit.setupInitialState("commit456", "tree789", mockTree2);
+				fakeOctokit.setupInitialState(COMMIT456_SHA, "tree789" as TreeSha, mockTree2);
 
 				// Second read - should refetch because commit SHA changed
 				const result2 = await vault.readFromSource();
 				expect(result2).toEqual({
 					state: {
-						"file1.md": "sha2",
-						"file2.md": "sha3"
+						"file1.md": BLOB2_SHA,
+						"file2.md": BLOB3_SHA
 					},
-					commitSha: "commit456"
+					commitSha: COMMIT456_SHA
 				});
 			});
 		});
@@ -213,7 +222,7 @@ describe("RemoteGitHubVault", () => {
 	describe("Write Operations", () => {
 		describe("applyChanges", () => {
 			it("should create commit with file additions", async () => {
-				fakeOctokit.setupInitialState("parent123", "tree456", []);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
 
 				const fileOps = await vault.applyChanges(
 					[{ path: "newfile.md", content: FileContent.fromPlainText("Hello World") }],
@@ -237,10 +246,10 @@ describe("RemoteGitHubVault", () => {
 
 			it("should handle file modifications", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "existing.md", type: "blob", mode: "100644", sha: "oldblob" }
+					{ path: "existing.md", type: "blob", mode: "100644", sha: "oldblob" as BlobSha }
 				];
 
-				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const fileOps = await vault.applyChanges(
 					[{ path: "existing.md", content: FileContent.fromPlainText("Updated content") }],
@@ -254,10 +263,10 @@ describe("RemoteGitHubVault", () => {
 
 			it("should handle file deletions", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "todelete.md", type: "blob", mode: "100644", sha: "blob1" }
+					{ path: "todelete.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
 				];
 
-				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const fileOps = await vault.applyChanges(
 					[],
@@ -274,7 +283,7 @@ describe("RemoteGitHubVault", () => {
 			});
 
 			it("should handle binary files with base64 encoding", async () => {
-				fakeOctokit.setupInitialState("parent123", "tree456", []);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
 
 				const fileOps = await vault.applyChanges(
 					[{ path: "image.png", content: FileContent.fromBase64("iVBORw0KGgo=") }],
@@ -287,12 +296,12 @@ describe("RemoteGitHubVault", () => {
 			});
 
 			it("should skip changes when no tree nodes created", async () => {
-				const existingBlobSha = fakeOctokit.hashContent("Same content");
+				const existingBlobSha = fakeOctokit.hashContent("Same content") as BlobSha;
 				const mockTree: TreeNode[] = [
 					{ path: "file.md", type: "blob", mode: "100644", sha: existingBlobSha }
 				];
 
-				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const fileOps = await vault.applyChanges(
 					[{ path: "file.md", content: FileContent.fromPlainText("Same content") }],
@@ -301,15 +310,15 @@ describe("RemoteGitHubVault", () => {
 
 				expect(fileOps).toEqual([]);
 				// Commit SHA should not have changed
-				expect(fakeOctokit.getLatestCommitSha()).toBe("parent123");
+				expect(fakeOctokit.getLatestCommitSha()).toBe(PARENTCOMMIT123_SHA);
 			});
 
 			it("should skip deletion when file doesn't exist on remote", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "other.md", type: "blob", mode: "100644", sha: "blob1" }
+					{ path: "other.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
 				];
 
-				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const fileOps = await vault.applyChanges(
 					[],
@@ -321,11 +330,11 @@ describe("RemoteGitHubVault", () => {
 
 			it("should handle mixed operations (add, modify, delete)", async () => {
 				const mockTree: TreeNode[] = [
-					{ path: "existing.md", type: "blob", mode: "100644", sha: "oldblob" },
-					{ path: "todelete.md", type: "blob", mode: "100644", sha: "delblob" }
+					{ path: "existing.md", type: "blob", mode: "100644", sha: "oldblob" as BlobSha },
+					{ path: "todelete.md", type: "blob", mode: "100644", sha: "delblob" as BlobSha }
 				];
 
-				fakeOctokit.setupInitialState("parent123", "tree456", mockTree);
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
 				const fileOps = await vault.applyChanges(
 					[

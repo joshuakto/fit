@@ -10,8 +10,8 @@
 import { LocalVault } from './localVault';
 import { TFile, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
-import { FileContent } from './contentEncoding';
-import { arrayBufferToContent } from './obsidianHelpers';
+import { FileContent } from './util/contentEncoding';
+import { arrayBufferToContent } from './util/obsidianHelpers';
 
 describe('LocalVault', () => {
 	let mockVault: jest.Mocked<Vault>;

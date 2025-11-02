@@ -7,13 +7,14 @@
  */
 
 import { LocalChange, RemoteChange, FileOpRecord } from "./fitTypes";
-import { FileContent } from "./contentEncoding";
+import { FileContent } from "./util/contentEncoding";
+import { BlobSha, CommitSha } from "./util/hashing";
 
 /**
  * Represents a snapshot of file states at a point in time.
  * Maps file paths to their content hashes (SHA-1).
  */
-export type FileState = Record<string, string>;
+export type FileState = Record<string, BlobSha>;
 
 /**
  * Result of reading vault state, including vault-specific metadata.
@@ -23,7 +24,7 @@ export type FileState = Record<string, string>;
  */
 export type VaultReadResult = {
 	state: FileState;
-	commitSha?: string; // Present for RemoteGitHubVault (GitHub commit SHA)
+	commitSha?: CommitSha; // Present for RemoteGitHubVault (GitHub commit SHA)
 };
 
 /**

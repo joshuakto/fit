@@ -1,4 +1,5 @@
-import { Base64Content, FileContent } from "./contentEncoding";
+import { Base64Content, FileContent } from "./util/contentEncoding";
+import { BlobSha, CommitSha } from "./util/hashing";
 
 export type LocalFileStatus = "deleted" | "created" | "changed" | "untracked";
 export type RemoteChangeType = "ADDED" | "MODIFIED" | "REMOVED";
@@ -11,20 +12,19 @@ export type LocalChange = {
 
 export type LocalUpdate = {
 	localChanges: LocalChange[],
-	// localTreeSha: Record<string, string>,
-	parentCommitSha: string
+	parentCommitSha: CommitSha
 };
 
 export type RemoteChange = {
 	path: string,
 	status: RemoteChangeType,
-	currentSha?: string
+	currentSha?: BlobSha
 };
 
 export type RemoteUpdate = {
 	remoteChanges: RemoteChange[],
-	remoteTreeSha: Record<string, string>,
-	latestRemoteCommitSha: string
+	remoteTreeSha: Record<string, BlobSha>,
+	latestRemoteCommitSha: CommitSha
 };
 
 export type ClashStatus = {

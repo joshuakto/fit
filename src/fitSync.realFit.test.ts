@@ -13,7 +13,8 @@ import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { FitSettings, LocalStores } from '../main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
-import { FileContent } from './contentEncoding';
+import { FileContent } from './util/contentEncoding';
+import { BlobSha, CommitSha } from './util/hashing';
 
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
@@ -135,7 +136,7 @@ describe('FitSync', () => {
 		localStoreState = {
 			localSha: {},
 			lastFetchedRemoteSha: {},
-			lastFetchedCommitSha: 'commit-initial'
+			lastFetchedCommitSha: 'commit-initial' as CommitSha
 		};
 
 		// Capture console output for debugging failed tests
@@ -587,7 +588,7 @@ describe('FitSync', () => {
 			// === SETUP: Simulate state mismatch ===
 			// Remote has a hidden file (exists in lastFetchedRemoteSha)
 			localStoreState.lastFetchedRemoteSha = {
-				'.env': 'fake-sha-for-old-remote-value'
+				'.env': 'fake-sha-for-old-remote-value' as BlobSha
 			};
 			localStoreState.localSha = {}; // File NOT in localSha (not tracked during scan)
 

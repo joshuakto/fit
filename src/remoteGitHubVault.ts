@@ -9,8 +9,8 @@ import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
 import { FileOpRecord } from "./fitTypes";
-import { EMPTY_TREE_SHA } from "./utils";
-import { FileContent, isBinaryExtension } from "./contentEncoding";
+import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
+import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -18,10 +18,13 @@ import { FileContent, isBinaryExtension } from "./contentEncoding";
  */
 export type TreeNode = {
 	path: string,
-	mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined,
-	type: "commit" | "blob" | "tree" | undefined,
-	sha: string | null
-};
+	mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined
+} & (
+	| { type: "commit", sha: CommitSha | null }
+	| { type: "blob", sha: BlobSha | null }
+	| { type: "tree", sha: TreeSha | null }
+	| { type: undefined, sha: null }
+);
 
 /**
  * Remote vault implementation for GitHub repositories.
@@ -50,7 +53,7 @@ export class RemoteGitHubVault implements IVault {
 
 	// Internal cache for remote state optimization
 	// Avoids redundant API calls when remote hasn't changed
-	private latestKnownCommitSha: string | null = null;
+	private latestKnownCommitSha: CommitSha | null = null;
 	private latestKnownState: FileState | null = null;
 
 	constructor(
@@ -159,7 +162,7 @@ export class RemoteGitHubVault implements IVault {
 	 * Get reference SHA for the current branch.
 	 * Throws VaultError (remote_not_found) on 404 (repository or branch not found).
 	 */
-	private async getRef(ref: string = `heads/${this.branch}`): Promise<string> {
+	private async getRef(ref: string = `heads/${this.branch}`): Promise<CommitSha> {
 		try {
 			const {data: response} = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/ref/{ref}`, {
@@ -168,7 +171,7 @@ export class RemoteGitHubVault implements IVault {
 					ref: ref,
 					headers: this.headers
 				});
-			return response.object.sha;
+			return response.object.sha as CommitSha;
 		} catch (error: unknown) {
 			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
@@ -177,7 +180,7 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Get the latest commit SHA from the current branch
 	 */
-	private async getLatestCommitSha(): Promise<string> {
+	private async getLatestCommitSha(): Promise<CommitSha> {
 		return await this.getRef(`heads/${this.branch}`);
 	}
 
@@ -202,15 +205,15 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Get tree SHA from a commit
 	 */
-	private async getCommitTreeSha(ref: string): Promise<string> {
+	private async getCommitTreeSha(ref: CommitSha): Promise<TreeSha> {
 		const commit = await this.getCommit(ref);
-		return commit.commit.tree.sha;
+		return commit.commit.tree.sha as TreeSha;
 	}
 
 	/**
 	 * Get the git tree for a given tree SHA
 	 */
-	private async getTree(tree_sha: string): Promise<TreeNode[]> {
+	private async getTree(tree_sha: TreeSha): Promise<TreeNode[]> {
 		try {
 			const { data: tree } = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
@@ -277,7 +280,7 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Create a blob on GitHub from content
 	 */
-	private async createBlob(content: string, encoding: string): Promise<string> {
+	private async createBlob(content: string, encoding: string): Promise<BlobSha> {
 		try {
 			const {data: blob} = await this.octokit.request(
 				`POST /repos/{owner}/{repo}/git/blobs`, {
@@ -287,7 +290,7 @@ export class RemoteGitHubVault implements IVault {
 					encoding,
 					headers: this.headers
 				});
-			return blob.sha;
+			return blob.sha as BlobSha;
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo');
 		}
@@ -354,8 +357,8 @@ export class RemoteGitHubVault implements IVault {
 	 */
 	private async createTree(
 		treeNodes: TreeNode[],
-		base_tree_sha: string
-	): Promise<string> {
+		base_tree_sha: TreeSha
+	): Promise<TreeSha> {
 		try {
 			const {data: newTree} = await this.octokit.request(
 				`POST /repos/{owner}/{repo}/git/trees`, {
@@ -366,7 +369,7 @@ export class RemoteGitHubVault implements IVault {
 					headers: this.headers
 				}
 			);
-			return newTree.sha;
+			return newTree.sha as TreeSha;
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo');
 		}
@@ -375,7 +378,7 @@ export class RemoteGitHubVault implements IVault {
 	/**
 	 * Create a commit pointing to a tree
 	 */
-	private async createCommit(treeSha: string, parentSha: string): Promise<string> {
+	private async createCommit(treeSha: TreeSha, parentSha: CommitSha): Promise<CommitSha> {
 		const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`;
 		try {
 			const { data: createdCommit } = await this.octokit.request(
@@ -387,7 +390,7 @@ export class RemoteGitHubVault implements IVault {
 					parents: [parentSha],
 					headers: this.headers
 				});
-			return createdCommit.sha;
+			return createdCommit.sha as CommitSha;
 		} catch (error: unknown) {
 			return await this.wrapOctokitError(error, 'repo');
 		}
