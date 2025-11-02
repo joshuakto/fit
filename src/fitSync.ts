@@ -6,17 +6,18 @@ import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { VaultError } from "./vault";
-import { Base64Content, FileContent, isBinaryExtension } from "./contentEncoding";
+import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { BlobSha, CommitSha } from "./util/hashing";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
 	source: string,
-	oldLocalSha: Record<string, string>,
-	newLocalSha: Record<string, string>,
-	oldRemoteSha: Record<string, string>,
-	newRemoteSha: Record<string, string>,
-	oldCommitSha: string | null | undefined,
-	newCommitSha: string,
+	oldLocalSha: Record<string, BlobSha>,
+	newLocalSha: Record<string, BlobSha>,
+	oldRemoteSha: Record<string, BlobSha>,
+	newRemoteSha: Record<string, BlobSha>,
+	oldCommitSha: CommitSha | null | undefined,
+	newCommitSha: CommitSha,
 	extraContext?: Record<string, unknown>
 ) {
 	const oldLocalCount = Object.keys(oldLocalSha).length;
@@ -589,8 +590,8 @@ export class FitSync implements IFitSync {
 		};
 		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
 
-		let latestRemoteTreeSha: Record<string, string>;
-		let latestCommitSha: string;
+		let latestRemoteTreeSha: Record<string, BlobSha>;
+		let latestCommitSha: CommitSha;
 		let pushedChanges: Array<LocalChange>;
 
 		if (pushResult) {
@@ -726,7 +727,7 @@ export class FitSync implements IFitSync {
 	private async pushChangedFilesToRemote(
 		localUpdate: LocalUpdate,
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, string>, lastFetchedCommitSha: string}|null> {
+	): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, BlobSha>, lastFetchedCommitSha: CommitSha}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}

@@ -13,6 +13,7 @@ import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { FileState } from "./vault";
 import { fitLogger } from "./logger";
+import { BlobSha, CommitSha } from "./util/hashing";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -30,9 +31,9 @@ import { fitLogger } from "./logger";
  */
 export class Fit {
 	// TODO: Rename these for clarity: localFileShas, remoteCommitSha, remoteFileShas
-	localSha: Record<string, string>;              // Cache of local file SHAs
-	lastFetchedCommitSha: string | null;           // Last synced commit SHA
-	lastFetchedRemoteSha: Record<string, string>;  // Cache of remote file SHAs
+	localSha: Record<string, BlobSha>;             // Cache of local file SHAs
+	lastFetchedCommitSha: CommitSha | null;        // Last synced commit SHA
+	lastFetchedRemoteSha: Record<string, BlobSha>; // Cache of remote file SHAs
 	localVault: LocalVault;                        // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 
@@ -146,7 +147,7 @@ export class Fit {
 	 *
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(): Promise<{changes: RemoteChange[], state: FileState, commitSha: string}> {
+	async getRemoteChanges(): Promise<{changes: RemoteChange[], state: FileState, commitSha: CommitSha}> {
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
