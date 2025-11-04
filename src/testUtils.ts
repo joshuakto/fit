@@ -280,6 +280,7 @@ export class FakeLocalVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
+	private pendingWrittenFileShas: Promise<Record<string, BlobSha>> | null = null;
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -418,6 +419,9 @@ export class FakeLocalVault implements IVault {
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
+		// Clear any pending SHA computation from previous call
+		this.pendingWrittenFileShas = null;
+
 		const error = this.failureScenarios.get('write');
 		if (error) {
 			this.clearFailure('write');
@@ -462,7 +466,43 @@ export class FakeLocalVault implements IVault {
 			}
 		}
 
+		// Start computing SHAs for written files asynchronously (for later retrieval)
+		// Only for trackable files that will appear in future scans
+		this.pendingWrittenFileShas = this.computeWrittenFileShas(filesToWrite);
+
 		return ops;
+	}
+
+	/**
+	 * Compute SHAs for files that were just written.
+	 * Only tracks files that shouldTrackState (will appear in future scans).
+	 */
+	private async computeWrittenFileShas(
+		filesToWrite: Array<{path: string, content: FileContent}>
+	): Promise<Record<string, BlobSha>> {
+		const shaPromises = filesToWrite
+			.filter(({path}) => this.shouldTrackState(path))
+			.map(async ({path, content}) => {
+				const sha = await LocalVault.fileSha1(path, content);
+				return [path, sha] as const;
+			});
+
+		const results = await Promise.all(shaPromises);
+		return Object.fromEntries(results);
+	}
+
+	/**
+	 * Get SHAs for files written in the last applyChanges() call.
+	 * Must be called after applyChanges() and awaited to get the computed SHAs.
+	 * Clears the pending SHAs after retrieval.
+	 */
+	async getAndClearWrittenFileShas(): Promise<Record<string, BlobSha>> {
+		if (!this.pendingWrittenFileShas) {
+			return {};
+		}
+		const shas = await this.pendingWrittenFileShas;
+		this.pendingWrittenFileShas = null;
+		return shas;
 	}
 
 	shouldTrackState(path: string): boolean {

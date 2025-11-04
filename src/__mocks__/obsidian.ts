@@ -25,6 +25,7 @@ export class TFolder {
 
 export class Vault {
 	readBinary = jest.fn();
+	cachedRead = jest.fn();
 }
 
 export class Component {

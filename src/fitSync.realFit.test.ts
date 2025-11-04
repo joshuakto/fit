@@ -345,7 +345,7 @@ describe('FitSync', () => {
 			const result1 = await syncAndHandleResult(fitSync, mockNotice1);
 
 			// Verify: Only normal.md was pushed, _fit/ files excluded
-			expect(result1).toMatchObject({
+			expect(result1).toEqual(expect.objectContaining({
 				success: true,
 				ops: expect.arrayContaining([
 					{
@@ -353,7 +353,7 @@ describe('FitSync', () => {
 						ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
 					}
 				])
-			});
+			}));
 
 			// Verify: Remote does NOT have _fit/ files
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['normal.md']);
@@ -438,7 +438,7 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Only visible file was synced (hidden file silently ignored)
-			expect(result).toMatchObject({
+			expect(result).toEqual(expect.objectContaining({
 				success: true,
 				ops: expect.arrayContaining([
 					{
@@ -446,7 +446,7 @@ describe('FitSync', () => {
 						ops: [expect.objectContaining({ path: 'visible.md', status: 'created' })]
 					}
 				])
-			});
+			}));
 
 			// Verify: Remote does NOT have hidden file
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
@@ -617,9 +617,7 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Sync succeeded
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// Verify: remote changes saved to _fit
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
@@ -885,7 +883,7 @@ describe('FitSync', () => {
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			expect(result).toMatchObject({success: true});
+			expect(result).toEqual(expect.objectContaining({success: true}));
 
 			// File should still exist locally (not deleted)
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({'.hidden': hiddenFileContent});

@@ -23,6 +23,7 @@ describe('LocalVault', () => {
 			getFiles: jest.fn(),
 			read: jest.fn(),
 			readBinary: jest.fn(),
+			cachedRead: jest.fn(),
 			getAbstractFileByPath: jest.fn()
 		} as unknown as jest.Mocked<Vault>;
 
