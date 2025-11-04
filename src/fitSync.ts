@@ -294,11 +294,7 @@ export class FitSync implements IFitSync {
 					});
 					continue; // Don't risk overwriting if file might exist
 				} else if (stat === 'file' || stat === 'folder') {
-					// File exists - treat as clash
-					fitLogger.log('[FitSync] File exists locally but not in cache - saving to _fit/ for safety', {
-						path: change.path,
-						reason: 'Possible tracking state inconsistency (version migration or bug)'
-					});
+					// File exists - save to _fit/ for safety (tracking state inconsistency)
 					resolvedChanges.push({
 						path: `_fit/${change.path}`,
 						content: change.content
@@ -306,9 +302,6 @@ export class FitSync implements IFitSync {
 					continue; // Don't risk overwriting local version
 				}
 				// File doesn't exist locally (stat === 'nonexistent') - safe to write directly
-				fitLogger.log('[FitSync] File not in cache but also not on disk - writing directly', {
-					path: change.path
-				});
 			}
 
 			// Normal file or no conflict - add as-is
@@ -341,18 +334,10 @@ export class FitSync implements IFitSync {
 					deletionsSkippedDueToStatFailure.push(path);
 					continue; // Don't delete if we can't verify it's safe
 				} else if (stat === 'file' || stat === 'folder') {
-					// File exists but not tracked - warn user, don't delete
-					fitLogger.log('[FitSync] Skipping deletion - file exists but not in cache', {
-						path,
-						reason: 'Cannot verify safe to delete (possible tracking state inconsistency)'
-					});
+					// File exists but not tracked - don't delete (tracking state inconsistency)
 					continue; // Skip deletion
 				}
 				// File doesn't exist (stat === 'nonexistent') - deletion already done, no action needed
-				fitLogger.log('[FitSync] File already deleted locally', {
-					path,
-					reason: 'Not in cache and not on disk'
-				});
 				continue; // Skip deletion (no-op)
 			}
 
@@ -573,6 +558,14 @@ export class FitSync implements IFitSync {
 			deletionsSkippedDueToStatFailure: deletionsSkippedDueToStatFailureClashes
 		} = await this.resolveClashes(clashes, existenceMap, syncNotice);
 
+		if (clashes.length > 0) {
+			fitLogger.log('[FitSync] Resolved clashes', {
+				clashCount: clashes.length,
+				unresolvedCount: unresolvedConflicts.length,
+				filesWrittenToFit: resolvedConflictOps.length
+			});
+		}
+
 		// Phase 4: Push local changes to remote
 		syncNotice.setMessage("Uploading local changes");
 		const pushUpdate = {
@@ -580,6 +573,10 @@ export class FitSync implements IFitSync {
 			parentCommitSha: remoteUpdate.latestRemoteCommitSha
 		};
 		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
+
+		fitLogger.log('[FitSync] Pushed local changes to remote', {
+			changesPushed: pushResult?.pushedChanges.length ?? 0
+		});
 
 		let latestRemoteTreeSha: Record<string, BlobSha>;
 		let latestCommitSha: CommitSha;
@@ -609,6 +606,13 @@ export class FitSync implements IFitSync {
 			deletionsSkippedDueToStatFailureClashes,
 			syncNotice
 		);
+
+		if (addToLocalNonClashed.length > 0 || deleteFromLocalNonClashed.length > 0) {
+			fitLogger.log('[FitSync] Pulled remote changes to local', {
+				filesWritten: addToLocalNonClashed.length,
+				filesDeleted: deleteFromLocalNonClashed.length
+			});
+		}
 
 		// Phase 6: Update local state using SHAs computed by LocalVault (performance optimization)
 		// LocalVault computed SHAs from in-memory content during file writes (see docs/sync-logic.md).

@@ -38,9 +38,11 @@ export class FitLogger {
 	 * Log diagnostic information
 	 * Writes to both console and file for cross-platform debugging
 	 */
-	log(tag: string, data: unknown) {
+	log(tag: string, data?: unknown) {
 		const timestamp = new Date().toISOString();
-		const message = `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`;
+		const message = data !== undefined
+			? `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`
+			: `[${timestamp}] ${tag}`;
 
 		// Always log to console for desktop users
 		console.log(tag, data);
