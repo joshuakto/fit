@@ -35,6 +35,12 @@ describe('Content.encodeToBase64', () => {
 		const result = Content.encodeToBase64('');
 		expect(result).toBe('');
 	});
+
+	it('should encode very large Unicode strings without RangeError', () => {
+		const longText = 'Large content'.repeat(20000);
+		const encoded = Content.encodeToBase64(longText);
+		expect(Content.decodeFromBase64(encoded)).toBe(longText);
+	});
 });
 
 describe('Content.decodeFromBase64', () => {
