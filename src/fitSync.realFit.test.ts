@@ -819,6 +819,26 @@ describe('FitSync', () => {
 					filesMovedToFit: ['.envrc']
 				}
 			);
+
+			// === VERIFY: File is reported as conflict (not just silently saved) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: '.envrc',
+						localStatus: 'untracked',
+						remoteStatus: 'ADDED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
 		});
 
 		it('should skip deletion when stat fails to check local existence (deletion)', async () => {
@@ -858,6 +878,56 @@ describe('FitSync', () => {
 					deletionsSkipped: ['.editorconfig']
 				}
 			);
+		});
+
+		it('should report file as conflict when saved to _fit/ for any safety reason', async () => {
+			// This test verifies the fix: ANY file written to _fit/ should be reported as a conflict.
+			// We use a dual-sided change scenario (both local and remote modified) which writes to _fit/.
+
+			// === SETUP: Both sides have same file with different content ===
+			const fitSync = createFitSync();
+			localVault.setFile('document.md', 'Local version\n');
+			remoteVault.setFile('document.md', 'Remote version\n');
+
+			// === STEP 1: Initial sync - establishes baseline ===
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// === STEP 2: Both sides modify the file ===
+			localVault.setFile('document.md', 'Local version - edited\n');
+			remoteVault.setFile('document.md', 'Remote version - edited\n');
+
+			// === STEP 3: Sync (conflict) ===
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// === VERIFY: Sync succeeded ===
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// === VERIFY: Remote version saved to _fit/ (local file unchanged) ===
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'document.md': 'Local version - edited\n',  // Local file untouched
+				'_fit/document.md': 'Remote version - edited\n'  // Remote version in conflict directory
+			});
+
+			// === VERIFY: File is reported as conflict (this is the key fix!) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: 'document.md',
+						localStatus: 'changed',
+						remoteStatus: 'MODIFIED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {

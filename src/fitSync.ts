@@ -154,11 +154,11 @@ export class FitSync implements IFitSync {
 		existenceMap?: Map<string, 'file' | 'folder' | 'nonexistent'>
 	): Promise<ConflictResolutionResult> {
 		if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
-			return {path: clash.path, noDiff: true};
+			return {path: clash.path};
 		} else if (clash.localStatus === "deleted") {
 			const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
 			const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-			return {path: clash.path, noDiff: false, conflictFile};
+			return {path: clash.path, conflictFile};
 		} else if (clash.localStatus === "untracked") {
 			// File is protected path or hidden - can't verify local state via tracking
 			if (clash.remoteStatus === "REMOVED") {
@@ -173,15 +173,15 @@ export class FitSync implements IFitSync {
 						path: clash.path
 					});
 				}
-				// Either file exists (don't delete) or doesn't exist (already deleted) - both are noDiff
-				return {path: clash.path, noDiff: true};
+				// Either file exists (don't delete) or doesn't exist (already deleted)
+				return {path: clash.path};
 			} else {
 				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
 
 				// Protected paths (e.g., .obsidian/) should ALWAYS go to _fit/, never written directly
 				if (!this.fit.shouldSyncPath(clash.path)) {
 					const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-					return {path: clash.path, noDiff: false, conflictFile};
+					return {path: clash.path, conflictFile};
 				}
 
 				// Unprotected but untracked (e.g., hidden files) - check if file actually exists locally
@@ -192,19 +192,16 @@ export class FitSync implements IFitSync {
 				if (locallyExists) {
 					// File exists locally (or unknown) - save remote version to _fit/ to avoid overwriting
 					const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-					return {path: clash.path, noDiff: false, conflictFile};
+					return {path: clash.path, conflictFile};
 				} else {
 					// File doesn't exist locally - safe to write directly
 					// This is NOT a conflict - it's a remote add that can be applied directly
 					fitLogger.log('[FitSync] Untracked file doesn\'t exist locally - will write directly (not a conflict)', {
 						path: clash.path
 					});
-					// Return noDiff=true but with the file content to write directly (not to _fit/)
-					// The caller (resolveClashes) will need to handle this special case
 					return {
 						path: clash.path,
-						noDiff: true,
-						conflictFile: { path: clash.path, content: remoteContent }
+						directWrite: { path: clash.path, content: remoteContent }
 					};
 				}
 			}
@@ -222,12 +219,13 @@ export class FitSync implements IFitSync {
 			if (remoteBase64 !== localBase64) {
 				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64);
 				const conflictFile = this.prepareConflictFile(clash.path, report.remoteContent);
-				return {path: clash.path, noDiff: false, conflictFile};
+				return {path: clash.path, conflictFile};
 			}
-			return { path: clash.path, noDiff: true };
+			return { path: clash.path };
 		} else {
-			// assumes remote file is deleted if sha not found in latestRemoteTreeSha.
-			return { path: clash.path, noDiff: false };
+			// Remote file was deleted, local file has changes - no file to write but this is still a "conflict"
+			// (User needs to be aware remote deleted their locally-changed file)
+			return { path: clash.path };
 		}
 	}
 
@@ -426,26 +424,20 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// TODO: Fix conflict reporting - files saved to _fit/ should always be reported as conflicts
-		// Currently, files written to _fit/ for safety (cache inconsistency, stat failure, protected paths)
-		// are excluded from conflict reporting if noDiff is true. This is wrong - any file in _fit/ should
-		// be reported as a conflict regardless of content comparison.
-		// Fix: include clashes in unresolved if res.conflictFile?.path.startsWith('_fit/'), not just !res.noDiff
-		const unresolved = fileResolutions.map((res, i)=> {
-			if (!res.noDiff) {
-				return clashes[i];
-			}
-			return null;
-		}).filter(Boolean) as Array<ClashStatus>;
-
-		// Batch write all conflict files (to _fit/) and direct writes (untracked files that don't exist)
+		// conflictFile = written to _fit/ (user-facing conflict)
+		// directWrite = written directly (safe, no conflict)
 		const conflictFilesToWrite = fileResolutions
-			.filter(r => r.conflictFile && r.conflictFile.path.startsWith('_fit/'))
+			.filter(r => r.conflictFile)
 			.map(r => r.conflictFile!);
 
 		const directWrites = fileResolutions
-			.filter(r => r.conflictFile && !r.conflictFile.path.startsWith('_fit/'))
-			.map(r => r.conflictFile!);
+			.filter(r => r.directWrite)
+			.map(r => r.directWrite!);
+
+		// Conflicts are determined by presence of conflictFile (always goes to _fit/)
+		const unresolved = fileResolutions
+			.map((res, i) => res.conflictFile ? clashes[i] : null)
+			.filter(Boolean) as Array<ClashStatus>;
 
 		const ops: FileOpRecord[] = [];
 
@@ -459,7 +451,8 @@ export class FitSync implements IFitSync {
 			ops.push(...directOps);
 		}
 
-		if (!fileResolutions.every(res=>res.noDiff)) {
+		// Show "Change conflicts detected" notice if any conflicts will be written to _fit/
+		if (conflictFilesToWrite.length > 0) {
 			syncNotice.setMessage(`Change conflicts detected`);
 		}
 

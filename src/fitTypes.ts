@@ -46,8 +46,8 @@ export type ConflictReport = {
 
 export type ConflictResolutionResult = {
 	path: string
-	noDiff: boolean
-	conflictFile?: { path: string, content: FileContent }  // File to write to _fit/ (if noDiff=false)
+	conflictFile?: { path: string, content: FileContent }  // Conflict to write to _fit/ (always _fit/ prefixed)
+	directWrite?: { path: string, content: FileContent }   // Safe direct write (no conflict, untracked file that doesn't exist)
 };
 
 export type FileOpRecord = {
