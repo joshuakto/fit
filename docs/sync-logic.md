@@ -628,6 +628,15 @@ await localVault.applyChanges([{path: "file.md", content: "version A"}]);
 
 **Safety concern:** Does Obsidian normalize content when writing files (line endings, whitespace, etc.)? If so, we'd need to re-read files to get accurate SHAs.
 
+**Alternative considered:** Read-after-write approach (rejected):
+```typescript
+// Write file, then immediately read it back to compute SHA
+await this.vault.modifyBinary(file, content);
+const readBack = await this.vault.cachedRead(file);
+const sha = computeSha1(path + readBack);
+```
+This would handle any Obsidian normalization, but adds significant overhead (doubles I/O per file) and still vulnerable to race conditions (user edits between write and cachedRead).
+
 **Empirical testing (2025-11-05)** with 8 file types on Linux (Obsidian 1.x) confirmed:
 - **CRLF files** - No normalization (preserved exactly)
 - **LF files** - No normalization
@@ -654,6 +663,7 @@ if (this.shouldTrackState(path)) {
 **SHA promises collected in applyChanges():**
 ```typescript
 // Start SHA computation in parallel with file writes
+// writeFile() returns: { op: FileOpRecord; shaPromise: Promise<BlobSha> | null }
 const writeResults = await Promise.all(
     filesToWrite.map(async ({path, content}) => {
         return await this.writeFile(path, content.toBase64(), content);
@@ -668,8 +678,13 @@ for (const result of writeResults) {
     }
 }
 
-// Caller awaits all SHAs at end of sync
-this.pendingWrittenFileShas = Promise.all(...);
+// Store promise to collect all SHAs (for later retrieval)
+this.pendingWrittenFileShas = Promise.all(
+    Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
+        const sha = await shaPromise;
+        return [path, sha] as const;
+    })
+).then(entries => Object.fromEntries(entries));
 ```
 
 **Retrieval in FitSync:**
