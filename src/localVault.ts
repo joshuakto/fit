@@ -46,6 +46,7 @@ function isBinaryExtensionForSha(extension: string): boolean {
  */
 export class LocalVault implements IVault {
 	private vault: Vault;
+	private pendingWrittenFileShas: Promise<Record<string, BlobSha>> | null = null;
 
 	constructor(vault: Vault) {
 		this.vault = vault;
@@ -183,28 +184,44 @@ export class LocalVault implements IVault {
 	}
 
 	/**
-	 * Write or update a file
+	 * Write or update a file and optionally compute its SHA.
+	 * @param path - File path
 	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
-	 * @returns Record of file operation performed
+	 * @param originalContent - The FileContent object we're writing (for SHA computation)
+	 * @returns Record of file operation performed and SHA promise (if trackable)
 	 */
-	private async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
+	private async writeFile(
+		path: string,
+		content: Base64Content,
+		originalContent: FileContent
+	): Promise<{ op: FileOpRecord; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 
 			if (file && file instanceof TFile) {
 				await this.vault.modifyBinary(file, contentToArrayBuffer(content));
-				return {path, status: "changed"};
 			} else if (!file) {
 				await this.ensureFolderExists(path);
 				await this.vault.createBinary(path, contentToArrayBuffer(content));
-				return {path, status: "created"};
+			} else {
+				// File exists but is not a TFile - check if it's a folder
+				if (file instanceof TFolder) {
+					throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+				}
+				// Unknown type - future-proof for new Obsidian abstract file types
+				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
-			// File exists but is not a TFile - check if it's a folder
-			if (file instanceof TFolder) {
-				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+
+			const op: FileOpRecord = { path, status: file ? "changed" : "created" };
+
+			// Compute SHA from in-memory content if file should be tracked
+			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
+			let shaPromise: Promise<BlobSha> | null = null;
+			if (this.shouldTrackState(path)) {
+				shaPromise = LocalVault.fileSha1(path, originalContent);
 			}
-			// Unknown type - future-proof for new Obsidian abstract file types
-			throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
+
+			return { op, shaPromise };
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
@@ -245,27 +262,68 @@ export class LocalVault implements IVault {
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<FileOpRecord[]> {
+		// Clear any pending SHA computation from previous call
+		this.pendingWrittenFileShas = null;
+
 		// Process file additions or updates
-		const writeOperations = filesToWrite.map(async ({path, content}) => {
-			try {
-				return await this.writeFile(path, content.toBase64());
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(`Failed to write to ${path}: ${message}`);
-			}
-		});
+		const writeResults = await Promise.all(
+			filesToWrite.map(async ({path, content}) => {
+				try {
+					return await this.writeFile(path, content.toBase64(), content);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Failed to write to ${path}: ${message}`);
+				}
+			})
+		);
 
 		// Process file deletions
-		const deletionOperations = filesToDelete.map(async (path) => {
-			try {
-				return await this.deleteFile(path);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(`Failed to delete ${path}: ${message}`);
-			}
-		});
+		const deletionOps = await Promise.all(
+			filesToDelete.map(async (path) => {
+				try {
+					return await this.deleteFile(path);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Failed to delete ${path}: ${message}`);
+				}
+			})
+		);
 
-		const fileOps = await Promise.all([...writeOperations, ...deletionOperations]);
+		// Extract file operations for return value
+		const writeOps = writeResults.map(r => r.op);
+		const fileOps = [...writeOps, ...deletionOps];
+
+		// Collect SHA promises from write operations (started asynchronously in writeFile)
+		// Map: path -> SHA promise (only for trackable files)
+		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
+		for (const result of writeResults) {
+			if (result.shaPromise) {
+				shaPromiseMap[result.op.path] = result.shaPromise;
+			}
+		}
+
+		// Store the promise to collect all SHAs (for later retrieval via getAndClearWrittenFileShas)
+		this.pendingWrittenFileShas = Promise.all(
+			Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
+				const sha = await shaPromise;
+				return [path, sha] as const;
+			})
+		).then(entries => Object.fromEntries(entries));
+
 		return fileOps;
+	}
+
+	/**
+	 * Get SHAs for files written in the last applyChanges() call.
+	 * Must be called after applyChanges() and awaited to get the computed SHAs.
+	 * Clears the pending SHAs after retrieval.
+	 */
+	async getAndClearWrittenFileShas(): Promise<Record<string, BlobSha>> {
+		if (!this.pendingWrittenFileShas) {
+			return {};
+		}
+		const shas = await this.pendingWrittenFileShas;
+		this.pendingWrittenFileShas = null;
+		return shas;
 	}
 }

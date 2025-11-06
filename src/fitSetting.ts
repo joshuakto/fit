@@ -323,7 +323,7 @@ export default class FitSettingTab extends PluginSettingTab {
 					const { fitLogger } = await import('./logger');
 					fitLogger.setEnabled(value);
 					if (value) {
-						fitLogger.log('[Settings] Debug logging enabled', { timestamp: new Date().toISOString() });
+						fitLogger.log('[Settings] Debug logging enabled');
 					}
 				}));
 	};

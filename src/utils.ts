@@ -63,10 +63,6 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 	return isEqual;
 }
 
-export function removeLineEndingsFromBase64String(content: string): string {
-	return content.replace(/\r?\n|\r|\n/g, '');
-}
-
 export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRecord[]}>): void {
 	console.log(records);
 	if (records.length === 0 || records.every(r=>r.ops.length===0)) {return;}

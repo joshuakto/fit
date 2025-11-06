@@ -157,12 +157,10 @@ export class Fit {
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
 			fitLogger.log('[Fit] Remote changes detected', {
-				changeCount: changes.length,
-				changes: changes.map(c => ({ path: c.path, status: c.status })),
-				currentRemoteFilesCount: Object.keys(state).length,
-				cachedRemoteFilesCount: Object.keys(this.lastFetchedRemoteSha).length,
-				filesOnlyInRemote: Object.keys(state).filter(p => !this.lastFetchedRemoteSha[p]),
-				filesOnlyInCache: Object.keys(this.lastFetchedRemoteSha).filter(p => !state[p])
+				added: changes.filter(c => c.status === 'ADDED').length,
+				modified: changes.filter(c => c.status === 'MODIFIED').length,
+				removed: changes.filter(c => c.status === 'REMOVED').length,
+				total: changes.length
 			});
 		}
 
@@ -200,18 +198,6 @@ export class Fit {
 					remoteStatus: remoteChange.status
 				});
 			}
-		}
-
-		// Log clashes for debugging sync conflicts
-		if (clashes.length > 0) {
-			fitLogger.log('[Fit] File clashes detected', {
-				clashCount: clashes.length,
-				clashes: clashes.map(c => ({
-					path: c.path,
-					localStatus: c.localStatus,
-					remoteStatus: c.remoteStatus
-				}))
-			});
 		}
 
 		return clashes;

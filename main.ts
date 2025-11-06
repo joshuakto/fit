@@ -149,7 +149,6 @@ export default class FitPlugin extends Plugin {
 		await this.loadLocalStore();
 
 		fitLogger.log('[Plugin] Sync initiated', {
-			timestamp: new Date().toISOString(),
 			triggerType: this.syncing ? 'manual' : (this.autoSyncing ? 'auto' : 'unknown')
 		});
 
@@ -197,7 +196,7 @@ export default class FitPlugin extends Plugin {
 	performManualSync = async (): Promise<void> => {
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.syncing = true;
-		fitLogger.log('[Plugin] Manual sync requested', { timestamp: new Date().toISOString() });
+		fitLogger.log('[Plugin] Manual sync requested');
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 		const syncSuccess = await this.sync(syncNotice);
@@ -223,7 +222,6 @@ export default class FitPlugin extends Plugin {
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.autoSyncing = true;
 		fitLogger.log('[Plugin] Auto-sync triggered', {
-			timestamp: new Date().toISOString(),
 			mode: this.settings.autoSync
 		});
 		const syncNotice = new FitNotice(

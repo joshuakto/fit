@@ -68,15 +68,24 @@ sequenceDiagram
     Note over Fit: Detect changes
 
     par Apply Changes (to Local/Remote in parallel)
-        Fit->>Local: Apply remote changes
-        Note over Local: Write/delete files
-        Fit->>Remote: Apply local changes
+        Fit->>Local: Apply changes from remote
+        Note over Local: Write files + compute SHAs<br/>(from in-memory content)
+    and
+        Fit->>Remote: Apply changes from local
         Note over Remote: Create commit
     end
 
+    Local->>Fit: Return specialized SHA updates<br/>(only written files)
     Fit->>Storage: Save updated caches
     Note over Storage: Updated SHA caches
 ```
+
+**Key optimization:** When pulling remote changes, LocalVault computes SHAs **during** file writes (from in-memory content), not by re-scanning the entire vault. This provides:
+- **Better performance:** Avoids re-reading files from disk
+- **Race condition safety:** SHAs computed from synced content, not concurrent user edits
+- **Efficient updates:** Only written files get new SHAs, rest of cache unchanged
+
+See [SHA Computation Strategy](#sha-computation-strategy) below for detailed rationale.
 
 ### Why SHA Comparison?
 
@@ -558,6 +567,206 @@ remote files = {
 - User maintains control: Local files are never overwritten
 - Clear conflict markers: Remote versions in `_fit/` are easy to identify
 
+## SHA Computation Strategy
+
+FIT uses a specialized SHA computation approach during sync operations to maximize performance and avoid race conditions.
+
+### Two Computation Modes
+
+**1. Full Vault Scan (Pre-Sync)**
+- **When:** Before each sync to detect local changes
+- **Method:** Read all vault files from disk and compute SHAs
+- **Purpose:** Compare current state to cached baseline (`localSha`)
+- **Implementation:** [`LocalVault.readFromSource()`](../src/localVault.ts)
+
+**2. Specialized Updates (During Sync)**
+- **When:** While writing remote changes to local vault
+- **Method:** Compute SHAs from in-memory content (fetched from GitHub API)
+- **Purpose:** Update cache for written files only, avoiding full re-scan
+- **Implementation:** [`LocalVault.writeFile()` + `getAndClearWrittenFileShas()`](../src/localVault.ts)
+
+### Why Compute from In-Memory Content?
+
+When files are written during sync, FIT computes their SHAs from the **in-memory content received from GitHub API**, not by re-reading files from disk. This provides three critical benefits:
+
+**1. Performance - Avoids Redundant I/O**
+
+During sync, we already have the file content in memory (fetched from GitHub API). Re-reading all files from disk would:
+- Double the I/O operations (write + read for each file)
+- Block the main thread with synchronous file reads
+- Significantly slow down large syncs (100+ files)
+
+With in-memory computation:
+- SHA computation overlaps with push to remote and state persistence
+- Better CPU utilization through parallelism
+- No blocking the main thread during sync
+
+**2. Race Condition Avoidance**
+
+Computing SHAs from the content we're writing (not from files on disk) ensures:
+- Any local file edits **during** sync are not accidentally captured in the new baseline
+- Those edits will be properly detected on the **next** sync
+- SHA cache accurately reflects the state we just synced, not any intervening changes
+
+**Example race condition prevented:**
+```typescript
+// Without in-memory SHA computation:
+await localVault.applyChanges([{path: "file.md", content: "version A"}]);
+// User edits file.md → "version B" (during sync)
+const shas = await computeWrittenFileShas(); // Would capture "version B"
+// BUG: SHA cache now says file.md = SHA("version B")
+// but remote has "version A" → sync broken
+
+// With in-memory SHA computation:
+await localVault.applyChanges([{path: "file.md", content: "version A"}]);
+// SHA computed from "version A" immediately (before user edit)
+// User edits file.md → "version B" (during sync)
+// Next sync properly detects local change (compares current "version B" to cached SHA of "version A")
+```
+
+**3. Content Fidelity - No Normalization in Obsidian**
+
+**Safety concern:** Does Obsidian normalize content when writing files (line endings, whitespace, etc.)? If so, we'd need to re-read files to get accurate SHAs.
+
+**Alternative considered:** Read-after-write approach (rejected):
+```typescript
+// Write file, then immediately read it back to compute SHA
+await this.vault.modifyBinary(file, content);
+const readBack = await this.vault.cachedRead(file);
+const sha = computeSha1(path + readBack);
+```
+This would handle any Obsidian normalization, but adds significant overhead (doubles I/O per file) and still vulnerable to race conditions (user edits between write and cachedRead).
+
+**Empirical testing (2025-11-05)** with 8 file types on Linux (Obsidian 1.x) confirmed:
+- **CRLF files** - No normalization (preserved exactly)
+- **LF files** - No normalization
+- **Mixed line endings** - No normalization
+- **Emoji/Unicode** - No normalization
+- **Trailing whitespace** - No normalization
+- **Binary content** - No normalization
+- **Long lines (1700+ chars)** - No normalization
+
+**Result:** Obsidian writes files **exactly as provided**, with no line ending conversion or content transformation. SHA computed from in-memory content = SHA computed from re-read file.
+
+### Implementation
+
+**Location:** [LocalVault.writeFile() in localVault.ts](../src/localVault.ts#L217-L224)
+
+```typescript
+// Compute SHA from in-memory content if file should be tracked
+let shaPromise: Promise<BlobSha> | null = null;
+if (this.shouldTrackState(path)) {
+    shaPromise = LocalVault.fileSha1(path, originalContent);
+}
+```
+
+**SHA promises collected in applyChanges():**
+```typescript
+// Start SHA computation in parallel with file writes
+// writeFile() returns: { op: FileOpRecord; shaPromise: Promise<BlobSha> | null }
+const writeResults = await Promise.all(
+    filesToWrite.map(async ({path, content}) => {
+        return await this.writeFile(path, content.toBase64(), content);
+    })
+);
+
+// Collect SHA promises (already running in background)
+const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
+for (const result of writeResults) {
+    if (result.shaPromise) {
+        shaPromiseMap[result.op.path] = result.shaPromise;
+    }
+}
+
+// Store promise to collect all SHAs (for later retrieval)
+this.pendingWrittenFileShas = Promise.all(
+    Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
+        const sha = await shaPromise;
+        return [path, sha] as const;
+    })
+).then(entries => Object.fromEntries(entries));
+```
+
+**Retrieval in FitSync:**
+```typescript
+// After applyChanges() completes
+const newLocalShas = await this.fit.localVault.getAndClearWrittenFileShas();
+// Merge with existing cache (specialized update, not full re-scan)
+const updatedLocalSha = { ...this.fit.localSha, ...newLocalShas };
+```
+
+**Log output:** [FitSync.performSync() in fitSync.ts](../src/fitSync.ts)
+```
+[2025-11-05T10:37:19.456Z] [FitSync] Computed SHAs from in-memory content (skipped re-reading files): {
+  "filesProcessed": 195,
+  "totalFilesInState": 195
+}
+```
+
+## SHA Normalization
+
+FIT applies normalization to ensure SHA consistency across platforms and API differences.
+
+### Base64 Content Normalization
+
+**Problem:** GitHub API returns base64 with newlines for readability (every ~60-76 chars), but Obsidian's `arrayBufferToBase64()` returns base64 without newlines. This causes SHA mismatches for binary files (PNG, PDF, etc.).
+
+**Solution:** All base64 content is normalized when entering the system via `FileContent.fromBase64()`:
+
+```typescript
+// In contentEncoding.ts
+static fromBase64(content: string | Base64Content): FileContent {
+    const normalized = removeLineEndingsFromBase64String(content);
+    return new FileContent({ encoding: 'base64', content: Content.asBase64(normalized) });
+}
+```
+
+**Why this works:**
+- GitHub blob content: `"SGVs\nbG8=\n"` → normalized to `"SGVsbG8="`
+- Obsidian read content: `"SGVsbG8="` → already normalized
+- SHA computed from same canonical form → consistent
+
+### SHA Cache Inconsistency Recovery
+
+**Scenario:** SHA differs between cache and current state, but content is actually identical.
+
+**Causes:**
+- Base64 normalization issues (fixed in v1.2.0+)
+- Cache corruption or inconsistency
+- Manual cache editing
+- Plugin version upgrade with SHA computation changes
+
+**Self-healing behavior:**
+1. Change detection reports file as "changed" (SHA differs from cache)
+2. Sync attempts to push to remote
+3. Remote detects content is identical (blob SHA matches existing)
+4. No tree nodes created → `fileOps.length === 0`
+5. Log message: `[FitSync] No remote changes needed - content already matches`
+6. Cache updated with correct SHA from current file content
+7. **Self-correcting:** Next sync uses corrected SHA, no spurious change
+
+**No data loss:**
+- ✅ Remote never modified (GitHub deduplicates identical blobs)
+- ✅ Local files untouched
+- ✅ Cache self-corrects to accurate SHA
+- ✅ Only cost: one unnecessary sync attempt (optimized away by GitHub)
+
+**Example log:**
+```
+[2025-11-04T14:10:30.123Z] [FitSync] Starting sync: {
+  "local": {
+    "changed": ["image.png"]
+  }
+}
+
+[2025-11-04T14:10:30.456Z] [FitSync] No remote changes needed - content already matches: {
+  "localChangesDetected": 1,
+  "reason": "Local content matches remote despite SHA cache mismatch (likely cache inconsistency)"
+}
+```
+
+This is not an error - it's a self-healing mechanism that corrects cache inconsistencies without user intervention.
+
 ## Edge Cases
 
 ### Lost SHA Cache
@@ -638,61 +847,73 @@ When debug logging is enabled (Settings → Enable debug logging), FIT writes a 
 **Logged events:**
 1. **SHA cache load:** Where caches came from (plugin data.json)
 2. **SHA computation:** Files scanned from vault
-3. **Per-file decisions:** Why each file was marked create/delete/modify
-4. **SHA cache updates:** What changed in caches after sync
-5. **Sync decisions:** Complete reasoning for sync operations
+3. **Change detection:** Files involved in sync (logged upfront for crash diagnostics)
+4. **Sync outcomes:** Operations performed and conflicts detected
+5. **State updates:** Final state persisted after successful sync
 
-**Example log trace for deletion:**
+**Example log trace for initial sync with remote changes:**
 ```
-[2025-10-04T03:25:38.106Z] [Fit] SHA caches loaded from storage: {
+[2025-11-04T10:30:15.234Z] [Fit] SHA caches loaded from storage: {
   "source": "plugin data.json",
-  "localShaCount": 256,
-  "remoteShaCount": 263,
-  "lastCommit": "3f45fe4f0ecacc9400b7ec19c20c8c6044a539e0"
+  "localShaCount": 0,
+  "remoteShaCount": 0,
+  "lastCommit": null
 }
 
-[2025-10-04T03:25:38.106Z] [Fit] Computed local SHAs from filesystem: {
+[2025-11-04T10:30:15.456Z] [LocalVault] Computed local SHAs from filesystem: {
   "source": "vault files",
-  "fileCount": 255  // One less than cache - something was deleted
+  "fileCount": 0
 }
 
-[2025-10-04T03:25:38.107Z] [compareSha] local change detected: {
-  "path": "deleted-file.md",
-  "status": "deleted",
-  "currentSha": "null (file absent)",
-  "storedSha": "abc123...",
-  "decision": "DELETE"
+[2025-11-04T10:30:16.789Z] [Fit] Remote changes detected: {
+  "added": 195,
+  "modified": 0,
+  "removed": 0,
+  "total": 195
 }
 
-[2025-10-04T03:25:38.107Z] [compareSha] local change summary: {
-  "totalChanges": 1,
-  "creates": 0,
-  "modifies": 0,
-  "deletes": 1
+[2025-11-04T10:30:16.790Z] [FitSync] Starting sync: {
+  "remote": {
+    "added": [
+      "README.md",
+      "notes/daily/2025-01-15.md",
+      ...
+    ]
+  }
 }
 
-[2025-10-04T03:25:38.108Z] [Fit] Local changes detected: {
-  "changeCount": 1,
-  "changes": [{"path": "deleted-file.md", "status": "deleted"}],
-  "currentFilesCount": 255,
-  "cachedFilesCount": 256,
-  "filesOnlyInCache": ["deleted-file.md"],
-  "filesOnlyInCurrent": []
+[2025-11-04T10:37:19.456Z] [FitSync] Computed SHAs from in-memory content (skipped re-reading files): {
+  "filesProcessed": 195,
+  "totalFilesInState": 195
 }
 
-[2025-10-04T03:25:39.376Z] [FitSync] Pre-sync check complete: {
-  "status": "onlyLocalChanged",
-  "filesPendingRemoteDeletion": ["deleted-file.md"]
+[2025-11-04T10:37:19.789Z] [FitSync] Updating local store after successful sync: {
+  "localShaCount": 195,
+  "remoteShaCount": 195,
+  "commitSha": "a1b2c3d4..."
+}
+```
+
+**Example log trace with conflicts:**
+```
+[2025-11-04T10:45:20.123Z] [FitSync] Starting sync: {
+  "local": {
+    "changed": ["file1.md"]
+  },
+  "remote": {
+    "modified": ["file1.md", "file2.md"]
+  }
 }
 
-[2025-10-04T03:25:42.258Z] [FitSync] Updating local store after push: {
-  "source": "push",
-  "oldLocalShaCount": 256,
-  "newLocalShaCount": 255,
-  "localShaRemoved": ["deleted-file.md"],
-  "remoteShaRemoved": ["deleted-file.md"],
-  "commitShaChanged": true,
-  "pushedChanges": 1
+[2025-11-04T10:45:21.456Z] [FitSync] Sync completed with conflicts: {
+  "conflictCount": 1,
+  "conflicts": [
+    {
+      "path": "file1.md",
+      "local": "changed",
+      "remote": "MODIFIED"
+    }
+  ]
 }
 ```
 
