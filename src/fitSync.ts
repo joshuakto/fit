@@ -673,16 +673,6 @@ export class FitSync implements IFitSync {
 			// Get remote changes (vault caching handles optimization)
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = await this.fit.getRemoteChanges();
 
-			// Early exit if nothing to sync
-			if (filteredLocalChanges.length === 0 && remoteChanges.length === 0) {
-				if (remoteCommitSha !== this.fit.lastFetchedCommitSha) {
-					// Special case: only commit SHA changed, no actual file changes
-					await this.saveLocalStoreCallback({ lastFetchedCommitSha: remoteCommitSha });
-				}
-				syncNotice.setMessage("Sync successful");
-				return { success: true, ops: [], clash: [] };
-			}
-
 			// Log sync decision for diagnostics
 			// Log all files involved upfront for crash diagnostics
 			const logData: Record<string, Record<string, string[]>> = {};

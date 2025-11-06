@@ -465,8 +465,18 @@ describe('FitSync', () => {
 			// Verify: No changes detected (hidden file ignored)
 			expect(result2).toEqual(expect.objectContaining({
 				success: true,
-				ops: [] // No operations
+				ops: [
+					{heading: 'Local file updates:', ops: []},
+					{heading: 'Remote file updates:', ops: []}
+				]
 			}));
+
+			// Verify all notice messages (no file ops, just progress and success)
+			expect(mockNotice2._calls).toEqual(expect.arrayContaining([
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Sync successful']}
+			]));
 
 			// Verify: Remote still only has visible file
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
@@ -1051,6 +1061,55 @@ describe('FitSync', () => {
 					true
 				]}
 			]);
+		});
+	});
+
+	describe('Only Commit SHA Changed', () => {
+		it('should update commit SHA when remote commit changes but no tracked files changed', async () => {
+			// Arrange - Set up initial synced state
+			const fitSync = createFitSync();
+			localVault.setFile('tracked.md', 'content');
+			remoteVault.setFile('tracked.md', 'content');
+
+			// Initial sync to establish baseline
+			const mockNotice1 = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice1);
+			const initialCommitSha = localStoreState.lastFetchedCommitSha;
+
+			// Act - Simulate external tool pushing commit that doesn't affect our tracked files
+			// This simulates a `.gitignore` change or other file we don't track
+			// We need to bypass FakeRemoteVault's normal file APIs and directly manipulate the commit SHA
+			// to simulate a commit that affects only files we filter out
+
+			// Hack: Directly set a new commit SHA on the fake vault without changing tracked files
+			const newCommitSha = ('commit-' + Date.now()) as CommitSha;
+			(remoteVault as any).commitSha = newCommitSha;
+
+			// Second sync - should detect commit SHA change even though no file changes
+			const mockNotice2 = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice2);
+
+			// Assert
+			expect(result).toEqual(expect.objectContaining({success: true}));
+			expect(mockNotice2._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Sync successful']}
+			]);
+
+			// Verify commit SHA was updated (this is the key behavior being tested)
+			expect(localStoreState.lastFetchedCommitSha).toBe(newCommitSha);
+			expect(localStoreState.lastFetchedCommitSha).not.toBe(initialCommitSha);
+
+			// Verify no file operations (truly empty - no changes to tracked files)
+			expect(result).toMatchObject({
+				ops: [
+					{heading: 'Local file updates:', ops: []},
+					{heading: 'Remote file updates:', ops: []}
+				],
+				clash: []
+			});
 		});
 	});
 });
