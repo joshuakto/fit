@@ -15,80 +15,74 @@ import { BlobSha } from "./hashing";
  */
 export type ChangeOperation = "ADDED" | "MODIFIED" | "REMOVED";
 
-/**
- * @deprecated Use ChangeOperation instead
- */
-export type LocalChangeOperation = "deleted" | "created" | "changed";
-
+/** Represents a change detected by comparing file states */
 export type FileChange = {
 	path: string;
 	type: ChangeOperation;
-	/** SHA of file in current state (undefined for REMOVED files) */
-	currentSha?: BlobSha;
-};
-
-export type LocalChange = {
-	path: string;
-	type: LocalChangeOperation;
 };
 
 /**
- * Represents a clash between local and remote changes to the same file
+ * Local state classification for clash resolution
+ *
+ * When detecting clashes, we need to know the local state:
+ * - ChangeOperation: File has a tracked change (ADDED/MODIFIED/REMOVED)
+ * - "untracked": File exists but isn't tracked by shouldTrackState(),
+ *   so we can't determine its actual state (e.g., hidden files, protected paths)
  */
+export type LocalClashState = ChangeOperation | "untracked";
+
+/** Represents a clash between local and remote changes to the same file */
 export type FileClash = {
 	path: string;
 	/** Local state - actual change OR "untracked" if we can't track it */
-	localState: LocalChangeOperation | "untracked";
+	localState: LocalClashState;
 	/** Remote operation - always a real change */
 	remoteOp: ChangeOperation;
 };
 
-export type FileLocation = "remote" | "local";
-export type ComparisonResult<Env extends FileLocation> = {
-	path: string;
-	type: Env extends "local" ? LocalChangeOperation : ChangeOperation;
-	currentSha?: BlobSha;
-};
-
 /**
- * Compare currentSha with storedSha and check for differences.
+ * Compare current vs stored file state and detect changes
  *
- * Files only in currentSha are considerd added, while files only in storedSha are considered
+ * Files only in currentShaMap are considerd added, while files only in storedShaMap are considered
  * removed.
  *
  * @param currentShaMap - Current file state (path -> SHA)
  * @param storedShaMap - Baseline file state (path -> SHA)
  * @returns Array of detected changes
  */
-export function compareFileStates<Env extends FileLocation>(
+export function compareFileStates(
 	currentShaMap: Record<string, BlobSha>,
-	storedShaMap: Record<string, BlobSha>,
-	env: Env): ComparisonResult<Env>[] {
+	storedShaMap: Record<string, BlobSha>
+): FileChange[] {
 	const getValueOrNull = <T>(obj: Record<string, T>, key: string): T | null =>
 		obj.hasOwnProperty(key) ? obj[key] : null;
 
-	const determineStatus = (currentSha: BlobSha | null, storedSha: BlobSha | null): ChangeOperation | LocalChangeOperation | null => {
+	const determineChangeType = (
+		currentSha: BlobSha | null,
+		storedSha: BlobSha | null
+	): ChangeOperation | null => {
 		if (currentSha && storedSha && currentSha !== storedSha) {
-			return env === "local" ? "changed" : "MODIFIED";
+			return "MODIFIED";
 		} else if (currentSha && !storedSha) {
-			return env === "local" ? "created" : "ADDED";
+			return "ADDED";
 		} else if (!currentSha && storedSha) {
-			return env === "local" ? "deleted" : "REMOVED";
+			return "REMOVED";
 		}
 		return null;
 	};
 
-	return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
-		const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
-		const changeType = determineStatus(currentSha, storedSha);
+	return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): FileChange[] => {
+		const [currentSha, storedSha] = [
+			getValueOrNull(currentShaMap, path),
+			getValueOrNull(storedShaMap, path)
+		];
+		const changeType = determineChangeType(currentSha, storedSha);
 		if (changeType) {
 			return [{
 				path,
-				type: changeType as Env extends "local" ? LocalChangeOperation : ChangeOperation,
-				currentSha: currentSha ?? undefined
+				type: changeType,
 			}];
 		}
 		return [];
 	});
 }
-

@@ -8,7 +8,7 @@
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
-import { LocalChange } from "./util/changeTracking";
+import { FileChange } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 
@@ -525,7 +525,7 @@ export class RemoteGitHubVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<LocalChange[]> {
+	): Promise<FileChange[]> {
 		// Get current commit and tree
 		const parentCommitSha = await this.getLatestCommitSha();
 		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
@@ -565,18 +565,18 @@ export class RemoteGitHubVault implements IVault {
 		await this.updateRef(newCommitSha);
 
 		// Build file operation records
-		const fileOps: LocalChange[] = [];
+		const fileOps: FileChange[] = [];
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
 
-			let changeType: "created" | "changed" | "deleted";
+			let changeType: "ADDED" | "MODIFIED" | "REMOVED";
 			if (node.sha === null) {
-				changeType = "deleted";
+				changeType = "REMOVED";
 			} else if (remoteTree.some(n => n.path === node.path)) {
-				changeType = "changed";
+				changeType = "MODIFIED";
 			} else {
-				changeType = "created";
+				changeType = "ADDED";
 			}
 
 			fileOps.push({ path: node.path, type: changeType });

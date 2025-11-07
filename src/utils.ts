@@ -1,5 +1,5 @@
 import { Notice } from "obsidian";
-import { FileClash, LocalChange } from "./util/changeTracking";
+import { ChangeOperation, FileChange, FileClash, LocalClashState } from "./util/changeTracking";
 
 export function extractExtension(path: string): string | undefined {
 	return path.match(/[^.]+$/)?.[0];
@@ -13,7 +13,7 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 	return isEqual;
 }
 
-export function showFileChanges(records: Array<{heading: string, changes: LocalChange[]}>): void {
+export function showFileChanges(records: Array<{heading: string, changes: FileChange[]}>): void {
 	console.log(records);
 	if (records.length === 0 || records.every(r=>r.changes.length===0)) {return;}
 	const fileOpsNotice = new Notice("", 0);
@@ -23,10 +23,10 @@ export function showFileChanges(records: Array<{heading: string, changes: LocalC
 			cls: "file-changes-heading"
 		});
 		heading.setText(`${recordSet.heading}\n`);
-		const fileChanges = {
-			created: [] as Array<string>,
-			changed: [] as Array<string>,
-			deleted: [] as Array<string>
+		const fileChanges: Record<ChangeOperation, string[]> = {
+			ADDED: [],
+			MODIFIED: [],
+			REMOVED: []
 		};
 		for (const op of recordSet.changes) {
 			fileChanges[op.type].push(op.path);
@@ -34,7 +34,7 @@ export function showFileChanges(records: Array<{heading: string, changes: LocalC
 		for (const [changeType, paths] of Object.entries(fileChanges)) {
 			if (paths.length === 0) {continue;}
 			const heading = fileOpsNotice.noticeEl.createEl("span");
-			heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1)}\n`);
+			heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1).toLowerCase()}\n`);
 			heading.addClass(`file-changes-subheading`);
 			for (const path of paths) {
 				const listItem = fileOpsNotice.noticeEl.createEl("li", {
@@ -49,13 +49,13 @@ export function showFileChanges(records: Array<{heading: string, changes: LocalC
 
 export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	if (clashedFiles.length === 0) {return;}
-	const localStatusMap = {
-		created: "create",
-		changed: "change",
-		deleted: "delete",
+	const localStatusMap: Record<LocalClashState, string> = {
+		ADDED: "create",
+		MODIFIED: "change",
+		REMOVED: "delete",
 		untracked: "untracked"
 	};
-	const remoteStatusMap = {
+	const remoteStatusMap: Record<ChangeOperation, string> = {
 		ADDED:  "create",
 		MODIFIED: "change",
 		REMOVED: "delete"

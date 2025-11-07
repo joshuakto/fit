@@ -6,7 +6,7 @@
  */
 
 import { LocalStores, FitSettings } from "main";
-import { FileClash, LocalChange, FileChange, compareFileStates } from "./util/changeTracking";
+import { FileChange, FileClash, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
@@ -131,10 +131,10 @@ export class Fit {
 		return filtered;
 	}
 
-	async getLocalChanges(): Promise<{changes: LocalChange[], state: FileState}> {
+	async getLocalChanges(): Promise<{changes: FileChange[], state: FileState}> {
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
-		const changes = compareFileStates(currentState, this.localSha, "local");
+		const changes = compareFileStates(currentState, this.localSha);
 		return { changes, state: currentState };
 	}
 
@@ -151,14 +151,14 @@ export class Fit {
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
 		}
-		const changes = compareFileStates(state, this.lastFetchedRemoteSha, "remote");
+		const changes = compareFileStates(state, this.lastFetchedRemoteSha);
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
 			fitLogger.log('[Fit] Remote changes detected', {
-				added: changes.filter(c => c.type === 'ADDED').length,
-				modified: changes.filter(c => c.type === 'MODIFIED').length,
-				removed: changes.filter(c => c.type === 'REMOVED').length,
+				ADDED: changes.filter(c => c.type === 'ADDED').length,
+				MODIFIED: changes.filter(c => c.type === 'MODIFIED').length,
+				REMOVED: changes.filter(c => c.type === 'REMOVED').length,
 				total: changes.length
 			});
 		}
@@ -166,7 +166,7 @@ export class Fit {
 		return { changes, state, commitSha };
 	}
 
-	getClashedChanges(localChanges: LocalChange[], remoteChanges:FileChange[]): Array<FileClash> {
+	getClashedChanges(localChanges: FileChange[], remoteChanges:FileChange[]): Array<FileClash> {
 		const clashes: Array<FileClash> = [];
 
 		// Step 1: Filter out remote changes to untracked/unsynced paths and treat as clashes.

@@ -6,7 +6,7 @@
  * (Obsidian vault) or remotely (GitHub repository, GitLab, etc.).
  */
 
-import { LocalChange } from "./util/changeTracking";
+import { FileChange } from "./util/changeTracking";
 import { FileContent } from "./util/contentEncoding";
 import { BlobSha, CommitSha } from "./util/hashing";
 
@@ -90,7 +90,7 @@ export class VaultError extends Error {
  *
  * // Detect changes (typically in pre-sync checks)
  * const currentLocal = await localVault.readFromSource();
- * const localChanges = compareFileStates(currentLocal, baselineState, "local");
+ * const localChanges = compareFileStates(currentLocal, baselineState);
  *
  * // Apply changes during sync
  * await localVault.applyChanges(
@@ -149,7 +149,7 @@ export interface IVault {
 	applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<LocalChange[]>;
+	): Promise<FileChange[]>;
 
 	// ===== Metadata =====
 

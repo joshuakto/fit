@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileClash, LocalChange, FileChange } from "./util/changeTracking";
+import { FileChange, FileClash } from "./util/changeTracking";
 import { extractExtension } from "./utils";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
@@ -77,9 +77,9 @@ export interface IFitSync {
  */
 type SyncExecutionResult = {
 	/** Operations applied to local vault (from remote changes) */
-	localOps: LocalChange[];
+	localOps: FileChange[];
 	/** Operations applied to remote (from local changes) */
-	remoteOps: LocalChange[];
+	remoteOps: FileChange[];
 	/** Unresolved conflicts (context-dependent: new conflicts or all conflicts) */
 	conflicts: FileClash[];
 };
@@ -170,9 +170,9 @@ export class FitSync implements IFitSync {
 		clash: FileClash,
 		existenceMap?: Map<string, 'file' | 'folder' | 'nonexistent'>
 	): Promise<ConflictResolutionResult> {
-		if (clash.localState === "deleted" && clash.remoteOp === "REMOVED") {
+		if (clash.localState === "REMOVED" && clash.remoteOp === "REMOVED") {
 			return {path: clash.path};
-		} else if (clash.localState === "deleted") {
+		} else if (clash.localState === "REMOVED") {
 			const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
 			const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
 			return {path: clash.path, conflictFile};
@@ -226,7 +226,7 @@ export class FitSync implements IFitSync {
 
 		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
 
-		// Remote file was modified (not deleted)
+		// Remote file was MODIFIED (not deleted)
 		if (clash.remoteOp !== "REMOVED") {
 			const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
 			// TODO: Should we really need to force to base64 to compare, even if hypothetically both were already plaintext?
@@ -261,7 +261,7 @@ export class FitSync implements IFitSync {
 		deletionsSkippedDueToStatFailureClashes: string[],
 		syncNotice: FitNotice
 	): Promise<{
-		changes: LocalChange[],
+		changes: FileChange[],
 		filesMovedToFitDueToStatFailure: string[],
 		deletionsSkippedDueToStatFailure: string[]
 	}> {
@@ -390,7 +390,7 @@ export class FitSync implements IFitSync {
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
 		syncNotice: FitNotice
 	): Promise<{
-		changes: LocalChange[],
+		changes: FileChange[],
 		unresolved: FileClash[],
 		filesMovedToFitDueToStatFailure: string[],
 		deletionsSkippedDueToStatFailure: string[]
@@ -456,7 +456,7 @@ export class FitSync implements IFitSync {
 			.map((res, i) => res.conflictFile ? clashes[i] : null)
 			.filter(Boolean) as Array<FileClash>;
 
-		const changes: LocalChange[] = [];
+		const changes: FileChange[] = [];
 
 		if (conflictFilesToWrite.length > 0) {
 			const conflictOps = await this.fit.localVault.applyChanges(conflictFilesToWrite, []);
@@ -512,7 +512,7 @@ export class FitSync implements IFitSync {
 	 * @returns The operations that were applied and any conflicts discovered during execution
 	 */
 	private async performSync(
-		localChanges: LocalChange[],
+		localChanges: FileChange[],
 		remoteUpdate: {
 			remoteChanges: FileChange[],
 			remoteTreeSha: Record<string, BlobSha>,
@@ -558,7 +558,7 @@ export class FitSync implements IFitSync {
 
 		// From local changes: deletions need verification (version migration safety)
 		localChangesToPush
-			.filter(c => c.type === 'deleted')
+			.filter(c => c.type === 'REMOVED')
 			.forEach(c => pathsToStat.add(c.path));
 
 		// Batch stat all paths at once
@@ -594,7 +594,7 @@ export class FitSync implements IFitSync {
 
 		let latestRemoteTreeSha: Record<string, BlobSha>;
 		let latestCommitSha: CommitSha;
-		let pushedChanges: Array<LocalChange>;
+		let pushedChanges: Array<FileChange>;
 
 		if (pushResult) {
 			latestRemoteTreeSha = pushResult.lastFetchedRemoteSha;
@@ -692,16 +692,16 @@ export class FitSync implements IFitSync {
 			const logData: Record<string, Record<string, string[]>> = {};
 
 			const localData: Record<string, string[]> = {};
-			['created', 'changed', 'deleted'].forEach(changeType => {
+			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
 				const files = filteredLocalChanges.filter(c => c.type === changeType).map(c => c.path);
 				if (files.length > 0) localData[changeType] = files;
 			});
 			if (Object.keys(localData).length > 0) logData.local = localData;
 
 			const remoteData: Record<string, string[]> = {};
-			[['ADDED', 'added'], ['MODIFIED', 'modified'], ['REMOVED', 'removed']].forEach(([changeType, key]) => {
+			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
 				const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
-				if (files.length > 0) remoteData[key] = files;
+				if (files.length > 0) remoteData[changeType] = files;
 			});
 			if (Object.keys(remoteData).length > 0) logData.remote = remoteData;
 
@@ -769,11 +769,11 @@ export class FitSync implements IFitSync {
 
 	private async pushChangedFilesToRemote(
 		localUpdate: {
-			localChanges: LocalChange[],
+			localChanges: FileChange[],
 			parentCommitSha: CommitSha
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, BlobSha>, lastFetchedCommitSha: CommitSha}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: Record<string, BlobSha>, lastFetchedCommitSha: CommitSha}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
@@ -783,7 +783,7 @@ export class FitSync implements IFitSync {
 		const filesToDelete: Array<string> = [];
 
 		for (const change of localUpdate.localChanges) {
-			if (change.type === 'deleted') {
+			if (change.type === 'REMOVED') {
 				// SAFEGUARD: Verify file physically absent before deleting from remote
 				// Prevents data loss when filtering rules change between versions
 				const existence = existenceMap.get(change.path);
@@ -827,10 +827,9 @@ export class FitSync implements IFitSync {
 			throw new Error('Missing expected commitSha from remote');
 		}
 
-		// Map fileOps back to original LocalChange format for return value
 		const pushedChanges = fileOps.map(op => {
 			const originalChange = localUpdate.localChanges.find(c => c.path === op.path);
-			return originalChange || { path: op.path, type: op.type as LocalChange['type'] };
+			return originalChange || { path: op.path, type: op.type };
 		});
 
 		return {

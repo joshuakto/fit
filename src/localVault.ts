@@ -6,7 +6,7 @@
 
 import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, VaultError, VaultReadResult } from "./vault";
-import { LocalChange } from "./util/changeTracking";
+import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
@@ -194,7 +194,7 @@ export class LocalVault implements IVault {
 		path: string,
 		content: Base64Content,
 		originalContent: FileContent
-	): Promise<{ change: LocalChange; shaPromise: Promise<BlobSha> | null }> {
+	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 
@@ -212,7 +212,7 @@ export class LocalVault implements IVault {
 				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
 
-			const change: LocalChange = { path, type: file ? "changed" : "created" };
+			const change: FileChange = { path, type: file ? "MODIFIED" : "ADDED" };
 
 			// Compute SHA from in-memory content if file should be tracked
 			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
@@ -236,12 +236,12 @@ export class LocalVault implements IVault {
 	 * Delete a file
 	 * @returns Record of file operation performed
 	 */
-	private async deleteFile(path: string): Promise<LocalChange> {
+	private async deleteFile(path: string): Promise<FileChange> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
 				await this.vault.delete(file);
-				return {path, type: "deleted"};
+				return {path, type: "REMOVED"};
 			}
 			throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
 		} catch (error) {
@@ -261,7 +261,7 @@ export class LocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<LocalChange[]> {
+	): Promise<FileChange[]> {
 		// Clear any pending SHA computation from previous call
 		this.pendingWrittenFileShas = null;
 

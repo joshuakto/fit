@@ -243,8 +243,8 @@ describe('FitSync', () => {
 				{
 					heading: expect.stringContaining('Remote file updates'),
 					changes: expect.arrayContaining([
-						expect.objectContaining({ path: 'fileA.md', type: 'created' }),
-						expect.objectContaining({ path: 'fileB.md', type: 'created' })
+						expect.objectContaining({ path: 'fileA.md', type: 'ADDED' }),
+						expect.objectContaining({ path: 'fileB.md', type: 'ADDED' })
 					])
 				}
 			]),
@@ -350,7 +350,7 @@ describe('FitSync', () => {
 				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						changes: [expect.objectContaining({ path: 'normal.md', type: 'created' })]
+						changes: [expect.objectContaining({ path: 'normal.md', type: 'ADDED' })]
 					}
 				])
 			}));
@@ -376,8 +376,8 @@ describe('FitSync', () => {
 					{
 						heading: expect.stringContaining('Local file updates'),
 						changes: expect.arrayContaining([
-							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', type: 'created' }),
-							expect.objectContaining({ path: 'remote-normal.md', type: 'created' })
+							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', type: 'ADDED' }),
+							expect.objectContaining({ path: 'remote-normal.md', type: 'ADDED' })
 						])
 					}
 				]),
@@ -443,7 +443,7 @@ describe('FitSync', () => {
 				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						changes: [expect.objectContaining({ path: 'visible.md', type: 'created' })]
+						changes: [expect.objectContaining({ path: 'visible.md', type: 'ADDED' })]
 					}
 				])
 			}));
@@ -575,7 +575,7 @@ describe('FitSync', () => {
 	});
 
 	describe('🚨 Data loss prevention (safety nets for bugs/migrations)', () => {
-		it('should never overwrite local file when remote modified but file missing from localSha', async () => {
+		it('should never overwrite local file when remote MODIFIED but file missing from localSha', async () => {
 			// === CRITICAL DATA LOSS SCENARIO ===
 			// This simulates TWO dangerous scenarios:
 			//
@@ -652,7 +652,7 @@ describe('FitSync', () => {
 			// REQUIRED ADDITIONAL PROTECTION:
 			// Before applying remote changes in FitSync.applyRemoteChanges():
 			//   if (change.type === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
-			//     // File modified remotely but not in localSha - could be version migration issue
+			//     // File MODIFIED remotely but not in localSha - could be version migration issue
 			//     const exists = await vault.adapter.exists(path);
 			//     if (exists) {
 			//       fitLogger.log('[FitSync] File exists locally but not in localSha - treating as clash');
@@ -740,7 +740,7 @@ describe('FitSync', () => {
 			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
 				localSha: {
-					// README.md IS tracked locally (so it won't appear as "created")
+					// README.md IS tracked locally (so it won't appear as "ADDED")
 					'README.md': initialLocalState['README.md']
 				},
 				lastFetchedRemoteSha: {
@@ -882,7 +882,7 @@ describe('FitSync', () => {
 
 		it('should report file as conflict when saved to _fit/ for any safety reason', async () => {
 			// This test verifies the fix: ANY file written to _fit/ should be reported as a conflict.
-			// We use a dual-sided change scenario (both local and remote modified) which writes to _fit/.
+			// We use a dual-sided change scenario (both local and remote MODIFIED) which writes to _fit/.
 
 			// === SETUP: Both sides have same file with different content ===
 			const fitSync = createFitSync();
@@ -914,7 +914,7 @@ describe('FitSync', () => {
 				clash: expect.arrayContaining([
 					expect.objectContaining({
 						path: 'document.md',
-						localState: 'changed',
+						localState: 'MODIFIED',
 						remoteOp: 'MODIFIED'
 					})
 				])
