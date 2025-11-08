@@ -6,7 +6,7 @@
  * (Obsidian vault) or remotely (GitHub repository, GitLab, etc.).
  */
 
-import { LocalChange, RemoteChange, FileOpRecord } from "./fitTypes";
+import { LocalChange } from "./util/changeTracking";
 import { FileContent } from "./util/contentEncoding";
 import { BlobSha, CommitSha } from "./util/hashing";
 
@@ -26,11 +26,6 @@ export type VaultReadResult = {
 	state: FileState;
 	commitSha?: CommitSha; // Present for RemoteGitHubVault (GitHub commit SHA)
 };
-
-/**
- * Generic change representation (can be local or remote)
- */
-export type StateChange = LocalChange | RemoteChange;
 
 // ===== Vault Error Types =====
 
@@ -95,7 +90,7 @@ export class VaultError extends Error {
  *
  * // Detect changes (typically in pre-sync checks)
  * const currentLocal = await localVault.readFromSource();
- * const localChanges = compareSha(currentLocal, baselineState, "local");
+ * const localChanges = compareFileStates(currentLocal, baselineState, "local");
  *
  * // Apply changes during sync
  * await localVault.applyChanges(
@@ -154,7 +149,7 @@ export interface IVault {
 	applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]>;
+	): Promise<LocalChange[]>;
 
 	// ===== Metadata =====
 

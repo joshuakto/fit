@@ -9,7 +9,7 @@ import { Fit } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
-import { showFileOpsRecord, showUnappliedConflicts } from 'src/utils';
+import { showFileChanges, showUnappliedConflicts } from 'src/utils';
 import { fitLogger } from 'src/logger';
 import { BlobSha, CommitSha } from 'src/util/hashing';
 
@@ -156,9 +156,9 @@ export default class FitPlugin extends Plugin {
 
 		if (syncResult.success) {
 			fitLogger.log('[Plugin] Sync completed successfully', {
-				fileOpsCount: syncResult.ops.length,
+				fileOpsCount: syncResult.changeGroups.length,
 				unresolvedConflictsCount: syncResult.clash.length,
-				operations: syncResult.ops,
+				operations: syncResult.changeGroups,
 				unresolvedConflicts: syncResult.clash
 			});
 
@@ -166,7 +166,7 @@ export default class FitPlugin extends Plugin {
 				showUnappliedConflicts(syncResult.clash);
 			}
 			if (this.settings.notifyChanges) {
-				showFileOpsRecord(syncResult.ops);
+				showFileChanges(syncResult.changeGroups);
 			}
 			return true;
 		} else {

@@ -122,7 +122,7 @@ flowchart TD
     NoChange --> End[Done]
 ```
 
-**Implementation:** [`compareSha()` in utils.ts](../src/utils.ts)
+**Implementation:** [`compareFileStates()` in util/changeTracking.ts](../src/util/changeTracking.ts)
 
 ```typescript
 // Example local change detection
@@ -171,7 +171,7 @@ lastFetchedRemoteSha = {
   "file2.md": "def456"   // No longer exists remotely
 }
 
-// Results from compareSha():
+// Results from compareFileStates():
 // - file1.md: MODIFIED (SHA changed)
 // - file3.md: ADDED (not in cache)
 // - file2.md: REMOVED (not in current remote)
@@ -320,7 +320,7 @@ lastFetchedRemoteSha = { ".gitignore": "abc123" }
 
 // After v3 upgrade or setting disabled:
 newScan = {}  // Reverted to Vault API (can't read hidden files)
-compareSha(newScan, localSha) → reports ".gitignore" as DELETED
+compareFileStates(newScan, localSha) // → reports ".gitignore" as DELETED
 // ⚠️ Risk: Plugin pushes deletion to remote → DATA LOSS
 ```
 
@@ -663,7 +663,7 @@ if (this.shouldTrackState(path)) {
 **SHA promises collected in applyChanges():**
 ```typescript
 // Start SHA computation in parallel with file writes
-// writeFile() returns: { op: FileOpRecord; shaPromise: Promise<BlobSha> | null }
+// writeFile() returns: { change: LocalChange; shaPromise: Promise<BlobSha> | null }
 const writeResults = await Promise.all(
     filesToWrite.map(async ({path, content}) => {
         return await this.writeFile(path, content.toBase64(), content);
@@ -674,7 +674,7 @@ const writeResults = await Promise.all(
 const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
 for (const result of writeResults) {
     if (result.shaPromise) {
-        shaPromiseMap[result.op.path] = result.shaPromise;
+        shaPromiseMap[result.change.path] = result.shaPromise;
     }
 }
 
@@ -924,4 +924,4 @@ When debug logging is enabled (Settings → Enable debug logging), FIT writes a 
 - Source code:
   - [fit.ts](../src/fit.ts) - Core change detection
   - [fitSync.ts](../src/fitSync.ts) - Sync coordination
-  - [utils.ts](../src/utils.ts) - `compareSha()` implementation
+  - [util/changeTracking.ts](../src/util/changeTracking.ts)

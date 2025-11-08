@@ -1,55 +1,5 @@
 import { Notice } from "obsidian";
-import { ClashStatus, FileOpRecord, LocalFileStatus, RemoteChangeType } from "./fitTypes";
-import { BlobSha } from "./util/hashing";
-
-type Status = RemoteChangeType | LocalFileStatus;
-
-type FileLocation = "remote" | "local";
-
-type ComparisonResult<Env extends FileLocation> = {
-	path: string,
-	status: Env extends "local" ? LocalFileStatus: RemoteChangeType
-	currentSha?: BlobSha
-	extension?: string
-};
-
-function getValueOrNull<T>(obj: Record<string, T>, key: string): T | null {
-	return obj.hasOwnProperty(key) ? obj[key] : null;
-}
-
-
-// compare currentSha with storedSha and check for differences, files only in currentSha
-//  are considerd added, while files only in storedSha are considered removed
-export function compareSha<Env extends "remote" | "local">(
-	currentShaMap: Record<string, BlobSha>,
-	storedShaMap: Record<string, BlobSha>,
-	env: Env): ComparisonResult<Env>[] {
-	const determineStatus = (currentSha: BlobSha | null, storedSha: BlobSha | null): Status | null  =>
-	{
-		if (currentSha && storedSha && currentSha !== storedSha) {
-			return env === "local" ? "changed" : "MODIFIED";
-		} else if (currentSha && !storedSha) {
-			return env === "local" ? "created" : "ADDED";
-		} else if (!currentSha && storedSha) {
-			return env === "local" ? "deleted" : "REMOVED";
-		}
-		return null;
-	};
-
-	return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
-		const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
-		const status = determineStatus(currentSha, storedSha);
-		if (status) {
-			return [{
-				path,
-				status: status as Env extends "local" ? LocalFileStatus : RemoteChangeType,
-				currentSha: currentSha ?? undefined,
-				extension: extractExtension(path)
-			}];
-		}
-		return [];
-	});
-}
+import { FileClash, LocalChange } from "./util/changeTracking";
 
 export function extractExtension(path: string): string | undefined {
 	return path.match(/[^.]+$/)?.[0];
@@ -63,12 +13,12 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 	return isEqual;
 }
 
-export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRecord[]}>): void {
+export function showFileChanges(records: Array<{heading: string, changes: LocalChange[]}>): void {
 	console.log(records);
-	if (records.length === 0 || records.every(r=>r.ops.length===0)) {return;}
+	if (records.length === 0 || records.every(r=>r.changes.length===0)) {return;}
 	const fileOpsNotice = new Notice("", 0);
 	records.map(recordSet => {
-		if (recordSet.ops.length === 0) {return;}
+		if (recordSet.changes.length === 0) {return;}
 		const heading = fileOpsNotice.noticeEl.createEl("span", {
 			cls: "file-changes-heading"
 		});
@@ -76,10 +26,9 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
 		const fileChanges = {
 			created: [] as Array<string>,
 			changed: [] as Array<string>,
-			deleted: [] as Array<string>,
-			untracked: [] as Array<string>
+			deleted: [] as Array<string>
 		};
-		for (const op of recordSet.ops) {
+		for (const op of recordSet.changes) {
 			fileChanges[op.status].push(op.path);
 		}
 		for (const [changeType, paths] of Object.entries(fileChanges)) {
@@ -98,7 +47,7 @@ export function showFileOpsRecord(records: Array<{heading: string, ops: FileOpRe
 	});
 }
 
-export function showUnappliedConflicts(clashedFiles: Array<ClashStatus>): void {
+export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	if (clashedFiles.length === 0) {return;}
 	const localStatusMap = {
 		created: "create",

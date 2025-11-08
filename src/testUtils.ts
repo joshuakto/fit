@@ -5,7 +5,7 @@
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { IVault, VaultError, VaultReadResult } from './vault';
-import { FileOpRecord } from './fitTypes';
+import { LocalChange } from "./util/changeTracking";
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
 import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
@@ -418,7 +418,7 @@ export class FakeLocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<LocalChange[]> {
 		// Clear any pending SHA computation from previous call
 		this.pendingWrittenFileShas = null;
 
@@ -430,7 +430,7 @@ export class FakeLocalVault implements IVault {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const ops: FileOpRecord[] = [];
+		const changes: LocalChange[] = [];
 
 		for (const file of filesToWrite) {
 			// Simulate file/folder conflicts that occur in real filesystems:
@@ -456,13 +456,13 @@ export class FakeLocalVault implements IVault {
 
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				ops.push({ path, status: 'deleted' });
+				changes.push({ path, status: 'deleted' });
 			}
 		}
 
@@ -470,7 +470,7 @@ export class FakeLocalVault implements IVault {
 		// Only for trackable files that will appear in future scans
 		this.pendingWrittenFileShas = this.computeWrittenFileShas(filesToWrite);
 
-		return ops;
+		return changes;
 	}
 
 	/**
@@ -651,25 +651,25 @@ export class FakeRemoteVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<LocalChange[]> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		const ops: FileOpRecord[] = [];
+		const changes: LocalChange[] = [];
 
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, status: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				ops.push({ path, status: 'deleted' });
+				changes.push({ path, status: 'deleted' });
 			}
 		}
 
@@ -681,7 +681,7 @@ export class FakeRemoteVault implements IVault {
 				.join('\n')
 		) as CommitSha;
 
-		return ops;
+		return changes;
 	}
 
 	shouldTrackState(_path: string): boolean {

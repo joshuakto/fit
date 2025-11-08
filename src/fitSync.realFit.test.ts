@@ -96,8 +96,8 @@ describe('FitSync', () => {
 			notice.setMessage(fullMessage, true);
 		} else {
 			// TODO: Simulate conflict handling for success cases
-			// if (result.ops) {
-			//   showUnappliedConflicts(result.ops);
+			// if (result.changeGroups) {
+			//   showUnappliedConflicts(result.changeGroups);
 			// }
 		}
 
@@ -239,10 +239,10 @@ describe('FitSync', () => {
 		// Verify: Both files A and B were synced (both are new vs baseline)
 		expect(successResult).toEqual({
 			success: true,
-			ops: expect.arrayContaining([
+			changeGroups: expect.arrayContaining([
 				{
 					heading: expect.stringContaining('Remote file updates'),
-					ops: expect.arrayContaining([
+					changes: expect.arrayContaining([
 						expect.objectContaining({ path: 'fileA.md', status: 'created' }),
 						expect.objectContaining({ path: 'fileB.md', status: 'created' })
 					])
@@ -347,10 +347,10 @@ describe('FitSync', () => {
 			// Verify: Only normal.md was pushed, _fit/ files excluded
 			expect(result1).toEqual(expect.objectContaining({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
 					}
 				])
 			}));
@@ -372,10 +372,10 @@ describe('FitSync', () => {
 			// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
 			expect(result2).toEqual({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Local file updates'),
-						ops: expect.arrayContaining([
+						changes: expect.arrayContaining([
 							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', status: 'created' }),
 							expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
 						])
@@ -440,10 +440,10 @@ describe('FitSync', () => {
 			// Verify: Only visible file was synced (hidden file silently ignored)
 			expect(result).toEqual(expect.objectContaining({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						ops: [expect.objectContaining({ path: 'visible.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'visible.md', status: 'created' })]
 					}
 				])
 			}));
@@ -465,13 +465,13 @@ describe('FitSync', () => {
 			// Verify: No changes detected (hidden file ignored)
 			expect(result2).toEqual(expect.objectContaining({
 				success: true,
-				ops: [
-					{heading: 'Local file updates:', ops: []},
-					{heading: 'Remote file updates:', ops: []}
+				changeGroups: [
+					{heading: 'Local file updates:', changes: []},
+					{heading: 'Remote file updates:', changes: []}
 				]
 			}));
 
-			// Verify all notice messages (no file ops, just progress and success)
+			// Verify all notice messages (no file changes, just progress and success)
 			expect(mockNotice2._calls).toEqual(expect.arrayContaining([
 				{method: 'setMessage', args: ['Uploading local changes']},
 				{method: 'setMessage', args: ['Writing remote changes to local']},
@@ -819,6 +819,26 @@ describe('FitSync', () => {
 					filesMovedToFit: ['.envrc']
 				}
 			);
+
+			// === VERIFY: File is reported as conflict (not just silently saved) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: '.envrc',
+						localStatus: 'untracked',
+						remoteStatus: 'ADDED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
 		});
 
 		it('should skip deletion when stat fails to check local existence (deletion)', async () => {
@@ -858,6 +878,56 @@ describe('FitSync', () => {
 					deletionsSkipped: ['.editorconfig']
 				}
 			);
+		});
+
+		it('should report file as conflict when saved to _fit/ for any safety reason', async () => {
+			// This test verifies the fix: ANY file written to _fit/ should be reported as a conflict.
+			// We use a dual-sided change scenario (both local and remote modified) which writes to _fit/.
+
+			// === SETUP: Both sides have same file with different content ===
+			const fitSync = createFitSync();
+			localVault.setFile('document.md', 'Local version\n');
+			remoteVault.setFile('document.md', 'Remote version\n');
+
+			// === STEP 1: Initial sync - establishes baseline ===
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// === STEP 2: Both sides modify the file ===
+			localVault.setFile('document.md', 'Local version - edited\n');
+			remoteVault.setFile('document.md', 'Remote version - edited\n');
+
+			// === STEP 3: Sync (conflict) ===
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// === VERIFY: Sync succeeded ===
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// === VERIFY: Remote version saved to _fit/ (local file unchanged) ===
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'document.md': 'Local version - edited\n',  // Local file untouched
+				'_fit/document.md': 'Remote version - edited\n'  // Remote version in conflict directory
+			});
+
+			// === VERIFY: File is reported as conflict (this is the key fix!) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: 'document.md',
+						localStatus: 'changed',
+						remoteStatus: 'MODIFIED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {
@@ -1104,9 +1174,9 @@ describe('FitSync', () => {
 
 			// Verify no file operations (truly empty - no changes to tracked files)
 			expect(result).toMatchObject({
-				ops: [
-					{heading: 'Local file updates:', ops: []},
-					{heading: 'Remote file updates:', ops: []}
+				changeGroups: [
+					{heading: 'Local file updates:', changes: []},
+					{heading: 'Remote file updates:', changes: []}
 				],
 				clash: []
 			});

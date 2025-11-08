@@ -8,7 +8,7 @@
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
-import { FileOpRecord } from "./fitTypes";
+import { LocalChange } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 
@@ -525,7 +525,7 @@ export class RemoteGitHubVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<LocalChange[]> {
 		// Get current commit and tree
 		const parentCommitSha = await this.getLatestCommitSha();
 		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
@@ -565,7 +565,7 @@ export class RemoteGitHubVault implements IVault {
 		await this.updateRef(newCommitSha);
 
 		// Build file operation records
-		const fileOps: FileOpRecord[] = [];
+		const fileOps: LocalChange[] = [];
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
