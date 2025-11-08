@@ -6,15 +6,9 @@
  * (Obsidian vault) or remotely (GitHub repository, GitLab, etc.).
  */
 
-import { FileChange } from "./util/changeTracking";
+import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent } from "./util/contentEncoding";
-import { BlobSha, CommitSha } from "./util/hashing";
-
-/**
- * Represents a snapshot of file states at a point in time.
- * Maps file paths to their content hashes (SHA-1).
- */
-export type FileState = Record<string, BlobSha>;
+import { CommitSha } from "./util/hashing";
 
 /**
  * Result of reading vault state, including vault-specific metadata.
@@ -23,7 +17,7 @@ export type FileState = Record<string, BlobSha>;
  * For LocalVault: May be extended in future for other metadata
  */
 export type VaultReadResult = {
-	state: FileState;
+	state: FileStates;
 	commitSha?: CommitSha; // Present for RemoteGitHubVault (GitHub commit SHA)
 };
 

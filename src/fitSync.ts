@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates } from "./util/changeTracking";
 import { extractExtension } from "./utils";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
@@ -7,15 +7,15 @@ import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { VaultError } from "./vault";
 import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
-import { BlobSha, CommitSha } from "./util/hashing";
+import { CommitSha } from "./util/hashing";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
 	source: string,
-	oldLocalSha: Record<string, BlobSha>,
-	newLocalSha: Record<string, BlobSha>,
-	oldRemoteSha: Record<string, BlobSha>,
-	newRemoteSha: Record<string, BlobSha>,
+	oldLocalSha: FileStates,
+	newLocalSha: FileStates,
+	oldRemoteSha: FileStates,
+	newRemoteSha: FileStates,
 	oldCommitSha: CommitSha | null | undefined,
 	newCommitSha: CommitSha,
 	extraContext?: Record<string, unknown>
@@ -515,10 +515,10 @@ export class FitSync implements IFitSync {
 		localChanges: FileChange[],
 		remoteUpdate: {
 			remoteChanges: FileChange[],
-			remoteTreeSha: Record<string, BlobSha>,
+			remoteTreeSha: FileStates,
 			latestRemoteCommitSha: CommitSha
 		},
-		currentLocalState: Record<string, BlobSha>,
+		currentLocalState: FileStates,
 		syncNotice: FitNotice
 	): Promise<SyncExecutionResult> {
 		// Phase 1: Detect all clashes between local and remote changes
@@ -592,7 +592,7 @@ export class FitSync implements IFitSync {
 			changesPushed: pushResult?.pushedChanges.length ?? 0
 		});
 
-		let latestRemoteTreeSha: Record<string, BlobSha>;
+		let latestRemoteTreeSha: FileStates;
 		let latestCommitSha: CommitSha;
 		let pushedChanges: Array<FileChange>;
 
@@ -773,7 +773,7 @@ export class FitSync implements IFitSync {
 			parentCommitSha: CommitSha
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: Record<string, BlobSha>, lastFetchedCommitSha: CommitSha}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: FileStates, lastFetchedCommitSha: CommitSha}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}

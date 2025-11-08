@@ -7,8 +7,8 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
-import { FileChange } from "./util/changeTracking";
+import { IVault, VaultError, VaultReadResult } from "./vault";
+import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 
@@ -54,7 +54,7 @@ export class RemoteGitHubVault implements IVault {
 	// Internal cache for remote state optimization
 	// Avoids redundant API calls when remote hasn't changed
 	private latestKnownCommitSha: CommitSha | null = null;
-	private latestKnownState: FileState | null = null;
+	private latestKnownState: FileStates | null = null;
 
 	constructor(
 		pat: string,
@@ -626,7 +626,7 @@ export class RemoteGitHubVault implements IVault {
 			: await this.getTree(treeSha);
 
 		// Build FileState from tree (no filtering - caller handles that)
-		const newState: FileState = {};
+		const newState: FileStates = {};
 		for (const node of remoteTree) {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {

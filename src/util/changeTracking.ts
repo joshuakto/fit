@@ -22,6 +22,12 @@ export type FileChange = {
 };
 
 /**
+ * Represents a snapshot of file states at a point in time.
+ * Maps file paths to their content hashes (SHA-1).
+ */
+export type FileStates = Record<string, BlobSha>;
+
+/**
  * Local state classification for clash resolution
  *
  * When detecting clashes, we need to know the local state:
@@ -51,8 +57,8 @@ export type FileClash = {
  * @returns Array of detected changes
  */
 export function compareFileStates(
-	currentShaMap: Record<string, BlobSha>,
-	storedShaMap: Record<string, BlobSha>
+	currentShaMap: FileStates,
+	storedShaMap: FileStates
 ): FileChange[] {
 	const getValueOrNull = <T>(obj: Record<string, T>, key: string): T | null =>
 		obj.hasOwnProperty(key) ? obj[key] : null;

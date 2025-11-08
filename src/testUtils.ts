@@ -5,7 +5,7 @@
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { IVault, VaultError, VaultReadResult } from './vault';
-import { FileChange } from "./util/changeTracking";
+import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
 import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
@@ -280,7 +280,7 @@ export class FakeLocalVault implements IVault {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
-	private pendingWrittenFileShas: Promise<Record<string, BlobSha>> | null = null;
+	private pendingWrittenFileShas: Promise<FileStates> | null = null;
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -340,7 +340,7 @@ export class FakeLocalVault implements IVault {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const state: Record<string, BlobSha> = {};
+		const state: FileStates = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				state[path] = await LocalVault.fileSha1(path, content);
@@ -479,7 +479,7 @@ export class FakeLocalVault implements IVault {
 	 */
 	private async computeWrittenFileShas(
 		filesToWrite: Array<{path: string, content: FileContent}>
-	): Promise<Record<string, BlobSha>> {
+	): Promise<FileStates> {
 		const shaPromises = filesToWrite
 			.filter(({path}) => this.shouldTrackState(path))
 			.map(async ({path, content}) => {
@@ -496,7 +496,7 @@ export class FakeLocalVault implements IVault {
 	 * Must be called after applyChanges() and awaited to get the computed SHAs.
 	 * Clears the pending SHAs after retrieval.
 	 */
-	async getAndClearWrittenFileShas(): Promise<Record<string, BlobSha>> {
+	async getAndClearWrittenFileShas(): Promise<FileStates> {
 		if (!this.pendingWrittenFileShas) {
 			return {};
 		}
@@ -620,7 +620,7 @@ export class FakeRemoteVault implements IVault {
 			throw error;
 		}
 
-		const state: Record<string, BlobSha> = {};
+		const state: FileStates = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				const base64Content = content.toBase64();

@@ -6,13 +6,12 @@
  */
 
 import { LocalStores, FitSettings } from "main";
-import { FileChange, FileClash, compareFileStates } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
-import { FileState } from "./vault";
 import { fitLogger } from "./logger";
-import { BlobSha, CommitSha } from "./util/hashing";
+import { CommitSha } from "./util/hashing";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -30,10 +29,10 @@ import { BlobSha, CommitSha } from "./util/hashing";
  */
 export class Fit {
 	// TODO: Rename these for clarity: localFileShas, remoteCommitSha, remoteFileShas
-	localSha: Record<string, BlobSha>;             // Cache of local file SHAs
-	lastFetchedCommitSha: CommitSha | null;        // Last synced commit SHA
-	lastFetchedRemoteSha: Record<string, BlobSha>; // Cache of remote file SHAs
-	localVault: LocalVault;                        // Local vault (tracks local file state)
+	localSha: FileStates;                   // Cache of local file SHAs
+	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
+	lastFetchedRemoteSha: FileStates;       // Cache of remote file SHAs
+	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 
 
@@ -121,8 +120,8 @@ export class Fit {
 	 * @param state - Complete file state from vault
 	 * @returns Filtered state containing only synced paths
 	 */
-	filterSyncedState(state: FileState): FileState {
-		const filtered: FileState = {};
+	filterSyncedState(state: FileStates): FileStates {
+		const filtered: FileStates = {};
 		for (const [path, sha] of Object.entries(state)) {
 			if (this.shouldSyncPath(path)) {
 				filtered[path] = sha;
@@ -131,7 +130,7 @@ export class Fit {
 		return filtered;
 	}
 
-	async getLocalChanges(): Promise<{changes: FileChange[], state: FileState}> {
+	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
 		const changes = compareFileStates(currentState, this.localSha);
@@ -146,7 +145,7 @@ export class Fit {
 	 *
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileState, commitSha: CommitSha}> {
+	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha}> {
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");

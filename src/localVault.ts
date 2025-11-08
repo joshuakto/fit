@@ -6,7 +6,7 @@
 
 import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, VaultError, VaultReadResult } from "./vault";
-import { FileChange } from "./util/changeTracking";
+import { FileChange, FileStates } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
@@ -46,7 +46,7 @@ function isBinaryExtensionForSha(extension: string): boolean {
  */
 export class LocalVault implements IVault {
 	private vault: Vault;
-	private pendingWrittenFileShas: Promise<Record<string, BlobSha>> | null = null;
+	private pendingWrittenFileShas: Promise<FileStates> | null = null;
 
 	constructor(vault: Vault) {
 		this.vault = vault;
@@ -318,7 +318,7 @@ export class LocalVault implements IVault {
 	 * Must be called after applyChanges() and awaited to get the computed SHAs.
 	 * Clears the pending SHAs after retrieval.
 	 */
-	async getAndClearWrittenFileShas(): Promise<Record<string, BlobSha>> {
+	async getAndClearWrittenFileShas(): Promise<FileStates> {
 		if (!this.pendingWrittenFileShas) {
 			return {};
 		}
