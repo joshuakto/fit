@@ -331,13 +331,13 @@ compareFileStates(newScan, localSha) // → reports ".gitignore" as DELETED
 // Phase 2: Batch stat all paths needing verification (including deletions)
 const pathsToStat = new Set<string>();
 localChangesToPush
-  .filter(c => c.status === 'deleted')
+  .filter(c => c.type === 'deleted')
   .forEach(c => pathsToStat.add(c.path));
 const {existenceMap} = await this.collectFilesystemState(Array.from(pathsToStat));
 
 // Phase 4: Push local changes with safeguard
 for (const change of localChanges) {
-  if (change.status === 'deleted') {
+  if (change.type === 'deleted') {
     const existence = existenceMap.get(change.path);
     const physicallyExists = existence === 'file' || existence === 'folder';
     if (physicallyExists) {
@@ -439,11 +439,11 @@ This happens when remote has a commit but it doesn't affect tracked files (e.g.,
 **Example:**
 ```typescript
 localChanges = [
-  { path: "local-only.md", status: "created" }
+  { path: "local-only.md", type: "created" }
 ]
 
 remoteChanges = [
-  { path: "remote-only.md", status: "ADDED" }
+  { path: "remote-only.md", type: "ADDED" }
 ]
 
 // No overlap → compatible changes

@@ -29,7 +29,7 @@ export function showFileChanges(records: Array<{heading: string, changes: LocalC
 			deleted: [] as Array<string>
 		};
 		for (const op of recordSet.changes) {
-			fileChanges[op.status].push(op.path);
+			fileChanges[op.type].push(op.path);
 		}
 		for (const [changeType, paths] of Object.entries(fileChanges)) {
 			if (paths.length === 0) {continue;}
@@ -74,12 +74,12 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 			cls: "file-conflict-row"
 		});
 		conflictItem.createDiv({
-			cls: `file-conflict-${localStatusMap[clash.localStatus]}`
+			cls: `file-conflict-${localStatusMap[clash.localState]}`
 		});
 		conflictItem.createDiv("div")
 			.setText(clash.path);
 		conflictItem.createDiv({
-			cls: `file-conflict-${remoteStatusMap[clash.remoteStatus]}`
+			cls: `file-conflict-${remoteStatusMap[clash.remoteOp]}`
 		});
 	}
 	const footer = conflictNotice.noticeEl.createDiv({

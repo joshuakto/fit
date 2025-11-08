@@ -22,15 +22,14 @@ export type LocalChangeOperation = "deleted" | "created" | "changed";
 
 export type FileChange = {
 	path: string;
-	/** @todo Rename to type */
-	status: ChangeOperation;
+	type: ChangeOperation;
 	/** SHA of file in current state (undefined for REMOVED files) */
 	currentSha?: BlobSha;
 };
 
 export type LocalChange = {
 	path: string;
-	status: LocalChangeOperation;
+	type: LocalChangeOperation;
 };
 
 /**
@@ -38,22 +37,16 @@ export type LocalChange = {
  */
 export type FileClash = {
 	path: string;
-	/**
-	 * Local state - actual change OR "untracked" if we can't track it
-	 * @todo Rename to localState
-	 */
-	localStatus: LocalChangeOperation | "untracked";
-	/**
-	 * Remote operation - always a real change
-	 * @todo Rename to remoteOp
-	 */
-	remoteStatus: ChangeOperation;
+	/** Local state - actual change OR "untracked" if we can't track it */
+	localState: LocalChangeOperation | "untracked";
+	/** Remote operation - always a real change */
+	remoteOp: ChangeOperation;
 };
 
 export type FileLocation = "remote" | "local";
 export type ComparisonResult<Env extends FileLocation> = {
 	path: string;
-	status: Env extends "local" ? LocalChangeOperation : ChangeOperation;
+	type: Env extends "local" ? LocalChangeOperation : ChangeOperation;
 	currentSha?: BlobSha;
 };
 
@@ -87,11 +80,11 @@ export function compareFileStates<Env extends FileLocation>(
 
 	return Object.keys({ ...currentShaMap, ...storedShaMap }).flatMap((path): ComparisonResult<Env>[] => {
 		const [currentSha, storedSha] = [getValueOrNull(currentShaMap, path), getValueOrNull(storedShaMap, path)];
-		const status = determineStatus(currentSha, storedSha);
-		if (status) {
+		const changeType = determineStatus(currentSha, storedSha);
+		if (changeType) {
 			return [{
 				path,
-				status: status as Env extends "local" ? LocalChangeOperation : ChangeOperation,
+				type: changeType as Env extends "local" ? LocalChangeOperation : ChangeOperation,
 				currentSha: currentSha ?? undefined
 			}];
 		}

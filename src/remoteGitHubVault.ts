@@ -570,16 +570,16 @@ export class RemoteGitHubVault implements IVault {
 		for (const node of treeNodes) {
 			if (!node.path) continue;
 
-			let status: "created" | "changed" | "deleted";
+			let changeType: "created" | "changed" | "deleted";
 			if (node.sha === null) {
-				status = "deleted";
+				changeType = "deleted";
 			} else if (remoteTree.some(n => n.path === node.path)) {
-				status = "changed";
+				changeType = "changed";
 			} else {
-				status = "created";
+				changeType = "created";
 			}
 
-			fileOps.push({ path: node.path, status });
+			fileOps.push({ path: node.path, type: changeType });
 		}
 
 		return fileOps;

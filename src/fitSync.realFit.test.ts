@@ -243,8 +243,8 @@ describe('FitSync', () => {
 				{
 					heading: expect.stringContaining('Remote file updates'),
 					changes: expect.arrayContaining([
-						expect.objectContaining({ path: 'fileA.md', status: 'created' }),
-						expect.objectContaining({ path: 'fileB.md', status: 'created' })
+						expect.objectContaining({ path: 'fileA.md', type: 'created' }),
+						expect.objectContaining({ path: 'fileB.md', type: 'created' })
 					])
 				}
 			]),
@@ -350,7 +350,7 @@ describe('FitSync', () => {
 				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						changes: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'normal.md', type: 'created' })]
 					}
 				])
 			}));
@@ -376,15 +376,15 @@ describe('FitSync', () => {
 					{
 						heading: expect.stringContaining('Local file updates'),
 						changes: expect.arrayContaining([
-							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', status: 'created' }),
-							expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
+							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', type: 'created' }),
+							expect.objectContaining({ path: 'remote-normal.md', type: 'created' })
 						])
 					}
 				]),
 				clash: [{
 					path: '_fit/remote-conflict.md',
-					localStatus: 'untracked',
-					remoteStatus: 'ADDED'
+					localState: 'untracked',
+					remoteOp: 'ADDED'
 				}]
 			});
 
@@ -443,7 +443,7 @@ describe('FitSync', () => {
 				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						changes: [expect.objectContaining({ path: 'visible.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'visible.md', type: 'created' })]
 					}
 				])
 			}));
@@ -651,7 +651,7 @@ describe('FitSync', () => {
 			//
 			// REQUIRED ADDITIONAL PROTECTION:
 			// Before applying remote changes in FitSync.applyRemoteChanges():
-			//   if (change.status === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
+			//   if (change.type === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
 			//     // File modified remotely but not in localSha - could be version migration issue
 			//     const exists = await vault.adapter.exists(path);
 			//     if (exists) {
@@ -825,8 +825,8 @@ describe('FitSync', () => {
 				clash: expect.arrayContaining([
 					expect.objectContaining({
 						path: '.envrc',
-						localStatus: 'untracked',
-						remoteStatus: 'ADDED'
+						localState: 'untracked',
+						remoteOp: 'ADDED'
 					})
 				])
 			});
@@ -914,8 +914,8 @@ describe('FitSync', () => {
 				clash: expect.arrayContaining([
 					expect.objectContaining({
 						path: 'document.md',
-						localStatus: 'changed',
-						remoteStatus: 'MODIFIED'
+						localState: 'changed',
+						remoteOp: 'MODIFIED'
 					})
 				])
 			});

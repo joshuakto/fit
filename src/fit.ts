@@ -156,9 +156,9 @@ export class Fit {
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
 			fitLogger.log('[Fit] Remote changes detected', {
-				added: changes.filter(c => c.status === 'ADDED').length,
-				modified: changes.filter(c => c.status === 'MODIFIED').length,
-				removed: changes.filter(c => c.status === 'REMOVED').length,
+				added: changes.filter(c => c.type === 'ADDED').length,
+				modified: changes.filter(c => c.type === 'MODIFIED').length,
+				removed: changes.filter(c => c.type === 'REMOVED').length,
 				total: changes.length
 			});
 		}
@@ -178,23 +178,23 @@ export class Fit {
 			} else {
 				clashes.push({
 					path: remoteChange.path,
-					localStatus: 'untracked',
-					remoteStatus: remoteChange.status
+					localState: 'untracked',
+					remoteOp: remoteChange.type
 				});
 			}
 		}
 
 		// Step 2: Find tracked paths that changed on both sides
-		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.status]));
+		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.type]));
 
 		for (const remoteChange of trackedRemoteChanges) {
-			const localStatus = localChangesByPath.get(remoteChange.path);
-			if (localStatus !== undefined) {
+			const localState = localChangesByPath.get(remoteChange.path);
+			if (localState !== undefined) {
 				// Both sides changed this tracked path
 				clashes.push({
 					path: remoteChange.path,
-					localStatus,
-					remoteStatus: remoteChange.status
+					localState,
+					remoteOp: remoteChange.type
 				});
 			}
 		}

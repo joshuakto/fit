@@ -456,13 +456,13 @@ export class FakeLocalVault implements IVault {
 
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			changes.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, type: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				changes.push({ path, status: 'deleted' });
+				changes.push({ path, type: 'deleted' });
 			}
 		}
 
@@ -663,13 +663,13 @@ export class FakeRemoteVault implements IVault {
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			changes.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, type: existed ? 'changed' : 'created' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				changes.push({ path, status: 'deleted' });
+				changes.push({ path, type: 'deleted' });
 			}
 		}
 

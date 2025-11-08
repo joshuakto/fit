@@ -230,7 +230,7 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(fileOps).toEqual([
-					{ path: "newfile.md", status: "created" }
+					{ path: "newfile.md", type: "created" }
 				]);
 
 				// Verify the file was added to the tree
@@ -257,7 +257,7 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(fileOps).toEqual([
-					{ path: "existing.md", status: "changed" }
+					{ path: "existing.md", type: "changed" }
 				]);
 			});
 
@@ -274,7 +274,7 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(fileOps).toEqual([
-					{ path: "todelete.md", status: "deleted" }
+					{ path: "todelete.md", type: "deleted" }
 				]);
 
 				// Verify file was removed from tree
@@ -291,7 +291,7 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(fileOps).toEqual([
-					{ path: "image.png", status: "created" }
+					{ path: "image.png", type: "created" }
 				]);
 			});
 
@@ -346,9 +346,9 @@ describe("RemoteGitHubVault", () => {
 
 				expect(fileOps).toHaveLength(3);
 				expect(fileOps).toEqual(expect.arrayContaining([
-					{ path: "new.md", status: "created" },
-					{ path: "existing.md", status: "changed" },
-					{ path: "todelete.md", status: "deleted" }
+					{ path: "new.md", type: "created" },
+					{ path: "existing.md", type: "changed" },
+					{ path: "todelete.md", type: "deleted" }
 				]));
 			});
 		});

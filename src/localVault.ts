@@ -212,7 +212,7 @@ export class LocalVault implements IVault {
 				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
 
-			const change: LocalChange = { path, status: file ? "changed" : "created" };
+			const change: LocalChange = { path, type: file ? "changed" : "created" };
 
 			// Compute SHA from in-memory content if file should be tracked
 			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
@@ -241,7 +241,7 @@ export class LocalVault implements IVault {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
 				await this.vault.delete(file);
-				return {path, status: "deleted"};
+				return {path, type: "deleted"};
 			}
 			throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
 		} catch (error) {
