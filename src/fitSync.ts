@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { ClashStatus, ConflictReport, ConflictResolutionResult, FileOpRecord, LocalChange, LocalUpdate, RemoteUpdate } from "./fitTypes";
+import { FileClash, LocalChange, FileChange } from "./util/changeTracking";
 import { extractExtension } from "./utils";
 import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
@@ -81,7 +81,24 @@ type SyncExecutionResult = {
 	/** Operations applied to remote (from local changes) */
 	remoteOps: LocalChange[];
 	/** Unresolved conflicts (context-dependent: new conflicts or all conflicts) */
-	conflicts: ClashStatus[];
+	conflicts: FileClash[];
+};
+
+type ConflictReport = {
+	path: string
+	resolutionStrategy: "utf-8"
+	localContent: Base64Content
+	remoteContent: Base64Content
+} | {
+	resolutionStrategy: "binary",
+	path: string,
+	remoteContent: Base64Content
+};
+
+export type ConflictResolutionResult = {
+	path: string;
+	conflictFile?: { path: string; content: FileContent; }; // Conflict to write to _fit/ (always _fit/ prefixed)
+	directWrite?: { path: string; content: FileContent; }; // Safe direct write (no conflict, untracked file that doesn't exist)
 };
 
 /**
@@ -150,7 +167,7 @@ export class FitSync implements IFitSync {
 	}
 
 	private async resolveFileConflict(
-		clash: ClashStatus,
+		clash: FileClash,
 		existenceMap?: Map<string, 'file' | 'folder' | 'nonexistent'>
 	): Promise<ConflictResolutionResult> {
 		if (clash.localStatus === "deleted" && clash.remoteStatus === "REMOVED") {
@@ -244,7 +261,7 @@ export class FitSync implements IFitSync {
 		deletionsSkippedDueToStatFailureClashes: string[],
 		syncNotice: FitNotice
 	): Promise<{
-		ops: FileOpRecord[],
+		changes: LocalChange[],
 		filesMovedToFitDueToStatFailure: string[],
 		deletionsSkippedDueToStatFailure: string[]
 	}> {
@@ -357,9 +374,9 @@ export class FitSync implements IFitSync {
 		const deleteFromLocal = safeDeleteFromLocal;
 
 		// Apply changes (filtered to save conflicts to _fit/)
-		const ops = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+		const changes = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-		return { ops, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
+		return { changes, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
 	}
 
 	/**
@@ -369,18 +386,18 @@ export class FitSync implements IFitSync {
 	 * @returns File operations performed, unresolved conflicts, and stat failure tracking
 	 */
 	private async resolveClashes(
-		clashes: ClashStatus[],
+		clashes: FileClash[],
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
 		syncNotice: FitNotice
 	): Promise<{
-		ops: FileOpRecord[],
-		unresolved: ClashStatus[],
+		changes: LocalChange[],
+		unresolved: FileClash[],
 		filesMovedToFitDueToStatFailure: string[],
 		deletionsSkippedDueToStatFailure: string[]
 	}> {
 		if (clashes.length === 0) {
 			return {
-				ops: [],
+				changes: [],
 				unresolved: [],
 				filesMovedToFitDueToStatFailure: [],
 				deletionsSkippedDueToStatFailure: []
@@ -437,18 +454,18 @@ export class FitSync implements IFitSync {
 		// Conflicts are determined by presence of conflictFile (always goes to _fit/)
 		const unresolved = fileResolutions
 			.map((res, i) => res.conflictFile ? clashes[i] : null)
-			.filter(Boolean) as Array<ClashStatus>;
+			.filter(Boolean) as Array<FileClash>;
 
-		const ops: FileOpRecord[] = [];
+		const changes: LocalChange[] = [];
 
 		if (conflictFilesToWrite.length > 0) {
 			const conflictOps = await this.fit.localVault.applyChanges(conflictFilesToWrite, []);
-			ops.push(...conflictOps);
+			changes.push(...conflictOps);
 		}
 
 		if (directWrites.length > 0) {
 			const directOps = await this.fit.localVault.applyChanges(directWrites, []);
-			ops.push(...directOps);
+			changes.push(...directOps);
 		}
 
 		// Show "Change conflicts detected" notice if any conflicts will be written to _fit/
@@ -456,7 +473,7 @@ export class FitSync implements IFitSync {
 			syncNotice.setMessage(`Change conflicts detected`);
 		}
 
-		return { ops, unresolved, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
+		return { changes, unresolved, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
 	}
 
 	/**
@@ -496,7 +513,11 @@ export class FitSync implements IFitSync {
 	 */
 	private async performSync(
 		localChanges: LocalChange[],
-		remoteUpdate: RemoteUpdate,
+		remoteUpdate: {
+			remoteChanges: FileChange[],
+			remoteTreeSha: Record<string, BlobSha>,
+			latestRemoteCommitSha: CommitSha
+		},
 		currentLocalState: Record<string, BlobSha>,
 		syncNotice: FitNotice
 	): Promise<SyncExecutionResult> {
@@ -545,7 +566,7 @@ export class FitSync implements IFitSync {
 
 		// Phase 3: Resolve all clashes (writes to _fit/ if needed)
 		const {
-			ops: resolvedConflictOps,
+			changes: resolvedConflictOps,
 			unresolved: unresolvedConflicts,
 			filesMovedToFitDueToStatFailure: filesMovedToFitDueToStatFailureClashes,
 			deletionsSkippedDueToStatFailure: deletionsSkippedDueToStatFailureClashes
@@ -590,7 +611,7 @@ export class FitSync implements IFitSync {
 		}
 
 		// Phase 5: Pull remote changes to local (with safety checks)
-		const {ops: localFileOpsRecord} = await this.applyRemoteChanges(
+		const {changes: localFileOpsRecord} = await this.applyRemoteChanges(
 			addToLocalNonClashed,
 			deleteFromLocalNonClashed,
 			existenceMap,
@@ -721,9 +742,9 @@ export class FitSync implements IFitSync {
 
 			return {
 				success: true,
-				ops: [
-					{heading: "Local file updates:", ops: localOps},
-					{heading: "Remote file updates:", ops: remoteOps},
+				changeGroups: [
+					{heading: "Local file updates:", changes: localOps},
+					{heading: "Remote file updates:", changes: remoteOps},
 				],
 				clash: conflicts
 			};
@@ -747,7 +768,10 @@ export class FitSync implements IFitSync {
 	}
 
 	private async pushChangedFilesToRemote(
-		localUpdate: LocalUpdate,
+		localUpdate: {
+			localChanges: LocalChange[],
+			parentCommitSha: CommitSha
+		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
 	): Promise<{pushedChanges: LocalChange[], lastFetchedRemoteSha: Record<string, BlobSha>, lastFetchedCommitSha: CommitSha}|null> {
 		if (localUpdate.localChanges.length === 0) {

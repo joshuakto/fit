@@ -6,8 +6,7 @@
  */
 
 import { LocalStores, FitSettings } from "main";
-import { compareSha } from "./utils";
-import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes";
+import { FileClash, LocalChange, FileChange, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
@@ -135,7 +134,7 @@ export class Fit {
 	async getLocalChanges(): Promise<{changes: LocalChange[], state: FileState}> {
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
-		const changes = compareSha(currentState, this.localSha, "local");
+		const changes = compareFileStates(currentState, this.localSha, "local");
 		return { changes, state: currentState };
 	}
 
@@ -147,12 +146,12 @@ export class Fit {
 	 *
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(): Promise<{changes: RemoteChange[], state: FileState, commitSha: CommitSha}> {
+	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileState, commitSha: CommitSha}> {
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
 		}
-		const changes = compareSha(state, this.lastFetchedRemoteSha, "remote");
+		const changes = compareFileStates(state, this.lastFetchedRemoteSha, "remote");
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
@@ -167,11 +166,11 @@ export class Fit {
 		return { changes, state, commitSha };
 	}
 
-	getClashedChanges(localChanges: LocalChange[], remoteChanges:RemoteChange[]): Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> {
-		const clashes: Array<{path: string, localStatus: LocalFileStatus, remoteStatus: RemoteChangeType}> = [];
+	getClashedChanges(localChanges: LocalChange[], remoteChanges:FileChange[]): Array<FileClash> {
+		const clashes: Array<FileClash> = [];
 
 		// Step 1: Filter out remote changes to untracked/unsynced paths and treat as clashes.
-		const trackedRemoteChanges: RemoteChange[] = [];
+		const trackedRemoteChanges: FileChange[] = [];
 
 		for (const remoteChange of remoteChanges) {
 			if (this.shouldSyncPath(remoteChange.path) && this.localVault.shouldTrackState(remoteChange.path)) {
@@ -179,7 +178,7 @@ export class Fit {
 			} else {
 				clashes.push({
 					path: remoteChange.path,
-					localStatus: 'untracked' as LocalFileStatus,
+					localStatus: 'untracked',
 					remoteStatus: remoteChange.status
 				});
 			}

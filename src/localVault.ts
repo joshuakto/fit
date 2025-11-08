@@ -6,7 +6,7 @@
 
 import { TFile, TFolder, Vault } from "obsidian";
 import { IVault, VaultError, VaultReadResult } from "./vault";
-import { FileOpRecord } from "./fitTypes";
+import { LocalChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
@@ -194,7 +194,7 @@ export class LocalVault implements IVault {
 		path: string,
 		content: Base64Content,
 		originalContent: FileContent
-	): Promise<{ op: FileOpRecord; shaPromise: Promise<BlobSha> | null }> {
+	): Promise<{ change: LocalChange; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 
@@ -212,7 +212,7 @@ export class LocalVault implements IVault {
 				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
 
-			const op: FileOpRecord = { path, status: file ? "changed" : "created" };
+			const change: LocalChange = { path, status: file ? "changed" : "created" };
 
 			// Compute SHA from in-memory content if file should be tracked
 			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
@@ -221,7 +221,7 @@ export class LocalVault implements IVault {
 				shaPromise = LocalVault.fileSha1(path, originalContent);
 			}
 
-			return { op, shaPromise };
+			return { change, shaPromise };
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
@@ -236,7 +236,7 @@ export class LocalVault implements IVault {
 	 * Delete a file
 	 * @returns Record of file operation performed
 	 */
-	private async deleteFile(path: string): Promise<FileOpRecord> {
+	private async deleteFile(path: string): Promise<LocalChange> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
@@ -261,7 +261,7 @@ export class LocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<LocalChange[]> {
 		// Clear any pending SHA computation from previous call
 		this.pendingWrittenFileShas = null;
 
@@ -290,7 +290,7 @@ export class LocalVault implements IVault {
 		);
 
 		// Extract file operations for return value
-		const writeOps = writeResults.map(r => r.op);
+		const writeOps = writeResults.map(r => r.change);
 		const fileOps = [...writeOps, ...deletionOps];
 
 		// Collect SHA promises from write operations (started asynchronously in writeFile)
@@ -298,7 +298,7 @@ export class LocalVault implements IVault {
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
 		for (const result of writeResults) {
 			if (result.shaPromise) {
-				shaPromiseMap[result.op.path] = result.shaPromise;
+				shaPromiseMap[result.change.path] = result.shaPromise;
 			}
 		}
 
