@@ -5,7 +5,7 @@ import { LocalStores } from "main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
-import { VaultError } from "./vault";
+import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
 import { CommitSha } from "./util/hashing";
 
@@ -261,7 +261,7 @@ export class FitSync implements IFitSync {
 		deletionsSkippedDueToStatFailureClashes: string[],
 		syncNotice: FitNotice
 	): Promise<{
-		changes: FileChange[],
+		result: ApplyChangesResult<"local">,
 		filesMovedToFitDueToStatFailure: string[],
 		deletionsSkippedDueToStatFailure: string[]
 	}> {
@@ -374,9 +374,9 @@ export class FitSync implements IFitSync {
 		const deleteFromLocal = safeDeleteFromLocal;
 
 		// Apply changes (filtered to save conflicts to _fit/)
-		const changes = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
-		return { changes, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
+		return { result, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
 	}
 
 	/**
@@ -458,14 +458,15 @@ export class FitSync implements IFitSync {
 
 		const changes: FileChange[] = [];
 
+		// TODO: Consolidate to call applyChanges once?
 		if (conflictFilesToWrite.length > 0) {
-			const conflictOps = await this.fit.localVault.applyChanges(conflictFilesToWrite, []);
-			changes.push(...conflictOps);
+			const result = await this.fit.localVault.applyChanges(conflictFilesToWrite, []);
+			changes.push(...result.changes);
 		}
 
 		if (directWrites.length > 0) {
-			const directOps = await this.fit.localVault.applyChanges(directWrites, []);
-			changes.push(...directOps);
+			const result = await this.fit.localVault.applyChanges(directWrites, []);
+			changes.push(...result.changes);
 		}
 
 		// Show "Change conflicts detected" notice if any conflicts will be written to _fit/
@@ -611,7 +612,7 @@ export class FitSync implements IFitSync {
 		}
 
 		// Phase 5: Pull remote changes to local (with safety checks)
-		const {changes: localFileOpsRecord} = await this.applyRemoteChanges(
+		const {result: localFileOpsRecord} = await this.applyRemoteChanges(
 			addToLocalNonClashed,
 			deleteFromLocalNonClashed,
 			existenceMap,
@@ -632,7 +633,8 @@ export class FitSync implements IFitSync {
 		// LocalVault computed SHAs from in-memory content during file writes (see docs/sync-logic.md).
 		// Benefits: avoids redundant I/O, prevents race conditions, no normalization in Obsidian.
 		// Only trackable files included (hidden files excluded to avoid spurious deletions).
-		const writtenFileShas = await this.fit.localVault.getAndClearWrittenFileShas();
+		// Note: We await the SHA promise here (not earlier) to allow parallel computation with other sync operations.
+		const writtenFileShas = await localFileOpsRecord.writtenStates;
 
 		// Update local state: start with current state, apply writes, remove deletes
 		const newLocalState = {
@@ -660,7 +662,7 @@ export class FitSync implements IFitSync {
 			latestRemoteTreeSha,
 			this.fit.lastFetchedCommitSha,
 			latestCommitSha,
-			{ localOpsApplied: localFileOpsRecord.length, remoteOpsPushed: pushedChanges.length }
+			{ localOpsApplied: localFileOpsRecord.changes.length, remoteOpsPushed: pushedChanges.length }
 		);
 
 		await this.saveLocalStoreCallback({
@@ -670,7 +672,7 @@ export class FitSync implements IFitSync {
 		});
 
 		return {
-			localOps: localFileOpsRecord.concat(resolvedConflictOps),
+			localOps: localFileOpsRecord.changes.concat(resolvedConflictOps),
 			remoteOps: pushedChanges,
 			conflicts: unresolvedConflicts
 		};
@@ -807,13 +809,12 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Use remoteVault.applyChanges() to handle all GitHub operations
-		const fileOps = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
+		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
 
 		// If no operations were performed, return null
 		// This can happen when local SHA differs from cache but content matches remote
 		// (spurious change due to SHA normalization or caching issues)
-		if (fileOps.length === 0) {
+		if (result.changes.length === 0) {
 			fitLogger.log('[FitSync] No remote changes needed - content already matches', {
 				localChangesDetected: localUpdate.localChanges.length,
 				reason: 'Local content matches remote despite SHA cache mismatch (likely SHA normalization or cache inconsistency)'
@@ -821,13 +822,26 @@ export class FitSync implements IFitSync {
 			return null;
 		}
 
+		// Current approach wastes 3 API calls and risks claiming we synced to wrong commit if remote moved.
 		// Get updated state after push
+		// TODO: Eliminate this redundant readFromSource() call (same issue as local vault had).
+		// We already have result.commitSha and result.treeSha from applyChanges().
+		// Should build newRemoteState from current state + result.changes instead of re-reading.
 		const { state: newRemoteState, commitSha: newRemoteCommitSha } = await this.fit.remoteVault.readFromSource();
 		if (newRemoteCommitSha === undefined) {
 			throw new Error('Missing expected commitSha from remote');
 		}
 
-		const pushedChanges = fileOps.map(op => {
+		// Detect if remote moved between applyChanges and readFromSource (race condition or concurrent client)
+		if (newRemoteCommitSha !== result.commitSha) {
+			fitLogger.log('[FitSync] WARNING: Remote commit changed between push and read - potential data loss!', {
+				pushedCommitSha: result.commitSha,
+				readCommitSha: newRemoteCommitSha,
+				risk: 'Local state will reflect newer commit than what was actually pushed'
+			});
+		}
+
+		const pushedChanges = result.changes.map(op => {
 			const originalChange = localUpdate.localChanges.find(c => c.path === op.path);
 			return originalChange || { path: op.path, type: op.type };
 		});

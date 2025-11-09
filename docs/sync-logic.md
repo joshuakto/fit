@@ -838,6 +838,38 @@ lastFetchedRemoteSha = {
 
 **Recovery:** All operations are idempotent, safe to retry
 
+## 🔒 Concurrency Control
+
+**Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [main.ts](../main.ts) entry points.
+
+```mermaid
+flowchart LR
+    User[👤 User Actions] --> Entry[🚪 Entry Points<br/>main.ts]
+    Entry --> Guard{Sync already<br/>running?}
+
+    Guard -->|Already running| Block[❌ Early return<br/>silently blocked]
+    Guard -->|Not running| Set[Set sync flag<br/>syncing = true]
+
+    Set --> Orchestrate[🎭 Orchestration<br/>FitSync.sync/performSync]
+    Orchestrate --> Vaults[🗄️ Vault Operations<br/>LocalVault, RemoteGitHubVault]
+
+    Vaults --> Clear[Clear sync flag<br/>syncing = false]
+
+    Block --> Done[Done]
+    Clear --> Done
+```
+
+**Why serialized:**
+- Shared state updated atomically at sync completion
+- GitHub API requires parent commit SHA (concurrent pushes fail)
+- Vault writes aren't transactional
+
+**What's serialized:** Manual sync, auto-sync, overlapping attempts (double-click)
+
+**What's allowed:** User editing during sync (SHAs from in-memory content, changes detected next sync)
+
+**Multi-device:** Not prevented - GitHub handles conflicts, sync retries after pull
+
 ## Debug Logging
 
 ### Provenance Tracking

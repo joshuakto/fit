@@ -19,6 +19,13 @@ import { FileStates } from 'src/util/changeTracking';
  * Settings are persisted in Obsidian's plugin data storage
  */
 export interface FitSettings {
+	// TODO: When adding support for multiple remote providers (GitLab, Gitea),
+	// consider using a discriminated union structure:
+	// remote: { provider: "github", pat: string, owner: string, ... }
+	//       | { provider: "gitlab", token: string, project: string, ... }
+	//       | { provider: "gitea", token: string, owner: string, ... }
+	// This would allow type-safe, provider-specific settings.
+	// See RemoteVaultProvider type in src/vault.ts for provider enum.
 	pat: string;
 	owner: string;
 	avatarUrl: string;
@@ -195,6 +202,8 @@ export default class FitPlugin extends Plugin {
 
 	// Shared method for both ribbon icon and command palette
 	performManualSync = async (): Promise<void> => {
+		// TODO: Show user-visible notification instead of silent early return when sync already in progress
+		// Consider: disabled button state, "Sync in progress" notice, or both
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.syncing = true;
 		fitLogger.log('[Plugin] Manual sync requested');

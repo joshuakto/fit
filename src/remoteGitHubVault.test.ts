@@ -224,14 +224,16 @@ describe("RemoteGitHubVault", () => {
 			it("should create commit with file additions", async () => {
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[{ path: "newfile.md", content: FileContent.fromPlainText("Hello World") }],
 					[]
 				);
 
-				expect(fileOps).toEqual([
-					{ path: "newfile.md", type: "ADDED" }
-				]);
+				expect(result).toEqual({
+					changes: [{ path: "newfile.md", type: "ADDED" }],
+					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
+					treeSha: expect.not.stringMatching(TREE456_SHA),
+				});
 
 				// Verify the file was ADDED to the tree
 				const currentTree = fakeOctokit.getCurrentTree();
@@ -251,14 +253,18 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[{ path: "existing.md", content: FileContent.fromPlainText("Updated content") }],
 					[]
 				);
 
-				expect(fileOps).toEqual([
-					{ path: "existing.md", type: "MODIFIED" }
-				]);
+				expect(result).toEqual({
+					changes: [
+						{ path: "existing.md", type: "MODIFIED" }
+					],
+					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
+					treeSha: expect.not.stringMatching(TREE456_SHA),
+				});
 			});
 
 			it("should handle file deletions", async () => {
@@ -268,14 +274,18 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[],
 					["todelete.md"]
 				);
 
-				expect(fileOps).toEqual([
-					{ path: "todelete.md", type: "REMOVED" }
-				]);
+				expect(result).toEqual({
+					changes: [
+						{ path: "todelete.md", type: "REMOVED" }
+					],
+					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
+					treeSha: expect.not.stringMatching(TREE456_SHA),
+				});
 
 				// Verify file was REMOVED from tree
 				const currentTree = fakeOctokit.getCurrentTree();
@@ -285,14 +295,18 @@ describe("RemoteGitHubVault", () => {
 			it("should handle binary files with base64 encoding", async () => {
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[{ path: "image.png", content: FileContent.fromBase64("iVBORw0KGgo=") }],
 					[]
 				);
 
-				expect(fileOps).toEqual([
-					{ path: "image.png", type: "ADDED" }
-				]);
+				expect(result).toEqual({
+					changes: [
+						{ path: "image.png", type: "ADDED" }
+					],
+					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
+					treeSha: expect.not.stringMatching(TREE456_SHA),
+				});
 			});
 
 			it("should skip changes when no tree nodes created", async () => {
@@ -303,12 +317,16 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[{ path: "file.md", content: FileContent.fromPlainText("Same content") }],
 					[]
 				);
 
-				expect(fileOps).toEqual([]);
+				expect(result).toEqual({
+					changes: [],
+					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no tree nodes created
+					treeSha: TREE456_SHA, // Unchanged when no tree nodes created
+				});
 				// Commit SHA should not have changed
 				expect(fakeOctokit.getLatestCommitSha()).toBe(PARENTCOMMIT123_SHA);
 			});
@@ -320,12 +338,16 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[],
 					["nonexistent.md"]
 				);
 
-				expect(fileOps).toEqual([]);
+				expect(result).toEqual({
+					changes: [],
+					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no changes
+					treeSha: TREE456_SHA, // Unchanged when no changes
+				});
 			});
 
 			it("should handle mixed operations (add, modify, delete)", async () => {
@@ -336,7 +358,7 @@ describe("RemoteGitHubVault", () => {
 
 				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, mockTree);
 
-				const fileOps = await vault.applyChanges(
+				const result = await vault.applyChanges(
 					[
 						{ path: "new.md", content: FileContent.fromPlainText("New file") },
 						{ path: "existing.md", content: FileContent.fromPlainText("Updated") }
@@ -344,12 +366,15 @@ describe("RemoteGitHubVault", () => {
 					["todelete.md"]
 				);
 
-				expect(fileOps).toHaveLength(3);
-				expect(fileOps).toEqual(expect.arrayContaining([
-					{ path: "new.md", type: "ADDED" },
-					{ path: "existing.md", type: "MODIFIED" },
-					{ path: "todelete.md", type: "REMOVED" }
-				]));
+				expect(result).toEqual({
+					changes: expect.arrayContaining([
+						{ path: "new.md", type: "ADDED" },
+						{ path: "existing.md", type: "MODIFIED" },
+						{ path: "todelete.md", type: "REMOVED" }
+					]),
+					commitSha: expect.anything(),
+					treeSha: expect.anything(),
+				});
 			});
 		});
 	});

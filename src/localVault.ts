@@ -5,8 +5,8 @@
  */
 
 import { TFile, TFolder, Vault } from "obsidian";
-import { IVault, VaultError, VaultReadResult } from "./vault";
-import { FileChange, FileStates } from "./util/changeTracking";
+import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
+import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
@@ -44,9 +44,8 @@ function isBinaryExtensionForSha(extension: string): boolean {
  *
  * Isolates Obsidian Vault API quirks from sync logic.
  */
-export class LocalVault implements IVault {
+export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
-	private pendingWrittenFileShas: Promise<FileStates> | null = null;
 
 	constructor(vault: Vault) {
 		this.vault = vault;
@@ -261,11 +260,7 @@ export class LocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileChange[]> {
-		// Clear any pending SHA computation from previous call
-// TODO: Fix concurrency issue https://github.com/joshuakto/fit/pull/131#discussion_r2507368749 
-				this.pendingWrittenFileShas = null;
-
+	): Promise<ApplyChangesResult<"local">> {
 		// Process file additions or updates
 		const writeResults = await Promise.all(
 			filesToWrite.map(async ({path, content}) => {
@@ -292,7 +287,7 @@ export class LocalVault implements IVault {
 
 		// Extract file operations for return value
 		const writeOps = writeResults.map(r => r.change);
-		const fileOps = [...writeOps, ...deletionOps];
+		const changes = [...writeOps, ...deletionOps];
 
 		// Collect SHA promises from write operations (started asynchronously in writeFile)
 		// Map: path -> SHA promise (only for trackable files)
@@ -303,28 +298,18 @@ export class LocalVault implements IVault {
 			}
 		}
 
-		// Store the promise to collect all SHAs (for later retrieval via getAndClearWrittenFileShas)
-		this.pendingWrittenFileShas = Promise.all(
+		// Return SHA computations as promise for caller to await when ready
+		// This allows SHA computation (CPU-intensive) to run in parallel with other sync operations
+		const writtenStates = Promise.all(
 			Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
 				const sha = await shaPromise;
 				return [path, sha] as const;
 			})
 		).then(entries => Object.fromEntries(entries));
 
-		return fileOps;
-	}
-
-	/**
-	 * Get SHAs for files written in the last applyChanges() call.
-	 * Must be called after applyChanges() and awaited to get the computed SHAs.
-	 * Clears the pending SHAs after retrieval.
-	 */
-	async getAndClearWrittenFileShas(): Promise<FileStates> {
-		if (!this.pendingWrittenFileShas) {
-			return {};
-		}
-		const shas = await this.pendingWrittenFileShas;
-		this.pendingWrittenFileShas = null;
-		return shas;
+		return {
+			changes,
+			writtenStates
+		};
 	}
 }

@@ -7,7 +7,7 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { IVault, VaultError, VaultReadResult } from "./vault";
+import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
@@ -42,7 +42,7 @@ export type TreeNode = {
  *
  * Future: Create RemoteGitLabVault, RemoteGiteaVault as additional implementations.
  */
-export class RemoteGitHubVault implements IVault {
+export class RemoteGitHubVault implements IVault<"remote"> {
 	private octokit: Octokit;
 	private owner: string;
 	private repo: string;
@@ -525,7 +525,7 @@ export class RemoteGitHubVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileChange[]> {
+	): Promise<ApplyChangesResult<"remote">> {
 		// Get current commit and tree
 		const parentCommitSha = await this.getLatestCommitSha();
 		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
@@ -554,9 +554,13 @@ export class RemoteGitHubVault implements IVault {
 		const treeNodes = (await Promise.all(treeNodePromises))
 			.filter(node => node !== null) as TreeNode[];
 
-		// If no changes needed, return empty array
+		// If no changes needed, return empty result (preserve current state)
 		if (treeNodes.length === 0) {
-			return [];
+			return {
+				changes: [],
+				commitSha: parentCommitSha,
+				treeSha: parentTreeSha
+			};
 		}
 
 		// Create tree, commit, and update ref
@@ -565,7 +569,7 @@ export class RemoteGitHubVault implements IVault {
 		await this.updateRef(newCommitSha);
 
 		// Build file operation records
-		const fileOps: FileChange[] = [];
+		const changes: FileChange[] = [];
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
@@ -579,10 +583,14 @@ export class RemoteGitHubVault implements IVault {
 				changeType = "ADDED";
 			}
 
-			fileOps.push({ path: node.path, type: changeType });
+			changes.push({ path: node.path, type: changeType });
 		}
 
-		return fileOps;
+		return {
+			changes,
+			commitSha: newCommitSha,
+			treeSha: newTreeSha
+		};
 	}
 
 	// ===== Metadata =====
