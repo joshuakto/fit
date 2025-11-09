@@ -263,7 +263,8 @@ export class LocalVault implements IVault {
 		filesToDelete: Array<string>
 	): Promise<FileChange[]> {
 		// Clear any pending SHA computation from previous call
-		this.pendingWrittenFileShas = null;
+// TODO: Fix concurrency issue https://github.com/joshuakto/fit/pull/131#discussion_r2507368749 
+				this.pendingWrittenFileShas = null;
 
 		// Process file additions or updates
 		const writeResults = await Promise.all(
