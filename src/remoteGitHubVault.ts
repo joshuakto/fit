@@ -7,8 +7,8 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
-import { IVault, FileState, VaultError, VaultReadResult } from "./vault";
-import { LocalChange } from "./util/changeTracking";
+import { IVault, VaultError, VaultReadResult } from "./vault";
+import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 
@@ -54,7 +54,7 @@ export class RemoteGitHubVault implements IVault {
 	// Internal cache for remote state optimization
 	// Avoids redundant API calls when remote hasn't changed
 	private latestKnownCommitSha: CommitSha | null = null;
-	private latestKnownState: FileState | null = null;
+	private latestKnownState: FileStates | null = null;
 
 	constructor(
 		pat: string,
@@ -525,7 +525,7 @@ export class RemoteGitHubVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<LocalChange[]> {
+	): Promise<FileChange[]> {
 		// Get current commit and tree
 		const parentCommitSha = await this.getLatestCommitSha();
 		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
@@ -565,21 +565,21 @@ export class RemoteGitHubVault implements IVault {
 		await this.updateRef(newCommitSha);
 
 		// Build file operation records
-		const fileOps: LocalChange[] = [];
+		const fileOps: FileChange[] = [];
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
 
-			let status: "created" | "changed" | "deleted";
+			let changeType: "ADDED" | "MODIFIED" | "REMOVED";
 			if (node.sha === null) {
-				status = "deleted";
+				changeType = "REMOVED";
 			} else if (remoteTree.some(n => n.path === node.path)) {
-				status = "changed";
+				changeType = "MODIFIED";
 			} else {
-				status = "created";
+				changeType = "ADDED";
 			}
 
-			fileOps.push({ path: node.path, status });
+			fileOps.push({ path: node.path, type: changeType });
 		}
 
 		return fileOps;
@@ -626,7 +626,7 @@ export class RemoteGitHubVault implements IVault {
 			: await this.getTree(treeSha);
 
 		// Build FileState from tree (no filtering - caller handles that)
-		const newState: FileState = {};
+		const newState: FileStates = {};
 		for (const node of remoteTree) {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {

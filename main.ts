@@ -11,7 +11,8 @@ import FitSettingTab from 'src/fitSetting';
 import { FitSync } from 'src/fitSync';
 import { showFileChanges, showUnappliedConflicts } from 'src/utils';
 import { fitLogger } from 'src/logger';
-import { BlobSha, CommitSha } from 'src/util/hashing';
+import { CommitSha } from 'src/util/hashing';
+import { FileStates } from 'src/util/changeTracking';
 
 /**
  * Plugin configuration interface
@@ -51,9 +52,9 @@ const DEFAULT_SETTINGS: FitSettings = {
  * Tracks sync state between plugin sessions to enable incremental sync
  */
 export interface LocalStores {
-	localSha: Record<string, BlobSha>             // File path -> SHA cache
-	lastFetchedCommitSha: CommitSha | null        // Last synced commit
-	lastFetchedRemoteSha: Record<string, BlobSha> // Remote file path -> SHA cache
+	localSha: FileStates                   // File path -> SHA cache
+	lastFetchedCommitSha: CommitSha | null // Last synced commit
+	lastFetchedRemoteSha: FileStates       // Remote file path -> SHA cache
 }
 
 const DEFAULT_LOCAL_STORE: LocalStores = {

@@ -237,9 +237,9 @@ describe('LocalVault', () => {
 			);
 
 			expect(results).toHaveLength(3);
-			expect(results).toContainEqual({ path: 'new.md', status: 'created' });
-			expect(results).toContainEqual({ path: 'existing.md', status: 'changed' });
-			expect(results).toContainEqual({ path: 'delete.md', status: 'deleted' });
+			expect(results).toContainEqual({ path: 'new.md', type: 'ADDED' });
+			expect(results).toContainEqual({ path: 'existing.md', type: 'MODIFIED' });
+			expect(results).toContainEqual({ path: 'delete.md', type: 'REMOVED' });
 		});
 
 		it('should handle empty changes', async () => {

@@ -2,7 +2,7 @@
  * Structured result types for sync operations
  */
 
-import { FileClash, LocalChange  } from "./util/changeTracking";
+import { FileChange, FileClash  } from "./util/changeTracking";
 import { VaultError } from "./vault";
 
 /**
@@ -21,8 +21,9 @@ export type SyncOrchestrationError = {
  */
 export type SyncError = VaultError | SyncOrchestrationError;
 
+// Suggested: { success: true; changes: Array<{ heading: string, files: FileChange[] }>; clash: FileClash[] }
 export type SyncResult =
-    | { success: true; changeGroups: Array<{ heading: string, changes: LocalChange[] }>; clash: FileClash[] }
+    | { success: true; changeGroups: Array<{ heading: string, changes: FileChange[] }>; clash: FileClash[] }
     | { success: false; error: SyncError };
 
 /**

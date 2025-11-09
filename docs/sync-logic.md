@@ -11,7 +11,7 @@ This document explains the detailed sync logic in FIT - the nuts and bolts of ho
 **Emoji Key:**
 - **Components:** 💾 Local Vault • ☁️ Remote Vault • 📦 Cache/Storage • 📁 `_fit/` Directory
 - **Operations:** ⬆️ Push • ⬇️ Pull • 🔀 Conflict
-- **File Status:** 🟢 Created/Added • ✏️ Modified • ❌ Deleted
+- **File Status:** 🟢 Added • ✏️ Modified • ❌ Removed
 
 ## 📦 SHA Cache System
 
@@ -112,13 +112,13 @@ flowchart TD
     ComputeSHA --> Compare{Compare with<br/>cached localSha}
 
     Compare -->|File in cache,<br/>SHA differs| Modified[✏️ MODIFIED]
-    Compare -->|File not in cache| Created[🟢 CREATED]
-    Compare -->|Cached file<br/>not in vault| Deleted[❌ DELETED]
+    Compare -->|File not in cache| Added[🟢 ADDED]
+    Compare -->|Cached file<br/>not in vault| Removed[❌ REMOVED]
     Compare -->|File in cache,<br/>SHA matches| NoChange[No change]
 
     Modified --> Result[💾 Local Changes]
-    Created --> Result
-    Deleted --> Result
+    Added --> Result
+    Removed --> Result
     NoChange --> End[Done]
 ```
 
@@ -136,7 +136,7 @@ cachedLocalSha = {
   "file2.md": "def456"   // Was cached
 }
 
-// Result: file2.md detected as DELETED
+// Result: file2.md detected as REMOVED
 ```
 
 ### ☁️ Remote Change Detection
@@ -320,7 +320,7 @@ lastFetchedRemoteSha = { ".gitignore": "abc123" }
 
 // After v3 upgrade or setting disabled:
 newScan = {}  // Reverted to Vault API (can't read hidden files)
-compareFileStates(newScan, localSha) // → reports ".gitignore" as DELETED
+compareFileStates(newScan, localSha) // // → reports ".gitignore" as REMOVED
 // ⚠️ Risk: Plugin pushes deletion to remote → DATA LOSS
 ```
 
@@ -331,13 +331,13 @@ compareFileStates(newScan, localSha) // → reports ".gitignore" as DELETED
 // Phase 2: Batch stat all paths needing verification (including deletions)
 const pathsToStat = new Set<string>();
 localChangesToPush
-  .filter(c => c.status === 'deleted')
+  .filter(c => c.type === 'REMOVED')
   .forEach(c => pathsToStat.add(c.path));
 const {existenceMap} = await this.collectFilesystemState(Array.from(pathsToStat));
 
 // Phase 4: Push local changes with safeguard
 for (const change of localChanges) {
-  if (change.status === 'deleted') {
+  if (change.type === 'REMOVED') {
     const existence = existenceMap.get(change.path);
     const physicallyExists = existence === 'file' || existence === 'folder';
     if (physicallyExists) {
@@ -402,7 +402,7 @@ flowchart TD
 - No action needed
 
 #### 2. Only Local Changed
-**Changes detected:** Local files created/modified/deleted
+**Changes detected:** Local files ADDED/MODIFIED/REMOVED
 **Remote state:** No remote changes since last sync
 
 **Actions:**
@@ -412,7 +412,7 @@ flowchart TD
 4. Update `lastFetchedCommitSha` with new commit
 
 #### 3. Only Remote Changed
-**Changes detected:** Remote files added/modified/removed
+**Changes detected:** Remote files ADDED/MODIFIED/REMOVED
 **Local state:** No local changes since last sync
 
 **Actions:**
@@ -439,11 +439,11 @@ This happens when remote has a commit but it doesn't affect tracked files (e.g.,
 **Example:**
 ```typescript
 localChanges = [
-  { path: "local-only.md", status: "created" }
+  { path: "local-only.md", type: "ADDED" }
 ]
 
 remoteChanges = [
-  { path: "remote-only.md", status: "ADDED" }
+  { path: "remote-only.md", type: "ADDED" }
 ]
 
 // No overlap → compatible changes
@@ -475,14 +475,14 @@ Files clash when BOTH local and remote have changes to the same path.
 
 ```mermaid
 flowchart TD
-    Start[File Clashed:<br/>Same file modified<br/>💾 locally & ☁️ remotely] --> CheckScenario{What happened<br/>to the file?}
+    Start[File Clashed:<br/>Same file MODIFIED<br/>💾 locally & ☁️ remotely] --> CheckScenario{What happened<br/>to the file?}
 
-    CheckScenario -->|✏️ Both modified,<br/>different content| SaveBoth[⬇️📁 Pull remote to _fit/<br/>Keep local in place]
-    CheckScenario -->|💾❌ vs ☁️✏️<br/>Deleted vs Modified| SaveRemote[⬇️📁 Pull remote to _fit/<br/>Keep local deleted]
-    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Deleted| KeepLocal[⬆️ Push local<br/>Restore on remote]
+    CheckScenario -->|✏️ Both MODIFIED,<br/>different content| SaveBoth[⬇️📁 Pull remote to _fit/<br/>Keep local in place]
+    CheckScenario -->|💾❌ vs ☁️✏️<br/>Removed vs Modified| SaveRemote[⬇️📁 Pull remote to _fit/<br/>Keep local deleted]
+    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Removed| KeepLocal[⬆️ Push local<br/>Restore on remote]
 
-    CheckScenario -->|✏️ Both modified,<br/>same content| AutoResolve2[✓ Auto-resolved<br/>Content identical]
-    CheckScenario -->|❌ Both deleted| AutoResolve1[✓ Auto-resolved<br/>Both sides agree]
+    CheckScenario -->|✏️ Both MODIFIED,<br/>same content| AutoResolve2[✓ Auto-resolved<br/>Content identical]
+    CheckScenario -->|❌ Both REMOVED| AutoResolve1[✓ Auto-resolved<br/>Both sides agree]
 
     SaveRemote --> Manual[🔀 Manual resolution needed]
     KeepLocal --> Manual
@@ -502,17 +502,17 @@ flowchart TD
 
 #### Manual Resolution Required
 
-**💾 Local deleted, ☁️ remote modified/added:**
+**💾 Local deleted, ☁️ remote MODIFIED/ADDED:**
 - Save remote version → 📁 `_fit/path/to/file.md`
 - Keep local deleted (file stays deleted in vault)
 - User can manually restore from 📁 `_fit/` if needed
 
-**☁️ Remote deleted, 💾 local modified:**
+**☁️ Remote deleted, 💾 local MODIFIED:**
 - Keep local version in original location
 - Push to remote (restores the file remotely)
 - Local version wins automatically
 
-**Both sides modified (different content):**
+**Both sides MODIFIED (different content):**
 - Keep 💾 local version in original location
 - Save ☁️ remote version → 📁 `_fit/path/to/file.md`
 - User manually merges the two versions
@@ -532,7 +532,7 @@ lastFetchedCommitSha = "initial"
 ```
 
 **Behavior:**
-1. **All local files** appear as "CREATED" (not in `localSha` cache)
+1. **All local files** appear as "ADDED" (not in `localSha` cache)
 2. **All remote files** appear as "ADDED" (not in `lastFetchedRemoteSha` cache)
 3. **Files existing both locally and remotely** are detected as conflicts
 4. **Conflict resolution applies:**
@@ -663,7 +663,7 @@ if (this.shouldTrackState(path)) {
 **SHA promises collected in applyChanges():**
 ```typescript
 // Start SHA computation in parallel with file writes
-// writeFile() returns: { change: LocalChange; shaPromise: Promise<BlobSha> | null }
+// writeFile() returns: { change: FileChange; shaPromise: Promise<BlobSha> | null }
 const writeResults = await Promise.all(
     filesToWrite.map(async ({path, content}) => {
         return await this.writeFile(path, content.toBase64(), content);
@@ -746,7 +746,7 @@ static fromBase64(content: string | Base64Content): FileContent {
 7. **Self-correcting:** Next sync uses corrected SHA, no spurious change
 
 **No data loss:**
-- ✅ Remote never modified (GitHub deduplicates identical blobs)
+- ✅ Remote never MODIFIED (GitHub deduplicates identical blobs)
 - ✅ Local files untouched
 - ✅ Cache self-corrects to accurate SHA
 - ✅ Only cost: one unnecessary sync attempt (optimized away by GitHub)
@@ -782,7 +782,7 @@ currentLocalSha = {
   "existing-file.md": "abc123"
 }
 
-// Detection: File appears CREATED (not in cache)
+// Detection: File appears ADDED (not in cache)
 // Remote has same file → Will try to push
 // May cause unnecessary conflicts
 ```
@@ -806,7 +806,7 @@ lastFetchedRemoteSha = {
   "deleted-file.md": "old-sha"
 }
 
-// Detection: File appears DELETED locally
+// Detection: File appears REMOVED locally
 // But if remote was updated: might clash or recreate
 ```
 
@@ -866,15 +866,15 @@ When debug logging is enabled (Settings → Enable debug logging), FIT writes a 
 }
 
 [2025-11-04T10:30:16.789Z] [Fit] Remote changes detected: {
-  "added": 195,
-  "modified": 0,
-  "removed": 0,
+  "ADDED": 195,
+  "MODIFIED": 0,
+  "REMOVED": 0,
   "total": 195
 }
 
 [2025-11-04T10:30:16.790Z] [FitSync] Starting sync: {
   "remote": {
-    "added": [
+    "ADDED": [
       "README.md",
       "notes/daily/2025-01-15.md",
       ...
@@ -901,7 +901,7 @@ When debug logging is enabled (Settings → Enable debug logging), FIT writes a 
     "changed": ["file1.md"]
   },
   "remote": {
-    "modified": ["file1.md", "file2.md"]
+    "MODIFIED": ["file1.md", "file2.md"]
   }
 }
 

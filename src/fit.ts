@@ -6,13 +6,12 @@
  */
 
 import { LocalStores, FitSettings } from "main";
-import { FileClash, LocalChange, FileChange, compareFileStates } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
-import { FileState } from "./vault";
 import { fitLogger } from "./logger";
-import { BlobSha, CommitSha } from "./util/hashing";
+import { CommitSha } from "./util/hashing";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -30,10 +29,10 @@ import { BlobSha, CommitSha } from "./util/hashing";
  */
 export class Fit {
 	// TODO: Rename these for clarity: localFileShas, remoteCommitSha, remoteFileShas
-	localSha: Record<string, BlobSha>;             // Cache of local file SHAs
-	lastFetchedCommitSha: CommitSha | null;        // Last synced commit SHA
-	lastFetchedRemoteSha: Record<string, BlobSha>; // Cache of remote file SHAs
-	localVault: LocalVault;                        // Local vault (tracks local file state)
+	localSha: FileStates;                   // Cache of local file SHAs
+	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
+	lastFetchedRemoteSha: FileStates;       // Cache of remote file SHAs
+	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 
 
@@ -121,8 +120,8 @@ export class Fit {
 	 * @param state - Complete file state from vault
 	 * @returns Filtered state containing only synced paths
 	 */
-	filterSyncedState(state: FileState): FileState {
-		const filtered: FileState = {};
+	filterSyncedState(state: FileStates): FileStates {
+		const filtered: FileStates = {};
 		for (const [path, sha] of Object.entries(state)) {
 			if (this.shouldSyncPath(path)) {
 				filtered[path] = sha;
@@ -131,10 +130,10 @@ export class Fit {
 		return filtered;
 	}
 
-	async getLocalChanges(): Promise<{changes: LocalChange[], state: FileState}> {
+	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
-		const changes = compareFileStates(currentState, this.localSha, "local");
+		const changes = compareFileStates(currentState, this.localSha);
 		return { changes, state: currentState };
 	}
 
@@ -146,19 +145,19 @@ export class Fit {
 	 *
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileState, commitSha: CommitSha}> {
+	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha}> {
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
 		}
-		const changes = compareFileStates(state, this.lastFetchedRemoteSha, "remote");
+		const changes = compareFileStates(state, this.lastFetchedRemoteSha);
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
 			fitLogger.log('[Fit] Remote changes detected', {
-				added: changes.filter(c => c.status === 'ADDED').length,
-				modified: changes.filter(c => c.status === 'MODIFIED').length,
-				removed: changes.filter(c => c.status === 'REMOVED').length,
+				ADDED: changes.filter(c => c.type === 'ADDED').length,
+				MODIFIED: changes.filter(c => c.type === 'MODIFIED').length,
+				REMOVED: changes.filter(c => c.type === 'REMOVED').length,
 				total: changes.length
 			});
 		}
@@ -166,7 +165,7 @@ export class Fit {
 		return { changes, state, commitSha };
 	}
 
-	getClashedChanges(localChanges: LocalChange[], remoteChanges:FileChange[]): Array<FileClash> {
+	getClashedChanges(localChanges: FileChange[], remoteChanges:FileChange[]): Array<FileClash> {
 		const clashes: Array<FileClash> = [];
 
 		// Step 1: Filter out remote changes to untracked/unsynced paths and treat as clashes.
@@ -178,23 +177,23 @@ export class Fit {
 			} else {
 				clashes.push({
 					path: remoteChange.path,
-					localStatus: 'untracked',
-					remoteStatus: remoteChange.status
+					localState: 'untracked',
+					remoteOp: remoteChange.type
 				});
 			}
 		}
 
 		// Step 2: Find tracked paths that changed on both sides
-		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.status]));
+		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.type]));
 
 		for (const remoteChange of trackedRemoteChanges) {
-			const localStatus = localChangesByPath.get(remoteChange.path);
-			if (localStatus !== undefined) {
+			const localState = localChangesByPath.get(remoteChange.path);
+			if (localState !== undefined) {
 				// Both sides changed this tracked path
 				clashes.push({
 					path: remoteChange.path,
-					localStatus,
-					remoteStatus: remoteChange.status
+					localState,
+					remoteOp: remoteChange.type
 				});
 			}
 		}

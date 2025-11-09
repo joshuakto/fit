@@ -313,18 +313,18 @@
     margin-bottom: 2px;
 }
 
-.file-created {
+.file-ADDED {
     background-color: rgba(144, 238, 144, 0.4);
     background-image: var(--file-create);
 }
 
-.file-changed {
+.file-MODIFIED {
     background-color: rgba(249, 180, 52, 0.4);
     background-image: var(--file-change);
 
 }
 
-.file-deleted {
+.file-REMOVED {
     background-color: rgba(255, 99, 71, 0.3);
     background-image: var(--file-delete);
 }
