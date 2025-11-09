@@ -210,8 +210,9 @@ export default class FitPlugin extends Plugin {
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 		const syncSuccess = await this.sync(syncNotice);
-		// TODO: Consider wrapping this in try-catch to ensure spinner always stops
-		// even if sync() throws an unexpected exception
+		// TODO: #133 - Wrap in try-finally to ensure syncing flag and spinner always clear.
+		// Current risk: If sync() throws (bypassing its internal error handling),
+		// syncing flag stays true permanently, blocking all future syncs until app restart.
 		this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		if (!syncSuccess) {
 			syncNotice.remove("error");

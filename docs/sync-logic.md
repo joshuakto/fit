@@ -843,20 +843,26 @@ lastFetchedRemoteSha = {
 **Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [main.ts](../main.ts) entry points.
 
 ```mermaid
-flowchart LR
-    User[👤 User Actions] --> Entry[🚪 Entry Points<br/>main.ts]
-    Entry --> Guard{Sync already<br/>running?}
+sequenceDiagram
+    participant User as 👤 User Action
+    participant Entry as 🚪 Entry Points<br/>main.ts
+    participant Sync as 🎭 FitSync.sync
+    participant Vaults as 🗄️ Vaults<br/>Local & Remote
 
-    Guard -->|Already running| Block[❌ Early return<br/>silently blocked]
-    Guard -->|Not running| Set[Set sync flag<br/>syncing = true]
+    User->>Entry: Trigger sync
 
-    Set --> Orchestrate[🎭 Orchestration<br/>FitSync.sync/performSync]
-    Orchestrate --> Vaults[🗄️ Vault Operations<br/>LocalVault, RemoteGitHubVault]
-
-    Vaults --> Clear[Clear sync flag<br/>syncing = false]
-
-    Block --> Done[Done]
-    Clear --> Done
+    alt Sync already in progress
+        Entry-->>User: ❌ Silent early return<br/>syncing flag prevents concurrent access
+    else Sync available
+        rect rgba(0, 0, 0, 0.05)
+            Note over Entry,Vaults: syncing flag set during this scope
+            Entry->>Sync: Orchestrate sync
+            Sync->>Vaults: Read/write operations
+            Vaults-->>Sync: Results
+            Sync-->>Entry: SyncResult
+        end
+        Entry-->>User: ✅ Complete
+    end
 ```
 
 **Why serialized:**

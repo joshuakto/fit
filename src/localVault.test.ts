@@ -257,6 +257,7 @@ describe('LocalVault', () => {
 			const results = await localVault.applyChanges([], []);
 
 			expect(results.changes).toEqual([]);
+			expect(await results.writtenStates).toEqual({});
 		});
 
 		it('should process writes and deletes in parallel', async () => {
