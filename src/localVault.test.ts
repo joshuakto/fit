@@ -236,17 +236,28 @@ describe('LocalVault', () => {
 				['delete.md']
 			);
 
-			expect(results).toHaveLength(3);
-			expect(results).toContainEqual({ path: 'new.md', type: 'ADDED' });
-			expect(results).toContainEqual({ path: 'existing.md', type: 'MODIFIED' });
-			expect(results).toContainEqual({ path: 'delete.md', type: 'REMOVED' });
+			expect(results).toEqual(expect.objectContaining({
+				changes: expect.arrayContaining([
+					{ path: 'new.md', type: 'ADDED' },
+					{ path: 'existing.md', type: 'MODIFIED' },
+					{ path: 'delete.md', type: 'REMOVED' }
+				]),
+			}));
+
+			// Verify SHA computation promise
+			expect(await results.writtenStates).toEqual({
+				'new.md': expect.any(String),
+				'existing.md': expect.any(String),
+				// Note no 'delete.md' (Deleted files should not have SHAs)
+			});
 		});
 
 		it('should handle empty changes', async () => {
 			const localVault = new LocalVault(mockVault);
 			const results = await localVault.applyChanges([], []);
 
-			expect(results).toEqual([]);
+			expect(results.changes).toEqual([]);
+			expect(await results.writtenStates).toEqual({});
 		});
 
 		it('should process writes and deletes in parallel', async () => {

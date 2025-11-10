@@ -19,6 +19,13 @@ import { FileStates } from 'src/util/changeTracking';
  * Settings are persisted in Obsidian's plugin data storage
  */
 export interface FitSettings {
+	// TODO: When adding support for multiple remote providers (GitLab, Gitea),
+	// consider using a discriminated union structure:
+	// remote: { provider: "github", pat: string, owner: string, ... }
+	//       | { provider: "gitlab", token: string, project: string, ... }
+	//       | { provider: "gitea", token: string, owner: string, ... }
+	// This would allow type-safe, provider-specific settings.
+	// See RemoteVaultProvider type in src/vault.ts for provider enum.
 	pat: string;
 	owner: string;
 	avatarUrl: string;
@@ -195,14 +202,17 @@ export default class FitPlugin extends Plugin {
 
 	// Shared method for both ribbon icon and command palette
 	performManualSync = async (): Promise<void> => {
+		// TODO: Show user-visible notification instead of silent early return when sync already in progress
+		// Consider: disabled button state, "Sync in progress" notice, or both
 		if ( this.syncing || this.autoSyncing ) { return; }
 		this.syncing = true;
 		fitLogger.log('[Plugin] Manual sync requested');
 		this.fitSyncRibbonIconEl.addClass('animate-icon');
 		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
 		const syncSuccess = await this.sync(syncNotice);
-		// TODO: Consider wrapping this in try-catch to ensure spinner always stops
-		// even if sync() throws an unexpected exception
+		// TODO: #133 - Wrap in try-finally to ensure syncing flag and spinner always clear.
+		// Current risk: If sync() throws (bypassing its internal error handling),
+		// syncing flag stays true permanently, blocking all future syncs until app restart.
 		this.fitSyncRibbonIconEl.removeClass('animate-icon');
 		if (!syncSuccess) {
 			syncNotice.remove("error");

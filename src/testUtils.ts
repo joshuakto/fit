@@ -4,7 +4,7 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { IVault, VaultError, VaultReadResult } from './vault';
+import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
 import { extractExtension } from './utils';
@@ -276,11 +276,10 @@ type FailureScenario = 'read' | 'stat' | 'write';
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
-export class FakeLocalVault implements IVault {
+export class FakeLocalVault implements IVault<"local"> {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
-	private pendingWrittenFileShas: Promise<FileStates> | null = null;
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -418,10 +417,7 @@ export class FakeLocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileChange[]> {
-		// Clear any pending SHA computation from previous call
-		this.pendingWrittenFileShas = null;
-
+	): Promise<ApplyChangesResult<"local">> {
 		const error = this.failureScenarios.get('write');
 		if (error) {
 			this.clearFailure('write');
@@ -468,9 +464,12 @@ export class FakeLocalVault implements IVault {
 
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans
-		this.pendingWrittenFileShas = this.computeWrittenFileShas(filesToWrite);
+		const writtenStates = this.computeWrittenFileShas(filesToWrite);
 
-		return changes;
+		return {
+			changes,
+			writtenStates
+		};
 	}
 
 	/**
@@ -491,20 +490,6 @@ export class FakeLocalVault implements IVault {
 		return Object.fromEntries(results);
 	}
 
-	/**
-	 * Get SHAs for files written in the last applyChanges() call.
-	 * Must be called after applyChanges() and awaited to get the computed SHAs.
-	 * Clears the pending SHAs after retrieval.
-	 */
-	async getAndClearWrittenFileShas(): Promise<FileStates> {
-		if (!this.pendingWrittenFileShas) {
-			return {};
-		}
-		const shas = await this.pendingWrittenFileShas;
-		this.pendingWrittenFileShas = null;
-		return shas;
-	}
-
 	shouldTrackState(path: string): boolean {
 		// Exclude hidden files (same as LocalVault)
 		const parts = path.split('/');
@@ -516,7 +501,7 @@ export class FakeLocalVault implements IVault {
  * Fake implementation of IVault for remote testing.
  * Simulates a remote vault (like GitHub) with in-memory file storage and commit tracking.
  */
-export class FakeRemoteVault implements IVault {
+export class FakeRemoteVault implements IVault<"remote"> {
 	private files: Map<string, FileContent> = new Map();
 	private blobShas: Map<BlobSha, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: CommitSha = 'initial-commit' as CommitSha;
@@ -651,7 +636,7 @@ export class FakeRemoteVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileChange[]> {
+	): Promise<ApplyChangesResult<"remote">> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
@@ -681,7 +666,16 @@ export class FakeRemoteVault implements IVault {
 				.join('\n')
 		) as CommitSha;
 
-		return changes;
+		// Compute tree SHA from file list (simulates GitHub tree object)
+		const treeSha = await computeSha1(
+			Array.from(this.files.keys()).sort().join('\n')
+		) as TreeSha;
+
+		return {
+			changes: changes,
+			commitSha: this.commitSha,
+			treeSha
+		};
 	}
 
 	shouldTrackState(_path: string): boolean {
