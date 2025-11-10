@@ -330,7 +330,7 @@ export class FakeLocalVault implements IVault<"local"> {
 			([path, content]) => [path, content.toRaw().content]));
 	}
 
-	async readFromSource(): Promise<VaultReadResult> {
+	async readFromSource(): Promise<VaultReadResult<"local">> {
 		const error = this.failureScenarios.get('read');
 		if (error) {
 			this.clearFailure('read');
@@ -598,23 +598,37 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		return this.branch;
 	}
 
-	async readFromSource(): Promise<VaultReadResult> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
-			throw error;
-		}
-
+	/**
+	 * Build FileStates from current files in the fake vault.
+	 * Computes SHAs consistently for both readFromSource and buildStateFromTree.
+	 *
+	 * @param storeBlobShaMapping - If true, stores blob SHA -> content mapping for readFileContent
+	 * @returns FileStates mapping paths to blob SHAs
+	 */
+	private async buildCurrentState(storeBlobShaMapping: boolean): Promise<FileStates> {
 		const state: FileStates = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				const base64Content = content.toBase64();
 				const sha = await computeSha1(path + base64Content) as BlobSha;
 				state[path] = sha;
-				// Store blob SHA -> content mapping for readFileContent
-				this.blobShas.set(sha, base64Content);
+				// Store blob SHA -> content mapping for readFileContent if requested
+				if (storeBlobShaMapping) {
+					this.blobShas.set(sha, base64Content);
+				}
 			}
 		}
+		return state;
+	}
+
+	async readFromSource(): Promise<VaultReadResult<"remote">> {
+		if (this.failureError) {
+			const error = this.failureError;
+			this.clearFailure();
+			throw error;
+		}
+
+		const state = await this.buildCurrentState(true);
 		return { state, commitSha: this.commitSha };
 	}
 
@@ -671,10 +685,16 @@ export class FakeRemoteVault implements IVault<"remote"> {
 			Array.from(this.files.keys()).sort().join('\n')
 		) as TreeSha;
 
+		// Build new state from current files (consistent with real vault)
+		// In tests, tree SHA doesn't matter - just return current state
+		// This mimics RemoteGitHubVault.buildStateFromTree behavior
+		const newState = await this.buildCurrentState(false);
+
 		return {
 			changes: changes,
 			commitSha: this.commitSha,
-			treeSha
+			treeSha,
+			newState
 		};
 	}
 

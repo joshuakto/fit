@@ -10,16 +10,26 @@ import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent } from "./util/contentEncoding";
 import { CommitSha, TreeSha } from "./util/hashing";
 
+/** Discriminated return types for readFromSource() based on vault category */
+type VaultReadResultMap = {
+	/** Local vault result - just the state */
+	"local": {
+		state: FileStates;
+	};
+	/** Remote vault result - includes commit SHA */
+	"remote": {
+		state: FileStates;
+		commitSha: CommitSha;
+	};
+};
+
 /**
  * Result of reading vault state, including vault-specific metadata.
  *
  * For RemoteGitHubVault: Includes the commit SHA of the fetched state
  * For LocalVault: May be extended in future for other metadata
  */
-export type VaultReadResult = {
-	state: FileStates;
-	commitSha?: CommitSha; // Present for RemoteGitHubVault (GitHub commit SHA)
-};
+export type VaultReadResult<T extends VaultCategory = VaultCategory> = VaultReadResultMap[T];
 
 /**
  * Vault category: local filesystem vs remote git hosting
@@ -34,12 +44,14 @@ type ApplyChangesResultMap = {
 		 * Await when ready to update local state - allows parallelization on mobile. */
 		writtenStates: Promise<FileStates>;
 	};
-	/** Remote vault result - includes commit metadata */
+	/** Remote vault result - includes commit metadata and new state */
 	"remote": {
 		/** New commit SHA created on remote */
 		commitSha: CommitSha;
 		/** New tree SHA created on remote */
 		treeSha: TreeSha;
+		/** FileStates computed from the new tree (for cache updates) */
+		newState: FileStates;
 	};
 };
 
@@ -139,7 +151,7 @@ export interface IVault<T extends VaultCategory> {
 	 *
 	 * @returns The scanned state and vault-specific metadata
 	 */
-	readFromSource(): Promise<VaultReadResult>;
+	readFromSource(): Promise<VaultReadResult<T>>;
 
 	/**
 	 * Read file content for a specific path

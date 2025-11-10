@@ -662,37 +662,28 @@ if (this.shouldTrackState(path)) {
 
 **SHA promises collected in applyChanges():**
 ```typescript
-// Start SHA computation in parallel with file writes
-// writeFile() returns: { change: FileChange; shaPromise: Promise<BlobSha> | null }
-const writeResults = await Promise.all(
-    filesToWrite.map(async ({path, content}) => {
-        return await this.writeFile(path, content.toBase64(), content);
-    })
-);
+// LocalVault.applyChanges() returns result with writtenStates promise
+const result = await localVault.applyChanges(filesToWrite, filesToDelete);
 
-// Collect SHA promises (already running in background)
-const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
-for (const result of writeResults) {
-    if (result.shaPromise) {
-        shaPromiseMap[result.change.path] = result.shaPromise;
-    }
-}
+// result = {
+//   changes: FileChange[],
+//   writtenStates: Promise<FileStates>  // SHAs computed in parallel
+// }
 
-// Store promise to collect all SHAs (for later retrieval)
-this.pendingWrittenFileShas = Promise.all(
-    Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
-        const sha = await shaPromise;
-        return [path, sha] as const;
-    })
-).then(entries => Object.fromEntries(entries));
+// SHA computation started during file writes, continues in background
 ```
 
 **Retrieval in FitSync:**
 ```typescript
-// After applyChanges() completes
-const newLocalShas = await this.fit.localVault.getAndClearWrittenFileShas();
-// Merge with existing cache (specialized update, not full re-scan)
-const updatedLocalSha = { ...this.fit.localSha, ...newLocalShas };
+// Await SHA promise when ready to update local state
+// (allows SHA computation to run in parallel with other sync operations)
+const writtenFileShas = await localFileOpsRecord.writtenStates;
+
+// Merge with current state (specialized update, not full re-scan)
+const newLocalState = {
+    ...currentLocalState,
+    ...writtenFileShas
+};
 ```
 
 **Log output:** [FitSync.performSync() in fitSync.ts](../src/fitSync.ts)

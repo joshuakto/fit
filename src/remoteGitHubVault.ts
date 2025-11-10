@@ -302,13 +302,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 *
 	 * @param path - File path
 	 * @param content - File content (base64 for binary, raw text otherwise) or null for deletion
-	 * @param remoteTree - Current remote tree nodes (for optimization - skip if unchanged)
+	 * @param currentState - Current remote FileStates (for optimization - skip if unchanged)
 	 * @returns TreeNode to include in commit, or null if no change needed
 	 */
 	private async createTreeNodeFromContent(
 		path: string,
 		content: FileContent | null,
-		remoteTree: TreeNode[]
+		currentState: FileStates
 	): Promise<TreeNode | null> {
 		let rawContent: string | null = null;
 		let encoding: 'base64' | 'utf-8' | undefined;
@@ -321,7 +321,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Deletion case (content is null)
 		if (rawContent === null) {
 			// Skip deletion if file doesn't exist on remote
-			if (remoteTree.every(node => node.path !== path)) {
+			if (!(path in currentState)) {
 				return null;
 			}
 			return {
@@ -340,7 +340,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		const blobSha = await this.createBlob(rawContent, encoding);
 
 		// Skip if file on remote is identical
-		if (remoteTree.some(node => node.path === path && node.sha === blobSha)) {
+		if (currentState[path] === blobSha) {
 			return null;
 		}
 
@@ -526,12 +526,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<ApplyChangesResult<"remote">> {
-		// Get current commit and tree
-		const parentCommitSha = await this.getLatestCommitSha();
+		// Get current state using cache when available
+		const { state: currentState, commitSha: parentCommitSha } = await this.readFromSource();
 		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
-		const remoteTree = parentTreeSha === EMPTY_TREE_SHA
-			? []
-			: await this.getTree(parentTreeSha);
 
 		// Create tree nodes for all changes
 		const treeNodePromises: Promise<TreeNode | null>[] = [];
@@ -539,14 +536,14 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Process file writes/updates
 		for (const {path, content} of filesToWrite) {
 			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, content, remoteTree)
+				this.createTreeNodeFromContent(path, content, currentState)
 			);
 		}
 
 		// Process file deletions
 		for (const path of filesToDelete) {
 			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, null, remoteTree)
+				this.createTreeNodeFromContent(path, null, currentState)
 			);
 		}
 
@@ -554,12 +551,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		const treeNodes = (await Promise.all(treeNodePromises))
 			.filter(node => node !== null) as TreeNode[];
 
-		// If no changes needed, return empty result (preserve current state)
+		// If no changes needed, return empty result (currentState already from cache)
 		if (treeNodes.length === 0) {
 			return {
 				changes: [],
 				commitSha: parentCommitSha,
-				treeSha: parentTreeSha
+				treeSha: parentTreeSha,
+				newState: currentState
 			};
 		}
 
@@ -568,28 +566,42 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		const newCommitSha = await this.createCommit(newTreeSha, parentCommitSha);
 		await this.updateRef(newCommitSha);
 
-		// Build file operation records
+		// Build file operation records and construct new state from known changes
 		const changes: FileChange[] = [];
+		const newState: FileStates = { ...currentState };
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
 
+			// All nodes should be blobs (type:"blob") from createTreeNodeFromContent
+			// which only creates blob nodes for files
 			let changeType: "ADDED" | "MODIFIED" | "REMOVED";
 			if (node.sha === null) {
+				// Deletion
 				changeType = "REMOVED";
-			} else if (remoteTree.some(n => n.path === node.path)) {
+				delete newState[node.path];
+			} else if (node.path in currentState) {
+				// Modification - node.sha is BlobSha for blob nodes
 				changeType = "MODIFIED";
+				newState[node.path] = node.sha as BlobSha;
 			} else {
+				// Addition - node.sha is BlobSha for blob nodes
 				changeType = "ADDED";
+				newState[node.path] = node.sha as BlobSha;
 			}
 
 			changes.push({ path: node.path, type: changeType });
 		}
 
+		// Update cache to avoid redundant fetches later
+		this.latestKnownCommitSha = newCommitSha;
+		this.latestKnownState = newState;
+
 		return {
 			changes,
 			commitSha: newCommitSha,
-			treeSha: newTreeSha
+			treeSha: newTreeSha,
+			newState
 		};
 	}
 
@@ -617,7 +629,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Uses internal caching to avoid redundant API calls when remote hasn't changed.
 	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
 	 */
-	async readFromSource(): Promise<VaultReadResult> {
+	async readFromSource(): Promise<VaultReadResult<"remote">> {
 		const commitSha = await this.getLatestCommitSha();
 
 		// Return cached state if remote hasn't changed
@@ -627,26 +639,36 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Fetch fresh state from GitHub
 		const treeSha = await this.getCommitTreeSha(commitSha);
-
-		// Check if this is the empty tree - skip getTree() call (would return 404)
-		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
-			? []
-			: await this.getTree(treeSha);
-
-		// Build FileState from tree (no filtering - caller handles that)
-		const newState: FileStates = {};
-		for (const node of remoteTree) {
-			// Only include blobs (files), skip trees (directories)
-			if (node.type === "blob" && node.path && node.sha) {
-				newState[node.path] = node.sha;
-			}
-		}
+		const newState = await this.buildStateFromTree(treeSha);
 
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
 
 		return { state: { ...newState }, commitSha };
+	}
+
+	/**
+	 * Build FileStates from a tree SHA without reading commit metadata.
+	 * Used after applyChanges() to construct state from the new tree.
+	 *
+	 * @param treeSha - Tree SHA to read
+	 * @returns FileStates mapping paths to blob SHAs
+	 */
+	private async buildStateFromTree(treeSha: TreeSha): Promise<FileStates> {
+		// Check if this is the empty tree - skip getTree() call (would return 404)
+		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
+			? []
+			: await this.getTree(treeSha);
+
+		const state: FileStates = {};
+		for (const node of remoteTree) {
+			// Only include blobs (files), skip trees (directories)
+			if (node.type === "blob" && node.path && node.sha) {
+				state[node.path] = node.sha;
+			}
+		}
+		return state;
 	}
 
 }
