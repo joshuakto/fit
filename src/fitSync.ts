@@ -822,25 +822,6 @@ export class FitSync implements IFitSync {
 			return null;
 		}
 
-		// Current approach wastes 3 API calls and risks claiming we synced to wrong commit if remote moved.
-		// Get updated state after push
-		// TODO: Eliminate this redundant readFromSource() call (same issue as local vault had).
-		// We already have result.commitSha and result.treeSha from applyChanges().
-		// Should build newRemoteState from current state + result.changes instead of re-reading.
-		const { state: newRemoteState, commitSha: newRemoteCommitSha } = await this.fit.remoteVault.readFromSource();
-		if (newRemoteCommitSha === undefined) {
-			throw new Error('Missing expected commitSha from remote');
-		}
-
-		// Detect if remote moved between applyChanges and readFromSource (race condition or concurrent client)
-		if (newRemoteCommitSha !== result.commitSha) {
-			fitLogger.log('[FitSync] WARNING: Remote commit changed between push and read - potential data loss!', {
-				pushedCommitSha: result.commitSha,
-				readCommitSha: newRemoteCommitSha,
-				risk: 'Local state will reflect newer commit than what was actually pushed'
-			});
-		}
-
 		const pushedChanges = result.changes.map(op => {
 			const originalChange = localUpdate.localChanges.find(c => c.path === op.path);
 			return originalChange || { path: op.path, type: op.type };
@@ -848,8 +829,8 @@ export class FitSync implements IFitSync {
 
 		return {
 			pushedChanges,
-			lastFetchedRemoteSha: newRemoteState,
-			lastFetchedCommitSha: newRemoteCommitSha,
+			lastFetchedRemoteSha: result.newState,
+			lastFetchedCommitSha: result.commitSha,
 		};
 	}
 

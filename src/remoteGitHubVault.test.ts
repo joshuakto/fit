@@ -233,6 +233,7 @@ describe("RemoteGitHubVault", () => {
 					changes: [{ path: "newfile.md", type: "ADDED" }],
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
+					newState: { 'newfile.md': expect.any(String) }
 				});
 
 				// Verify the file was ADDED to the tree
@@ -259,11 +260,10 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(result).toEqual({
-					changes: [
-						{ path: "existing.md", type: "MODIFIED" }
-					],
+					changes: [{ path: "existing.md", type: "MODIFIED" }],
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
+					newState: { "existing.md": expect.any(String) },
 				});
 			});
 
@@ -280,11 +280,10 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(result).toEqual({
-					changes: [
-						{ path: "todelete.md", type: "REMOVED" }
-					],
+					changes: [{ path: "todelete.md", type: "REMOVED" }],
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
+					newState: {},
 				});
 
 				// Verify file was REMOVED from tree
@@ -301,11 +300,10 @@ describe("RemoteGitHubVault", () => {
 				);
 
 				expect(result).toEqual({
-					changes: [
-						{ path: "image.png", type: "ADDED" }
-					],
+					changes: [{ path: "image.png", type: "ADDED" }],
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
+					newState: { "image.png": expect.any(String) },
 				});
 			});
 
@@ -326,6 +324,7 @@ describe("RemoteGitHubVault", () => {
 					changes: [],
 					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no tree nodes created
 					treeSha: TREE456_SHA, // Unchanged when no tree nodes created
+					newState: { "file.md": expect.any(String) },
 				});
 				// Commit SHA should not have changed
 				expect(fakeOctokit.getLatestCommitSha()).toBe(PARENTCOMMIT123_SHA);
@@ -347,6 +346,7 @@ describe("RemoteGitHubVault", () => {
 					changes: [],
 					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no changes
 					treeSha: TREE456_SHA, // Unchanged when no changes
+					newState: { "other.md": BLOB1_SHA },
 				});
 			});
 
@@ -374,6 +374,10 @@ describe("RemoteGitHubVault", () => {
 					]),
 					commitSha: expect.anything(),
 					treeSha: expect.anything(),
+					newState: {
+						"new.md": expect.any(String),
+						"existing.md": expect.any(String),
+					},
 				});
 			});
 		});

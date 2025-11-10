@@ -493,7 +493,7 @@ describe('FitSync', () => {
 			localStoreState = {
 				localSha: (await localVault.readFromSource()).state,
 				lastFetchedRemoteSha: remoteResult.state,
-				lastFetchedCommitSha: remoteResult.commitSha ?? null
+				lastFetchedCommitSha: remoteResult.commitSha
 			};
 			const fitSync = createFitSync();
 
