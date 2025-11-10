@@ -6,6 +6,8 @@
  * non-orchestration details and keep them remote-agnostic.
  */
 
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { Vault } from 'obsidian';
@@ -20,10 +22,11 @@ describe('FitSync', () => {
 	let localVault: FakeLocalVault;
 	let remoteVault: FakeRemoteVault;
 	let localStoreState: LocalStores;
-	let consoleLogSpy: jest.SpyInstance;
-	let consoleErrorSpy: jest.SpyInstance;
-	let fitLoggerLogSpy: jest.SpyInstance;
-	let fitLoggerFlushSpy: jest.SpyInstance;
+	// Spies - MockInstance types inferred from method signatures
+	let consoleLogSpy: MockInstance<typeof console.log>;
+	let consoleErrorSpy: MockInstance<typeof console.error>;
+	let fitLoggerLogSpy: MockInstance<typeof fitLogger.log>;
+	let fitLoggerFlushSpy: MockInstance;
 
 	// Realistic settings that get passed through to RemoteGitHubVault
 	const testSettings = {
@@ -66,10 +69,10 @@ describe('FitSync', () => {
 		const calls: Array<{method: string, args: any[]}> = [];
 
 		const mockNotice = {
-			setMessage: jest.fn((...args: any[]) => {
+			setMessage: vi.fn((...args: any[]) => {
 				calls.push({ method: 'setMessage', args });
 			}),
-			remove: jest.fn((...args: any[]) => {
+			remove: vi.fn((...args: any[]) => {
 				calls.push({ method: 'remove', args });
 			}),
 			// Expose the calls array for verification
@@ -110,14 +113,14 @@ describe('FitSync', () => {
 	 */
 	function expectLoggerCalledWith(message: string, expectedMetadata: any) {
 		const allCalls = fitLoggerLogSpy.mock.calls;
-		const matchingCall = allCalls.find(call => call[0] === message);
+		const matchingCall = allCalls.find((call) => call[0] === message);
 
 		if (!matchingCall) {
 			// Message not found - show which messages were logged
-			const loggedMessages = allCalls.map(call => call[0]);
+			const loggedMessages = allCalls.map((call) => call[0]);
 			throw new Error(
 				`Expected logger to be called with message:\n  "${message}"\n\n` +
-				`But it was never called with that message. Logged messages:\n  ${loggedMessages.map(m => `"${m}"`).join('\n  ')}`
+				`But it was never called with that message. Logged messages:\n  ${loggedMessages.map((m) => `"${m}"`).join('\n  ')}`
 			);
 		}
 
@@ -143,10 +146,10 @@ describe('FitSync', () => {
 		const consoleLogCapture: any[] = [];
 		const consoleErrorCapture: any[] = [];
 
-		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation((...args) => {
+		consoleLogSpy = vi.spyOn(console, 'log').mockImplementation((...args) => {
 			consoleLogCapture.push(['log', args]);
 		});
-		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args) => {
+		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation((...args) => {
 			consoleErrorCapture.push(['error', args]);
 		});
 
@@ -154,9 +157,9 @@ describe('FitSync', () => {
 		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
 
 		// Spy on fitLogger to verify logging behavior
-		fitLoggerLogSpy = jest.spyOn(fitLogger, 'log');
+		fitLoggerLogSpy = vi.spyOn(fitLogger, 'log');
 		// Spy on flushToFile but don't mock it - let it run to verify file write attempts
-		fitLoggerFlushSpy = jest.spyOn(fitLogger as any, 'flushToFile');
+		fitLoggerFlushSpy = vi.spyOn(fitLogger as any, 'flushToFile');
 	});
 
 	afterEach(() => {
@@ -1005,9 +1008,9 @@ describe('FitSync', () => {
 			// Mock vault adapter for file operations
 			const mockVault = {
 				adapter: {
-					exists: jest.fn().mockResolvedValue(false),
-					read: jest.fn().mockResolvedValue(''),
-					write: jest.fn().mockResolvedValue(undefined)
+					exists: vi.fn().mockResolvedValue(false),
+					read: vi.fn().mockResolvedValue(''),
+					write: vi.fn().mockResolvedValue(undefined)
 				}
 			};
 			fitLogger.setVault(mockVault as any);

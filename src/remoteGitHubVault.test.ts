@@ -2,6 +2,7 @@
  * Tests for RemoteGitHubVault
  */
 
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FakeOctokit } from "./testUtils";
