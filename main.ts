@@ -100,7 +100,9 @@ export default class FitPlugin extends Plugin {
 	fitPullRibbonIconEl: HTMLElement;
 	fitPushRibbonIconEl: HTMLElement;
 	fitSyncRibbonIconEl: HTMLElement;
+	private activeSyncRequests = 0; // Track number of active sync attempts
 	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
+	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
 
 	// if settings not configured, open settings to let user quickly setup
 	// Note: this is not a stable feature and might be disabled at any point in the future
@@ -166,20 +168,12 @@ export default class FitPlugin extends Plugin {
 		if (!this.checkSettingsConfigured()) { return; }
 		await this.loadLocalStore();
 
-		const syncNotice = new FitNotice(
-			this.fit,
-			["loading"],
-			triggerType === 'manual' ? "Initiating sync" : "Auto syncing",
-			triggerType === 'manual' ? undefined : 0,  // Auto-sync: hide immediately on success
-			triggerType === 'auto' && this.settings.autoSync === "muted"
-		);
-
 		fitLogger.log('[Plugin] Sync initiated', { triggerType });
 		if (triggerType === 'auto') {
 			fitLogger.log('[Plugin] Auto-sync mode', { mode: this.settings.autoSync });
 		}
 
-		const syncResult = await this.fitSync.sync(syncNotice);
+		const syncResult = await this.fitSync.sync(this.currentSyncNotice!);
 
 		if (syncResult.success) {
 			fitLogger.log('[Plugin] Sync completed successfully', {
@@ -198,9 +192,9 @@ export default class FitPlugin extends Plugin {
 
 			// Show success completion state in notice
 			if (triggerType === 'auto') {
-				syncNotice.remove(); // Auto-sync hides notice completely
+				this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
 			} else {
-				syncNotice.remove("done"); // Manual shows success state briefly
+				this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
 			}
 		} else {
 			// Handle already-syncing case - this is expected for concurrent requests
@@ -228,8 +222,8 @@ export default class FitPlugin extends Plugin {
 				...(syncResult.error.details || {})
 			});
 
-			syncNotice.setMessage(fullMessage, true);
-			syncNotice.remove("error");
+			this.currentSyncNotice!.setMessage(fullMessage, true);
+			this.currentSyncNotice!.remove("error");
 		}
 	}
 
@@ -243,8 +237,20 @@ export default class FitPlugin extends Plugin {
 	 */
 	private onSyncStart(triggerType: 'manual' | 'auto'): void {
 		// Track this sync attempt
+		this.activeSyncRequests++;
 		if (triggerType === 'manual') {
 			this.activeManualSyncRequests++;
+		}
+
+		// "Real" start = first request - create shared notice
+		if (this.activeSyncRequests === 1) {
+			this.currentSyncNotice = new FitNotice(
+				this.fit,
+				["loading"],
+				triggerType === 'manual' ? "Initiating sync" : "Auto syncing",
+				triggerType === 'manual' ? undefined : 0,  // Auto-sync: hide immediately on success
+				triggerType === 'auto' && this.settings.autoSync === "muted"
+			);
 		}
 
 		// Show animation if this is the first manual sync request
@@ -258,8 +264,16 @@ export default class FitPlugin extends Plugin {
 	 * Only cleans up notice/animation on the last active request.
 	 */
 	private onSyncEnd(triggerType: 'manual' | 'auto'): void {
+		// Decrement counters
+		this.activeSyncRequests--;
 		if (triggerType === 'manual') {
 			this.activeManualSyncRequests--;
+		}
+
+		// "Real" end = last request completes - clean up shared notice
+		// Note: executeSync already handled success/error display, we just clean up the reference
+		if (this.activeSyncRequests === 0) {
+			this.currentSyncNotice = null;
 		}
 
 		// Clear animation when all manual sync attempts complete

@@ -1228,6 +1228,7 @@ describe('FitSync', () => {
 		it('should keep animation active until all manual syncs complete', () => {
 			// Simulate the counter-based coordination from main.ts
 			const state = {
+				activeSyncRequests: 0,
 				activeManualSyncRequests: 0,
 				animationActive: false,
 				noticeCreated: false
@@ -1236,23 +1237,29 @@ describe('FitSync', () => {
 			// Helper that mimics onSyncStart/onSyncEnd behavior with manual completion
 			const simulateSync = (triggerType: 'manual' | 'auto') => {
 				// onSyncStart behavior
+				state.activeSyncRequests++;
 				if (triggerType === 'manual') {
 					state.activeManualSyncRequests++;
 					if (state.activeManualSyncRequests === 1) {
 						state.animationActive = true;
 					}
 				}
-				state.noticeCreated = true;
+				if (state.activeSyncRequests === 1) {
+					state.noticeCreated = true;
+				}
 
 				// Return a function to complete this sync (simulates onSyncEnd)
 				return () => {
+					state.activeSyncRequests--;
 					if (triggerType === 'manual') {
 						state.activeManualSyncRequests--;
 						if (state.activeManualSyncRequests === 0) {
 							state.animationActive = false;
 						}
 					}
-					state.noticeCreated = false;
+					if (state.activeSyncRequests === 0) {
+						state.noticeCreated = false;
+					}
 				};
 			};
 
@@ -1267,6 +1274,7 @@ describe('FitSync', () => {
 
 			// After starting all syncs, verify state
 			expect(state).toEqual({
+				activeSyncRequests: 3,
 				activeManualSyncRequests: 3,
 				animationActive: true,
 				noticeCreated: true,
@@ -1280,7 +1288,7 @@ describe('FitSync', () => {
 			expect(state).toMatchObject({
 				activeManualSyncRequests: 1, // Still one active
 				animationActive: true, // ✅ Bug would have cleared this early
-				noticeCreated: false, // BUG: Notice prematurely cleared
+				noticeCreated: true, // Notice still active
 			});
 
 			// After long sync finishes, animation should clear
@@ -1295,12 +1303,14 @@ describe('FitSync', () => {
 		it('should keep manual animation active during auto-sync', () => {
 			// Verify separate counters for manual vs auto
 			const state = {
+				activeSyncRequests: 0,
 				activeManualSyncRequests: 0,
 				animationActive: false,
 			};
 
 			const simulateSync = (triggerType: 'manual' | 'auto') => {
 				// onSyncStart
+				state.activeSyncRequests++;
 				if (triggerType === 'manual') {
 					state.activeManualSyncRequests++;
 					if (state.activeManualSyncRequests === 1) {
@@ -1310,6 +1320,7 @@ describe('FitSync', () => {
 
 				// Return completion function
 				return () => {
+					state.activeSyncRequests--;
 					if (triggerType === 'manual') {
 						state.activeManualSyncRequests--;
 						if (state.activeManualSyncRequests === 0) {
@@ -1326,30 +1337,40 @@ describe('FitSync', () => {
 			// Manual sync should show animation
 			expect(state).toMatchObject({
 				animationActive: true,
+				activeSyncRequests: 2,
 			});
 
 			// After manual completes, animation should clear even though auto still running
 			completeManualSync();
 			expect(state).toMatchObject({
 				animationActive: false,
+				activeSyncRequests: 1, // Auto still running
 			});
 
 			completeAutoSync();
+			expect(state.activeSyncRequests).toBe(0);
 		});
 
 		it('should create only one notice for concurrent requests', () => {
 			// Verify single shared notice for all concurrent syncs
 			const state = {
+				activeSyncRequests: 0,
 				noticeCount: 0,
 			};
 
 			const simulateSync = () => {
 				// onSyncStart
-				state.noticeCount++;
+				state.activeSyncRequests++;
+				if (state.activeSyncRequests === 1) {
+					state.noticeCount++; // Only first request creates notice
+				}
 
 				// Return completion function
 				return () => {
-					state.noticeCount--;
+					state.activeSyncRequests--;
+					if (state.activeSyncRequests === 0) {
+						state.noticeCount--; // Last request cleans up notice
+					}
 				};
 			};
 
@@ -1358,21 +1379,25 @@ describe('FitSync', () => {
 			const completeSync2 = simulateSync();
 			const completeSync3 = simulateSync();
 
+			// During concurrent execution, should only have one notice
 			expect(state).toMatchObject({
-				noticeCount: 3, // BUG: Multiple notices for duplicate sync attempts
+				noticeCount: 1,
+				activeSyncRequests: 3,
 			});
 
 			// Complete some syncs
 			completeSync2();
 			completeSync3();
 			expect(state).toMatchObject({
-				noticeCount: 1, // Only one notice remaining
+				noticeCount: 1, // Still just one notice
+				activeSyncRequests: 1,
 			});
 
 			// Complete last sync
 			completeSync1();
 			expect(state).toMatchObject({
-				noticeCount: 0, // Cleaned up last notice
+				noticeCount: 0, // Cleaned up after last completes
+				activeSyncRequests: 0,
 			});
 		});
 	});
