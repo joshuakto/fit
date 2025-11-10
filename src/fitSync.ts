@@ -127,6 +127,7 @@ export type ConflictResolutionResult = {
 export class FitSync implements IFitSync {
 	fit: Fit;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
+	private isSyncing = false;
 
 
 	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
@@ -679,6 +680,14 @@ export class FitSync implements IFitSync {
 	}
 
 	async sync(syncNotice: FitNotice): Promise<SyncResult> {
+		// Check if already syncing
+		if (this.isSyncing) {
+			fitLogger.log('[FitSync] Sync already in progress - aborting new sync request');
+			return { success: false, error: SyncErrors.alreadySyncing() };
+		}
+
+		this.isSyncing = true;
+
 		try {
 			syncNotice.setMessage("Checking for changes...");
 
@@ -766,6 +775,8 @@ export class FitSync implements IFitSync {
 					? String(error.message)
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
+		} finally {
+			this.isSyncing = false;
 		}
 	}
 
@@ -853,7 +864,7 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Handle sync orchestration errors (type === 'unknown')
+		// Handle sync orchestration errors (type === 'unknown' | 'already-syncing')
 		return syncError.detailMessage;
 	}
 }

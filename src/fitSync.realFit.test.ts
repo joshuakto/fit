@@ -1132,6 +1132,41 @@ describe('FitSync', () => {
 				]}
 			]);
 		});
+
+		it('should return already-syncing error when concurrent sync attempted', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			remoteVault.setFile('test.md', 'content');
+
+			// Create two mock notices for concurrent syncs
+			const mockNotice1 = createMockNotice();
+			const mockNotice2 = createMockNotice();
+
+			// Act - Start first sync but don't await it yet
+			const sync1Promise = fitSync.sync(mockNotice1 as any);
+
+			// Immediately try to start second sync while first is still running
+			const sync2Result = await fitSync.sync(mockNotice2 as any);
+
+			// Wait for first sync to complete
+			const sync1Result = await sync1Promise;
+
+			// Assert - First sync should succeed
+			expect(sync1Result).toEqual(expect.objectContaining({ success: true }));
+
+			// Second sync should fail with already-syncing error
+			expect(sync2Result).toEqual({
+				success: false,
+				error: {
+					type: 'already-syncing',
+					detailMessage: 'Sync already in progress',
+				},
+			});
+
+			// Verify notice wasn't updated by second sync (it should return immediately)
+			expect(mockNotice2._calls).toEqual([]);
+		});
 	});
 
 	describe('Only Commit SHA Changed', () => {
