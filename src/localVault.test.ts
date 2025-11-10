@@ -7,6 +7,8 @@
  * - Change detection
  */
 
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Mock, SpyInstance } from 'vitest';
 import { LocalVault } from './localVault';
 import { TFile, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
@@ -14,22 +16,32 @@ import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
 
 describe('LocalVault', () => {
-	let mockVault: jest.Mocked<Vault>;
-	let consoleLogSpy: jest.SpyInstance;
-	let consoleErrorSpy: jest.SpyInstance;
+	let mockVault: {
+		getFiles: Mock;
+		read: Mock;
+		readBinary: Mock;
+		cachedRead: Mock;
+		getAbstractFileByPath: Mock;
+		createBinary?: Mock;
+		modifyBinary?: Mock;
+		delete?: Mock;
+		createFolder?: Mock;
+	};
+	let consoleLogSpy: SpyInstance;
+	let consoleErrorSpy: SpyInstance;
 
 	beforeEach(() => {
 		mockVault = {
-			getFiles: jest.fn(),
-			read: jest.fn(),
-			readBinary: jest.fn(),
-			cachedRead: jest.fn(),
-			getAbstractFileByPath: jest.fn()
-		} as unknown as jest.Mocked<Vault>;
+			getFiles: vi.fn(),
+			read: vi.fn(),
+			readBinary: vi.fn(),
+			cachedRead: vi.fn(),
+			getAbstractFileByPath: vi.fn()
+		};
 
 		// Suppress console noise during tests
-		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+		consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 	});
 
 	afterEach(() => {
@@ -163,9 +175,9 @@ describe('LocalVault', () => {
 
 	describe('readFileContent', () => {
 		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.read = jest.fn();
-			mockVault.readBinary = jest.fn();
+			mockVault.getAbstractFileByPath = vi.fn();
+			mockVault.read = vi.fn();
+			mockVault.readBinary = vi.fn();
 		});
 
 		it('should read text file content', async () => {
@@ -209,11 +221,11 @@ describe('LocalVault', () => {
 
 	describe('applyChanges', () => {
 		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.createBinary = jest.fn().mockResolvedValue(undefined);
-			mockVault.modifyBinary = jest.fn().mockResolvedValue(undefined);
-			mockVault.delete = jest.fn().mockResolvedValue(undefined);
-			mockVault.createFolder = jest.fn().mockResolvedValue(undefined);
+			mockVault.getAbstractFileByPath = vi.fn();
+			mockVault.createBinary = vi.fn().mockResolvedValue(undefined);
+			mockVault.modifyBinary = vi.fn().mockResolvedValue(undefined);
+			mockVault.delete = vi.fn().mockResolvedValue(undefined);
+			mockVault.createFolder = vi.fn().mockResolvedValue(undefined);
 		});
 
 		it('should apply multiple writes and deletes', async () => {

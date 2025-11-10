@@ -1,9 +1,11 @@
+import { vi } from 'vitest';
+
 // Mock retry function that returns an enhanced Octokit class
-export const retry = jest.fn(() => {
+export const retry = vi.fn(() => {
 	return class MockOctokitWithRetry {
 		retry = {
-			retryRequest: jest.fn()
+			retryRequest: vi.fn()
 		};
-		request = jest.fn();
+		request = vi.fn();
 	};
 });
