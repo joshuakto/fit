@@ -2,6 +2,7 @@
  * Tests for content encoding utilities
  */
 
+import { describe, it, expect } from 'vitest';
 import { Content, FileContent } from './contentEncoding';
 
 describe('Content.encodeToBase64', () => {

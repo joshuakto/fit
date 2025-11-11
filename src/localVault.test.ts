@@ -7,29 +7,43 @@
  * - Change detection
  */
 
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Mock, MockInstance } from 'vitest';
 import { LocalVault } from './localVault';
 import { TFile, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
 import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
 
+// Type-safe mock that includes only the methods LocalVault uses
+type MockVault = Pick<Vault,
+	'getFiles' | 'getAbstractFileByPath' | 'createFolder' |
+	'read' | 'readBinary' | 'cachedRead' | 'createBinary' | 'modifyBinary' | 'delete'
+>;
+
 describe('LocalVault', () => {
-	let mockVault: jest.Mocked<Vault>;
-	let consoleLogSpy: jest.SpyInstance;
-	let consoleErrorSpy: jest.SpyInstance;
+	let mockVault: {
+		[K in keyof MockVault]: Mock;
+	};
+	let consoleLogSpy: MockInstance<typeof console.log>;
+	let consoleErrorSpy: MockInstance<typeof console.error>;
 
 	beforeEach(() => {
 		mockVault = {
-			getFiles: jest.fn(),
-			read: jest.fn(),
-			readBinary: jest.fn(),
-			cachedRead: jest.fn(),
-			getAbstractFileByPath: jest.fn()
-		} as unknown as jest.Mocked<Vault>;
+			getFiles: vi.fn(),
+			read: vi.fn(),
+			readBinary: vi.fn(),
+			cachedRead: vi.fn(),
+			getAbstractFileByPath: vi.fn(),
+			createFolder: vi.fn(),
+			createBinary: vi.fn(),
+			modifyBinary: vi.fn(),
+			delete: vi.fn()
+		};
 
 		// Suppress console noise during tests
-		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+		consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 	});
 
 	afterEach(() => {
@@ -40,7 +54,7 @@ describe('LocalVault', () => {
 
 	describe('shouldTrackState', () => {
 		it('should exclude hidden files (starting with .)', () => {
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			expect(localVault.shouldTrackState('.obsidian/config.json')).toBe(false);
 			expect(localVault.shouldTrackState('.gitignore')).toBe(false);
@@ -48,14 +62,14 @@ describe('LocalVault', () => {
 		});
 
 		it('should exclude files in hidden directories', () => {
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			expect(localVault.shouldTrackState('.obsidian/plugins/fit/main.js')).toBe(false);
 			expect(localVault.shouldTrackState('folder/.hidden/file.md')).toBe(false);
 		});
 
 		it('should track normal files', () => {
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			expect(localVault.shouldTrackState('notes/daily/2024-01-01.md')).toBe(true);
 			expect(localVault.shouldTrackState('README.md')).toBe(true);
@@ -63,7 +77,7 @@ describe('LocalVault', () => {
 		});
 
 		it('should handle edge cases', () => {
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			expect(localVault.shouldTrackState('normal/fit/file.md')).toBe(true); // "fit" as folder name is OK
 			expect(localVault.shouldTrackState('_fit')).toBe(true); // _fit as a filename (without /) IS tracked
@@ -89,7 +103,7 @@ describe('LocalVault', () => {
 				return mockFiles.find(f => f.path === path) as TFile;
 			});
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state } = await localVault.readFromSource();
 
 			expect(state).toMatchObject({
@@ -115,7 +129,7 @@ describe('LocalVault', () => {
 				return mockFiles.find(f => f.path === path) as TFile;
 			});
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state } = await localVault.readFromSource();
 
 			// Only hidden files are excluded from state tracking
@@ -135,7 +149,7 @@ describe('LocalVault', () => {
 				return mockFiles.find(f => f.path === path) as TFile;
 			});
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state } = await localVault.readFromSource();
 
 			expect(state).toMatchObject({
@@ -154,7 +168,7 @@ describe('LocalVault', () => {
 		it('should handle empty vault', async () => {
 			mockVault.getFiles.mockReturnValue([]);
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state } = await localVault.readFromSource();
 
 			expect(state).toEqual({});
@@ -163,9 +177,9 @@ describe('LocalVault', () => {
 
 	describe('readFileContent', () => {
 		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.read = jest.fn();
-			mockVault.readBinary = jest.fn();
+			mockVault.getAbstractFileByPath = vi.fn();
+			mockVault.read = vi.fn();
+			mockVault.readBinary = vi.fn();
 		});
 
 		it('should read text file content', async () => {
@@ -175,7 +189,7 @@ describe('LocalVault', () => {
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
 			mockVault.read.mockResolvedValue(expectedContent);
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('note.md');
 
 			expect(content).toEqual(FileContent.fromPlainText(expectedContent));
@@ -189,7 +203,7 @@ describe('LocalVault', () => {
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
 			mockVault.readBinary.mockResolvedValue(binaryData);
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('image.png');
 
 			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
@@ -199,7 +213,7 @@ describe('LocalVault', () => {
 		it('should throw error if file not found', async () => {
 			mockVault.getAbstractFileByPath.mockReturnValue(null);
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
 				'File not found: missing.md'
@@ -208,14 +222,6 @@ describe('LocalVault', () => {
 	});
 
 	describe('applyChanges', () => {
-		beforeEach(() => {
-			mockVault.getAbstractFileByPath = jest.fn();
-			mockVault.createBinary = jest.fn().mockResolvedValue(undefined);
-			mockVault.modifyBinary = jest.fn().mockResolvedValue(undefined);
-			mockVault.delete = jest.fn().mockResolvedValue(undefined);
-			mockVault.createFolder = jest.fn().mockResolvedValue(undefined);
-		});
-
 		it('should apply multiple writes and deletes', async () => {
 			const existingFile = StubTFile.ofPath('existing.md');
 			const fileToDelete = StubTFile.ofPath('delete.md');
@@ -227,7 +233,7 @@ describe('LocalVault', () => {
 				return null;
 			});
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const results = await localVault.applyChanges(
 				[
 					{ path: 'new.md', content: FileContent.fromPlainText('new content') },
@@ -253,7 +259,7 @@ describe('LocalVault', () => {
 		});
 
 		it('should handle empty changes', async () => {
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 			const results = await localVault.applyChanges([], []);
 
 			expect(results.changes).toEqual([]);
@@ -270,16 +276,16 @@ describe('LocalVault', () => {
 				return null;
 			});
 
-			const localVault = new LocalVault(mockVault);
+			const localVault = new LocalVault(mockVault as any as Vault);
 
 			// Track call order - if parallel, all should start before any finish
 			const callOrder: string[] = [];
-			mockVault.modifyBinary.mockImplementation(async () => {
+			mockVault.modifyBinary = vi.fn().mockImplementation(async () => {
 				callOrder.push('modify-start');
 				await new Promise(resolve => setTimeout(resolve, 10));
 				callOrder.push('modify-end');
 			});
-			mockVault.delete.mockImplementation(async () => {
+			mockVault.delete = vi.fn().mockImplementation(async () => {
 				callOrder.push('delete-start');
 				await new Promise(resolve => setTimeout(resolve, 10));
 				callOrder.push('delete-end');
