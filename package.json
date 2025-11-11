@@ -25,7 +25,7 @@
 		"@types/node": "^18.19.127",
 		"@typescript-eslint/eslint-plugin": "^8.44.1",
 		"@typescript-eslint/parser": "^8.44.1",
-		"@vitest/coverage-v8": "^4.0.8",
+		"@vitest/coverage-istanbul": "^4.0.8",
 		"@vitest/ui": "^4.0.8",
 		"builtin-modules": "^5.0.0",
 		"esbuild": "^0.25.10",
