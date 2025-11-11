@@ -96,12 +96,13 @@ export default class FitPlugin extends Plugin {
 	localStore: LocalStores;
 	fit: Fit;
 	fitSync: FitSync;
-	autoSyncing: boolean;
-	syncing: boolean;
 	autoSyncIntervalId: number | null;
 	fitPullRibbonIconEl: HTMLElement;
 	fitPushRibbonIconEl: HTMLElement;
 	fitSyncRibbonIconEl: HTMLElement;
+	private activeSyncRequests = 0; // Track number of active sync attempts
+	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
+	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
 
 	// if settings not configured, open settings to let user quickly setup
 	// Note: this is not a stable feature and might be disabled at any point in the future
@@ -152,15 +153,27 @@ export default class FitPlugin extends Plugin {
 		await this.saveLocalStore();
 	};
 
-	sync = async (syncNotice: FitNotice): Promise<boolean> => {
-		if (!this.checkSettingsConfigured()) { return false; }
+	// ============================================================================
+	// BUSINESS LOGIC LAYER
+	// ============================================================================
+
+	/**
+	 * Execute sync operation with plugin-level concerns:
+	 * - Settings validation
+	 * - Local store loading
+	 * - Result processing (notifications, error formatting)
+	 * - Notice updates
+	 */
+	private async executeSync(triggerType: 'manual' | 'auto'): Promise<void> {
+		if (!this.checkSettingsConfigured()) { return; }
 		await this.loadLocalStore();
 
-		fitLogger.log('[Plugin] Sync initiated', {
-			triggerType: this.syncing ? 'manual' : (this.autoSyncing ? 'auto' : 'unknown')
-		});
+		fitLogger.log('[Plugin] Sync initiated', { triggerType });
+		if (triggerType === 'auto') {
+			fitLogger.log('[Plugin] Auto-sync mode', { mode: this.settings.autoSync });
+		}
 
-		const syncResult = await this.fitSync.sync(syncNotice);
+		const syncResult = await this.fitSync.sync(this.currentSyncNotice!);
 
 		if (syncResult.success) {
 			fitLogger.log('[Plugin] Sync completed successfully', {
@@ -176,8 +189,22 @@ export default class FitPlugin extends Plugin {
 			if (this.settings.notifyChanges) {
 				showFileChanges(syncResult.changeGroups);
 			}
-			return true;
+
+			// Show success completion state in notice
+			if (triggerType === 'auto') {
+				this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
+			} else {
+				this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
+			}
 		} else {
+			// Handle already-syncing case - this is expected for concurrent requests
+			if (syncResult.error.type === 'already-syncing') {
+				// Don't modify the notice - it's being used by the active sync
+				// The concurrent request just logs and returns
+				fitLogger.log('[Plugin] Sync already in progress', { triggerType });
+				return;
+			}
+
 			// Generate user-friendly message from structured sync error
 			const errorMessage = this.fitSync.getSyncErrorMessage(syncResult.error);
 			const fullMessage = `Sync failed: ${errorMessage}`;
@@ -195,66 +222,110 @@ export default class FitPlugin extends Plugin {
 				...(syncResult.error.details || {})
 			});
 
-			syncNotice.setMessage(fullMessage, true);
-			return false;
+			this.currentSyncNotice!.setMessage(fullMessage, true);
+			this.currentSyncNotice!.remove("error");
 		}
-	};
+	}
 
-	// Shared method for both ribbon icon and command palette
-	performManualSync = async (): Promise<void> => {
-		// TODO: Show user-visible notification instead of silent early return when sync already in progress
-		// Consider: disabled button state, "Sync in progress" notice, or both
-		if ( this.syncing || this.autoSyncing ) { return; }
-		this.syncing = true;
-		fitLogger.log('[Plugin] Manual sync requested');
-		this.fitSyncRibbonIconEl.addClass('animate-icon');
-		const syncNotice = new FitNotice(this.fit, ["loading"], "Initiating sync");
-		const syncSuccess = await this.sync(syncNotice);
-		// TODO: #133 - Wrap in try-finally to ensure syncing flag and spinner always clear.
-		// Current risk: If sync() throws (bypassing its internal error handling),
-		// syncing flag stays true permanently, blocking all future syncs until app restart.
-		this.fitSyncRibbonIconEl.removeClass('animate-icon');
-		if (!syncSuccess) {
-			syncNotice.remove("error");
-		} else {
-			syncNotice.remove("done");
+	// ============================================================================
+	// UI LIFECYCLE MANAGEMENT
+	// ============================================================================
+
+	/**
+	 * Handle sync start event - manages UI state when a sync request begins.
+	 * Only creates notice/animation on the first active request.
+	 */
+	private onSyncStart(triggerType: 'manual' | 'auto'): void {
+		// Track this sync attempt
+		this.activeSyncRequests++;
+		if (triggerType === 'manual') {
+			this.activeManualSyncRequests++;
 		}
-		this.syncing = false;
+
+		// "Real" start = first request - create shared notice
+		if (this.activeSyncRequests === 1) {
+			this.currentSyncNotice = new FitNotice(
+				this.fit,
+				["loading"],
+				triggerType === 'manual' ? "Initiating sync" : "Auto syncing",
+				triggerType === 'manual' ? undefined : 0,  // Auto-sync: hide immediately on success
+				triggerType === 'auto' && this.settings.autoSync === "muted"
+			);
+		}
+
+		// Show animation if this is the first manual sync request
+		if (triggerType === 'manual' && this.activeManualSyncRequests === 1) {
+			this.fitSyncRibbonIconEl.addClass('animate-icon');
+		}
+	}
+
+	/**
+	 * Handle sync end event - manages UI state when a sync request completes.
+	 * Only cleans up notice/animation on the last active request.
+	 */
+	private onSyncEnd(triggerType: 'manual' | 'auto'): void {
+		// Decrement counters
+		this.activeSyncRequests--;
+		if (triggerType === 'manual') {
+			this.activeManualSyncRequests--;
+		}
+
+		// "Real" end = last request completes - clean up shared notice
+		// Note: executeSync already handled success/error display, we just clean up the reference
+		if (this.activeSyncRequests === 0) {
+			this.currentSyncNotice = null;
+		}
+
+		// Clear animation when all manual sync attempts complete
+		if (this.activeManualSyncRequests === 0) {
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		}
+	}
+
+	// ============================================================================
+	// COORDINATION LAYER (Decorator Pattern)
+	// ============================================================================
+
+	/**
+	 * Wraps sync execution with UI lifecycle events (notice, animation).
+	 * This is the "decorator" that adds UI coordination to the core sync operation.
+	 */
+	private async executeSyncWithUICoordination(triggerType: 'manual' | 'auto'): Promise<void> {
+		fitLogger.log(`[Plugin] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
+
+		this.onSyncStart(triggerType);
+		try {
+			await this.executeSync(triggerType);
+		} finally {
+			this.onSyncEnd(triggerType);
+		}
+	}
+
+	// ============================================================================
+	// PUBLIC ENTRY POINTS (User-triggered sync operations)
+	// ============================================================================
+
+	/**
+	 * Entry point: User clicks ribbon icon or uses command palette
+	 */
+	triggerManualSync = async (): Promise<void> => {
+		await this.executeSyncWithUICoordination('manual');
 	};
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
 		// TODO: Update title from "GitHub" to selected remote service when other services are supported.
-		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Sync to GitHub', this.performManualSync);
+		this.fitSyncRibbonIconEl = this.addRibbonIcon('github', 'Sync to GitHub', this.triggerManualSync);
 		this.fitSyncRibbonIconEl.addClass('fit-sync-ribbon-el');
 	}
 
-	async autoSync() {
-		if ( this.syncing || this.autoSyncing ) { return; }
-		this.autoSyncing = true;
-		fitLogger.log('[Plugin] Auto-sync triggered', {
-			mode: this.settings.autoSync
-		});
-		const syncNotice = new FitNotice(
-			this.fit,
-			["loading"],
-			"Auto syncing",
-			0,
-			this.settings.autoSync === "muted"
-		);
-		const syncSuccess = await this.sync(syncNotice);
-		if (!syncSuccess) {
-			syncNotice.remove("error");
-		} else {
-			syncNotice.remove();
-		}
-		this.autoSyncing = false;
-	}
-
-	async autoUpdate() {
-		if (!(this.settings.autoSync === "off") && !this.syncing && !this.autoSyncing && this.checkSettingsConfigured()) {
+	/**
+	 * Entry point: Scheduled sync triggered (usually via timer)
+	 */
+	async handleAutoSyncTimer() {
+		if (!(this.settings.autoSync === "off") && this.checkSettingsConfigured()) {
 			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
-				await this.autoSync();
+				await this.executeSyncWithUICoordination('auto');
 			} else if (this.settings.autoSync === "remind") {
 				const { changes } = await this.fit.getRemoteChanges();
 				if (changes.length > 0) {
@@ -266,7 +337,6 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
-
 	async startOrUpdateAutoSyncInterval() {
 		// Clear existing interval if it exists
 		if (this.autoSyncIntervalId !== null) {
@@ -276,7 +346,7 @@ export default class FitPlugin extends Plugin {
 
 		// Check remote every X minutes (set in settings)
 		this.autoSyncIntervalId = window.setInterval(async () => {
-			await this.autoUpdate();
+			await this.handleAutoSyncTimer();
 		}, this.settings.checkEveryXMinutes * 60 * 1000);
 	}
 
@@ -293,8 +363,6 @@ export default class FitPlugin extends Plugin {
 
 		this.fit = new Fit(this.settings, this.localStore, this.app.vault);
 		this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
-		this.syncing = false;
-		this.autoSyncing = false;
 		this.settingTab = new FitSettingTab(this.app, this);
 		this.loadRibbonIcons();
 
@@ -302,7 +370,7 @@ export default class FitPlugin extends Plugin {
 		this.addCommand({
 			id: 'fit-sync',
 			name: 'Fit Sync',
-			callback: this.performManualSync
+			callback: this.triggerManualSync
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin

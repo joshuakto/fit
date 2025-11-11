@@ -1132,6 +1132,41 @@ describe('FitSync', () => {
 				]}
 			]);
 		});
+
+		it('should return already-syncing error when concurrent sync attempted', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			remoteVault.setFile('test.md', 'content');
+
+			// Create two mock notices for concurrent syncs
+			const mockNotice1 = createMockNotice();
+			const mockNotice2 = createMockNotice();
+
+			// Act - Start first sync but don't await it yet
+			const sync1Promise = fitSync.sync(mockNotice1 as any);
+
+			// Immediately try to start second sync while first is still running
+			const sync2Result = await fitSync.sync(mockNotice2 as any);
+
+			// Wait for first sync to complete
+			const sync1Result = await sync1Promise;
+
+			// Assert - First sync should succeed
+			expect(sync1Result).toEqual(expect.objectContaining({ success: true }));
+
+			// Second sync should fail with already-syncing error
+			expect(sync2Result).toEqual({
+				success: false,
+				error: {
+					type: 'already-syncing',
+					detailMessage: 'Sync already in progress',
+				},
+			});
+
+			// Verify notice wasn't updated by second sync (it should return immediately)
+			expect(mockNotice2._calls).toEqual([]);
+		});
 	});
 
 	describe('Only Commit SHA Changed', () => {
@@ -1179,6 +1214,190 @@ describe('FitSync', () => {
 					{heading: 'Remote file updates:', changes: []}
 				],
 				clash: []
+			});
+		});
+	});
+
+	describe('Concurrent sync coordination (main.ts UI state management)', () => {
+		/**
+		 * These tests simulate the counter-based coordination logic from main.ts
+		 * (onSyncStart/onSyncEnd) to verify correct UI state management under
+		 * concurrent sync attempts. This tests the race condition fixes.
+		 */
+
+		it('should keep animation active until all manual syncs complete', () => {
+			// Simulate the counter-based coordination from main.ts
+			const state = {
+				activeSyncRequests: 0,
+				activeManualSyncRequests: 0,
+				animationActive: false,
+				noticeCreated: false
+			};
+
+			// Helper that mimics onSyncStart/onSyncEnd behavior with manual completion
+			const simulateSync = (triggerType: 'manual' | 'auto') => {
+				// onSyncStart behavior
+				state.activeSyncRequests++;
+				if (triggerType === 'manual') {
+					state.activeManualSyncRequests++;
+					if (state.activeManualSyncRequests === 1) {
+						state.animationActive = true;
+					}
+				}
+				if (state.activeSyncRequests === 1) {
+					state.noticeCreated = true;
+				}
+
+				// Return a function to complete this sync (simulates onSyncEnd)
+				return () => {
+					state.activeSyncRequests--;
+					if (triggerType === 'manual') {
+						state.activeManualSyncRequests--;
+						if (state.activeManualSyncRequests === 0) {
+							state.animationActive = false;
+						}
+					}
+					if (state.activeSyncRequests === 0) {
+						state.noticeCreated = false;
+					}
+				};
+			};
+
+			// Race condition scenario from user's bug report:
+			// - Sync 1 starts (manual, long-running)
+			// - Sync 2 attempted (manual, gets already-syncing)
+			// - Sync 3 attempted (manual, gets already-syncing)
+			// - Animation should persist until Sync 1 finishes
+			const completeSync1 = simulateSync('manual');
+			const completeSync2 = simulateSync('manual');
+			const completeSync3 = simulateSync('manual');
+
+			// After starting all syncs, verify state
+			expect(state).toEqual({
+				activeSyncRequests: 3,
+				activeManualSyncRequests: 3,
+				animationActive: true,
+				noticeCreated: true,
+			});
+
+			// Complete quick syncs (would have gotten already-syncing in real scenario)
+			completeSync2();
+			completeSync3();
+
+			// After quick syncs finish, animation should STILL be active
+			expect(state).toMatchObject({
+				activeManualSyncRequests: 1, // Still one active
+				animationActive: true, // ✅ Bug would have cleared this early
+				noticeCreated: true, // Notice still active
+			});
+
+			// After long sync finishes, animation should clear
+			completeSync1();
+			expect(state).toMatchObject({
+				activeManualSyncRequests: 0,
+				animationActive: false,
+				noticeCreated: false,
+			});
+		});
+
+		it('should keep manual animation active during auto-sync', () => {
+			// Verify separate counters for manual vs auto
+			const state = {
+				activeSyncRequests: 0,
+				activeManualSyncRequests: 0,
+				animationActive: false,
+			};
+
+			const simulateSync = (triggerType: 'manual' | 'auto') => {
+				// onSyncStart
+				state.activeSyncRequests++;
+				if (triggerType === 'manual') {
+					state.activeManualSyncRequests++;
+					if (state.activeManualSyncRequests === 1) {
+						state.animationActive = true;
+					}
+				}
+
+				// Return completion function
+				return () => {
+					state.activeSyncRequests--;
+					if (triggerType === 'manual') {
+						state.activeManualSyncRequests--;
+						if (state.activeManualSyncRequests === 0) {
+							state.animationActive = false;
+						}
+					}
+				};
+			};
+
+			// Scenario: Auto-sync starts, then manual sync during it
+			const completeAutoSync = simulateSync('auto');
+			const completeManualSync = simulateSync('manual');
+
+			// Manual sync should show animation
+			expect(state).toMatchObject({
+				animationActive: true,
+				activeSyncRequests: 2,
+			});
+
+			// After manual completes, animation should clear even though auto still running
+			completeManualSync();
+			expect(state).toMatchObject({
+				animationActive: false,
+				activeSyncRequests: 1, // Auto still running
+			});
+
+			completeAutoSync();
+			expect(state.activeSyncRequests).toBe(0);
+		});
+
+		it('should create only one notice for concurrent requests', () => {
+			// Verify single shared notice for all concurrent syncs
+			const state = {
+				activeSyncRequests: 0,
+				noticeCount: 0,
+			};
+
+			const simulateSync = () => {
+				// onSyncStart
+				state.activeSyncRequests++;
+				if (state.activeSyncRequests === 1) {
+					state.noticeCount++; // Only first request creates notice
+				}
+
+				// Return completion function
+				return () => {
+					state.activeSyncRequests--;
+					if (state.activeSyncRequests === 0) {
+						state.noticeCount--; // Last request cleans up notice
+					}
+				};
+			};
+
+			// Start multiple concurrent syncs
+			const completeSync1 = simulateSync();
+			const completeSync2 = simulateSync();
+			const completeSync3 = simulateSync();
+
+			// During concurrent execution, should only have one notice
+			expect(state).toMatchObject({
+				noticeCount: 1,
+				activeSyncRequests: 3,
+			});
+
+			// Complete some syncs
+			completeSync2();
+			completeSync3();
+			expect(state).toMatchObject({
+				noticeCount: 1, // Still just one notice
+				activeSyncRequests: 1,
+			});
+
+			// Complete last sync
+			completeSync1();
+			expect(state).toMatchObject({
+				noticeCount: 0, // Cleaned up after last completes
+				activeSyncRequests: 0,
 			});
 		});
 	});

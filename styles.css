@@ -201,6 +201,7 @@
     position: relative; /* Set position to relative */
     font-size: 16px; /* Font size 16 pixels */
     overflow: hidden;
+    color: transparent; /* Hide the original icon to prevent double rendering */
 }
 
 .fit-sync-ribbon-el.animate-icon::after {

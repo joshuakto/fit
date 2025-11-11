@@ -9,7 +9,7 @@ import { VaultError } from "./vault";
  * Sync-specific error for orchestration-level failures that don't come from vaults
  */
 export type SyncOrchestrationError = {
-	type: 'unknown'
+	type: 'unknown' | 'already-syncing'
 	detailMessage: string
 	details?: {
 		originalError?: unknown
@@ -34,5 +34,9 @@ export const SyncErrors = {
 		type: 'unknown',
 		detailMessage,
 		details
+	}),
+	alreadySyncing: (detailMessage: string = 'Sync already in progress'): SyncOrchestrationError => ({
+		type: 'already-syncing',
+		detailMessage
 	})
 };
