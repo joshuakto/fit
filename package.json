@@ -1,6 +1,6 @@
 {
 	"name": "fit",
-	"version": "1.3.0-beta",
+	"version": "1.4.0-beta",
 	"description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
 	"main": "main.js",
 	"type": "module",
