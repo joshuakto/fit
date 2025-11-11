@@ -4,10 +4,11 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { IVault, VaultError } from './vault';
-import { FileOpRecord } from './fitTypes';
-import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './contentEncoding';
-import { extractExtension, computeSha1 } from './utils';
+import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
+import { FileChange, FileStates } from "./util/changeTracking";
+import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
+import { extractExtension } from './utils';
+import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 
 /**
@@ -65,10 +66,10 @@ export class StubTFile extends TFile {
  *   const vault = new RemoteGitHubVault(fake as any, "owner", "repo", "main", ...);
  */
 export class FakeOctokit {
-	private refs: Map<string, string> = new Map(); // ref name -> commit SHA
-	private commits: Map<string, { tree: string; parents: string[]; message: string }> = new Map();
-	private trees: Map<string, TreeNode[]> = new Map();
-	private blobs: Map<string, string> = new Map(); // blob SHA -> content
+	private refs: Map<string, CommitSha> = new Map(); // ref name -> commit SHA
+	private commits: Map<CommitSha, { tree: TreeSha; parents: CommitSha[]; message: string }> = new Map();
+	private trees: Map<TreeSha, TreeNode[]> = new Map();
+	private blobs: Map<BlobSha, string> = new Map(); // blob SHA -> content
 	private repoExists: boolean = true; // Simulate whether repository exists
 	private errorSimulations: Map<string, Error> = new Map(); // route -> error to throw
 
@@ -81,7 +82,7 @@ export class FakeOctokit {
 	/**
 	 * Set up initial repository state with a commit and tree.
 	 */
-	setupInitialState(commitSha: string, treeSha: string, tree: TreeNode[]): void {
+	setupInitialState(commitSha: CommitSha, treeSha: TreeSha, tree: TreeNode[]): void {
 		this.refs.set(`heads/${this.branch}`, commitSha);
 		this.commits.set(commitSha, { tree: treeSha, parents: [], message: "Initial commit" });
 		this.trees.set(treeSha, tree);
@@ -105,7 +106,7 @@ export class FakeOctokit {
 	/**
 	 * Add a blob to the fake repository.
 	 */
-	addBlob(sha: string, content: string): void {
+	addBlob(sha: BlobSha, content: string): void {
 		this.blobs.set(sha, content);
 	}
 
@@ -125,7 +126,7 @@ export class FakeOctokit {
 	/**
 	 * Get the latest commit SHA for the branch.
 	 */
-	getLatestCommitSha(): string | undefined {
+	getLatestCommitSha(): CommitSha | undefined {
 		return this.refs.get(`heads/${this.branch}`);
 	}
 
@@ -197,7 +198,7 @@ export class FakeOctokit {
 		// POST /repos/{owner}/{repo}/git/blobs
 		if (route === "POST /repos/{owner}/{repo}/git/blobs") {
 			// Create a simple hash from content for deterministic SHA generation
-			const sha = this.hashContent(params.content);
+			const sha = this.hashContent(params.content) as BlobSha;
 			this.blobs.set(sha, params.content);
 			return { data: { sha } };
 		}
@@ -226,7 +227,7 @@ export class FakeOctokit {
 				}
 			}
 
-			const sha = this.hashContent(JSON.stringify(resultTree));
+			const sha = this.hashContent(JSON.stringify(resultTree)) as TreeSha;
 			this.trees.set(sha, resultTree);
 			return { data: { sha } };
 		}
@@ -234,7 +235,7 @@ export class FakeOctokit {
 		// POST /repos/{owner}/{repo}/git/commits
 		if (route === "POST /repos/{owner}/{repo}/git/commits") {
 			const { tree, parents, message } = params;
-			const sha = this.hashContent(JSON.stringify({ tree, parents, message }));
+			const sha = this.hashContent(JSON.stringify({ tree, parents, message })) as CommitSha;
 			this.commits.set(sha, { tree, parents, message });
 			return { data: { sha } };
 		}
@@ -275,7 +276,7 @@ type FailureScenario = 'read' | 'stat' | 'write';
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
-export class FakeLocalVault implements IVault {
+export class FakeLocalVault implements IVault<"local"> {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
@@ -321,14 +322,6 @@ export class FakeLocalVault implements IVault {
 		this.files.set(path, fileContent);
 	}
 
-	async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
-		// FakeLocalVault receives Base64Content (matching real LocalVault signature)
-		// Decode to plain text for storage in fake vault
-		const exists = this.files.has(path);
-		this.setFile(path, Content.decodeFromBase64(content));
-		return {path, status: exists ? "changed" : "created"};
-	}
-
 	/**
 	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */
@@ -337,7 +330,7 @@ export class FakeLocalVault implements IVault {
 			([path, content]) => [path, content.toRaw().content]));
 	}
 
-	async readFromSource(): Promise<Record<string, string>> {
+	async readFromSource(): Promise<VaultReadResult<"local">> {
 		const error = this.failureScenarios.get('read');
 		if (error) {
 			this.clearFailure('read');
@@ -346,13 +339,13 @@ export class FakeLocalVault implements IVault {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const state: Record<string, string> = {};
+		const state: FileStates = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				state[path] = await LocalVault.fileSha1(path, content);
 			}
 		}
-		return state;
+		return { state };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -424,7 +417,7 @@ export class FakeLocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<ApplyChangesResult<"local">> {
 		const error = this.failureScenarios.get('write');
 		if (error) {
 			this.clearFailure('write');
@@ -433,7 +426,7 @@ export class FakeLocalVault implements IVault {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const ops: FileOpRecord[] = [];
+		const changes: FileChange[] = [];
 
 		for (const file of filesToWrite) {
 			// Simulate file/folder conflicts that occur in real filesystems:
@@ -459,17 +452,42 @@ export class FakeLocalVault implements IVault {
 
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				ops.push({ path, status: 'deleted' });
+				changes.push({ path, type: 'REMOVED' });
 			}
 		}
 
-		return ops;
+		// Start computing SHAs for written files asynchronously (for later retrieval)
+		// Only for trackable files that will appear in future scans
+		const writtenStates = this.computeWrittenFileShas(filesToWrite);
+
+		return {
+			changes,
+			writtenStates
+		};
+	}
+
+	/**
+	 * Compute SHAs for files that were just written.
+	 * Only tracks files that shouldTrackState (will appear in future scans).
+	 */
+	private async computeWrittenFileShas(
+		filesToWrite: Array<{path: string, content: FileContent}>
+	): Promise<FileStates> {
+		const shaPromises = filesToWrite
+			.filter(({path}) => this.shouldTrackState(path))
+			.map(async ({path, content}) => {
+				const sha = await LocalVault.fileSha1(path, content);
+				return [path, sha] as const;
+			});
+
+		const results = await Promise.all(shaPromises);
+		return Object.fromEntries(results);
 	}
 
 	shouldTrackState(path: string): boolean {
@@ -483,10 +501,10 @@ export class FakeLocalVault implements IVault {
  * Fake implementation of IVault for remote testing.
  * Simulates a remote vault (like GitHub) with in-memory file storage and commit tracking.
  */
-export class FakeRemoteVault implements IVault {
+export class FakeRemoteVault implements IVault<"remote"> {
 	private files: Map<string, FileContent> = new Map();
-	private blobShas: Map<string, Base64Content> = new Map(); // blob SHA -> content
-	private commitSha: string = 'initial-commit';
+	private blobShas: Map<BlobSha, Base64Content> = new Map(); // blob SHA -> content
+	private commitSha: CommitSha = 'initial-commit' as CommitSha;
 	private failureError: Error | null = null;
 	private owner: string;
 	private repo: string;
@@ -533,7 +551,7 @@ export class FakeRemoteVault implements IVault {
 		}
 		this.files.set(path, fileContent);
 		// Store blob SHA -> content mapping for readFileContent
-		const sha = await computeSha1(path + fileContent.toBase64());
+		const sha = await computeSha1(path + fileContent.toBase64()) as BlobSha;
 		this.blobShas.set(sha, fileContent.toBase64());
 	}
 
@@ -555,31 +573,8 @@ export class FakeRemoteVault implements IVault {
 	/**
 	 * Get current commit SHA (for test assertions).
 	 */
-	getCommitSha(): string {
+	getCommitSha(): CommitSha {
 		return this.commitSha;
-	}
-
-	/**
-	 * Get the latest commit SHA (implements RemoteGitHubVault interface).
-	 */
-	async getLatestCommitSha(): Promise<string> {
-		return this.commitSha;
-	}
-
-	/**
-	 * Get tree SHA from a commit (stub for RemoteGitHubVault compatibility).
-	 */
-	async getCommitTreeSha(_ref: string): Promise<string> {
-		// Return a fake tree SHA based on current state
-		return await computeSha1(JSON.stringify(Array.from(this.files.keys())));
-	}
-
-	/**
-	 * Get tree nodes (stub for RemoteGitHubVault compatibility).
-	 */
-	async getTree(_treeSha: string): Promise<any[]> {
-		// Return empty tree for now - can be enhanced later if needed
-		return [];
 	}
 
 	/**
@@ -604,92 +599,76 @@ export class FakeRemoteVault implements IVault {
 	}
 
 	/**
-	 * Create tree node from content (stub for RemoteGitHubVault compatibility).
-	 * This method stores the content in the fake vault.
+	 * Build FileStates from current files in the fake vault.
+	 * Computes SHAs consistently for both readFromSource and buildStateFromTree.
+	 *
+	 * @param storeBlobShaMapping - If true, stores blob SHA -> content mapping for readFileContent
+	 * @returns FileStates mapping paths to blob SHAs
 	 */
-	async createTreeNodeFromContent(path: string, content: FileContent | null, _remoteTree: any[], _encoding?: string): Promise<any> {
-		if (content === null) {
-			this.files.delete(path);
-			return null;
-		}
-		// Store the file content so it persists in the fake vault
-		this.setFile(path, content);
-		const sha = await computeSha1(path + content.toBase64());
-		return { path, sha, mode: '100644', type: 'blob' };
-	}
-
-	async readFromSource(): Promise<Record<string, string>> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
-			throw error;
-		}
-
-		const state: Record<string, string> = {};
+	private async buildCurrentState(storeBlobShaMapping: boolean): Promise<FileStates> {
+		const state: FileStates = {};
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				const base64Content = content.toBase64();
-				const sha = await computeSha1(path + base64Content);
+				const sha = await computeSha1(path + base64Content) as BlobSha;
 				state[path] = sha;
-				// Store blob SHA -> content mapping for readFileContent
-				this.blobShas.set(sha, base64Content);
+				// Store blob SHA -> content mapping for readFileContent if requested
+				if (storeBlobShaMapping) {
+					this.blobShas.set(sha, base64Content);
+				}
 			}
 		}
 		return state;
 	}
 
-	/**
-	 * Read from source at a specific commit (for compatibility with RemoteGitHubVault).
-	 * For fake vault, just delegate to readFromSource (ignore commit SHA).
-	 */
-	async readFromSourceAtCommit(_commitSha: string): Promise<Record<string, string>> {
-		return this.readFromSource();
-	}
-
-	async readFileContent(pathOrSha: string): Promise<FileContent> {
+	async readFromSource(): Promise<VaultReadResult<"remote">> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		// Check if it's a blob SHA first (real RemoteGitHubVault uses blob SHAs)
-		const blobContent = this.blobShas.get(pathOrSha);
-		if (blobContent !== undefined) {
-			return FileContent.fromBase64(blobContent);
+		const state = await this.buildCurrentState(true);
+		return { state, commitSha: this.commitSha };
+	}
+
+	async readFileContent(path: string): Promise<FileContent> {
+		if (this.failureError) {
+			const error = this.failureError;
+			this.clearFailure();
+			throw error;
 		}
 
-		// Fall back to path-based lookup (for backward compatibility)
-		const pathContent = this.files.get(pathOrSha);
-		if (pathContent === undefined) {
-			throw new Error(`File not found: ${pathOrSha}`);
+		const content = this.files.get(path);
+		if (content === undefined) {
+			throw new Error(`File not found: ${path}`);
 		}
 		// Convert to base64 to match GitHub API behavior.
-		return FileContent.fromBase64(pathContent.toBase64());
+		return FileContent.fromBase64(content.toBase64());
 	}
 
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<ApplyChangesResult<"remote">> {
 		if (this.failureError) {
 			const error = this.failureError;
 			this.clearFailure();
 			throw error;
 		}
 
-		const ops: FileOpRecord[] = [];
+		const changes: FileChange[] = [];
 
 		for (const file of filesToWrite) {
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
-			ops.push({ path: file.path, status: existed ? 'changed' : 'created' });
+			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				ops.push({ path, status: 'deleted' });
+				changes.push({ path, type: 'REMOVED' });
 			}
 		}
 
@@ -699,9 +678,24 @@ export class FakeRemoteVault implements IVault {
 			Array.from(this.files.entries())
 				.map(([path, content]) => `${path}:${content.toBase64()}`)
 				.join('\n')
-		);
+		) as CommitSha;
 
-		return ops;
+		// Compute tree SHA from file list (simulates GitHub tree object)
+		const treeSha = await computeSha1(
+			Array.from(this.files.keys()).sort().join('\n')
+		) as TreeSha;
+
+		// Build new state from current files (consistent with real vault)
+		// In tests, tree SHA doesn't matter - just return current state
+		// This mimics RemoteGitHubVault.buildStateFromTree behavior
+		const newState = await this.buildCurrentState(false);
+
+		return {
+			changes: changes,
+			commitSha: this.commitSha,
+			treeSha,
+			newState
+		};
 	}
 
 	shouldTrackState(_path: string): boolean {

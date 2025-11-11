@@ -2,6 +2,7 @@
  * Tests for content encoding utilities
  */
 
+import { describe, it, expect } from 'vitest';
 import { Content, FileContent } from './contentEncoding';
 
 describe('Content.encodeToBase64', () => {
@@ -34,6 +35,12 @@ describe('Content.encodeToBase64', () => {
 	it('should handle empty string', () => {
 		const result = Content.encodeToBase64('');
 		expect(result).toBe('');
+	});
+
+	it('should encode very large Unicode strings without RangeError', () => {
+		const longText = 'Large content'.repeat(20000);
+		const encoded = Content.encodeToBase64(longText);
+		expect(Content.decodeFromBase64(encoded)).toBe(longText);
 	});
 });
 

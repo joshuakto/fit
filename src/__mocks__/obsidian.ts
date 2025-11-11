@@ -1,8 +1,10 @@
-export const arrayBufferToBase64 = jest.fn((buffer: ArrayBuffer) => {
+import { vi } from 'vitest';
+
+export const arrayBufferToBase64 = vi.fn((buffer: ArrayBuffer) => {
 	return btoa(String.fromCharCode(...new Uint8Array(buffer)));
 });
 
-export const base64ToArrayBuffer = jest.fn((base64: string) => {
+export const base64ToArrayBuffer = vi.fn((base64: string) => {
 	const binaryString = atob(base64);
 	const bytes = new Uint8Array(binaryString.length);
 	for (let i = 0; i < binaryString.length; i++) {
@@ -24,18 +26,19 @@ export class TFolder {
 }
 
 export class Vault {
-	readBinary = jest.fn();
+	readBinary = vi.fn();
+	cachedRead = vi.fn();
 }
 
 export class Component {
-	load = jest.fn();
-	unload = jest.fn();
+	load = vi.fn();
+	unload = vi.fn();
 }
 
 export class Notice {
 	constructor(message: string) {}
-	setMessage = jest.fn();
-	hide = jest.fn();
+	setMessage = vi.fn();
+	hide = vi.fn();
 }
 
 export const Platform = {

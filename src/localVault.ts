@@ -5,12 +5,12 @@
  */
 
 import { TFile, TFolder, Vault } from "obsidian";
-import { IVault, FileState, VaultError } from "./vault";
-import { FileOpRecord } from "./fitTypes";
+import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
+import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
-import { Base64Content, FileContent } from "./contentEncoding";
-import { contentToArrayBuffer, readFileContent } from "./obsidianHelpers";
-import { computeSha1 } from "./utils";
+import { Base64Content, FileContent } from "./util/contentEncoding";
+import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
+import { BlobSha, computeSha1 } from "./util/hashing";
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
@@ -44,7 +44,7 @@ function isBinaryExtensionForSha(extension: string): boolean {
  *
  * Isolates Obsidian Vault API quirks from sync logic.
  */
-export class LocalVault implements IVault {
+export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
 
 	constructor(vault: Vault) {
@@ -98,7 +98,7 @@ export class LocalVault implements IVault {
 	/**
 	 * Scan vault, update latest known state, and return it
 	 */
-	async readFromSource(): Promise<FileState> {
+	async readFromSource(): Promise<VaultReadResult> {
 		const allFiles = this.vault.getFiles();
 
 		// Filter to only tracked paths
@@ -115,7 +115,7 @@ export class LocalVault implements IVault {
 
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
-			trackedPaths.map(async (path): Promise<[string, string]> => {
+			trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
 				const sha = await LocalVault.fileSha1(
 					path, await readFileContent(this.vault, path));
 				return [path, sha];
@@ -130,7 +130,7 @@ export class LocalVault implements IVault {
 			fileCount: Object.keys(newState).length
 		});
 
-		return { ...newState };
+		return { state: { ...newState } };
 	}
 
 	/**
@@ -138,26 +138,14 @@ export class LocalVault implements IVault {
 	 * (Matches GitHub's blob SHA format)
 	 */
 	// NOTE: Public visibility for tests.
-	static fileSha1(path: string, fileContent: FileContent): Promise<string> {
+	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
 		const extension = path.split('.').pop() || '';
 		const contentToHash = (extension && isBinaryExtensionForSha(extension))
 			// Use base64 representation for consistent hashing
 			? fileContent.toBase64()
 			// Preserve plaintext SHA logic for non-binary case.
 			: fileContent.toPlainText();
-		return computeSha1(path + contentToHash);
-	}
-
-	/**
-	 * Get TFile for a given path, throwing error if not found or not a file
-	 */
-	private async getTFile(path: string): Promise<TFile> {
-		const file = this.vault.getAbstractFileByPath(path);
-		if (file && file instanceof TFile) {
-			return file;
-		} else {
-			throw new Error(`Attempting to read ${path} from local drive as TFile but not successful, file is of type ${typeof file}.`);
-		}
+		return computeSha1(path + contentToHash) as Promise<BlobSha>;
 	}
 
 	/**
@@ -189,40 +177,50 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Read file content for a specific path
-	 *
-	 * Returns content in format expected by RemoteGitHubVault.applyChanges():
-	 * - Binary files: Base64Content (GitHub expects base64)
-	 * - Text files: PlainTextContent (GitHub accepts utf-8)
 	 */
-	async readFileContent(pathOrSha: string): Promise<FileContent> {
-		// LocalVault only uses paths (not blob SHAs)
-		return readFileContent(this.vault, pathOrSha);
+	async readFileContent(path: string): Promise<FileContent> {
+		return readFileContent(this.vault, path);
 	}
 
 	/**
-	 * Write or update a file
-	 * @param path - File path to write
+	 * Write or update a file and optionally compute its SHA.
+	 * @param path - File path
 	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
-	 * @returns Record of file operation performed
+	 * @param originalContent - The FileContent object we're writing (for SHA computation)
+	 * @returns Record of file operation performed and SHA promise (if trackable)
 	 */
-	async writeFile(path: string, content: Base64Content): Promise<FileOpRecord> {
+	private async writeFile(
+		path: string,
+		content: Base64Content,
+		originalContent: FileContent
+	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 
 			if (file && file instanceof TFile) {
 				await this.vault.modifyBinary(file, contentToArrayBuffer(content));
-				return {path, status: "changed"};
 			} else if (!file) {
 				await this.ensureFolderExists(path);
 				await this.vault.createBinary(path, contentToArrayBuffer(content));
-				return {path, status: "created"};
+			} else {
+				// File exists but is not a TFile - check if it's a folder
+				if (file instanceof TFolder) {
+					throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+				}
+				// Unknown type - future-proof for new Obsidian abstract file types
+				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
-			// File exists but is not a TFile - check if it's a folder
-			if (file instanceof TFolder) {
-				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+
+			const change: FileChange = { path, type: file ? "MODIFIED" : "ADDED" };
+
+			// Compute SHA from in-memory content if file should be tracked
+			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
+			let shaPromise: Promise<BlobSha> | null = null;
+			if (this.shouldTrackState(path)) {
+				shaPromise = LocalVault.fileSha1(path, originalContent);
 			}
-			// Unknown type - future-proof for new Obsidian abstract file types
-			throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
+
+			return { change, shaPromise };
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
@@ -235,15 +233,14 @@ export class LocalVault implements IVault {
 
 	/**
 	 * Delete a file
-	 * @param path - File path to delete
 	 * @returns Record of file operation performed
 	 */
-	async deleteFile(path: string): Promise<FileOpRecord> {
+	private async deleteFile(path: string): Promise<FileChange> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
 				await this.vault.delete(file);
-				return {path, status: "deleted"};
+				return {path, type: "REMOVED"};
 			}
 			throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
 		} catch (error) {
@@ -263,28 +260,56 @@ export class LocalVault implements IVault {
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]> {
+	): Promise<ApplyChangesResult<"local">> {
 		// Process file additions or updates
-		const writeOperations = filesToWrite.map(async ({path, content}) => {
-			try {
-				return await this.writeFile(path, content.toBase64());
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(`Failed to write to ${path}: ${message}`);
-			}
-		});
+		const writeResults = await Promise.all(
+			filesToWrite.map(async ({path, content}) => {
+				try {
+					return await this.writeFile(path, content.toBase64(), content);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Failed to write to ${path}: ${message}`);
+				}
+			})
+		);
 
 		// Process file deletions
-		const deletionOperations = filesToDelete.map(async (path) => {
-			try {
-				return await this.deleteFile(path);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(`Failed to delete ${path}: ${message}`);
-			}
-		});
+		const deletionOps = await Promise.all(
+			filesToDelete.map(async (path) => {
+				try {
+					return await this.deleteFile(path);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Failed to delete ${path}: ${message}`);
+				}
+			})
+		);
 
-		const fileOps = await Promise.all([...writeOperations, ...deletionOperations]);
-		return fileOps;
+		// Extract file operations for return value
+		const writeOps = writeResults.map(r => r.change);
+		const changes = [...writeOps, ...deletionOps];
+
+		// Collect SHA promises from write operations (started asynchronously in writeFile)
+		// Map: path -> SHA promise (only for trackable files)
+		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
+		for (const result of writeResults) {
+			if (result.shaPromise) {
+				shaPromiseMap[result.change.path] = result.shaPromise;
+			}
+		}
+
+		// Return SHA computations as promise for caller to await when ready
+		// This allows SHA computation (CPU-intensive) to run in parallel with other sync operations
+		const writtenStates = Promise.all(
+			Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
+				const sha = await shaPromise;
+				return [path, sha] as const;
+			})
+		).then(entries => Object.fromEntries(entries));
+
+		return {
+			changes,
+			writtenStates
+		};
 	}
 }

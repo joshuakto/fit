@@ -60,9 +60,7 @@ export const Content = {
 	 */
 	encodeToBase64: (plainText: string | PlainTextContent): Base64Content => {
 		// Convert UTF-8 string to bytes, then to base64
-		const utf8Bytes = new TextEncoder().encode(plainText);
-		const binaryString = String.fromCodePoint(...utf8Bytes);
-		return btoa(binaryString) as Base64Content;
+		return Buffer.from(plainText, 'utf8').toString('base64') as Base64Content;
 	},
 
 	/**
@@ -118,7 +116,8 @@ export class FileContent {
 	 * @param content - Base64-encoded string (will be branded as Base64Content)
 	 */
 	static fromBase64(content: string | Base64Content): FileContent {
-		return new FileContent({ encoding: 'base64', content: Content.asBase64(content) });
+		const normalized = removeLineEndingsFromBase64String(content);
+		return new FileContent({ encoding: 'base64', content: Content.asBase64(normalized) });
 	}
 
 	/**
@@ -184,3 +183,21 @@ export function isBinaryExtension(extension: string): boolean {
  * 3. Alternative: Use mime-type library for better extension coverage as interim solution
  */
 const RECOGNIZED_BINARY_EXT = new Set(["png", "jpg", "jpeg", "pdf"]);
+
+/**
+ * Normalize base64 string by removing all whitespace (newlines, spaces, tabs).
+ *
+ * Different sources may format base64 differently:
+ * - GitHub API: Inserts newlines for readability (every ~60-76 chars)
+ * - Obsidian arrayBufferToBase64(): No whitespace
+ * - Other tools: May include spaces or tabs
+ *
+ * Removing all whitespace ensures canonical representation and SHA consistency.
+ * Valid base64 only contains [A-Za-z0-9+/=], so whitespace is purely formatting.
+ *
+ * @param content - Base64 string that may contain whitespace
+ * @returns Normalized base64 string without any whitespace
+ */
+function removeLineEndingsFromBase64String(content: string): string {
+	return content.replace(/\s/g, '');
+}

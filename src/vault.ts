@@ -6,19 +6,59 @@
  * (Obsidian vault) or remotely (GitHub repository, GitLab, etc.).
  */
 
-import { LocalChange, RemoteChange, FileOpRecord } from "./fitTypes";
-import { FileContent } from "./contentEncoding";
+import { FileChange, FileStates } from "./util/changeTracking";
+import { FileContent } from "./util/contentEncoding";
+import { CommitSha, TreeSha } from "./util/hashing";
+
+/** Discriminated return types for readFromSource() based on vault category */
+type VaultReadResultMap = {
+	/** Local vault result - just the state */
+	"local": {
+		state: FileStates;
+	};
+	/** Remote vault result - includes commit SHA */
+	"remote": {
+		state: FileStates;
+		commitSha: CommitSha;
+	};
+};
 
 /**
- * Represents a snapshot of file states at a point in time.
- * Maps file paths to their content hashes (SHA-1).
+ * Result of reading vault state, including vault-specific metadata.
+ *
+ * For RemoteGitHubVault: Includes the commit SHA of the fetched state
+ * For LocalVault: May be extended in future for other metadata
  */
-export type FileState = Record<string, string>;
+export type VaultReadResult<T extends VaultCategory = VaultCategory> = VaultReadResultMap[T];
 
 /**
- * Generic change representation (can be local or remote)
+ * Vault category: local filesystem vs remote git hosting
  */
-export type StateChange = LocalChange | RemoteChange;
+export type VaultCategory = "local" | "remote";
+
+/** Map vault category to its specific ApplyChangesResult type (exhaustiveness-checked) */
+type ApplyChangesResultMap = {
+	/** Local vault result - includes SHA computation promise */
+	"local": {
+		/** Promise for file SHAs (computed from in-memory content during writes).
+		 * Await when ready to update local state - allows parallelization on mobile. */
+		writtenStates: Promise<FileStates>;
+	};
+	/** Remote vault result - includes commit metadata and new state */
+	"remote": {
+		/** New commit SHA created on remote */
+		commitSha: CommitSha;
+		/** New tree SHA created on remote */
+		treeSha: TreeSha;
+		/** FileStates computed from the new tree (for cache updates) */
+		newState: FileStates;
+	};
+};
+
+export type ApplyChangesResult<T extends VaultCategory> =
+	{
+		changes: FileChange[];
+	} & ApplyChangesResultMap[T];
 
 // ===== Vault Error Types =====
 
@@ -75,6 +115,8 @@ export class VaultError extends Error {
  * Implementations handle both read operations (state detection) and write operations
  * (applying changes), making this a complete abstraction for file storage.
  *
+ * @typeParam T - Vault category ("local" | "remote") determining return type of applyChanges
+ *
  * @example
  * ```typescript
  * // Initialize vaults with cached state from persisted storage
@@ -83,13 +125,14 @@ export class VaultError extends Error {
  *
  * // Detect changes (typically in pre-sync checks)
  * const currentLocal = await localVault.readFromSource();
- * const localChanges = compareSha(currentLocal, baselineState, "local");
+ * const localChanges = compareFileStates(currentLocal, baselineState);
  *
- * // Apply changes during sync
- * await localVault.applyChanges(
+ * // Apply changes during sync - return type inferred from vault type
+ * const result = await localVault.applyChanges(
  *   [{path: 'new-file.md', content: 'content'}],  // files to write
  *   ['old-file.md']                                // files to delete
  * );
+ * // result.writtenStates is available (ApplyChangesResult<"local">)
  *
  * // Update vault cache after sync (scan and update internal state atomically)
  * const newLocalState = await localVault.readFromSource();
@@ -97,36 +140,31 @@ export class VaultError extends Error {
  * await saveToCache({localSha: newLocalState});
  * ```
  */
-export interface IVault {
+export interface IVault<T extends VaultCategory> {
 	// ===== Read Operations =====
 
 	/**
-	 * Scan source and return the current scanned state.
+	 * Scan source and return the current scanned state with vault-specific metadata.
 	 *
 	 * For LocalVault: Scans all files in Obsidian vault
-	 * For RemoteGitHubVault: Fetches tree from GitHub API
+	 * For RemoteGitHubVault: Fetches tree from GitHub API and includes commit SHA
 	 *
-	 * @returns The new scanned state
+	 * @returns The scanned state and vault-specific metadata
 	 */
-	readFromSource(): Promise<FileState>;
+	readFromSource(): Promise<VaultReadResult<T>>;
 
 	/**
-	 * Read file content for a specific path or SHA
+	 * Read file content for a specific path
 	 *
-	 * For LocalVault: pathOrSha is a file path in the vault
-	 *   - Returns FileContent wrapping Base64Content for binary file extensions (.png, .pdf)
-	 *   - Returns FileContent wrapping PlainTextContent for everything else (.md, .txt, no extension)
-	 *
-	 * For RemoteGitHubVault: pathOrSha is a blob SHA (GitHub stores content by hash)
-	 *   - ALWAYS returns FileContent wrapping Base64Content (GitHub API returns all blobs as base64)
+	 * For RemoteGitHubVault, returns content as of last readFromSource() for performance (does NOT force fresh remote fetch).
 	 *
 	 * Callers can use FileContent's toBase64() or toPlainText() helpers to get the content
 	 * in the desired format without worrying about the source encoding.
 	 *
-	 * @param pathOrSha - File path (LocalVault) or blob SHA (RemoteGitHubVault)
+	 * @param path - File path
 	 * @returns File content with runtime encoding tag
 	 */
-	readFileContent(pathOrSha: string): Promise<FileContent>;
+	readFileContent(path: string): Promise<FileContent>;
 
 	// ===== Write Operations (Applying Changes) =====
 
@@ -135,19 +173,20 @@ export interface IVault {
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
 	 *   - Converts FileContent to base64 and writes via Obsidian API
+	 *   - Returns writtenStates for efficient state updates
 	 *
 	 * For RemoteGitHubVault: Creates a single commit with all changes
 	 *   - Uses FileContent's existing encoding (plaintext or base64)
-	 *   - Tells GitHub API the appropriate encoding
+	 *   - Returns new commitSha and treeSha
 	 *
 	 * @param filesToWrite - Files to write or update with their content
 	 * @param filesToDelete - Files to delete
-	 * @returns Records of all file operations performed
+	 * @returns Operations performed and vault-specific metadata (type determined by T)
 	 */
 	applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
-	): Promise<FileOpRecord[]>;
+	): Promise<ApplyChangesResult<T>>;
 
 	// ===== Metadata =====
 

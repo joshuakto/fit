@@ -6,6 +6,8 @@
  * non-orchestration details and keep them remote-agnostic.
  */
 
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { Vault } from 'obsidian';
@@ -13,16 +15,18 @@ import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { FitSettings, LocalStores } from '../main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
-import { FileContent } from './contentEncoding';
+import { FileContent } from './util/contentEncoding';
+import { BlobSha, CommitSha } from './util/hashing';
 
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
 	let remoteVault: FakeRemoteVault;
 	let localStoreState: LocalStores;
-	let consoleLogSpy: jest.SpyInstance;
-	let consoleErrorSpy: jest.SpyInstance;
-	let fitLoggerLogSpy: jest.SpyInstance;
-	let fitLoggerFlushSpy: jest.SpyInstance;
+	// Spies - MockInstance types inferred from method signatures
+	let consoleLogSpy: MockInstance<typeof console.log>;
+	let consoleErrorSpy: MockInstance<typeof console.error>;
+	let fitLoggerLogSpy: MockInstance<typeof fitLogger.log>;
+	let fitLoggerFlushSpy: MockInstance;
 
 	// Realistic settings that get passed through to RemoteGitHubVault
 	const testSettings = {
@@ -65,10 +69,10 @@ describe('FitSync', () => {
 		const calls: Array<{method: string, args: any[]}> = [];
 
 		const mockNotice = {
-			setMessage: jest.fn((...args: any[]) => {
+			setMessage: vi.fn((...args: any[]) => {
 				calls.push({ method: 'setMessage', args });
 			}),
-			remove: jest.fn((...args: any[]) => {
+			remove: vi.fn((...args: any[]) => {
 				calls.push({ method: 'remove', args });
 			}),
 			// Expose the calls array for verification
@@ -95,8 +99,8 @@ describe('FitSync', () => {
 			notice.setMessage(fullMessage, true);
 		} else {
 			// TODO: Simulate conflict handling for success cases
-			// if (result.ops) {
-			//   showUnappliedConflicts(result.ops);
+			// if (result.changeGroups) {
+			//   showUnappliedConflicts(result.changeGroups);
 			// }
 		}
 
@@ -109,14 +113,14 @@ describe('FitSync', () => {
 	 */
 	function expectLoggerCalledWith(message: string, expectedMetadata: any) {
 		const allCalls = fitLoggerLogSpy.mock.calls;
-		const matchingCall = allCalls.find(call => call[0] === message);
+		const matchingCall = allCalls.find((call) => call[0] === message);
 
 		if (!matchingCall) {
 			// Message not found - show which messages were logged
-			const loggedMessages = allCalls.map(call => call[0]);
+			const loggedMessages = allCalls.map((call) => call[0]);
 			throw new Error(
 				`Expected logger to be called with message:\n  "${message}"\n\n` +
-				`But it was never called with that message. Logged messages:\n  ${loggedMessages.map(m => `"${m}"`).join('\n  ')}`
+				`But it was never called with that message. Logged messages:\n  ${loggedMessages.map((m) => `"${m}"`).join('\n  ')}`
 			);
 		}
 
@@ -135,17 +139,17 @@ describe('FitSync', () => {
 		localStoreState = {
 			localSha: {},
 			lastFetchedRemoteSha: {},
-			lastFetchedCommitSha: 'commit-initial'
+			lastFetchedCommitSha: 'commit-initial' as CommitSha
 		};
 
 		// Capture console output for debugging failed tests
 		const consoleLogCapture: any[] = [];
 		const consoleErrorCapture: any[] = [];
 
-		consoleLogSpy = jest.spyOn(console, 'log').mockImplementation((...args) => {
+		consoleLogSpy = vi.spyOn(console, 'log').mockImplementation((...args) => {
 			consoleLogCapture.push(['log', args]);
 		});
-		consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args) => {
+		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation((...args) => {
 			consoleErrorCapture.push(['error', args]);
 		});
 
@@ -153,9 +157,9 @@ describe('FitSync', () => {
 		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
 
 		// Spy on fitLogger to verify logging behavior
-		fitLoggerLogSpy = jest.spyOn(fitLogger, 'log');
+		fitLoggerLogSpy = vi.spyOn(fitLogger, 'log');
 		// Spy on flushToFile but don't mock it - let it run to verify file write attempts
-		fitLoggerFlushSpy = jest.spyOn(fitLogger as any, 'flushToFile');
+		fitLoggerFlushSpy = vi.spyOn(fitLogger as any, 'flushToFile');
 	});
 
 	afterEach(() => {
@@ -238,12 +242,12 @@ describe('FitSync', () => {
 		// Verify: Both files A and B were synced (both are new vs baseline)
 		expect(successResult).toEqual({
 			success: true,
-			ops: expect.arrayContaining([
+			changeGroups: expect.arrayContaining([
 				{
 					heading: expect.stringContaining('Remote file updates'),
-					ops: expect.arrayContaining([
-						expect.objectContaining({ path: 'fileA.md', status: 'created' }),
-						expect.objectContaining({ path: 'fileB.md', status: 'created' })
+					changes: expect.arrayContaining([
+						expect.objectContaining({ path: 'fileA.md', type: 'ADDED' }),
+						expect.objectContaining({ path: 'fileB.md', type: 'ADDED' })
 					])
 				}
 			]),
@@ -344,15 +348,15 @@ describe('FitSync', () => {
 			const result1 = await syncAndHandleResult(fitSync, mockNotice1);
 
 			// Verify: Only normal.md was pushed, _fit/ files excluded
-			expect(result1).toMatchObject({
+			expect(result1).toEqual(expect.objectContaining({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						ops: [expect.objectContaining({ path: 'normal.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'normal.md', type: 'ADDED' })]
 					}
 				])
-			});
+			}));
 
 			// Verify: Remote does NOT have _fit/ files
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['normal.md']);
@@ -371,19 +375,19 @@ describe('FitSync', () => {
 			// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
 			expect(result2).toEqual({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Local file updates'),
-						ops: expect.arrayContaining([
-							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', status: 'created' }),
-							expect.objectContaining({ path: 'remote-normal.md', status: 'created' })
+						changes: expect.arrayContaining([
+							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', type: 'ADDED' }),
+							expect.objectContaining({ path: 'remote-normal.md', type: 'ADDED' })
 						])
 					}
 				]),
 				clash: [{
 					path: '_fit/remote-conflict.md',
-					localStatus: 'untracked',
-					remoteStatus: 'ADDED'
+					localState: 'untracked',
+					remoteOp: 'ADDED'
 				}]
 			});
 
@@ -437,15 +441,15 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Only visible file was synced (hidden file silently ignored)
-			expect(result).toMatchObject({
+			expect(result).toEqual(expect.objectContaining({
 				success: true,
-				ops: expect.arrayContaining([
+				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Remote file updates'),
-						ops: [expect.objectContaining({ path: 'visible.md', status: 'created' })]
+						changes: [expect.objectContaining({ path: 'visible.md', type: 'ADDED' })]
 					}
 				])
-			});
+			}));
 
 			// Verify: Remote does NOT have hidden file
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
@@ -464,8 +468,18 @@ describe('FitSync', () => {
 			// Verify: No changes detected (hidden file ignored)
 			expect(result2).toEqual(expect.objectContaining({
 				success: true,
-				ops: [] // No operations
+				changeGroups: [
+					{heading: 'Local file updates:', changes: []},
+					{heading: 'Remote file updates:', changes: []}
+				]
 			}));
+
+			// Verify all notice messages (no file changes, just progress and success)
+			expect(mockNotice2._calls).toEqual(expect.arrayContaining([
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Sync successful']}
+			]));
 
 			// Verify: Remote still only has visible file
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
@@ -478,10 +492,11 @@ describe('FitSync', () => {
 			// === SETUP: Initial synced state with normal file ===
 			localVault.setFile('normal.md', 'Normal content');
 			await remoteVault.setFile('normal.md', 'Normal content');
+			const remoteResult = await remoteVault.readFromSource();
 			localStoreState = {
-				localSha: await localVault.readFromSource(),
-				lastFetchedRemoteSha: await remoteVault.readFromSource(),
-				lastFetchedCommitSha: remoteVault.getCommitSha()
+				localSha: (await localVault.readFromSource()).state,
+				lastFetchedRemoteSha: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha
 			};
 			const fitSync = createFitSync();
 
@@ -563,7 +578,7 @@ describe('FitSync', () => {
 	});
 
 	describe('🚨 Data loss prevention (safety nets for bugs/migrations)', () => {
-		it('should never overwrite local file when remote modified but file missing from localSha', async () => {
+		it('should never overwrite local file when remote MODIFIED but file missing from localSha', async () => {
 			// === CRITICAL DATA LOSS SCENARIO ===
 			// This simulates TWO dangerous scenarios:
 			//
@@ -586,7 +601,7 @@ describe('FitSync', () => {
 			// === SETUP: Simulate state mismatch ===
 			// Remote has a hidden file (exists in lastFetchedRemoteSha)
 			localStoreState.lastFetchedRemoteSha = {
-				'.env': 'fake-sha-for-old-remote-value'
+				'.env': 'fake-sha-for-old-remote-value' as BlobSha
 			};
 			localStoreState.localSha = {}; // File NOT in localSha (not tracked during scan)
 
@@ -615,9 +630,7 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Verify: Sync succeeded
-			expect(result).toMatchObject({
-				success: true
-			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
 
 			// Verify: remote changes saved to _fit
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
@@ -641,8 +654,8 @@ describe('FitSync', () => {
 			//
 			// REQUIRED ADDITIONAL PROTECTION:
 			// Before applying remote changes in FitSync.applyRemoteChanges():
-			//   if (change.status === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
-			//     // File modified remotely but not in localSha - could be version migration issue
+			//   if (change.type === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
+			//     // File MODIFIED remotely but not in localSha - could be version migration issue
 			//     const exists = await vault.adapter.exists(path);
 			//     if (exists) {
 			//       fitLogger.log('[FitSync] File exists locally but not in localSha - treating as clash');
@@ -668,8 +681,8 @@ describe('FitSync', () => {
 			remoteVault.setFile('.gitignore', 'remote version');
 			remoteVault.setFile('README.md', 'readme v1');
 
-			const initialRemoteState = await remoteVault.readFromSource();
-			const initialLocalState = await localVault.readFromSource();
+			const { state: initialRemoteState } = await remoteVault.readFromSource();
+			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
 				// localSha: .gitignore NOT tracked (hidden file)
 				localSha: {
@@ -726,11 +739,11 @@ describe('FitSync', () => {
 
 			// Simulate state where README.md is tracked but .gitignore is missing from cache
 			// This represents old buggy behavior where hidden files weren't indexed
-			const initialRemoteState = await remoteVault.readFromSource();
-			const initialLocalState = await localVault.readFromSource();
+			const { state: initialRemoteState } = await remoteVault.readFromSource();
+			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
 				localSha: {
-					// README.md IS tracked locally (so it won't appear as "created")
+					// README.md IS tracked locally (so it won't appear as "ADDED")
 					'README.md': initialLocalState['README.md']
 				},
 				lastFetchedRemoteSha: {
@@ -809,6 +822,26 @@ describe('FitSync', () => {
 					filesMovedToFit: ['.envrc']
 				}
 			);
+
+			// === VERIFY: File is reported as conflict (not just silently saved) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: '.envrc',
+						localState: 'untracked',
+						remoteOp: 'ADDED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
 		});
 
 		it('should skip deletion when stat fails to check local existence (deletion)', async () => {
@@ -849,6 +882,101 @@ describe('FitSync', () => {
 				}
 			);
 		});
+
+		it('should report file as conflict when saved to _fit/ for any safety reason', async () => {
+			// This test verifies the fix: ANY file written to _fit/ should be reported as a conflict.
+			// We use a dual-sided change scenario (both local and remote MODIFIED) which writes to _fit/.
+
+			// === SETUP: Both sides have same file with different content ===
+			const fitSync = createFitSync();
+			localVault.setFile('document.md', 'Local version\n');
+			remoteVault.setFile('document.md', 'Remote version\n');
+
+			// === STEP 1: Initial sync - establishes baseline ===
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// === STEP 2: Both sides modify the file ===
+			localVault.setFile('document.md', 'Local version - edited\n');
+			remoteVault.setFile('document.md', 'Remote version - edited\n');
+
+			// === STEP 3: Sync (conflict) ===
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// === VERIFY: Sync succeeded ===
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// === VERIFY: Remote version saved to _fit/ (local file unchanged) ===
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'document.md': 'Local version - edited\n',  // Local file untouched
+				'_fit/document.md': 'Remote version - edited\n'  // Remote version in conflict directory
+			});
+
+			// === VERIFY: File is reported as conflict (this is the key fix!) ===
+			expect(result).toMatchObject({
+				clash: expect.arrayContaining([
+					expect.objectContaining({
+						path: 'document.md',
+						localState: 'MODIFIED',
+						remoteOp: 'MODIFIED'
+					})
+				])
+			});
+
+			// === VERIFY: All notice messages (progress + conflict detection + status) ===
+			expect(mockNotice._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Change conflicts detected']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
+			]);
+		});
+
+		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {
+			// Scenario: Plugin version changes filtering rules (e.g., starts ignoring certain file types)
+			// Expected: Deletion NOT pushed to remote (file exists on filesystem but filtered from scan)
+
+			const hiddenFileContent = 'hidden content';
+			localVault.setFile('.hidden', hiddenFileContent);
+			remoteVault.setFile('.hidden', hiddenFileContent);
+
+			// Simulate v1 tracking the file (before filtering rule change)
+			const originalShouldTrackState = localVault.shouldTrackState.bind(localVault);
+			localVault.shouldTrackState = () => true; // v1: track all files
+
+			const initialRemoteState = await remoteVault.readFromSource();
+			const initialLocalState = await localVault.readFromSource();
+
+			localStoreState = {
+				localSha: {
+					'.hidden': initialLocalState.state['.hidden']
+				},
+				lastFetchedRemoteSha: {
+					'.hidden': initialRemoteState.state['.hidden']
+				},
+				lastFetchedCommitSha: remoteVault.getCommitSha()
+			};
+
+			// Simulate v2: filtering rule changed (now excludes hidden files)
+			localVault.shouldTrackState = originalShouldTrackState;
+
+			// Sync after filtering rule change
+			const fitSync = createFitSync();
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			expect(result).toEqual(expect.objectContaining({success: true}));
+
+			// File should still exist locally (not deleted)
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({'.hidden': hiddenFileContent});
+
+			// File should NOT be deleted from remote (safeguard prevents data loss)
+			expect(remoteVault.getFile('.hidden')).toBe(hiddenFileContent);
+
+			// localSha should exclude .hidden (new filtering rules)
+			expect(localStoreState.localSha).not.toHaveProperty('.hidden');
+		});
 	});
 
 	describe('Logger', () => {
@@ -880,9 +1008,9 @@ describe('FitSync', () => {
 			// Mock vault adapter for file operations
 			const mockVault = {
 				adapter: {
-					exists: jest.fn().mockResolvedValue(false),
-					read: jest.fn().mockResolvedValue(''),
-					write: jest.fn().mockResolvedValue(undefined)
+					exists: vi.fn().mockResolvedValue(false),
+					read: vi.fn().mockResolvedValue(''),
+					write: vi.fn().mockResolvedValue(undefined)
 				}
 			};
 			fitLogger.setVault(mockVault as any);
@@ -1006,6 +1134,274 @@ describe('FitSync', () => {
 					true
 				]}
 			]);
+		});
+
+		it('should return already-syncing error when concurrent sync attempted', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			remoteVault.setFile('test.md', 'content');
+
+			// Create two mock notices for concurrent syncs
+			const mockNotice1 = createMockNotice();
+			const mockNotice2 = createMockNotice();
+
+			// Act - Start first sync but don't await it yet
+			const sync1Promise = fitSync.sync(mockNotice1 as any);
+
+			// Immediately try to start second sync while first is still running
+			const sync2Result = await fitSync.sync(mockNotice2 as any);
+
+			// Wait for first sync to complete
+			const sync1Result = await sync1Promise;
+
+			// Assert - First sync should succeed
+			expect(sync1Result).toEqual(expect.objectContaining({ success: true }));
+
+			// Second sync should fail with already-syncing error
+			expect(sync2Result).toEqual({
+				success: false,
+				error: {
+					type: 'already-syncing',
+					detailMessage: 'Sync already in progress',
+				},
+			});
+
+			// Verify notice wasn't updated by second sync (it should return immediately)
+			expect(mockNotice2._calls).toEqual([]);
+		});
+	});
+
+	describe('Only Commit SHA Changed', () => {
+		it('should update commit SHA when remote commit changes but no tracked files changed', async () => {
+			// Arrange - Set up initial synced state
+			const fitSync = createFitSync();
+			localVault.setFile('tracked.md', 'content');
+			remoteVault.setFile('tracked.md', 'content');
+
+			// Initial sync to establish baseline
+			const mockNotice1 = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice1);
+			const initialCommitSha = localStoreState.lastFetchedCommitSha;
+
+			// Act - Simulate external tool pushing commit that doesn't affect our tracked files
+			// This simulates a `.gitignore` change or other file we don't track
+			// We need to bypass FakeRemoteVault's normal file APIs and directly manipulate the commit SHA
+			// to simulate a commit that affects only files we filter out
+
+			// Hack: Directly set a new commit SHA on the fake vault without changing tracked files
+			const newCommitSha = ('commit-' + Date.now()) as CommitSha;
+			(remoteVault as any).commitSha = newCommitSha;
+
+			// Second sync - should detect commit SHA change even though no file changes
+			const mockNotice2 = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice2);
+
+			// Assert
+			expect(result).toEqual(expect.objectContaining({success: true}));
+			expect(mockNotice2._calls).toEqual([
+				{method: 'setMessage', args: ['Checking for changes...']},
+				{method: 'setMessage', args: ['Uploading local changes']},
+				{method: 'setMessage', args: ['Writing remote changes to local']},
+				{method: 'setMessage', args: ['Sync successful']}
+			]);
+
+			// Verify commit SHA was updated (this is the key behavior being tested)
+			expect(localStoreState.lastFetchedCommitSha).toBe(newCommitSha);
+			expect(localStoreState.lastFetchedCommitSha).not.toBe(initialCommitSha);
+
+			// Verify no file operations (truly empty - no changes to tracked files)
+			expect(result).toMatchObject({
+				changeGroups: [
+					{heading: 'Local file updates:', changes: []},
+					{heading: 'Remote file updates:', changes: []}
+				],
+				clash: []
+			});
+		});
+	});
+
+	describe('Concurrent sync coordination (main.ts UI state management)', () => {
+		/**
+		 * These tests simulate the counter-based coordination logic from main.ts
+		 * (onSyncStart/onSyncEnd) to verify correct UI state management under
+		 * concurrent sync attempts. This tests the race condition fixes.
+		 */
+
+		it('should keep animation active until all manual syncs complete', () => {
+			// Simulate the counter-based coordination from main.ts
+			const state = {
+				activeSyncRequests: 0,
+				activeManualSyncRequests: 0,
+				animationActive: false,
+				noticeCreated: false
+			};
+
+			// Helper that mimics onSyncStart/onSyncEnd behavior with manual completion
+			const simulateSync = (triggerType: 'manual' | 'auto') => {
+				// onSyncStart behavior
+				state.activeSyncRequests++;
+				if (triggerType === 'manual') {
+					state.activeManualSyncRequests++;
+					if (state.activeManualSyncRequests === 1) {
+						state.animationActive = true;
+					}
+				}
+				if (state.activeSyncRequests === 1) {
+					state.noticeCreated = true;
+				}
+
+				// Return a function to complete this sync (simulates onSyncEnd)
+				return () => {
+					state.activeSyncRequests--;
+					if (triggerType === 'manual') {
+						state.activeManualSyncRequests--;
+						if (state.activeManualSyncRequests === 0) {
+							state.animationActive = false;
+						}
+					}
+					if (state.activeSyncRequests === 0) {
+						state.noticeCreated = false;
+					}
+				};
+			};
+
+			// Race condition scenario from user's bug report:
+			// - Sync 1 starts (manual, long-running)
+			// - Sync 2 attempted (manual, gets already-syncing)
+			// - Sync 3 attempted (manual, gets already-syncing)
+			// - Animation should persist until Sync 1 finishes
+			const completeSync1 = simulateSync('manual');
+			const completeSync2 = simulateSync('manual');
+			const completeSync3 = simulateSync('manual');
+
+			// After starting all syncs, verify state
+			expect(state).toEqual({
+				activeSyncRequests: 3,
+				activeManualSyncRequests: 3,
+				animationActive: true,
+				noticeCreated: true,
+			});
+
+			// Complete quick syncs (would have gotten already-syncing in real scenario)
+			completeSync2();
+			completeSync3();
+
+			// After quick syncs finish, animation should STILL be active
+			expect(state).toMatchObject({
+				activeManualSyncRequests: 1, // Still one active
+				animationActive: true, // ✅ Bug would have cleared this early
+				noticeCreated: true, // Notice still active
+			});
+
+			// After long sync finishes, animation should clear
+			completeSync1();
+			expect(state).toMatchObject({
+				activeManualSyncRequests: 0,
+				animationActive: false,
+				noticeCreated: false,
+			});
+		});
+
+		it('should keep manual animation active during auto-sync', () => {
+			// Verify separate counters for manual vs auto
+			const state = {
+				activeSyncRequests: 0,
+				activeManualSyncRequests: 0,
+				animationActive: false,
+			};
+
+			const simulateSync = (triggerType: 'manual' | 'auto') => {
+				// onSyncStart
+				state.activeSyncRequests++;
+				if (triggerType === 'manual') {
+					state.activeManualSyncRequests++;
+					if (state.activeManualSyncRequests === 1) {
+						state.animationActive = true;
+					}
+				}
+
+				// Return completion function
+				return () => {
+					state.activeSyncRequests--;
+					if (triggerType === 'manual') {
+						state.activeManualSyncRequests--;
+						if (state.activeManualSyncRequests === 0) {
+							state.animationActive = false;
+						}
+					}
+				};
+			};
+
+			// Scenario: Auto-sync starts, then manual sync during it
+			const completeAutoSync = simulateSync('auto');
+			const completeManualSync = simulateSync('manual');
+
+			// Manual sync should show animation
+			expect(state).toMatchObject({
+				animationActive: true,
+				activeSyncRequests: 2,
+			});
+
+			// After manual completes, animation should clear even though auto still running
+			completeManualSync();
+			expect(state).toMatchObject({
+				animationActive: false,
+				activeSyncRequests: 1, // Auto still running
+			});
+
+			completeAutoSync();
+			expect(state.activeSyncRequests).toBe(0);
+		});
+
+		it('should create only one notice for concurrent requests', () => {
+			// Verify single shared notice for all concurrent syncs
+			const state = {
+				activeSyncRequests: 0,
+				noticeCount: 0,
+			};
+
+			const simulateSync = () => {
+				// onSyncStart
+				state.activeSyncRequests++;
+				if (state.activeSyncRequests === 1) {
+					state.noticeCount++; // Only first request creates notice
+				}
+
+				// Return completion function
+				return () => {
+					state.activeSyncRequests--;
+					if (state.activeSyncRequests === 0) {
+						state.noticeCount--; // Last request cleans up notice
+					}
+				};
+			};
+
+			// Start multiple concurrent syncs
+			const completeSync1 = simulateSync();
+			const completeSync2 = simulateSync();
+			const completeSync3 = simulateSync();
+
+			// During concurrent execution, should only have one notice
+			expect(state).toMatchObject({
+				noticeCount: 1,
+				activeSyncRequests: 3,
+			});
+
+			// Complete some syncs
+			completeSync2();
+			completeSync3();
+			expect(state).toMatchObject({
+				noticeCount: 1, // Still just one notice
+				activeSyncRequests: 1,
+			});
+
+			// Complete last sync
+			completeSync1();
+			expect(state).toMatchObject({
+				noticeCount: 0, // Cleaned up after last completes
+				activeSyncRequests: 0,
+			});
 		});
 	});
 });

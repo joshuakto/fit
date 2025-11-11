@@ -37,26 +37,48 @@ export class FitLogger {
 	/**
 	 * Log diagnostic information
 	 * Writes to both console and file for cross-platform debugging
+	 *
+	 * Defensive: Never throws - logging failures are silently handled to avoid breaking caller
 	 */
-	log(tag: string, data: unknown) {
-		const timestamp = new Date().toISOString();
-		const message = `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`;
+	log(tag: string, data?: unknown) {
+		try {
+			const timestamp = new Date().toISOString();
+			let message: string;
 
-		// Always log to console for desktop users
-		console.log(tag, data);
+			if (data !== undefined) {
+				try {
+					message = `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`;
+				} catch (e) {
+					// Handle circular refs, BigInt, etc.
+					message = `[${timestamp}] ${tag}: [Unserializable data: ${e instanceof Error ? e.message : String(e)}]`;
+				}
+			} else {
+				message = `[${timestamp}] ${tag}`;
+			}
 
-		// Only write to file if logging is enabled
-		if (!this.loggingEnabled) {
-			return;
-		}
+			// Always log to console for desktop users (defensive)
+			try {
+				console.log(tag, data);
+			} catch (_e) {
+				// Ignore console errors (e.g., if console is overridden or unavailable)
+			}
 
-		// Buffer for file write
-		this.logBuffer.push(message);
+			// Only write to file if logging is enabled
+			if (!this.loggingEnabled) {
+				return;
+			}
 
-		// Schedule async write (debounced)
-		if (!this.writeScheduled) {
-			this.writeScheduled = true;
-			setTimeout(() => this.flushToFile(), 100);
+			// Buffer for file write
+			this.logBuffer.push(message);
+
+			// Schedule async write (debounced)
+			if (!this.writeScheduled) {
+				this.writeScheduled = true;
+				setTimeout(() => this.flushToFile(), 100);
+			}
+		} catch (_e) {
+			// Ultimate safety net - logging should NEVER crash the caller
+			// No-op: silently drop the log if everything fails
 		}
 	}
 

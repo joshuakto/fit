@@ -201,6 +201,7 @@
     position: relative; /* Set position to relative */
     font-size: 16px; /* Font size 16 pixels */
     overflow: hidden;
+    color: transparent; /* Hide the original icon to prevent double rendering */
 }
 
 .fit-sync-ribbon-el.animate-icon::after {
@@ -313,19 +314,19 @@
     margin-bottom: 2px;
 }
 
-.file-created {
-    background-color: rgba(144, 238, 144, 0.4); 
+.file-ADDED {
+    background-color: rgba(144, 238, 144, 0.4);
     background-image: var(--file-create);
 }
 
-.file-changed {
-    background-color: rgba(249, 180, 52, 0.4); 
+.file-MODIFIED {
+    background-color: rgba(249, 180, 52, 0.4);
     background-image: var(--file-change);
-    
+
 }
 
-.file-deleted {
-    background-color: rgba(255, 99, 71, 0.3); 
+.file-REMOVED {
+    background-color: rgba(255, 99, 71, 0.3);
     background-image: var(--file-delete);
 }
 
@@ -347,7 +348,7 @@
     padding: 3px;
 }
 
-.file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after {
+.file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after, .file-conflict-untracked::after {
     padding: 4px;
     border-radius: 20%;
     content: "     ";
@@ -356,15 +357,18 @@
 }
 .file-conflict-delete::after {
     background-image: var(--file-delete);
-    background-color: rgba(255, 99, 71, 0.3); 
+    background-color: rgba(255, 99, 71, 0.3);
 }
 .file-conflict-create::after {
     background-image: var(--file-create);
-    background-color: rgba(144, 238, 144, 0.4);  
+    background-color: rgba(144, 238, 144, 0.4);
 }
 .file-conflict-change::after {
     background-image: var(--file-change);
-    background-color: rgba(249, 180, 52, 0.4); 
+    background-color: rgba(249, 180, 52, 0.4);
+}
+.file-conflict-untracked::after {
+    background-color: rgba(128, 128, 128, 0.3);
 }
 .file-conflict-note {
     padding-left: 5px;
