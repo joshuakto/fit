@@ -8,7 +8,7 @@
 import { Notice } from 'obsidian';
 
 export interface CriticalErrorOptions {
-	logger?: { log: (tag: string, data?: unknown) => void };
+	logger?: { logUnsafe: (tag: string, data?: unknown) => void };
 	showNotice?: boolean;
 }
 
@@ -48,7 +48,7 @@ export function handleCriticalError(
 	// Try to log to file for diagnostics (defensive: never throw)
 	if (options.logger) {
 		try {
-			options.logger.log(`[Plugin] FATAL: ${context}`, {
+			options.logger.logUnsafe(`[Plugin] FATAL: ${context}`, {
 				error: errorMessage,
 				stack: errorStack,
 				timestamp: new Date().toISOString()
@@ -72,7 +72,7 @@ export function handleCriticalError(
 			// If Notice fails but logging worked, try to log the Notice failure
 			if (logError === null && options.logger) {
 				try {
-					options.logger.log('[Plugin] FATAL: Failed to show error notice', {
+					options.logger.logUnsafe('[Plugin] FATAL: Failed to show error notice', {
 						noticeError: noticeError instanceof Error ? noticeError.message : String(noticeError),
 						noticeStack: noticeError instanceof Error ? noticeError.stack : undefined,
 						originalError: errorMessage,

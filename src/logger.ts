@@ -4,6 +4,18 @@
  * Writes logs to .obsidian/plugins/fit/debug.log for mobile AND desktop users.
  * Uses vault.adapter API for cross-platform compatibility (works on iOS/Android/desktop).
  * Writing to plugin directory keeps logs out of vault and user's way.
+ *
+ * TODO: Refactor logger initialization pattern
+ * Current design uses lazy initialization with setters (setVault, setPluginDir, setEnabled),
+ * which requires careful initialization order and makes it easy to use logger before it's ready.
+ *
+ * Better approach:
+ * 1. Remove setters, require all dependencies at construction
+ * 2. Use factory function: FitLogger.create(vault, pluginDir, enabled)
+ * 3. Store instance on plugin class instead of module-level singleton
+ * 4. Extract minimal FileAdapter interface to decouple from Obsidian's Vault type
+ *
+ * Benefits: Type-safe initialization, easier testing, explicit dependencies
  */
 
 import { Vault } from "obsidian";
@@ -35,47 +47,57 @@ export class FitLogger {
 	}
 
 	/**
+	 * Logging implementation that can throw errors
+	 * Use this when you need to detect logging failures (e.g., in critical error handlers)
+	 * For normal operation, use log() which is defensive and never throws
+	 * @throws Error if logging fails
+	 */
+	logUnsafe(tag: string, data?: unknown): void {
+		const timestamp = new Date().toISOString();
+		let message: string;
+
+		if (data !== undefined) {
+			try {
+				message = `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`;
+			} catch (e) {
+				// Handle circular refs, BigInt, etc.
+				message = `[${timestamp}] ${tag}: [Unserializable data: ${e instanceof Error ? e.message : String(e)}]`;
+			}
+		} else {
+			message = `[${timestamp}] ${tag}`;
+		}
+
+		// Always log to console for desktop users (defensive)
+		try {
+			console.log(tag, data);
+		} catch (_e) {
+			// Ignore console errors (e.g., if console is overridden or unavailable)
+		}
+
+		// Only write to file if logging is enabled
+		if (!this.loggingEnabled) {
+			return;
+		}
+
+		// Buffer for file write
+		this.logBuffer.push(message);
+
+		// Schedule async write (debounced)
+		if (!this.writeScheduled) {
+			this.writeScheduled = true;
+			setTimeout(() => this.flushToFile(), 100);
+		}
+	}
+
+	/**
 	 * Log diagnostic information
 	 * Writes to both console and file for cross-platform debugging
 	 *
 	 * Defensive: Never throws - logging failures are silently handled to avoid breaking caller
 	 */
-	log(tag: string, data?: unknown) {
+	log(tag: string, data?: unknown): void {
 		try {
-			const timestamp = new Date().toISOString();
-			let message: string;
-
-			if (data !== undefined) {
-				try {
-					message = `[${timestamp}] ${tag}: ${JSON.stringify(data, null, 2)}`;
-				} catch (e) {
-					// Handle circular refs, BigInt, etc.
-					message = `[${timestamp}] ${tag}: [Unserializable data: ${e instanceof Error ? e.message : String(e)}]`;
-				}
-			} else {
-				message = `[${timestamp}] ${tag}`;
-			}
-
-			// Always log to console for desktop users (defensive)
-			try {
-				console.log(tag, data);
-			} catch (_e) {
-				// Ignore console errors (e.g., if console is overridden or unavailable)
-			}
-
-			// Only write to file if logging is enabled
-			if (!this.loggingEnabled) {
-				return;
-			}
-
-			// Buffer for file write
-			this.logBuffer.push(message);
-
-			// Schedule async write (debounced)
-			if (!this.writeScheduled) {
-				this.writeScheduled = true;
-				setTimeout(() => this.flushToFile(), 100);
-			}
+			this.logUnsafe(tag, data);
 		} catch (e) {
 			// Ultimate safety net - logging should NEVER crash the caller
 			// Try to at least report to console that logging failed
