@@ -76,9 +76,14 @@ export class FitLogger {
 				this.writeScheduled = true;
 				setTimeout(() => this.flushToFile(), 100);
 			}
-		} catch (_e) {
+		} catch (e) {
 			// Ultimate safety net - logging should NEVER crash the caller
-			// No-op: silently drop the log if everything fails
+			// Try to at least report to console that logging failed
+			try {
+				console.error(`[FitLogger] FATAL: Logging failed for tag "${tag}". Data:`, data, 'Error:', e);
+			} catch (_consoleError) {
+				// If even console fails, give up silently
+			}
 		}
 	}
 

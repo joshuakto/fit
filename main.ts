@@ -13,6 +13,7 @@ import { showFileChanges, showUnappliedConflicts } from 'src/utils';
 import { fitLogger } from 'src/logger';
 import { CommitSha } from 'src/util/hashing';
 import { FileStates } from 'src/util/changeTracking';
+import { handleCriticalError } from 'src/util/errorHandling';
 
 /**
  * Plugin configuration interface
@@ -351,33 +352,45 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async onload() {
-		await this.loadSettings();
-		await this.loadLocalStore();
+		try {
+			await this.loadSettings();
+			await this.loadLocalStore();
 
-		// Initialize logger with vault and plugin directory for cross-platform diagnostics
-		fitLogger.setVault(this.app.vault);
-		if (this.manifest.dir) {
-			fitLogger.setPluginDir(this.manifest.dir);
+			// Initialize logger with vault and plugin directory for cross-platform diagnostics
+			fitLogger.setVault(this.app.vault);
+			if (this.manifest.dir) {
+				fitLogger.setPluginDir(this.manifest.dir);
+			}
+			fitLogger.setEnabled(this.settings.enableDebugLogging);
+
+			fitLogger.log('[Plugin] Starting plugin initialization');
+
+			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
+			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
+			this.settingTab = new FitSettingTab(this.app, this);
+			this.loadRibbonIcons();
+
+			// Add command to command palette for fit sync
+			this.addCommand({
+				id: 'fit-sync',
+				name: 'Fit Sync',
+				callback: this.triggerManualSync
+			});
+
+			// This adds a settings tab so the user can configure various aspects of the plugin
+			this.addSettingTab(new FitSettingTab(this.app, this));
+
+			// register interval to repeat auto check
+			await this.startOrUpdateAutoSyncInterval();
+
+			fitLogger.log('[Plugin] Plugin initialization completed successfully');
+		} catch (error) {
+			handleCriticalError('Plugin failed to load', error, {
+				logger: fitLogger,
+				showNotice: true
+			});
+			throw error;
 		}
-		fitLogger.setEnabled(this.settings.enableDebugLogging);
-
-		this.fit = new Fit(this.settings, this.localStore, this.app.vault);
-		this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
-		this.settingTab = new FitSettingTab(this.app, this);
-		this.loadRibbonIcons();
-
-		// Add command to command palette for fit sync
-		this.addCommand({
-			id: 'fit-sync',
-			name: 'Fit Sync',
-			callback: this.triggerManualSync
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new FitSettingTab(this.app, this));
-
-		// register interval to repeat auto check
-		await this.startOrUpdateAutoSyncInterval();
 	}
 
 	onunload() {
