@@ -131,12 +131,21 @@ export class FitLogger {
 			// Use vault.adapter API for cross-platform compatibility (works on mobile!)
 			// Read existing log if it exists
 			let existingContent = '';
+			let hasUtf8Bom = false;
 			if (await this.vault.adapter.exists(logPath)) {
 				existingContent = await this.vault.adapter.read(logPath);
+				// Check if file already has UTF-8 BOM
+				hasUtf8Bom = existingContent.charCodeAt(0) === 0xFEFF;
 			}
 
 			// Append new content
 			let updatedContent = existingContent + newContent;
+
+			// Add UTF-8 BOM to beginning if not present
+			// This helps browsers correctly identify the file encoding when viewing directly
+			if (!hasUtf8Bom) {
+				updatedContent = '\uFEFF' + updatedContent;
+			}
 
 			// Truncate if too large (keep most recent logs by character count, not line count)
 			if (updatedContent.length > this.MAX_LOG_SIZE) {

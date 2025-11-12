@@ -7,6 +7,7 @@ import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
+import { FilePath } from './util/filePath';
 import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
@@ -33,8 +34,7 @@ export class StubTFile extends TFile {
 
 		stub.path = filePath;
 
-		// Extract name (last component) from forward-slash path
-		const name = filePath.split('/').pop()!;
+		const name = FilePath.getName(FilePath.create(filePath));
 		stub.name = name;
 
 		// Extract extension (everything after last dot)

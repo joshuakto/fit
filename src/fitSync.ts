@@ -7,6 +7,7 @@ import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { detectNormalizationMismatches } from "./util/filePath";
 import { CommitSha } from "./util/hashing";
 
 // Helper to log SHA cache updates with provenance tracking
@@ -526,6 +527,11 @@ export class FitSync implements IFitSync {
 		// Phase 1: Detect all clashes between local and remote changes
 		const clashes = this.fit.getClashedChanges(localChanges, remoteUpdate.remoteChanges);
 		const clashPaths = new Set(clashes.map(c => c.path));
+
+		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
+		const localPaths = Object.keys(currentLocalState);
+		const remotePaths = Object.keys(remoteUpdate.remoteTreeSha);
+		detectNormalizationMismatches(localPaths, remotePaths);
 
 		// Separate clashed remote changes from non-clashed ones
 		const remoteChangesToPull = remoteUpdate.remoteChanges.filter(c => !clashPaths.has(c.path));

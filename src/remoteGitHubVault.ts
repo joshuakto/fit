@@ -11,6 +11,7 @@ import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { FilePath, detectNormalizationIssues } from "./util/filePath";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -334,8 +335,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Addition/modification case
 		if (!encoding) {
-			const extension = path.split('.').pop() || '';
-			encoding = isBinaryExtension(extension) ? "base64" : "utf-8";
+			const filePath = FilePath.create(path);
+			const extension = FilePath.getExtension(filePath);
+			encoding = (extension && isBinaryExtension(extension)) ? "base64" : "utf-8";
 		}
 		const blobSha = await this.createBlob(rawContent, encoding);
 
@@ -640,6 +642,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Fetch fresh state from GitHub
 		const treeSha = await this.getCommitTreeSha(commitSha);
 		const newState = await this.buildStateFromTree(treeSha);
+
+		// Diagnostic: Check for Unicode normalization issues in file paths
+		detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
 
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
