@@ -231,7 +231,7 @@ export function detectNormalizationIssues(paths: string[], source: string): void
  */
 export function detectNormalizationMismatches(localPaths: string[], remotePaths: string[]): void {
 
-	const remoteNormalized = new Set(remotePaths.map(p => p.normalize('NFC')));
+	const remoteNormalizedMap = new Map(remotePaths.map(p => [p.normalize('NFC'), p]));
 
 	const mismatches: Array<{
 		localPath?: string;
@@ -244,9 +244,9 @@ export function detectNormalizationMismatches(localPaths: string[], remotePaths:
 		const nfc = localPath.normalize('NFC');
 
 		// If local path is NFD but remote has NFC version
-		if (localPath !== nfc && remoteNormalized.has(nfc)) {
+		if (localPath !== nfc) {
 			// Find the actual remote path
-			const remotePath = remotePaths.find(p => p.normalize('NFC') === nfc);
+			const remotePath = remoteNormalizedMap.get(nfc);
 
 			if (remotePath && remotePath !== localPath) {
 				mismatches.push({

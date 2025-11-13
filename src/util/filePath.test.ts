@@ -129,7 +129,7 @@ describe('FilePath namespace', () => {
 				hasNonAscii: true,
 				charLength: 8, // d ü n y a . m d
 			});
-			expect(info.byteLength).toBeGreaterThan(info.charLength) // Multi-byte UTF-8
+			expect(info.byteLength).toBeGreaterThan(info.charLength); // Multi-byte UTF-8
 		});
 
 		it('shows NFD input was normalized to NFC', () => {
