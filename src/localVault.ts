@@ -11,6 +11,7 @@ import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
 import { BlobSha, computeSha1 } from "./util/hashing";
+import { FilePath, detectNormalizationIssues } from "./util/filePath";
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
@@ -113,6 +114,9 @@ export class LocalVault implements IVault<"local"> {
 			});
 		}
 
+		// Diagnostic: Check for Unicode normalization issues in file paths
+		detectNormalizationIssues(trackedPaths, 'local filesystem');
+
 		// Compute SHAs for all tracked files
 		const shaEntries = await Promise.all(
 			trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
@@ -136,16 +140,22 @@ export class LocalVault implements IVault<"local"> {
 	/**
 	 * Compute SHA-1 hash of file path + content
 	 * (Matches GitHub's blob SHA format)
+	 *
+	 * Path is normalized to NFC before hashing to prevent
+	 * duplication issues with Unicode normalization (issue #51)
 	 */
 	// NOTE: Public visibility for tests.
 	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
-		const extension = path.split('.').pop() || '';
+		// Normalize path to NFC form for consistent hashing across platforms
+		const normalizedPath = FilePath.create(path);
+		const extension = FilePath.getExtension(normalizedPath);
+
 		const contentToHash = (extension && isBinaryExtensionForSha(extension))
 			// Use base64 representation for consistent hashing
 			? fileContent.toBase64()
 			// Preserve plaintext SHA logic for non-binary case.
 			: fileContent.toPlainText();
-		return computeSha1(path + contentToHash) as Promise<BlobSha>;
+		return computeSha1(normalizedPath + contentToHash) as Promise<BlobSha>;
 	}
 
 	/**

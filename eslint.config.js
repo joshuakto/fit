@@ -37,6 +37,8 @@ export default [
 			'@stylistic/no-mixed-spaces-and-tabs': ['warn'],
 			'@stylistic/semi': ['warn', 'always'],
 			'@stylistic/indent': ['warn', 'tab'],
+			'no-redeclare': 'off',
+			'no-control-regex': 'off',
 		},
 	},
 	{
