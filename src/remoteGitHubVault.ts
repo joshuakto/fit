@@ -638,17 +638,16 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Return cached state if remote hasn't changed
 		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
-			fitLogger.log('[RemoteGitHubVault] Using cached remote state', {
-				commitSha: commitSha.slice(0, 7)
-			});
+			fitLogger.log(`.... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
 			return { state: { ...this.latestKnownState }, commitSha };
 		}
 
 		// Fetch fresh state from GitHub
-		fitLogger.log('[RemoteGitHubVault] Fetching fresh tree from GitHub', {
-			newCommitSha: commitSha.slice(0, 7),
-			cachedCommitSha: this.latestKnownCommitSha?.slice(0, 7) ?? 'none'
-		});
+		if (this.latestKnownCommitSha === null) {
+			fitLogger.log(`.... ⬇️ [RemoteVault] Fetching initial state from GitHub (${commitSha.slice(0, 7)})...`);
+		} else {
+			fitLogger.log(`.... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
+		}
 		// Monitor for slow GitHub API operations
 		const treeSha = await this.getCommitTreeSha(commitSha);
 		const newState = await withSlowOperationMonitoring(

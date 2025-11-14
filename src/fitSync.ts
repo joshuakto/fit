@@ -37,22 +37,19 @@ function logCacheUpdate(
 		warnings.push(`Local SHA cache jumped from 0 to ${newLocalCount} files - possible recovery from empty cache or first sync`);
 	}
 
-	fitLogger.log('[FitSync] Updating local store after ' + source, {
-		source,
-		oldLocalShaCount: oldLocalCount,
-		newLocalShaCount: newLocalCount,
-		oldRemoteShaCount: Object.keys(oldRemoteSha).length,
-		newRemoteShaCount: Object.keys(newRemoteSha).length,
-		localShaAdded,
-		localShaRemoved,
-		remoteShaAdded: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]),
-		remoteShaRemoved: Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]),
-		commitShaChanged: oldCommitSha !== newCommitSha,
-		oldCommitSha,
-		newCommitSha,
-		...(warnings.length > 0 && { warnings }),
-		...extraContext
-	});
+	const totalChanges = localShaAdded.length + localShaRemoved.length +
+		Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length +
+		Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length;
+
+	if (totalChanges > 0 || oldCommitSha !== newCommitSha || warnings.length > 0) {
+		fitLogger.log(`.. 📦 [Cache] Updating SHA cache after ${source}`, {
+			localChanges: localShaAdded.length + localShaRemoved.length,
+			remoteChanges: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length + Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length,
+			commitChanged: oldCommitSha !== newCommitSha,
+			...(warnings.length > 0 && { warnings }),
+			...extraContext
+		});
+	}
 }
 
 /**
@@ -596,9 +593,9 @@ export class FitSync implements IFitSync {
 		};
 		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
 
-		fitLogger.log('[FitSync] Pushed local changes to remote', {
-			changesPushed: pushResult?.pushedChanges.length ?? 0
-		});
+		if (pushResult && pushResult.pushedChanges.length > 0) {
+			fitLogger.log(`.. ⬆️ [Push] Pushed ${pushResult.pushedChanges.length} changes to remote`);
+		}
 
 		let latestRemoteTreeSha: FileStates;
 		let latestCommitSha: CommitSha;
@@ -704,25 +701,33 @@ export class FitSync implements IFitSync {
 			// Get remote changes (vault caching handles optimization)
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = await this.fit.getRemoteChanges();
 
-			// Log sync decision for diagnostics
-			// Log all files involved upfront for crash diagnostics
-			const logData: Record<string, Record<string, string[]>> = {};
+			// Log detected changes for diagnostics
+			const localCount = filteredLocalChanges.length;
+			const remoteCount = remoteChanges.length;
 
-			const localData: Record<string, string[]> = {};
-			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
-				const files = filteredLocalChanges.filter(c => c.type === changeType).map(c => c.path);
-				if (files.length > 0) localData[changeType] = files;
-			});
-			if (Object.keys(localData).length > 0) logData.local = localData;
+			if (localCount > 0 || remoteCount > 0) {
+				const logData: Record<string, Record<string, string[]>> = {};
 
-			const remoteData: Record<string, string[]> = {};
-			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
-				const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
-				if (files.length > 0) remoteData[changeType] = files;
-			});
-			if (Object.keys(remoteData).length > 0) logData.remote = remoteData;
+				if (localCount > 0) {
+					const localData: Record<string, string[]> = {};
+					['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
+						const files = filteredLocalChanges.filter(c => c.type === changeType).map(c => c.path);
+						if (files.length > 0) localData[changeType] = files;
+					});
+					logData.local = localData;
+				}
 
-			fitLogger.log('[FitSync] Starting sync', logData);
+				if (remoteCount > 0) {
+					const remoteData: Record<string, string[]> = {};
+					['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
+						const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
+						if (files.length > 0) remoteData[changeType] = files;
+					});
+					logData.remote = remoteData;
+				}
+
+				fitLogger.log(`🔄 [FitSync] Syncing changes (${localCount} local, ${remoteCount} remote)`, logData);
+			}
 
 			// Execute sync (handles all clash detection, push, pull, persist)
 			const { localOps, remoteOps, conflicts } = await this.performSync(

@@ -52,7 +52,6 @@ describe('withSlowOperationMonitoring', () => {
 			'[Performance Warning] Slow operation detected',
 			expect.objectContaining({
 				operation: 'Slow operation',
-				thresholdSeconds: '5.0',
 				message: expect.stringContaining('5.0s')
 			})
 		);
@@ -153,7 +152,8 @@ describe('withSlowOperationMonitoring', () => {
 		expect(fitLogger.log).toHaveBeenCalledWith(
 			'[Performance Warning] Slow operation detected',
 			expect.objectContaining({
-				thresholdSeconds: '10.0'
+				operation: 'Operation with default threshold',
+				message: expect.stringContaining('10.0s')
 			})
 		);
 

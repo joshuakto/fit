@@ -135,10 +135,7 @@ export class LocalVault implements IVault<"local"> {
 		const newState = Object.fromEntries(shaEntries);
 
 		// Log computed SHAs for provenance tracking
-		fitLogger.log('[LocalVault] Computed local SHAs from filesystem', {
-			source: 'vault files',
-			fileCount: Object.keys(newState).length
-		});
+		fitLogger.log(`.. 💾 [LocalVault] Scanned ${Object.keys(newState).length} files`);
 
 		return { state: { ...newState } };
 	}

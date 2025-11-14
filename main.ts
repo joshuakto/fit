@@ -169,20 +169,26 @@ export default class FitPlugin extends Plugin {
 		if (!this.checkSettingsConfigured()) { return; }
 		await this.loadLocalStore();
 
-		fitLogger.log('[Plugin] Sync initiated', { triggerType });
-		if (triggerType === 'auto') {
-			fitLogger.log('[Plugin] Auto-sync mode', { mode: this.settings.autoSync });
-		}
+		const syncStartTime = Date.now();
+		fitLogger.log(`🚀 [SYNC START] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
 		const syncResult = await this.fitSync.sync(this.currentSyncNotice!);
 
 		if (syncResult.success) {
-			fitLogger.log('[Plugin] Sync completed successfully', {
-				fileOpsCount: syncResult.changeGroups.length,
-				unresolvedConflictsCount: syncResult.clash.length,
-				operations: syncResult.changeGroups,
-				unresolvedConflicts: syncResult.clash
-			});
+			const duration = Date.now() - syncStartTime;
+			const totalOps = syncResult.changeGroups.reduce((sum, g) => sum + g.changes.length, 0);
+			const hasConflicts = syncResult.clash.length > 0;
+
+			fitLogger.log(
+				`✅ [SYNC COMPLETE] ${hasConflicts ? 'Success with conflicts' : 'Success'}`,
+				{
+					duration: `${(duration / 1000).toFixed(2)}s`,
+					totalOperations: totalOps,
+					conflicts: syncResult.clash.length,
+					...(totalOps > 0 && { changes: syncResult.changeGroups }),
+					...(hasConflicts && { unresolvedConflicts: syncResult.clash })
+				}
+			);
 
 			if (this.settings.notifyConflicts) {
 				showUnappliedConflicts(syncResult.clash);
