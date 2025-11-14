@@ -12,6 +12,8 @@ import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
+import { fitLogger } from "./logger";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -636,12 +638,24 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Return cached state if remote hasn't changed
 		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
+			fitLogger.log('[RemoteGitHubVault] Using cached remote state', {
+				commitSha: commitSha.slice(0, 7)
+			});
 			return { state: { ...this.latestKnownState }, commitSha };
 		}
 
 		// Fetch fresh state from GitHub
+		fitLogger.log('[RemoteGitHubVault] Fetching fresh tree from GitHub', {
+			newCommitSha: commitSha.slice(0, 7),
+			cachedCommitSha: this.latestKnownCommitSha?.slice(0, 7) ?? 'none'
+		});
+		// Monitor for slow GitHub API operations
 		const treeSha = await this.getCommitTreeSha(commitSha);
-		const newState = await this.buildStateFromTree(treeSha);
+		const newState = await withSlowOperationMonitoring(
+			this.buildStateFromTree(treeSha),
+			`Remote vault tree fetch from GitHub`,
+			{ warnAfterMs: 10000 }
+		);
 
 		// Diagnostic: Check for Unicode normalization issues in file paths
 		detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');

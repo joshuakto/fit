@@ -12,6 +12,7 @@ import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
 import { BlobSha, computeSha1 } from "./util/hashing";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
@@ -118,12 +119,17 @@ export class LocalVault implements IVault<"local"> {
 		detectNormalizationIssues(trackedPaths, 'local filesystem');
 
 		// Compute SHAs for all tracked files
-		const shaEntries = await Promise.all(
-			trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
-				const sha = await LocalVault.fileSha1(
-					path, await readFileContent(this.vault, path));
-				return [path, sha];
-			})
+		// Monitor for slow operations that could cause mobile crashes
+		const shaEntries = await withSlowOperationMonitoring(
+			Promise.all(
+				trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
+					const sha = await LocalVault.fileSha1(
+						path, await readFileContent(this.vault, path));
+					return [path, sha];
+				})
+			),
+			`Local vault SHA computation (${trackedPaths.length} files)`,
+			{ warnAfterMs: 10000 }
 		);
 
 		const newState = Object.fromEntries(shaEntries);
@@ -272,27 +278,36 @@ export class LocalVault implements IVault<"local"> {
 		filesToDelete: Array<string>
 	): Promise<ApplyChangesResult<"local">> {
 		// Process file additions or updates
-		const writeResults = await Promise.all(
-			filesToWrite.map(async ({path, content}) => {
-				try {
-					return await this.writeFile(path, content.toBase64(), content);
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					throw new Error(`Failed to write to ${path}: ${message}`);
-				}
-			})
+		// Monitor for slow file write operations
+		const writeResults = await withSlowOperationMonitoring(
+			Promise.all(
+				filesToWrite.map(async ({path, content}) => {
+					try {
+						return await this.writeFile(path, content.toBase64(), content);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						throw new Error(`Failed to write to ${path}: ${message}`);
+					}
+				})
+			),
+			`Local vault file writes (${filesToWrite.length} files)`,
+			{ warnAfterMs: 10000 }
 		);
 
 		// Process file deletions
-		const deletionOps = await Promise.all(
-			filesToDelete.map(async (path) => {
-				try {
-					return await this.deleteFile(path);
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					throw new Error(`Failed to delete ${path}: ${message}`);
-				}
-			})
+		const deletionOps = await withSlowOperationMonitoring(
+			Promise.all(
+				filesToDelete.map(async (path) => {
+					try {
+						return await this.deleteFile(path);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						throw new Error(`Failed to delete ${path}: ${message}`);
+					}
+				})
+			),
+			`Local vault file deletions (${filesToDelete.length} files)`,
+			{ warnAfterMs: 10000 }
 		);
 
 		// Extract file operations for return value
