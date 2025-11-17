@@ -2,12 +2,13 @@
  * Tests for RemoteGitHubVault
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
 import { FileContent } from "./util/contentEncoding";
+import { fitLogger } from "./logger";
 
 const COMMIT123_SHA = "commit123" as CommitSha;
 const COMMIT456_SHA = "commit456" as CommitSha;
@@ -23,6 +24,9 @@ describe("RemoteGitHubVault", () => {
 	let vault: RemoteGitHubVault;
 
 	beforeEach(() => {
+		// Suppress logging to reduce test noise
+		vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+
 		fakeOctokit = new FakeOctokit("testowner", "testrepo", "main");
 		__setMockOctokitInstance(fakeOctokit);
 

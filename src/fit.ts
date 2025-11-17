@@ -146,6 +146,7 @@ export class Fit {
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
 	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha}> {
+		fitLogger.log('.. ☁️ [RemoteVault] Fetching from GitHub...');
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
