@@ -65,6 +65,16 @@ export class StubTFile extends TFile {
  *   // Now use fake.request() which will respond based on internal state
  *   const vault = new RemoteGitHubVault(fake as any, "owner", "repo", "main", ...);
  */
+/**
+ * Create an HTTP error with status code that wrapOctokitError will recognize
+ */
+function createHttpError(message: string, status: number): Error {
+	const error: any = new Error(message);
+	error.status = status;
+	error.response = {}; // Simulate response object for wrapOctokitError
+	return error;
+}
+
 export class FakeOctokit {
 	private refs: Map<string, CommitSha> = new Map(); // ref name -> commit SHA
 	private commits: Map<CommitSha, { tree: TreeSha; parents: CommitSha[]; message: string }> = new Map();
@@ -144,10 +154,7 @@ export class FakeOctokit {
 		// GET /repos/{owner}/{repo}
 		if (route === "GET /repos/{owner}/{repo}") {
 			if (!this.repoExists) {
-				const error: any = new Error(`Repository not found`);
-				error.status = 404;
-				error.response = {}; // Simulate response object for wrapOctokitError
-				throw error;
+				throw createHttpError(`Repository not found`, 404);
 			}
 			return { data: { name: this.repo, owner: { login: this.owner } } };
 		}
@@ -157,22 +164,25 @@ export class FakeOctokit {
 			const refName = params.ref;
 			const commitSha = this.refs.get(refName);
 			if (!commitSha) {
-				const error: any = new Error(`Ref not found: ${refName}`);
-				error.status = 404;
-				error.response = {}; // Simulate response object for wrapOctokitError
-				throw error;
+				throw createHttpError(`Ref not found: ${refName}`, 404);
 			}
 			return { data: { object: { sha: commitSha } } };
 		}
 
 		// GET /repos/{owner}/{repo}/commits/{ref}
 		if (route === "GET /repos/{owner}/{repo}/commits/{ref}") {
-			const commitSha = params.ref;
+			const ref = params.ref;
+			// Try to resolve ref as a branch name first, then as a commit SHA
+			let commitSha = this.refs.get(`heads/${ref}`);
+			if (!commitSha) {
+				// Not a branch, try as a direct commit SHA
+				commitSha = ref as CommitSha;
+			}
 			const commit = this.commits.get(commitSha);
 			if (!commit) {
-				throw new Error(`Commit not found: ${commitSha}`);
+				throw createHttpError(`Commit not found: ${ref}`, 404);
 			}
-			return { data: { commit: { tree: { sha: commit.tree } } } };
+			return { data: { sha: commitSha, commit: { tree: { sha: commit.tree } } } };
 		}
 
 		// GET /repos/{owner}/{repo}/git/trees/{tree_sha}
@@ -629,7 +639,9 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		}
 
 		const state = await this.buildCurrentState(true);
-		return { state, commitSha: this.commitSha };
+		// Mock tree SHA - not accurate but sufficient for testing
+		const treeSha = `tree-${this.commitSha}` as TreeSha;
+		return { state, commitSha: this.commitSha, treeSha };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
