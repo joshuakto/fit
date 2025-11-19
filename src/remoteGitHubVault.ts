@@ -607,15 +607,15 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Return cached state if remote hasn't changed
 		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
-			fitLogger.log(`.... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
+			fitLogger.log(`... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
 			return { state: { ...this.latestKnownState }, commitSha, treeSha };
 		}
 
 		// Fetch fresh state from GitHub
 		if (this.latestKnownCommitSha === null) {
-			fitLogger.log(`.... ⬇️ [RemoteVault] Fetching initial state from GitHub (${commitSha.slice(0, 7)})...`);
+			fitLogger.log(`... ⬇️ [RemoteVault] Fetching initial state from GitHub (${commitSha.slice(0, 7)})...`);
 		} else {
-			fitLogger.log(`.... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
+			fitLogger.log(`... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
 		}
 		// Monitor for slow GitHub API operations
 		const newState = await withSlowOperationMonitoring(
@@ -624,12 +624,16 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			{ warnAfterMs: 10000 }
 		);
 
-		// Diagnostic: Check for Unicode normalization issues in file paths
-		detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
-
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
+
+		// Log completion with normalization diagnostics
+		const normalizationInfo = detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
+		fitLogger.log(
+			`... ☁️ [RemoteVault] Fetched ${Object.keys(newState).length} files`,
+			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
+		);
 
 		return { state: { ...newState }, commitSha, treeSha };
 	}

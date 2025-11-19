@@ -75,7 +75,7 @@ export class Fit {
 		}
 
 		// Log SHA cache provenance for debugging
-		fitLogger.log('[Fit] SHA caches loaded from storage', {
+		fitLogger.log('.. 📦 [Cache] Loaded SHA caches from storage', {
 			source: 'plugin data.json',
 			localShaCount: localCount,
 			remoteShaCount: remoteCount,
@@ -131,6 +131,7 @@ export class Fit {
 	}
 
 	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
+		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
 		const changes = compareFileStates(currentState, this.localSha);

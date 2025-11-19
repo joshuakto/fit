@@ -155,7 +155,7 @@ export const FilePath = {
  * @param paths - Array of raw path strings to analyze
  * @param source - Description of where paths came from (e.g., "local", "remote")
  */
-export function detectNormalizationIssues(paths: string[], source: string): void {
+export function detectNormalizationIssues(paths: string[], source: string): { nfdCount: number } | null {
 
 	const nonNfcPaths: Array<{
 		path: string;
@@ -163,13 +163,10 @@ export function detectNormalizationIssues(paths: string[], source: string): void
 		charLength: number;
 		byteLength: number;
 	}> = [];
-	const nonAsciiPaths: string[] = [];
 
 	for (const path of paths) {
 		const hasNonAscii = /[^\x00-\x7F]/.test(path);
 		if (hasNonAscii) {
-			nonAsciiPaths.push(path);
-
 			const nfc = path.normalize('NFC');
 			const nfd = path.normalize('NFD');
 
@@ -196,28 +193,23 @@ export function detectNormalizationIssues(paths: string[], source: string): void
 		}
 	}
 
-	// Log summary if we found non-ASCII paths
-	if (nonAsciiPaths.length > 0) {
-		fitLogger.log(`[PathNormalization] Non-ASCII paths detected in ${source}`, {
-			totalPaths: paths.length,
-			nonAsciiCount: nonAsciiPaths.length,
-			nfdCount: nonNfcPaths.length,
-			nfcCount: nonAsciiPaths.length - nonNfcPaths.length
+	// Return NFD count if we found any NFD paths
+	if (nonNfcPaths.length > 0) {
+		// Log detailed warning for NFD paths (potential issue)
+		fitLogger.log(`⚠️ [PathNormalization] NFD-normalized paths found in ${source}`, {
+			warning: 'These paths may cause duplication if synced with NFC-normalized systems',
+			issue: 'https://github.com/joshuakto/fit/issues/51',
+			paths: nonNfcPaths.map(info => ({
+				...info,
+				nfcEquivalent: info.path.normalize('NFC'),
+				differentWhenNormalized: info.path !== info.path.normalize('NFC')
+			}))
 		});
 
-		// Log detailed info for NFD paths (potential issue)
-		if (nonNfcPaths.length > 0) {
-			fitLogger.log(`[PathNormalization] ⚠️  NFD-normalized paths found in ${source}`, {
-				warning: 'These paths may cause duplication if synced with NFC-normalized systems',
-				issue: 'https://github.com/joshuakto/fit/issues/51',
-				paths: nonNfcPaths.map(info => ({
-					...info,
-					nfcEquivalent: info.path.normalize('NFC'),
-					differentWhenNormalized: info.path !== info.path.normalize('NFC')
-				}))
-			});
-		}
+		return { nfdCount: nonNfcPaths.length };
 	}
+
+	return null;
 }
 
 /**

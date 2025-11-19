@@ -274,11 +274,6 @@ describe('FitSync', () => {
 		});
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
 
-		// Verify: Logger was called with appropriate tags during sync
-		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
-			expect.stringContaining('[Fit]'),
-			expect.anything()
-		);
 		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
 			expect.stringContaining('[FitSync]'),
 			expect.anything()
