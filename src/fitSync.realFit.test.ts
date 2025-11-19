@@ -12,7 +12,7 @@ import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
-import { FitSettings, LocalStores } from '../main';
+import { FitSettings, LocalStores } from '@main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
 import { FileContent } from './util/contentEncoding';

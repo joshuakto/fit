@@ -1,9 +1,9 @@
 import {describe, it, expect, vi, beforeEach, afterEach} from 'vitest';
 import {withSlowOperationMonitoring} from './asyncMonitoring';
-import {fitLogger} from '../logger';
+import {fitLogger} from '@/logger';
 
 // Mock fitLogger
-vi.mock('../logger', () => ({
+vi.mock('@/logger', () => ({
 	fitLogger: {
 		log: vi.fn()
 	}

@@ -1,4 +1,4 @@
-import {fitLogger} from '../logger';
+import {fitLogger} from '@/logger';
 
 /**
  * Monitors a promise and logs a single warning if it takes longer than expected.

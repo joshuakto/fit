@@ -13,7 +13,7 @@
  *   if (FilePath.isHidden(path)) { ... }
  */
 
-import { fitLogger } from '../logger';
+import { fitLogger } from '@/logger';
 
 /**
  * Branded type for normalized file paths
