@@ -15,6 +15,23 @@ import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 
 /**
+ * Helper to process Promise.allSettled results and collect failures
+ */
+function collectSettledFailures<T>(
+	results: PromiseSettledResult<T>[],
+	paths: string[]
+): Array<{path: string; error: unknown}> {
+	const failures: Array<{path: string; error: unknown}> = [];
+	for (let i = 0; i < results.length; i++) {
+		const result = results[i];
+		if (result.status === 'rejected') {
+			failures.push({ path: paths[i], error: result.reason });
+		}
+	}
+	return failures;
+}
+
+/**
  * Frozen list of binary file extensions for SHA calculation consistency.
  * IMPORTANT: This list is FROZEN to ensure SHA calculations remain stable even if
  * contentEncoding.ts adds new binary extensions in the future. Adding new extensions
@@ -117,8 +134,9 @@ export class LocalVault implements IVault<"local"> {
 
 		// Compute SHAs for all tracked files
 		// Monitor for slow operations that could cause mobile crashes
-		const shaEntries = await withSlowOperationMonitoring(
-			Promise.all(
+		// Use allSettled to collect both successes and failures per file
+		const shaResults = await withSlowOperationMonitoring(
+			Promise.allSettled(
 				trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
 					const sha = await LocalVault.fileSha1(
 						path, await readFileContent(this.vault, path));
@@ -128,6 +146,33 @@ export class LocalVault implements IVault<"local"> {
 			`Local vault SHA computation (${trackedPaths.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
+
+		// Separate successes from failures
+		const shaEntries: Array<[string, BlobSha]> = [];
+		const failedPaths: Array<{path: string, error: unknown}> = [];
+
+		shaResults.forEach((result, index) => {
+			const path = trackedPaths[index];
+			if (result.status === 'fulfilled') {
+				shaEntries.push(result.value);
+			} else {
+				failedPaths.push({ path, error: result.reason });
+				fitLogger.log(`❌ [LocalVault] Failed to process file: ${path}`, result.reason);
+			}
+		});
+
+		// If any files failed, throw a VaultError with details
+		if (failedPaths.length > 0) {
+			throw new VaultError(
+				'filesystem',
+				`Failed to read ${failedPaths.length} file(s) from local vault: ${failedPaths.map(f => f.path).join(', ')}`,
+				{
+					originalError: failedPaths[0].error,
+					failedPaths: failedPaths.map(f => f.path),
+					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
+				}
+			);
+		}
 
 		const newState = Object.fromEntries(shaEntries);
 
@@ -277,36 +322,71 @@ export class LocalVault implements IVault<"local"> {
 	): Promise<ApplyChangesResult<"local">> {
 		// Process file additions or updates
 		// Monitor for slow file write operations
-		const writeResults = await withSlowOperationMonitoring(
-			Promise.all(
-				filesToWrite.map(async ({path, content}) => {
-					try {
-						return await this.writeFile(path, content.toBase64(), content);
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						throw new Error(`Failed to write to ${path}: ${message}`);
-					}
-				})
+		const writeSettledResults = await withSlowOperationMonitoring(
+			Promise.allSettled(
+				filesToWrite.map(async ({path, content}) => this.writeFile(path, content.toBase64(), content))
 			),
 			`Local vault file writes (${filesToWrite.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
 
 		// Process file deletions
-		const deletionOps = await withSlowOperationMonitoring(
-			Promise.all(
-				filesToDelete.map(async (path) => {
-					try {
-						return await this.deleteFile(path);
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						throw new Error(`Failed to delete ${path}: ${message}`);
-					}
-				})
+		const deletionSettledResults = await withSlowOperationMonitoring(
+			Promise.allSettled(
+				filesToDelete.map(async (path) => this.deleteFile(path))
 			),
 			`Local vault file deletions (${filesToDelete.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
+
+		// Collect successful operations and failures
+		const writeResults: Array<{change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
+		const writeFailures = collectSettledFailures(writeSettledResults, filesToWrite.map(f => f.path));
+
+		for (let i = 0; i < writeSettledResults.length; i++) {
+			const result = writeSettledResults[i];
+			const {path} = filesToWrite[i];
+
+			if (result.status === 'fulfilled') {
+				const {change, shaPromise} = result.value;
+				writeResults.push({ change, shaPromise: shaPromise ?? undefined });
+			} else {
+				const failure = writeFailures.find(f => f.path === path);
+				fitLogger.log(`❌ [LocalVault] Failed to write file: ${path}`, failure?.error);
+			}
+		}
+
+		const deletionOps: FileChange[] = [];
+		const deleteFailures = collectSettledFailures(deletionSettledResults, filesToDelete);
+
+		for (let i = 0; i < deletionSettledResults.length; i++) {
+			const result = deletionSettledResults[i];
+			const path = filesToDelete[i];
+
+			if (result.status === 'fulfilled') {
+				deletionOps.push(result.value);
+			} else {
+				const failure = deleteFailures.find(f => f.path === path);
+				fitLogger.log(`❌ [LocalVault] Failed to delete file: ${path}`, failure?.error);
+			}
+		}
+
+		// If any operations failed, throw VaultError with details
+		if (writeFailures.length > 0 || deleteFailures.length > 0) {
+			const allFailures = [...writeFailures, ...deleteFailures];
+			const failedPaths = allFailures.map(f => f.path);
+			const primaryPath = failedPaths[0];
+			const primaryError = allFailures[0].error;
+			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
+
+			throw VaultError.filesystem(
+				`Failed to write to ${primaryPath}: ${primaryMessage}`,
+				{
+					failedPaths,
+					errors: allFailures
+				}
+			);
+		}
 
 		// Extract file operations for return value
 		const writeOps = writeResults.map(r => r.change);
