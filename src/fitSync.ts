@@ -1,7 +1,7 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates } from "./util/changeTracking";
 import { extractExtension } from "./utils";
-import { LocalStores } from "main";
+import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";

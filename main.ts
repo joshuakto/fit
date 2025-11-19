@@ -5,15 +5,15 @@
  */
 
 import { Plugin, SettingTab } from 'obsidian';
-import { Fit } from 'src/fit';
-import FitNotice from 'src/fitNotice';
-import FitSettingTab from 'src/fitSetting';
-import { FitSync } from 'src/fitSync';
-import { showFileChanges, showUnappliedConflicts } from 'src/utils';
-import { fitLogger } from 'src/logger';
-import { CommitSha } from 'src/util/hashing';
-import { FileStates } from 'src/util/changeTracking';
-import { handleCriticalError } from 'src/util/errorHandling';
+import { Fit } from '@/fit';
+import FitNotice from '@/fitNotice';
+import FitSettingTab from '@/fitSetting';
+import { FitSync } from '@/fitSync';
+import { showFileChanges, showUnappliedConflicts } from '@/utils';
+import { fitLogger } from '@/logger';
+import { CommitSha } from '@/util/hashing';
+import { FileStates } from '@/util/changeTracking';
+import { handleCriticalError } from '@/util/errorHandling';
 
 /**
  * Plugin configuration interface
