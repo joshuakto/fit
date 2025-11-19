@@ -162,55 +162,25 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	// ===== Read Operations =====
 
 	/**
-	 * Get reference SHA for the current branch.
-	 * Throws VaultError (remote_not_found) on 404 (repository or branch not found).
+	 * Fetch commit SHA and tree SHA in one API call
+	 * More efficient than separate getRef() + getCommit() calls
 	 */
-	private async getRef(ref: string = `heads/${this.branch}`): Promise<CommitSha> {
-		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/git/ref/{ref}`, {
-					owner: this.owner,
-					repo: this.repo,
-					ref: ref,
-					headers: this.headers
-				});
-			return response.object.sha as CommitSha;
-		} catch (error: unknown) {
-			return await this.wrapOctokitError(error, 'repo-or-branch');
-		}
-	}
-
-	/**
-	 * Get the latest commit SHA from the current branch
-	 */
-	private async getLatestCommitSha(): Promise<CommitSha> {
-		return await this.getRef(`heads/${this.branch}`);
-	}
-
-	/**
-	 * Get full commit data from GitHub API
-	 */
-	private async getCommit(ref: string) {
+	private async getLatestCommitAndTreeSha(): Promise<{ commitSha: CommitSha; treeSha: TreeSha }> {
 		try {
 			const {data: commit} = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/commits/{ref}`, {
 					owner: this.owner,
 					repo: this.repo,
-					ref,
+					ref: this.branch,
 					headers: this.headers
 				});
-			return commit;
+			return {
+				commitSha: commit.sha as CommitSha,
+				treeSha: commit.commit.tree.sha as TreeSha
+			};
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
-	}
-
-	/**
-	 * Get tree SHA from a commit
-	 */
-	private async getCommitTreeSha(ref: CommitSha): Promise<TreeSha> {
-		const commit = await this.getCommit(ref);
-		return commit.commit.tree.sha as TreeSha;
 	}
 
 	/**
@@ -531,8 +501,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		filesToDelete: Array<string>
 	): Promise<ApplyChangesResult<"remote">> {
 		// Get current state using cache when available
-		const { state: currentState, commitSha: parentCommitSha } = await this.readFromSource();
-		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
+		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
 		// Create tree nodes for all changes
 		const treeNodePromises: Promise<TreeNode | null>[] = [];
@@ -634,12 +603,12 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
 	 */
 	async readFromSource(): Promise<VaultReadResult<"remote">> {
-		const commitSha = await this.getLatestCommitSha();
+		const { commitSha, treeSha } = await this.getLatestCommitAndTreeSha();
 
 		// Return cached state if remote hasn't changed
 		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
 			fitLogger.log(`.... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
-			return { state: { ...this.latestKnownState }, commitSha };
+			return { state: { ...this.latestKnownState }, commitSha, treeSha };
 		}
 
 		// Fetch fresh state from GitHub
@@ -649,7 +618,6 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			fitLogger.log(`.... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
 		}
 		// Monitor for slow GitHub API operations
-		const treeSha = await this.getCommitTreeSha(commitSha);
 		const newState = await withSlowOperationMonitoring(
 			this.buildStateFromTree(treeSha),
 			`Remote vault tree fetch from GitHub`,
@@ -663,7 +631,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
 
-		return { state: { ...newState }, commitSha };
+		return { state: { ...newState }, commitSha, treeSha };
 	}
 
 	/**

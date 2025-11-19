@@ -884,7 +884,7 @@ Based on real-world measurements, here's what to expect for sync timing:
 
 1. **Network latency to GitHub** (biggest variable)
    - **Cache hit** (no remote changes): 1 API call to check if remote changed
-   - **Cache miss** (remote changed): 3 sequential API calls to fetch full state
+   - **Cache miss** (remote changed): 2 sequential API calls to fetch full state
    - Network conditions vary widely (local network vs international)
 
 2. **Vault size**
@@ -894,21 +894,20 @@ Based on real-world measurements, here's what to expect for sync timing:
 
 3. **Sequential operations** (see optimization opportunities below)
    - Local scan completes before remote fetch starts
-   - Remote API calls happen sequentially (ref → commit → tree)
+   - Remote API calls happen sequentially (commits → tree)
 
 ### Performance Optimization Strategies
 
 **Current optimizations:**
-- ✅ **Remote vault caching** - Checks `GET /repos/{owner}/{repo}/git/ref/{ref}` for commit SHA, then:
+- ✅ **Remote vault caching** - Uses `GET /repos/{owner}/{repo}/commits/{branch}` to get commit SHA + tree SHA in one call, then:
   - **Cache hit**: Returns cached file states if commit SHA unchanged (1 API call total)
-  - **Cache miss**: Fetches tree via `GET /repos/{owner}/{repo}/commits/{ref}` + `GET /repos/{owner}/{repo}/git/trees/{tree_sha}` (3 API calls total)
-  - Implementation: [src/remoteGitHubVault.ts:635-666](../src/remoteGitHubVault.ts#L635-L666)
+  - **Cache miss**: Fetches tree via `GET /repos/{owner}/{repo}/git/trees/{tree_sha}` (2 API calls total)
+  - Implementation: [src/remoteGitHubVault.ts:605-635](../src/remoteGitHubVault.ts#L605-L635), [src/remoteGitHubVault.ts:168-184](../src/remoteGitHubVault.ts#L168-L184)
 - ✅ **In-memory SHA computation** - Computes file SHAs during sync to avoid re-reading
 - ✅ **Batched filesystem operations** - Safety checks grouped for efficiency
 
 **Potential optimizations (not yet implemented):**
 - ⏸️ **Parallel local + remote fetch** - Currently sequential ([src/fitSync.ts:697-702](../src/fitSync.ts#L697-L702)), could overlap
-- ⏸️ **Combine ref + commit API calls** - Use `GET /repos/.../commits/{branch}` to get commit SHA + tree SHA in one call (saves 1 API call)
 
 **Trade-offs:**
 - Prioritizes correctness (always checks for latest remote state)

@@ -16,10 +16,11 @@ type VaultReadResultMap = {
 	"local": {
 		state: FileStates;
 	};
-	/** Remote vault result - includes commit SHA */
+	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {
 		state: FileStates;
 		commitSha: CommitSha;
+		treeSha: TreeSha;
 	};
 };
 
