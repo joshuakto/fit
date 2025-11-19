@@ -115,9 +115,6 @@ export class LocalVault implements IVault<"local"> {
 			});
 		}
 
-		// Diagnostic: Check for Unicode normalization issues in file paths
-		detectNormalizationIssues(trackedPaths, 'local filesystem');
-
 		// Compute SHAs for all tracked files
 		// Monitor for slow operations that could cause mobile crashes
 		const shaEntries = await withSlowOperationMonitoring(
@@ -134,8 +131,12 @@ export class LocalVault implements IVault<"local"> {
 
 		const newState = Object.fromEntries(shaEntries);
 
-		// Log computed SHAs for provenance tracking
-		fitLogger.log(`.. 💾 [LocalVault] Scanned ${Object.keys(newState).length} files`);
+		// Log computed SHAs for provenance tracking, with normalization diagnostics
+		const normalizationInfo = detectNormalizationIssues(trackedPaths, 'local filesystem');
+		fitLogger.log(
+			`... 💾 [LocalVault] Scanned ${Object.keys(newState).length} files`,
+			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
+		);
 
 		return { state: { ...newState } };
 	}

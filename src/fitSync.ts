@@ -694,12 +694,17 @@ export class FitSync implements IFitSync {
 		try {
 			syncNotice.setMessage("Checking for changes...");
 
-			// Get local changes and current local state (with SHAs already computed)
-			const {changes: localChanges, state: currentLocalState} = await this.fit.getLocalChanges();
+			// Get local and remote changes in parallel
+			fitLogger.log('🔄 [Sync] Checking local and remote changes (parallel)...');
+			const [
+				{changes: localChanges, state: currentLocalState},
+				{changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha}
+			] = await Promise.all([
+				this.fit.getLocalChanges(),
+				this.fit.getRemoteChanges()
+			]);
+			fitLogger.log('.. ✅ [Sync] Change detection complete');
 			const filteredLocalChanges = localChanges.filter(c => this.fit.shouldSyncPath(c.path));
-
-			// Get remote changes (vault caching handles optimization)
-			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = await this.fit.getRemoteChanges();
 
 			// Log detected changes for diagnostics
 			const localCount = filteredLocalChanges.length;
