@@ -11,6 +11,7 @@ import { FilePath } from './util/filePath';
 import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
+import { fitLogger } from './logger';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -290,6 +291,7 @@ export class FakeLocalVault implements IVault<"local"> {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
+	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -309,6 +311,15 @@ export class FakeLocalVault implements IVault<"local"> {
 		} else {
 			this.failureScenarios.clear();
 		}
+	}
+
+	/**
+	 * Set a mock function to be called during writeFile operations.
+	 * Allows test code to inject failures for specific paths.
+	 * @param mockFn - Function called with path before writing. Should throw to simulate failure, or null to clear.
+	 */
+	setMockWriteFile(mockFn: ((path: string) => Promise<void>) | null): void {
+		this.mockWriteFile = mockFn;
 	}
 
 	/**
@@ -349,12 +360,50 @@ export class FakeLocalVault implements IVault<"local"> {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
+		// Use Promise.allSettled to collect all file processing results
+		const paths = Array.from(this.files.keys()).filter(path => this.shouldTrackState(path));
+		const settledResults = await Promise.allSettled(
+			paths.map(async (path) => {
+				// Call mock if provided (allows test to inject failures)
+				if (this.mockWriteFile) {
+					await this.mockWriteFile(path);
+				}
+
+				const content = this.files.get(path)!;
+				const sha = await LocalVault.fileSha1(path, content);
+				return { path, sha };
+			})
+		);
+
+		// Collect successful results and failures
 		const state: FileStates = {};
-		for (const [path, content] of this.files.entries()) {
-			if (this.shouldTrackState(path)) {
-				state[path] = await LocalVault.fileSha1(path, content);
+		const failedPaths: string[] = [];
+		const errors: Array<{ path: string; error: unknown }> = [];
+
+		for (let i = 0; i < settledResults.length; i++) {
+			const result = settledResults[i];
+			const path = paths[i];
+
+			if (result.status === 'fulfilled') {
+				state[result.value.path] = result.value.sha;
+			} else {
+				fitLogger.log(`❌ [LocalVault] Failed to process file: ${path}`, result.reason);
+				failedPaths.push(path);
+				errors.push({ path, error: result.reason });
 			}
 		}
+
+		// If any files failed, throw VaultError with details
+		if (failedPaths.length > 0) {
+			throw VaultError.filesystem(
+				`Failed to read ${failedPaths.length} file(s) from local vault`,
+				{
+					failedPaths,
+					errors
+				}
+			);
+		}
+
 		return { state };
 	}
 
@@ -436,41 +485,83 @@ export class FakeLocalVault implements IVault<"local"> {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
-		const changes: FileChange[] = [];
+		// Use Promise.allSettled to match real LocalVault behavior
+		const writeSettledResults = await Promise.allSettled(
+			filesToWrite.map(async (file) => {
+				// Call mock if provided (allows test to inject failures)
+				if (this.mockWriteFile) {
+					await this.mockWriteFile(file.path);
+				}
 
-		for (const file of filesToWrite) {
-			// Simulate file/folder conflicts that occur in real filesystems:
-			// 1. Can't create file "foo" if folder "foo/" exists (has files like "foo/bar")
-			// 2. Can't create file "foo/bar" if file "foo" exists (would need folder "foo/")
+				// Simulate file/folder conflicts that occur in real filesystems:
+				// 1. Can't create file "foo" if folder "foo/" exists (has files like "foo/bar")
+				// 2. Can't create file "foo/bar" if file "foo" exists (would need folder "foo/")
 
-			const existingPaths = Array.from(this.files.keys());
+				const existingPaths = Array.from(this.files.keys());
 
-			// Check #1: File path conflicts with existing folder
-			if (existingPaths.some(p => p.startsWith(file.path + '/'))) {
-				throw VaultError.filesystem(
-					`Cannot create file "${file.path}" - a folder with this name already exists`
-				);
+				// Check #1: File path conflicts with existing folder
+				if (existingPaths.some(p => p.startsWith(file.path + '/'))) {
+					throw VaultError.filesystem(
+						`Cannot create file "${file.path}" - a folder with this name already exists`
+					);
+				}
+
+				// Check #2: Parent folder path conflicts with existing file
+				const parentFolder = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : null;
+				if (parentFolder && this.files.has(parentFolder)) {
+					throw VaultError.filesystem(
+						`Cannot create folder "${parentFolder}" for file "${file.path}" - a file with this name already exists`
+					);
+				}
+
+				const existed = this.files.has(file.path);
+				this.setFile(file.path, file.content);
+				const changeType: 'MODIFIED' | 'ADDED' = existed ? 'MODIFIED' : 'ADDED';
+				return { path: file.path, type: changeType };
+			})
+		);
+
+		// Collect successful writes and failures
+		const writeResults: FileChange[] = [];
+		const writeFailures: Array<{path: string; error: unknown}> = [];
+
+		for (let i = 0; i < writeSettledResults.length; i++) {
+			const result = writeSettledResults[i];
+			const {path} = filesToWrite[i];
+
+			if (result.status === 'fulfilled') {
+				writeResults.push(result.value);
+			} else {
+				writeFailures.push({ path, error: result.reason });
 			}
-
-			// Check #2: Parent folder path conflicts with existing file
-			const parentFolder = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : null;
-			if (parentFolder && this.files.has(parentFolder)) {
-				throw VaultError.filesystem(
-					`Cannot create folder "${parentFolder}" for file "${file.path}" - a file with this name already exists`
-				);
-			}
-
-			const existed = this.files.has(file.path);
-			this.setFile(file.path, file.content);
-			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
 
+		// Process deletions
+		const deletionResults: FileChange[] = [];
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
-				changes.push({ path, type: 'REMOVED' });
+				deletionResults.push({ path, type: 'REMOVED' });
 			}
 		}
+
+		// If any operations failed, throw VaultError with details
+		if (writeFailures.length > 0) {
+			const failedPaths = writeFailures.map(f => f.path);
+			const primaryPath = failedPaths[0];
+			const primaryError = writeFailures[0].error;
+			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
+
+			throw VaultError.filesystem(
+				`Failed to write to ${primaryPath}: ${primaryMessage}`,
+				{
+					failedPaths,
+					errors: writeFailures
+				}
+			);
+		}
+
+		const changes = [...writeResults, ...deletionResults];
 
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans

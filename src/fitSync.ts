@@ -695,14 +695,26 @@ export class FitSync implements IFitSync {
 			syncNotice.setMessage("Checking for changes...");
 
 			// Get local and remote changes in parallel
+			// Use allSettled to ensure both operations complete (or fail) before processing
+			// This prevents out-of-order logging when one operation fails quickly
 			fitLogger.log('🔄 [Sync] Checking local and remote changes (parallel)...');
-			const [
-				{changes: localChanges, state: currentLocalState},
-				{changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha}
-			] = await Promise.all([
+			const results = await Promise.allSettled([
 				this.fit.getLocalChanges(),
 				this.fit.getRemoteChanges()
 			]);
+
+			// Check for failures and throw the first error encountered
+			const [localResult, remoteResult] = results;
+			if (localResult.status === 'rejected') {
+				throw localResult.reason;
+			}
+			if (remoteResult.status === 'rejected') {
+				throw remoteResult.reason;
+			}
+
+			// Both succeeded, extract values
+			const {changes: localChanges, state: currentLocalState} = localResult.value;
+			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 			const filteredLocalChanges = localChanges.filter(c => this.fit.shouldSyncPath(c.path));
 
@@ -868,16 +880,33 @@ export class FitSync implements IFitSync {
 	getSyncErrorMessage(syncError: SyncError): string {
 		// Handle VaultError types
 		if (syncError instanceof VaultError) {
+			let baseMessage: string;
 			switch (syncError.type) {
 				case 'network':
-					return `${syncError.message}. Please check your internet connection.`;
+					baseMessage = `${syncError.message}. Please check your internet connection.`;
+					break;
 				case 'authentication':
-					return `${syncError.message}. Check your GitHub personal access token.`;
+					baseMessage = `${syncError.message}. Check your GitHub personal access token.`;
+					break;
 				case 'remote_not_found':
-					return `${syncError.message}. Check your repo and branch settings.`;
+					baseMessage = `${syncError.message}. Check your repo and branch settings.`;
+					break;
 				case 'filesystem':
-					return `File system error: ${syncError.message}`;
+					baseMessage = `File system error: ${syncError.message}`;
+					break;
 			}
+
+			// Append failed file paths if available
+			if (syncError.details?.failedPaths && syncError.details.failedPaths.length > 0) {
+				const paths = syncError.details.failedPaths;
+				if (paths.length <= 3) {
+					baseMessage += `\n\nFailed files:\n${paths.map(p => `  • ${p}`).join('\n')}`;
+				} else {
+					baseMessage += `\n\nFailed files (${paths.length} total):\n${paths.slice(0, 3).map(p => `  • ${p}`).join('\n')}\n  • ... and ${paths.length - 3} more`;
+				}
+			}
+
+			return baseMessage;
 		}
 
 		// Handle sync orchestration errors (type === 'unknown' | 'already-syncing')

@@ -506,21 +506,36 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Create tree nodes for all changes
 		const treeNodePromises: Promise<TreeNode | null>[] = [];
 
-		// Process file writes/updates
+		// Process file writes/updates (attach file path metadata)
 		for (const {path, content} of filesToWrite) {
 			treeNodePromises.push(
 				this.createTreeNodeFromContent(path, content, currentState)
+					.catch(error => {
+						// Attach file path as metadata (non-standard but better than message mutation)
+						if (error && typeof error === 'object') {
+							(error as Record<string, unknown>).filePath = path;
+						}
+						throw error;
+					})
 			);
 		}
 
-		// Process file deletions
+		// Process file deletions (attach file path metadata)
 		for (const path of filesToDelete) {
 			treeNodePromises.push(
 				this.createTreeNodeFromContent(path, null, currentState)
+					.catch(error => {
+						// Attach file path as metadata (non-standard but better than message mutation)
+						if (error && typeof error === 'object') {
+							(error as Record<string, unknown>).filePath = path;
+						}
+						throw error;
+					})
 			);
 		}
 
 		// Wait for all tree nodes and filter out nulls
+		// Note: Fails fast on first error (appropriate for remote operations to avoid orphaned blobs)
 		const treeNodes = (await Promise.all(treeNodePromises))
 			.filter(node => node !== null) as TreeNode[];
 
@@ -652,12 +667,34 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			: await this.getTree(treeSha);
 
 		const state: FileStates = {};
+		const failedPaths: Array<{path: string, error: unknown}> = [];
+
 		for (const node of remoteTree) {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {
-				state[node.path] = node.sha;
+				try {
+					// TODO: Should this notice if there's a collision overwriting same path?
+					state[node.path] = node.sha;
+				} catch (error) {
+					failedPaths.push({ path: node.path, error });
+					fitLogger.log(`❌ [RemoteVault] Failed to process file: ${node.path}`, error);
+				}
 			}
 		}
+
+		// If any files failed, throw a VaultError with details
+		if (failedPaths.length > 0) {
+			throw new VaultError(
+				'network',
+				`Failed to process ${failedPaths.length} file(s) from remote vault: ${failedPaths.map(f => f.path).join(', ')}`,
+				{
+					originalError: failedPaths[0].error,
+					failedPaths: failedPaths.map(f => f.path),
+					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
+				}
+			);
+		}
+
 		return state;
 	}
 
