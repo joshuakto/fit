@@ -255,14 +255,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 */
 	private async createBlob(content: string, encoding: string): Promise<BlobSha> {
 		try {
-			const {data: blob} = await this.octokit.request(
-				`POST /repos/{owner}/{repo}/git/blobs`, {
-					owner: this.owner,
-					repo: this.repo,
-					content,
-					encoding,
-					headers: this.headers
-				});
+			const {data: blob} = await withSlowOperationMonitoring(
+				this.octokit.request(
+					`POST /repos/{owner}/{repo}/git/blobs`, {
+						owner: this.owner,
+						repo: this.repo,
+						content,
+						encoding,
+						headers: this.headers
+					}),
+				'GitHub blob creation'
+			);
 			return blob.sha as BlobSha;
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo');
@@ -503,41 +506,66 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Get current state using cache when available
 		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
-		// Create tree nodes for all changes
-		const treeNodePromises: Promise<TreeNode | null>[] = [];
+		// Create tree nodes for all changes, tracking metadata for error handling
+		const operations: Array<{
+			path: string;
+			sizeBytes: number | null;
+			promise: Promise<TreeNode | null>;
+		}> = [];
 
-		// Process file writes/updates (attach file path metadata)
+		// Process file writes/updates
 		for (const {path, content} of filesToWrite) {
-			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, content, currentState)
-					.catch(error => {
-						// Attach file path as metadata (non-standard but better than message mutation)
-						if (error && typeof error === 'object') {
-							(error as Record<string, unknown>).filePath = path;
-						}
-						throw error;
-					})
-			);
+			operations.push({
+				path,
+				sizeBytes: content.size(),
+				promise: this.createTreeNodeFromContent(path, content, currentState)
+			});
 		}
 
-		// Process file deletions (attach file path metadata)
+		// Process file deletions
 		for (const path of filesToDelete) {
-			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, null, currentState)
-					.catch(error => {
-						// Attach file path as metadata (non-standard but better than message mutation)
-						if (error && typeof error === 'object') {
-							(error as Record<string, unknown>).filePath = path;
-						}
-						throw error;
-					})
-			);
+			operations.push({
+				path,
+				sizeBytes: null,  // No size for deletions
+				promise: this.createTreeNodeFromContent(path, null, currentState)
+			});
 		}
 
-		// Wait for all tree nodes and filter out nulls
-		// Note: Fails fast on first error (appropriate for remote operations to avoid orphaned blobs)
-		const treeNodes = (await Promise.all(treeNodePromises))
-			.filter(node => node !== null) as TreeNode[];
+		// Wait for all tree nodes, collecting both successes and failures
+		const results = await Promise.allSettled(operations.map(op => op.promise));
+
+		// Extract successful nodes and collect per-file errors
+		const treeNodes: TreeNode[] = [];
+		const perFileErrors: Array<{ path: string; error: unknown }> = [];
+
+		results.forEach((result, index) => {
+			const { path, sizeBytes } = operations[index];
+			if (result.status === 'fulfilled' && result.value !== null) {
+				treeNodes.push(result.value);
+			} else if (result.status === 'rejected') {
+				let error = result.reason;
+				// Enhance 422 errors (input too large) with file size
+				if (sizeBytes !== null) {
+					const errorObj = error as { status?: number };
+					if (errorObj.status === 422) {
+						const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
+						const enhancedError = error instanceof Error ? error : new Error(String(error));
+						enhancedError.message = `${enhancedError.message} (file size: ${sizeMB} MB)`;
+						error = enhancedError;
+					}
+				}
+				perFileErrors.push({ path, error });
+			}
+		});
+
+		// If any files failed, throw VaultError with per-file details
+		if (perFileErrors.length > 0) {
+			const failedPaths = perFileErrors.map(e => e.path);
+			throw VaultError.network(
+				`Failed to process ${perFileErrors.length} file(s) for remote upload`,
+				{ errors: perFileErrors, failedPaths }
+			);
+		}
 
 		// If no changes needed, return empty result (currentState already from cache)
 		if (treeNodes.length === 0) {

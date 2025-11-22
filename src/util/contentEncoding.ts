@@ -146,6 +146,21 @@ export class FileContent {
 	toRaw(): FileContentType {
 		return this.content;
 	}
+
+	/**
+	 * Get the size of the content in bytes (approximate for base64)
+	 */
+	size(): number {
+		const { encoding, content } = this.content;
+		if (encoding === 'plaintext') {
+			// For plain text, length is the byte count
+			return content.length;
+		} else {
+			// For base64, approximate byte size
+			// Base64 encoding: 4 chars represent 3 bytes
+			return Math.floor((content.length * 3) / 4);
+		}
+	}
 }
 
 /**

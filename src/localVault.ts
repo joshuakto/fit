@@ -125,6 +125,9 @@ export class LocalVault implements IVault<"local"> {
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
 		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
+		// Create map for quick file size lookups
+		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
+
 		if (ignoredPaths.length > 0) {
 			fitLogger.log('[LocalVault] Ignored paths in local scan', {
 				count: ignoredPaths.length,
@@ -156,8 +159,20 @@ export class LocalVault implements IVault<"local"> {
 			if (result.status === 'fulfilled') {
 				shaEntries.push(result.value);
 			} else {
-				failedPaths.push({ path, error: result.reason });
-				fitLogger.log(`❌ [LocalVault] Failed to process file: ${path}`, result.reason);
+				let error = result.reason;
+				const fileSize = fileSizeMap.get(path);
+
+				// For large files, augment error with size context
+				// Use conservative 10MB threshold (failures seen with 30MB, varies by device)
+				const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
+				if (fileSize && fileSize >= LARGE_FILE_THRESHOLD) {
+					const sizeMB = (fileSize / (1024 * 1024)).toFixed(1);
+					const origMsg = error instanceof Error ? error.message : String(error);
+					error = new Error(`${origMsg} (file size: ${sizeMB}MB - may exceed sync limits)`);
+				}
+
+				failedPaths.push({ path, error });
+				fitLogger.log(`❌ [LocalVault] Failed to process file: ${path}`, error);
 			}
 		});
 

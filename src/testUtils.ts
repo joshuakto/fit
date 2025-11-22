@@ -48,6 +48,9 @@ export class StubTFile extends TFile {
 			stub.basename = name;
 		}
 
+		// Add default stat with size 0 (tests can override if needed)
+		stub.stat = { size: 0, mtime: 0, ctime: 0 };
+
 		return stub as TFile;
 	}
 }
