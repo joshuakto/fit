@@ -1008,8 +1008,7 @@ describe('FitSync', () => {
 					write: vi.fn().mockResolvedValue(undefined)
 				}
 			};
-			fitLogger.setVault(mockVault as any);
-			fitLogger.setPluginDir('.obsidian/plugins/fit');
+			fitLogger.configure(mockVault as any, '.obsidian/plugins/fit');
 
 			const fitSync = createFitSync();
 			localVault.setFile('test.md', 'content');
