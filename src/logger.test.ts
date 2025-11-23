@@ -12,22 +12,30 @@ const UTF8_BOM = '\uFEFF';
  */
 function createMockAdapter(initialContent: string | null = null): LogFileAdapter & {
 	content: string | null;
-	writeCalls: string[];
+	appendCalls: string[];
+	renameToCalls: string[];
 } {
 	const state = {
 		content: initialContent,
-		writeCalls: [] as string[]
+		appendCalls: [] as string[],
+		renameToCalls: [] as string[]
 	};
 
 	return {
 		get content() { return state.content; },
-		get writeCalls() { return state.writeCalls; },
+		get appendCalls() { return state.appendCalls; },
+		get renameToCalls() { return state.renameToCalls; },
 		async read(): Promise<string | null> {
 			return state.content;
 		},
-		async write(data: string): Promise<void> {
-			state.writeCalls.push(data);
-			state.content = data;
+		async append(data: string): Promise<void> {
+			state.appendCalls.push(data);
+			state.content = (state.content ?? '') + data;
+		},
+		async renameTo(newName: string): Promise<void> {
+			state.renameToCalls.push(newName);
+			// Simulate rotation: content is moved, current file becomes empty
+			state.content = null;
 		}
 	};
 }
@@ -81,15 +89,20 @@ describe('Logger', () => {
 				maxLogSize: 500
 			});
 
-			// Log enough to trigger truncation with small limit
+			// Log enough to exceed limit
 			for (let i = 0; i < 10; i++) {
 				logger.log(`tag${i}`, 'x'.repeat(100));
 			}
 			await logger.flush();
 
+			// Add one more to trigger rotation
+			logger.log('final', 'data');
+			await logger.flush();
+
 			const content = adapter.content!;
-			// Should be truncated to around 500 chars (75% = 375 kept)
-			expect(content.length).toBeLessThanOrEqual(600); // some buffer for header
+			// Should have rotated, new file should be smaller than max
+			expect(adapter.renameToCalls).toHaveLength(1);
+			expect(content.length).toBeLessThanOrEqual(500);
 		});
 	});
 
@@ -147,24 +160,10 @@ describe('Logger', () => {
 			expect(content.indexOf(UTF8_BOM, 1)).toBe(-1);
 		});
 
-		it('should add BOM to file without one', async () => {
-			const existingContent = '[2025-01-01T00:00:00.000Z] NoBomContent\n';
-			const adapter = createMockAdapter(existingContent);
-			const logger = new Logger({
-				adapter,
-				maxLogSize: 10000
-			});
-
-			logger.log('NewEntry');
-			await logger.flush();
-
-			const content = adapter.content!;
-			expect(content.charCodeAt(0)).toBe(0xFEFF);
-		});
 	});
 
-	describe('truncation when over size limits', () => {
-		it('should truncate log at entry boundary when exceeding max size', async () => {
+	describe('rotation when over size limits', () => {
+		it('should rotate log on next write when exceeding max size', async () => {
 			const adapter = createMockAdapter();
 			const logger = new Logger({
 				adapter,
@@ -179,19 +178,30 @@ describe('Logger', () => {
 			logger.log('[ENTRY_E]', 'fifth entry content ' + 'x'.repeat(100));
 			await logger.flush();
 
+			// File now exceeds limit, but no rotation yet (happens on NEXT write)
+			expect(adapter.renameToCalls).toHaveLength(0);
+
+			// Add one more entry - THIS triggers rotation
+			logger.log('[ENTRY_F]', 'triggers rotation');
+			await logger.flush();
+
 			const content = adapter.content!;
 
-			// Should have truncation header
-			expect(content).toContain('[Log truncated');
+			// Should have triggered rotation
+			expect(adapter.renameToCalls).toHaveLength(1);
+			expect(adapter.renameToCalls[0]).toBe('debug.log.0');
 
-			// Most recent entries should be preserved
-			expect(content).toContain('[ENTRY_E]');
+			// Should have rotation header
+			expect(content).toContain('Log rotated (continued from debug.log.0)');
 
-			// Should still have BOM
+			// Most recent entry should be in new log
+			expect(content).toContain('[ENTRY_F]');
+
+			// Should have BOM at start
 			expect(content.charCodeAt(0)).toBe(0xFEFF);
 		});
 
-		it('should keep approximately 75% of max size after truncation', async () => {
+		it('should start fresh file after rotation', async () => {
 			const maxLogSize = 1000;
 			const adapter = createMockAdapter();
 			const logger = new Logger({
@@ -205,14 +215,19 @@ describe('Logger', () => {
 			}
 			await logger.flush();
 
+			// File exceeds limit, add one more to trigger rotation
+			logger.log('[FINAL]', 'triggers rotation');
+			await logger.flush();
+
 			const content = adapter.content!;
 
-			// Should be around 750 chars (75% of 1000), plus some variance for headers
+			// After rotation, new file should be smaller than max (just rotation header + new content)
 			expect(content.length).toBeLessThanOrEqual(maxLogSize);
-			expect(content.length).toBeGreaterThan(maxLogSize * 0.5);
+			// Should have triggered rotation
+			expect(adapter.renameToCalls).toHaveLength(1);
 		});
 
-		it('should preserve BOM after truncation', async () => {
+		it('should preserve BOM after rotation', async () => {
 			const adapter = createMockAdapter();
 			const logger = new Logger({
 				adapter,
@@ -231,64 +246,56 @@ describe('Logger', () => {
 		});
 	});
 
-	describe('enormous first entry truncation', () => {
-		it('should handle single entry larger than max size', async () => {
+	describe('enormous single entry handling', () => {
+		it('should rotate on next write after single entry exceeds size', async () => {
 			const adapter = createMockAdapter();
 			const logger = new Logger({
 				adapter,
 				maxLogSize: 500
 			});
 
-			// Log a single enormous entry
+			// Log a single enormous entry - this will write to file
 			logger.log('[HUGE_ENTRY]', 'x'.repeat(2000));
+			await logger.flush();
+
+			// File now contains huge entry, no rotation yet
+			expect(adapter.renameToCalls).toHaveLength(0);
+
+			// Add another entry - THIS will trigger rotation
+			logger.log('[SECOND]', 'data');
 			await logger.flush();
 
 			const content = adapter.content!;
 
-			// Should be truncated
-			expect(content.length).toBeLessThanOrEqual(600);
-			// Should have BOM
+			// Now should have rotated
+			expect(adapter.renameToCalls).toHaveLength(1);
 			expect(content.charCodeAt(0)).toBe(0xFEFF);
-			// Should have truncation header
-			expect(content).toContain('[Log truncated');
+			expect(content).toContain('[SECOND]');
+			expect(content).toContain('Log rotated');
 		});
 
-		it('should handle enormous entry when file already has content', async () => {
-			const existingContent = UTF8_BOM + '[2025-01-01T00:00:00.000Z] [EXISTING]\n';
+		it('should rotate when adding to existing content that exceeds limit', async () => {
+			// Pre-populate with content that already exceeds limit
+			const existingContent = UTF8_BOM + '[2025-01-01T00:00:00.000Z] [EXISTING]\n' + 'x'.repeat(600);
 			const adapter = createMockAdapter(existingContent);
 			const logger = new Logger({
 				adapter,
 				maxLogSize: 500
 			});
 
-			// Add huge entry that will push existing out
-			logger.log('[HUGE]', 'y'.repeat(2000));
+			// Add entry - should trigger rotation because existing exceeds limit
+			logger.log('[TRIGGER]', 'y'.repeat(100));
 			await logger.flush();
 
 			const content = adapter.content!;
 
-			expect(content.length).toBeLessThanOrEqual(600);
+			// Should have rotated because existing content exceeded limit
+			expect(adapter.renameToCalls).toHaveLength(1);
 			expect(content.charCodeAt(0)).toBe(0xFEFF);
+			expect(content).toContain('[TRIGGER]');
+			expect(content).toContain('Log rotated');
 		});
 
-		it('should force-truncate pathological content without entry markers', async () => {
-			// Pre-populate with content that has no valid log entry markers
-			const pathologicalContent = UTF8_BOM + 'x'.repeat(1000);
-			const adapter = createMockAdapter(pathologicalContent);
-			const logger = new Logger({
-				adapter,
-				maxLogSize: 500
-			});
-
-			logger.log('NewEntry');
-			await logger.flush();
-
-			const content = adapter.content!;
-
-			// Should not exceed limit even with pathological content
-			expect(content.length).toBeLessThanOrEqual(600);
-			expect(content.charCodeAt(0)).toBe(0xFEFF);
-		});
 	});
 
 	describe('snapshot tests', () => {
@@ -381,8 +388,7 @@ describe('Logger', () => {
 
 			const content = stripTimestamps(adapter.content!);
 			expect(content).toBe(
-				`${UTF8_BOM}[Log truncated - keeping last ~0KB]
-[TIMESTAMP] [D]: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+				`${UTF8_BOM}[TIMESTAMP] [Logger] Log rotated (continued from debug.log.0)
 [TIMESTAMP] [E]: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 `
 			);

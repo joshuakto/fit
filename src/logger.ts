@@ -16,11 +16,19 @@ export const MAX_LOG_STRING_LENGTH = 2000;
 /**
  * Minimal filesystem interface for a single log file.
  * Decouples logger from Obsidian's Vault type for easier testing.
+ * All operations target a single preconfigured file path.
  */
 export interface LogFileAdapter {
 	/** Read file contents, or null if file doesn't exist */
 	read(): Promise<string | null>;
-	write(data: string): Promise<void>;
+	/** Append data to end of file (creates file if nonexistent) */
+	append(data: string): Promise<void>;
+	/**
+	 * Rename this log file to a sibling file with the given name.
+	 * Used for log rotation (e.g., "debug.log" -> "debug.log.0").
+	 * @param newName - Simple filename (not a path), must be in same directory
+	 */
+	renameTo(newName: string): Promise<void>;
 }
 
 /**
@@ -204,69 +212,29 @@ export class Logger {
 		const newContent = messagesToWrite.join('\n') + '\n';
 
 		try {
-			// Use adapter API for cross-platform compatibility (works on mobile!)
-			// Read existing log if it exists
-			const existingContent = await this.adapter.read() ?? '';
+			// Check if we need to initialize or rotate the log file
+			const existingContent = await this.adapter.read();
 
-			// Check if file already has UTF-8 BOM
-			const hasUtf8Bom = existingContent.length > 0 && existingContent.charCodeAt(0) === 0xFEFF;
+			if (existingContent === null) {
+				// File doesn't exist - create with BOM prefix
+				await this.adapter.append('\uFEFF' + newContent);
+			} else if (existingContent.length === 0) {
+				// Empty file - add BOM
+				await this.adapter.append('\uFEFF' + newContent);
+			} else {
+				// File exists - check for corruption or size limit
+				const needsRotation = existingContent.length > this.maxLogSize;
 
-			// Append new content
-			let updatedContent = existingContent + newContent;
-
-			// Add UTF-8 BOM to beginning if not present
-			// This helps browsers correctly identify the file encoding when viewing directly
-			if (!hasUtf8Bom) {
-				updatedContent = '\uFEFF' + updatedContent;
-			}
-
-			// Truncate if too large (keep most recent logs by character count, not line count)
-			if (updatedContent.length > this.maxLogSize) {
-				// Keep last ~75% of max size to avoid constant truncation
-				const keepSize = Math.floor(this.maxLogSize * 0.75);
-				let truncatePoint = updatedContent.length - keepSize;
-
-				// Never truncate into the BOM (character 0)
-				if (truncatePoint < 1) {
-					truncatePoint = 1;
-				}
-
-				// Find the start of the next complete log entry (entries start with "[YYYY-MM-DD...")
-				const searchContent = updatedContent.slice(truncatePoint);
-				const nextEntryMatch = searchContent.match(/\n\[20\d{2}-/);
-
-				let actualTruncatePoint: number;
-				if (nextEntryMatch && nextEntryMatch.index !== undefined) {
-					actualTruncatePoint = truncatePoint + nextEntryMatch.index + 1; // +1 to skip the newline
+				if (needsRotation) {
+					// Rotate old log to .0 and start fresh
+					await this.adapter.renameTo('debug.log.0');
+					const rotationHeader = `[${new Date().toISOString()}] [Logger] Log rotated (continued from debug.log.0)\n`;
+					await this.adapter.append('\uFEFF' + rotationHeader + newContent);
 				} else {
-					// No valid log entry found - content may be corrupted
-					// Find next newline to avoid cutting mid-line/mid-character
-					const nextNewline = searchContent.indexOf('\n');
-					actualTruncatePoint = nextNewline >= 0
-						? truncatePoint + nextNewline + 1
-						: truncatePoint;
+					// Normal case - just append
+					await this.adapter.append(newContent);
 				}
-
-				let keptContent = updatedContent.slice(actualTruncatePoint);
-
-				// Strip any BOM from keptContent (we'll add our own)
-				if (keptContent.charCodeAt(0) === 0xFEFF) {
-					keptContent = keptContent.slice(1);
-				}
-
-				// Safety: if result would still be over limit, force-truncate to keepSize
-				// This prevents infinite loops if content is pathological
-				if (keptContent.length > keepSize) {
-					keptContent = keptContent.slice(keptContent.length - keepSize);
-				}
-
-				const truncatedHeader = `[Log truncated - keeping last ~${Math.floor(keptContent.length / 1000)}KB]\n`;
-
-				// Preserve UTF-8 BOM at the start of the file
-				updatedContent = '\uFEFF' + truncatedHeader + keptContent;
 			}
-
-			await this.adapter.write(updatedContent);
 		} catch (error) {
 			// Fail silently - don't break sync if logging fails
 			console.error('[Logger] Failed to write log file:', error);
@@ -303,8 +271,13 @@ export class FitLogger extends Logger {
 				if (!await vault.adapter.exists(logPath)) return null;
 				return vault.adapter.read(logPath);
 			},
-			async write(data: string): Promise<void> {
-				await vault.adapter.write(logPath, data);
+			async append(data: string): Promise<void> {
+				await vault.adapter.append(logPath, data);
+			},
+			async renameTo(newName: string): Promise<void> {
+				const dirPath = logPath.substring(0, logPath.lastIndexOf('/'));
+				const newPath = `${dirPath}/${newName}`;
+				await vault.adapter.rename(logPath, newPath);
 			}
 		};
 	}
