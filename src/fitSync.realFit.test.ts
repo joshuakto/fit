@@ -1004,12 +1004,12 @@ describe('FitSync', () => {
 			const mockVault = {
 				adapter: {
 					exists: vi.fn().mockResolvedValue(false),
-					read: vi.fn().mockResolvedValue(''),
-					write: vi.fn().mockResolvedValue(undefined)
+					read: vi.fn().mockResolvedValue(null),
+					append: vi.fn().mockResolvedValue(undefined),
+					rename: vi.fn().mockResolvedValue(undefined)
 				}
 			};
-			fitLogger.setVault(mockVault as any);
-			fitLogger.setPluginDir('.obsidian/plugins/fit');
+			fitLogger.configure(mockVault as any, '.obsidian/plugins/fit');
 
 			const fitSync = createFitSync();
 			localVault.setFile('test.md', 'content');
@@ -1028,8 +1028,8 @@ describe('FitSync', () => {
 			await new Promise(resolve => setTimeout(resolve, 150));
 			expect(fitLoggerFlushSpy).toHaveBeenCalled();
 
-			// Verify: vault.adapter.write was called with log file path
-			expect(mockVault.adapter.write).toHaveBeenCalledWith(
+			// Verify: vault.adapter.append was called with log file path
+			expect(mockVault.adapter.append).toHaveBeenCalledWith(
 				'.obsidian/plugins/fit/debug.log',
 				expect.stringContaining('[FitSync]')
 			);

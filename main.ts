@@ -361,18 +361,16 @@ export default class FitPlugin extends Plugin {
 		try {
 			// Initialize logger with vault and plugin directory for cross-platform diagnostics
 			// This is done first so the logger is available if later initialization steps fail.
-			fitLogger.setVault(this.app.vault);
 			if (this.manifest.dir) {
-				fitLogger.setPluginDir(this.manifest.dir);
+				fitLogger.configure(this.app.vault, this.manifest.dir);
 			}
 
 			await this.loadSettings();
-			await this.loadLocalStore();
-
-			// Now that settings are loaded, enable or disable logging based on user preference.
 			fitLogger.setEnabled(this.settings.enableDebugLogging);
 
 			fitLogger.log('[Plugin] Starting plugin initialization');
+
+			await this.loadLocalStore();
 
 			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
 			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
