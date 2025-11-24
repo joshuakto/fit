@@ -218,10 +218,9 @@ export default class FitPlugin extends Plugin {
 
 			// Log detailed error information for debugging AND to file
 			fitLogger.log('[Plugin] Sync failed', {
-				errorType: syncResult.error.type,
-				errorMessage: errorMessage,
-				errorDetails: syncResult.error.details || {},
-				fullMessage: fullMessage
+				type: syncResult.error.type,
+				message: fullMessage,
+				details: syncResult.error.details || {}
 			});
 
 			console.error(fullMessage, {
@@ -229,8 +228,9 @@ export default class FitPlugin extends Plugin {
 				...(syncResult.error.details || {})
 			});
 
+			// Show error message - setMessage with isError=true creates a sticky notice (timeout 0)
+			// Don't call remove() - errors should stay visible until user dismisses them
 			this.currentSyncNotice!.setMessage(fullMessage, true);
-			this.currentSyncNotice!.remove("error");
 		}
 	}
 
@@ -303,6 +303,21 @@ export default class FitPlugin extends Plugin {
 		this.onSyncStart(triggerType);
 		try {
 			await this.executeSync(triggerType);
+		} catch (error) {
+			// Catch any unhandled exceptions that slip through executeSync's error handling
+			// This ensures the notice spinner stops and users see an error message
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			const fullMessage = `Sync failed unexpectedly: ${errorMsg}`;
+
+			fitLogger.log('[Plugin] Unhandled sync error', {
+				error: errorMsg,
+				stack: error instanceof Error ? error.stack : undefined
+			});
+
+			console.error(fullMessage, error);
+
+			// Show error in notice - setMessage with isError=true stops the loading spinner
+			this.currentSyncNotice?.setMessage(fullMessage, true);
 		} finally {
 			this.onSyncEnd(triggerType);
 		}
