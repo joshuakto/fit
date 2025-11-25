@@ -1,7 +1,13 @@
 import { vi } from 'vitest';
 
 export const arrayBufferToBase64 = vi.fn((buffer: ArrayBuffer) => {
-	return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+	// Avoid spread operator to handle large buffers (same issue as PR #127)
+	const bytes = new Uint8Array(buffer);
+	let binaryString = '';
+	for (let i = 0; i < bytes.length; i++) {
+		binaryString += String.fromCharCode(bytes[i]);
+	}
+	return btoa(binaryString);
 });
 
 export const base64ToArrayBuffer = vi.fn((base64: string) => {
