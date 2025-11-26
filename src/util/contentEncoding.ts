@@ -69,8 +69,16 @@ export const Content = {
 	encodeToBase64: (plainText: string | PlainTextContent): Base64Content => {
 		// Convert UTF-8 string to bytes using TextEncoder (cross-platform Web API)
 		const utf8Bytes = new TextEncoder().encode(plainText);
+		// Extract only the view's bytes, not the entire underlying buffer.
+		// While TextEncoder.encode() typically returns a view covering the full buffer,
+		// this is not guaranteed - the engine might use buffer pooling or return a slice.
+		// Using .buffer directly could include garbage data beyond byteOffset+byteLength.
+		const buffer = utf8Bytes.buffer.slice(
+			utf8Bytes.byteOffset,
+			utf8Bytes.byteOffset + utf8Bytes.byteLength
+		);
 		// Use Obsidian's base64 encoder (works on all platforms)
-		return Content.asBase64(arrayBufferToBase64(utf8Bytes.buffer));
+		return Content.asBase64(arrayBufferToBase64(buffer));
 	},
 
 	/**
