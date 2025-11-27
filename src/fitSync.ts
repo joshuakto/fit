@@ -878,9 +878,10 @@ export class FitSync implements IFitSync {
 	 * Converts technical sync errors into messages appropriate for end users.
 	 */
 	getSyncErrorMessage(syncError: SyncError): string {
-		// Handle VaultError types
+		let baseMessage: string;
+
+		// Handle VaultError types (thrown by LocalVault and RemoteGitHubVault)
 		if (syncError instanceof VaultError) {
-			let baseMessage: string;
 			switch (syncError.type) {
 				case 'network':
 					baseMessage = `${syncError.message}. Please check your internet connection.`;
@@ -896,20 +897,38 @@ export class FitSync implements IFitSync {
 					break;
 			}
 
-			// Append failed file paths if available
-			if (syncError.details?.failedPaths && syncError.details.failedPaths.length > 0) {
-				const paths = syncError.details.failedPaths;
-				if (paths.length <= 3) {
-					baseMessage += `\n\nFailed files:\n${paths.map(p => `  • ${p}`).join('\n')}`;
+			// Append per-file error details if available
+			if (syncError.details?.errors && syncError.details.errors.length > 0) {
+				const errorEntries = syncError.details.errors;
+				if (errorEntries.length <= 3) {
+					// Show all errors with details for small counts
+					baseMessage += '\n\nFailed files:';
+					for (const { path, error } of errorEntries) {
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						// Show only first line for multi-line errors (full error in console/logs)
+						const displayMsg = errorMsg.split('\n')[0];
+						baseMessage += `\n  • ${path}: ${displayMsg}`;
+					}
 				} else {
-					baseMessage += `\n\nFailed files (${paths.length} total):\n${paths.slice(0, 3).map(p => `  • ${p}`).join('\n')}\n  • ... and ${paths.length - 3} more`;
+					// Show first 3 with details, then summarize rest
+					baseMessage += `\n\nFailed files (${errorEntries.length} total):`;
+					for (let i = 0; i < 3; i++) {
+						const { path, error } = errorEntries[i];
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						const displayMsg = errorMsg.split('\n')[0];
+						baseMessage += `\n  • ${path}: ${displayMsg}`;
+					}
+					baseMessage += `\n  • ... and ${errorEntries.length - 3} more`;
 				}
-			}
 
-			return baseMessage;
+				// Add recovery guidance for per-file errors
+				baseMessage += '\n\n💡 To sync other files: Move problematic file(s) out of your vault temporarily, or use git to sync them manually. .gitignore support coming soon.';
+			}
+		} else {
+			// Handle SyncOrchestrationError (type === 'unknown' | 'already-syncing')
+			baseMessage = syncError.detailMessage;
 		}
 
-		// Handle sync orchestration errors (type === 'unknown' | 'already-syncing')
-		return syncError.detailMessage;
+		return baseMessage;
 	}
 }

@@ -65,6 +65,16 @@ export interface LocalStores {
 	lastFetchedRemoteSha: FileStates       // Remote file path -> SHA cache
 }
 
+/**
+ * Discriminated union representing the outcome of a sync operation.
+ * Separates business logic (sync result) from UI lifecycle management.
+ */
+type SyncOutcome =
+	| { status: 'success'; result: Awaited<ReturnType<FitSync['sync']>> & { success: true } }
+	| { status: 'already-syncing' }
+	| { status: 'error'; error: { type: string; message: string; details?: Record<string, unknown> } }
+	| { status: 'not-configured' };
+
 const DEFAULT_LOCAL_STORE: LocalStores = {
 	localSha: {},
 	lastFetchedCommitSha: null,
@@ -165,8 +175,10 @@ export default class FitPlugin extends Plugin {
 	 * - Result processing (notifications, error formatting)
 	 * - Notice updates
 	 */
-	private async executeSync(triggerType: 'manual' | 'auto'): Promise<void> {
-		if (!this.checkSettingsConfigured()) { return; }
+	private async executeSync(triggerType: 'manual' | 'auto'): Promise<SyncOutcome> {
+		if (!this.checkSettingsConfigured()) {
+			return { status: 'not-configured' };
+		}
 		await this.loadLocalStore();
 
 		const syncStartTime = Date.now();
@@ -190,47 +202,37 @@ export default class FitPlugin extends Plugin {
 				}
 			);
 
-			if (this.settings.notifyConflicts) {
-				showUnappliedConflicts(syncResult.clash);
-			}
-			if (this.settings.notifyChanges) {
-				showFileChanges(syncResult.changeGroups);
-			}
-
-			// Show success completion state in notice
-			if (triggerType === 'auto') {
-				this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
-			} else {
-				this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
-			}
+			return { status: 'success', result: syncResult };
 		} else {
 			// Handle already-syncing case - this is expected for concurrent requests
 			if (syncResult.error.type === 'already-syncing') {
-				// Don't modify the notice - it's being used by the active sync
-				// The concurrent request just logs and returns
 				fitLogger.log('[Plugin] Sync already in progress', { triggerType });
-				return;
+				return { status: 'already-syncing' };
 			}
 
 			// Generate user-friendly message from structured sync error
 			const errorMessage = this.fitSync.getSyncErrorMessage(syncResult.error);
-			const fullMessage = `Sync failed: ${errorMessage}`;
 
 			// Log detailed error information for debugging AND to file
 			fitLogger.log('[Plugin] Sync failed', {
-				errorType: syncResult.error.type,
-				errorMessage: errorMessage,
-				errorDetails: syncResult.error.details || {},
-				fullMessage: fullMessage
+				type: syncResult.error.type,
+				message: errorMessage,
+				details: syncResult.error.details || {}
 			});
 
-			console.error(fullMessage, {
+			console.error(`Sync failed: ${errorMessage}`, {
 				type: syncResult.error.type,
 				...(syncResult.error.details || {})
 			});
 
-			this.currentSyncNotice!.setMessage(fullMessage, true);
-			this.currentSyncNotice!.remove("error");
+			return {
+				status: 'error',
+				error: {
+					type: syncResult.error.type,
+					message: errorMessage,
+					details: syncResult.error.details
+				}
+			};
 		}
 	}
 
@@ -264,6 +266,27 @@ export default class FitPlugin extends Plugin {
 		if (triggerType === 'manual' && this.activeManualSyncRequests === 1) {
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
 		}
+	}
+
+	/**
+	 * Handles cleanup when a sync fails with an error.
+	 * Unlike onSyncEnd, this does NOT nullify the notice reference,
+	 * allowing error notices to remain visible until the user dismisses them.
+	 */
+	private onSyncError(triggerType: 'manual' | 'auto'): void {
+		// Decrement counters
+		this.activeSyncRequests--;
+		if (triggerType === 'manual') {
+			this.activeManualSyncRequests--;
+		}
+
+		// Clear animation when all manual sync attempts complete
+		if (this.activeManualSyncRequests === 0) {
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		}
+
+		// Note: We do NOT nullify this.currentSyncNotice here,
+		// keeping the error notice alive for the user to dismiss manually.
 	}
 
 	/**
@@ -301,10 +324,68 @@ export default class FitPlugin extends Plugin {
 		fitLogger.log(`[Plugin] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
 		this.onSyncStart(triggerType);
+
+		let outcome: SyncOutcome;
 		try {
-			await this.executeSync(triggerType);
-		} finally {
-			this.onSyncEnd(triggerType);
+			outcome = await this.executeSync(triggerType);
+		} catch (error) {
+			// Catch any unhandled exceptions (programming errors, unexpected failures)
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			const fullMessage = `Sync failed unexpectedly: ${errorMsg}`;
+
+			fitLogger.log('[Plugin] Unhandled sync error', {
+				error: errorMsg,
+				stack: error instanceof Error ? error.stack : undefined
+			});
+
+			console.error(fullMessage, error);
+
+			// Show error in notice and clean up state
+			this.currentSyncNotice?.setMessage(fullMessage, true);
+			this.onSyncError(triggerType);
+			return;
+		}
+
+		// Handle all sync outcomes with centralized UI lifecycle management
+		switch (outcome.status) {
+			case 'success':
+				// Show optional notifications
+				if (this.settings.notifyConflicts) {
+					showUnappliedConflicts(outcome.result.clash);
+				}
+				if (this.settings.notifyChanges) {
+					showFileChanges(outcome.result.changeGroups);
+				}
+
+				// Show success completion state in notice
+				if (triggerType === 'auto') {
+					this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
+				} else {
+					this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
+				}
+
+				// Clean up and nullify notice reference (success can nullify)
+				this.onSyncEnd(triggerType);
+				break;
+
+			case 'already-syncing':
+				// Don't modify the notice - it's being used by the active sync
+				// The concurrent request just logs and returns (no cleanup needed)
+				break;
+
+			case 'not-configured':
+				// Settings check failed, sync didn't start
+				// No notice to clean up (onSyncStart didn't create one if settings invalid)
+				this.onSyncError(triggerType);
+				break;
+
+			case 'error':
+				// Show sticky error notice
+				this.currentSyncNotice!.setMessage(`Sync failed: ${outcome.error.message}`, true);
+
+				// Clean up state WITHOUT nullifying the error notice reference
+				this.onSyncError(triggerType);
+				break;
 		}
 	}
 

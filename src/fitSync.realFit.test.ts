@@ -1264,6 +1264,41 @@ describe('FitSync', () => {
 				}
 			]);
 		});
+
+		it('should show per-file errors with individual error messages in "Failed files:" section', async () => {
+			// This test verifies that per-file errors are properly displayed with
+			// both the file path and the specific error message for each file.
+
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('problematic-file.md', 'local content');
+
+			// Simulate RemoteGitHubVault error pattern: VaultError with errors array
+			const fileError = new Error('API error: rate limit exceeded');
+			const vaultError = VaultError.network(
+				'Failed to process 1 file(s) for remote upload',
+				{
+					errors: [{ path: 'problematic-file.md', error: fileError }],
+					failedPaths: ['problematic-file.md']
+				}
+			);
+			remoteVault.setFailure(vaultError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify the error message has the structured "Failed files:" section
+			const errorCall = mockNotice._calls.find(
+				(call: any) => call.method === 'setMessage' && call.args[1] === true
+			);
+			expect(errorCall).toBeDefined();
+			const errorMessage = errorCall!.args[0];
+
+			// Should have "Failed files:" section with bullet point and error message
+			expect(errorMessage).toMatch(/Failed files:\s+•\s+problematic-file\.md:\s+API error: rate limit exceeded/);
+		});
 	});
 
 	describe('Only Commit SHA Changed', () => {
