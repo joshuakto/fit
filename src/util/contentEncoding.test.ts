@@ -42,6 +42,33 @@ describe('Content.encodeToBase64', () => {
 		const encoded = Content.encodeToBase64(longText);
 		expect(Content.decodeFromBase64(encoded)).toBe(longText);
 	});
+
+	it('should produce same output as Node Buffer for ASCII', () => {
+		const text = 'Hello, World!';
+		const ourResult = Content.encodeToBase64(text);
+		// This is what Buffer.from(text, 'utf8').toString('base64') produces
+		const bufferResult = 'SGVsbG8sIFdvcmxkIQ==';
+		expect(ourResult).toBe(bufferResult);
+	});
+
+	it('should produce same output as Node Buffer for Unicode', () => {
+		const text = '你好, World! ✨ €50';
+		const ourResult = Content.encodeToBase64(text);
+		// This is what Buffer.from(text, 'utf8').toString('base64') produces
+		const bufferResult = '5L2g5aW9LCBXb3JsZCEg4pyoIOKCrDUw';
+		expect(ourResult).toBe(bufferResult);
+	});
+
+	it('should handle very large files (multi-MB text)', () => {
+		// Simulate a ~2.6MB text file (larger than typical markdown)
+		const largeText = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(50000);
+		const encoded = Content.encodeToBase64(largeText);
+
+		// Verify roundtrip
+		expect(Content.decodeFromBase64(encoded)).toBe(largeText);
+		// Verify it's actually base64 (should be ~33% larger than original UTF-8)
+		expect(encoded.length).toBeGreaterThan(largeText.length);
+	});
 });
 
 describe('Content.decodeFromBase64', () => {
