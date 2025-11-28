@@ -1,7 +1,7 @@
 {
 	"id": "fit",
 	"name": "Fit",
-	"version": "1.4.0-beta",
+	"version": "1.4.0-beta.2",
 	"minAppVersion": "1.4.0",
 	"description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
 	"author": "joshuakto",
