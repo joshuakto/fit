@@ -9,10 +9,6 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 [Discussions section]: https://github.com/joshuakto/fit/discussions
 
-## Security review
-
-Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
-
 ## Features
 - **Universally supported**: sync your vault across multiple devices, supports both mobile and desktop
 - Auto sync is now available 🎉
@@ -43,9 +39,60 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
 
+## 🔒 Security
+
+The FIT maintainers make every effort to protect your security and protect against data loss. However, mistakes can happen. Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
+
+You should also take care with security tokens you use to ensure they don't leak, because anyone with access to those can read and write your vault repository even if it's private (or worse if you configure broad unrestricted permissions on your token). In particular, **avoid syncing your .obsidian/ files** with other tools if you don't know what you're doing, and consider adding .gitignore rules to ignore .obsidian/ paths if you'll be syncing anything using git.
+
+⚠️ NOTE: The FIT plugin currently will NOT sync .obsidian/ paths, but will not protect you from some other tool syncing them.
+
+## Common Issues
+
+<details>
+<summary><b>📁 Empty directories not syncing</b></summary>
+
+**Why:** Git (and GitHub) doesn't track empty directories. This is a fundamental limitation of Git, not a FIT bug.
+
+**Solution:** Add a placeholder file like `_gitkeep` or `README.md` to keep the folder. Empty folders will only sync once they contain files.
+
+</details>
+
+<details>
+<summary><b>📦 File size limits - "input too large" errors</b></summary>
+
+**Why:** GitHub API has file size limits (~100MB hard limit, issues with files >10MB).
+
+**Symptoms:** Error messages like "input too large to process" or "File 'X' is too large..."
+
+**Solutions:**
+- Move large files (>20MB) outside your vault before syncing
+- Compress images/videos or split large PDFs
+- Link to external storage for large media files
+
+</details>
+
+<details>
+<summary><b>⚠️ Sync conflicts - files in `_fit/` folder</b></summary>
+
+**What happens:** When the same file is modified locally AND on GitHub, FIT saves both versions:
+- Your local version stays in place
+- The remote version is saved to `_fit/path/to/file.md`
+
+**How to resolve:**
+1. Find conflict files in the `_fit/` folder
+2. Compare both versions
+3. Manually merge the changes you want to keep
+4. Delete the `_fit/` version when done
+5. Sync again
+
+**Prevention:** Sync regularly (enable auto-sync) and avoid editing the same file on multiple devices simultaneously.
+
+</details>
+
 ## Roadmap
-1. Enable integration of other git tools (e.g. gitlab, gitea)
-2. Performance optimizations for large vaults
+
+See [CONTRIBUTING.md](https://github.com/joshuakto/fit/blob/main/docs/CONTRIBUTING.md#roadmap--priorities) for current milestone and long-term priorities.
 
 ## Relevant plugins
 There are other community plugins with more advanced git features, if you need features such as branching of your repo, [Git](https://github.com/denolehov/obsidian-git) is a nice plugin to check out.
