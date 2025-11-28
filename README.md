@@ -67,8 +67,8 @@ You should also take care with security tokens you use to ensure they don't leak
 
 **Solutions:**
 - Move large files (>20MB) outside your vault before syncing
-- Compress images/videos or split large PDFs
-- Link to external storage for large media files
+- Manually sync large files to GitHub using other tools (to create them and any time they're modified)
+- Add the files to .gitignore to exclude them from sync (once .gitignore is supported, #92)
 
 </details>
 
