@@ -2,12 +2,13 @@
  * Tests for RemoteGitHubVault
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RemoteGitHubVault, TreeNode } from "./remoteGitHubVault";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
 import { FileContent } from "./util/contentEncoding";
+import { fitLogger } from "./logger";
 
 const COMMIT123_SHA = "commit123" as CommitSha;
 const COMMIT456_SHA = "commit456" as CommitSha;
@@ -23,6 +24,9 @@ describe("RemoteGitHubVault", () => {
 	let vault: RemoteGitHubVault;
 
 	beforeEach(() => {
+		// Suppress logging to reduce test noise
+		vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+
 		fakeOctokit = new FakeOctokit("testowner", "testrepo", "main");
 		__setMockOctokitInstance(fakeOctokit);
 
@@ -59,7 +63,8 @@ describe("RemoteGitHubVault", () => {
 						"file2.txt": BLOB3_SHA
 						// Note: directory is excluded
 					},
-					commitSha: COMMIT123_SHA
+					commitSha: COMMIT123_SHA,
+					treeSha: TREE456_SHA
 				});
 			});
 
@@ -75,7 +80,8 @@ describe("RemoteGitHubVault", () => {
 
 				expect(result).toEqual({
 					state: {},
-					commitSha: COMMIT123_SHA
+					commitSha: COMMIT123_SHA,
+					treeSha: EMPTY_TREE_SHA
 				});
 			});
 
@@ -175,14 +181,15 @@ describe("RemoteGitHubVault", () => {
 				// Read once to populate cache.
 				await vault.readFromSource();
 
-				// Second read is from cache.
-				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/commits/{ref}",
+				// Second read uses cache (only calls commits API to check for changes, not tree API)
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
 					new Error("Shouldn't reach here if reading from cache"));
 				const result = await vault.readFromSource();
 
 				expect(result).toEqual({
 					state: { "test.md": BLOB123_SHA },
-					commitSha: COMMIT123_SHA
+					commitSha: COMMIT123_SHA,
+					treeSha: TREE456_SHA
 				});
 			});
 
@@ -197,7 +204,8 @@ describe("RemoteGitHubVault", () => {
 				const result1 = await vault.readFromSource();
 				expect(result1).toEqual({
 					state: { "file1.md": BLOB1_SHA },
-					commitSha: COMMIT123_SHA
+					commitSha: COMMIT123_SHA,
+					treeSha: TREE456_SHA
 				});
 
 				// Simulate remote change - new commit with different tree
@@ -214,7 +222,8 @@ describe("RemoteGitHubVault", () => {
 						"file1.md": BLOB2_SHA,
 						"file2.md": BLOB3_SHA
 					},
-					commitSha: COMMIT456_SHA
+					commitSha: COMMIT456_SHA,
+					treeSha: "tree789",
 				});
 			});
 		});

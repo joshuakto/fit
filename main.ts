@@ -5,14 +5,15 @@
  */
 
 import { Plugin, SettingTab } from 'obsidian';
-import { Fit } from 'src/fit';
-import FitNotice from 'src/fitNotice';
-import FitSettingTab from 'src/fitSetting';
-import { FitSync } from 'src/fitSync';
-import { showFileChanges, showUnappliedConflicts } from 'src/utils';
-import { fitLogger } from 'src/logger';
-import { CommitSha } from 'src/util/hashing';
-import { FileStates } from 'src/util/changeTracking';
+import { Fit } from '@/fit';
+import FitNotice from '@/fitNotice';
+import FitSettingTab from '@/fitSetting';
+import { FitSync } from '@/fitSync';
+import { showFileChanges, showUnappliedConflicts } from '@/utils';
+import { fitLogger } from '@/logger';
+import { CommitSha } from '@/util/hashing';
+import { FileStates } from '@/util/changeTracking';
+import { handleCriticalError } from '@/util/errorHandling';
 
 /**
  * Plugin configuration interface
@@ -63,6 +64,16 @@ export interface LocalStores {
 	lastFetchedCommitSha: CommitSha | null // Last synced commit
 	lastFetchedRemoteSha: FileStates       // Remote file path -> SHA cache
 }
+
+/**
+ * Discriminated union representing the outcome of a sync operation.
+ * Separates business logic (sync result) from UI lifecycle management.
+ */
+type SyncOutcome =
+	| { status: 'success'; result: Awaited<ReturnType<FitSync['sync']>> & { success: true } }
+	| { status: 'already-syncing' }
+	| { status: 'error'; error: { type: string; message: string; details?: Record<string, unknown> } }
+	| { status: 'not-configured' };
 
 const DEFAULT_LOCAL_STORE: LocalStores = {
 	localSha: {},
@@ -164,66 +175,64 @@ export default class FitPlugin extends Plugin {
 	 * - Result processing (notifications, error formatting)
 	 * - Notice updates
 	 */
-	private async executeSync(triggerType: 'manual' | 'auto'): Promise<void> {
-		if (!this.checkSettingsConfigured()) { return; }
+	private async executeSync(triggerType: 'manual' | 'auto'): Promise<SyncOutcome> {
+		if (!this.checkSettingsConfigured()) {
+			return { status: 'not-configured' };
+		}
 		await this.loadLocalStore();
 
-		fitLogger.log('[Plugin] Sync initiated', { triggerType });
-		if (triggerType === 'auto') {
-			fitLogger.log('[Plugin] Auto-sync mode', { mode: this.settings.autoSync });
-		}
+		const syncStartTime = Date.now();
+		fitLogger.log(`🚀 [SYNC START] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
 		const syncResult = await this.fitSync.sync(this.currentSyncNotice!);
 
 		if (syncResult.success) {
-			fitLogger.log('[Plugin] Sync completed successfully', {
-				fileOpsCount: syncResult.changeGroups.length,
-				unresolvedConflictsCount: syncResult.clash.length,
-				operations: syncResult.changeGroups,
-				unresolvedConflicts: syncResult.clash
-			});
+			const duration = Date.now() - syncStartTime;
+			const totalOps = syncResult.changeGroups.reduce((sum, g) => sum + g.changes.length, 0);
+			const hasConflicts = syncResult.clash.length > 0;
 
-			if (this.settings.notifyConflicts) {
-				showUnappliedConflicts(syncResult.clash);
-			}
-			if (this.settings.notifyChanges) {
-				showFileChanges(syncResult.changeGroups);
-			}
+			fitLogger.log(
+				`✅ [SYNC COMPLETE] ${hasConflicts ? 'Success with conflicts' : 'Success'}`,
+				{
+					duration: `${(duration / 1000).toFixed(2)}s`,
+					totalOperations: totalOps,
+					conflicts: syncResult.clash.length,
+					...(totalOps > 0 && { changes: syncResult.changeGroups }),
+					...(hasConflicts && { unresolvedConflicts: syncResult.clash })
+				}
+			);
 
-			// Show success completion state in notice
-			if (triggerType === 'auto') {
-				this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
-			} else {
-				this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
-			}
+			return { status: 'success', result: syncResult };
 		} else {
 			// Handle already-syncing case - this is expected for concurrent requests
 			if (syncResult.error.type === 'already-syncing') {
-				// Don't modify the notice - it's being used by the active sync
-				// The concurrent request just logs and returns
 				fitLogger.log('[Plugin] Sync already in progress', { triggerType });
-				return;
+				return { status: 'already-syncing' };
 			}
 
 			// Generate user-friendly message from structured sync error
 			const errorMessage = this.fitSync.getSyncErrorMessage(syncResult.error);
-			const fullMessage = `Sync failed: ${errorMessage}`;
 
 			// Log detailed error information for debugging AND to file
 			fitLogger.log('[Plugin] Sync failed', {
-				errorType: syncResult.error.type,
-				errorMessage: errorMessage,
-				errorDetails: syncResult.error.details || {},
-				fullMessage: fullMessage
+				type: syncResult.error.type,
+				message: errorMessage,
+				details: syncResult.error.details || {}
 			});
 
-			console.error(fullMessage, {
+			console.error(`Sync failed: ${errorMessage}`, {
 				type: syncResult.error.type,
 				...(syncResult.error.details || {})
 			});
 
-			this.currentSyncNotice!.setMessage(fullMessage, true);
-			this.currentSyncNotice!.remove("error");
+			return {
+				status: 'error',
+				error: {
+					type: syncResult.error.type,
+					message: errorMessage,
+					details: syncResult.error.details
+				}
+			};
 		}
 	}
 
@@ -257,6 +266,27 @@ export default class FitPlugin extends Plugin {
 		if (triggerType === 'manual' && this.activeManualSyncRequests === 1) {
 			this.fitSyncRibbonIconEl.addClass('animate-icon');
 		}
+	}
+
+	/**
+	 * Handles cleanup when a sync fails with an error.
+	 * Unlike onSyncEnd, this does NOT nullify the notice reference,
+	 * allowing error notices to remain visible until the user dismisses them.
+	 */
+	private onSyncError(triggerType: 'manual' | 'auto'): void {
+		// Decrement counters
+		this.activeSyncRequests--;
+		if (triggerType === 'manual') {
+			this.activeManualSyncRequests--;
+		}
+
+		// Clear animation when all manual sync attempts complete
+		if (this.activeManualSyncRequests === 0) {
+			this.fitSyncRibbonIconEl.removeClass('animate-icon');
+		}
+
+		// Note: We do NOT nullify this.currentSyncNotice here,
+		// keeping the error notice alive for the user to dismiss manually.
 	}
 
 	/**
@@ -294,10 +324,68 @@ export default class FitPlugin extends Plugin {
 		fitLogger.log(`[Plugin] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
 		this.onSyncStart(triggerType);
+
+		let outcome: SyncOutcome;
 		try {
-			await this.executeSync(triggerType);
-		} finally {
-			this.onSyncEnd(triggerType);
+			outcome = await this.executeSync(triggerType);
+		} catch (error) {
+			// Catch any unhandled exceptions (programming errors, unexpected failures)
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			const fullMessage = `Sync failed unexpectedly: ${errorMsg}`;
+
+			fitLogger.log('[Plugin] Unhandled sync error', {
+				error: errorMsg,
+				stack: error instanceof Error ? error.stack : undefined
+			});
+
+			console.error(fullMessage, error);
+
+			// Show error in notice and clean up state
+			this.currentSyncNotice?.setMessage(fullMessage, true);
+			this.onSyncError(triggerType);
+			return;
+		}
+
+		// Handle all sync outcomes with centralized UI lifecycle management
+		switch (outcome.status) {
+			case 'success':
+				// Show optional notifications
+				if (this.settings.notifyConflicts) {
+					showUnappliedConflicts(outcome.result.clash);
+				}
+				if (this.settings.notifyChanges) {
+					showFileChanges(outcome.result.changeGroups);
+				}
+
+				// Show success completion state in notice
+				if (triggerType === 'auto') {
+					this.currentSyncNotice!.remove(); // Auto-sync hides notice completely
+				} else {
+					this.currentSyncNotice!.remove("done"); // Manual shows success state briefly
+				}
+
+				// Clean up and nullify notice reference (success can nullify)
+				this.onSyncEnd(triggerType);
+				break;
+
+			case 'already-syncing':
+				// Don't modify the notice - it's being used by the active sync
+				// The concurrent request just logs and returns (no cleanup needed)
+				break;
+
+			case 'not-configured':
+				// Settings check failed, sync didn't start
+				// No notice to clean up (onSyncStart didn't create one if settings invalid)
+				this.onSyncError(triggerType);
+				break;
+
+			case 'error':
+				// Show sticky error notice
+				this.currentSyncNotice!.setMessage(`Sync failed: ${outcome.error.message}`, true);
+
+				// Clean up state WITHOUT nullifying the error notice reference
+				this.onSyncError(triggerType);
+				break;
 		}
 	}
 
@@ -351,33 +439,46 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async onload() {
-		await this.loadSettings();
-		await this.loadLocalStore();
+		try {
+			// Initialize logger with vault and plugin directory for cross-platform diagnostics
+			// This is done first so the logger is available if later initialization steps fail.
+			if (this.manifest.dir) {
+				fitLogger.configure(this.app.vault, this.manifest.dir);
+			}
 
-		// Initialize logger with vault and plugin directory for cross-platform diagnostics
-		fitLogger.setVault(this.app.vault);
-		if (this.manifest.dir) {
-			fitLogger.setPluginDir(this.manifest.dir);
+			await this.loadSettings();
+			fitLogger.setEnabled(this.settings.enableDebugLogging);
+
+			fitLogger.log('[Plugin] Starting plugin initialization');
+
+			await this.loadLocalStore();
+
+			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
+			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
+			this.settingTab = new FitSettingTab(this.app, this);
+			this.loadRibbonIcons();
+
+			// Add command to command palette for fit sync
+			this.addCommand({
+				id: 'fit-sync',
+				name: 'Fit Sync',
+				callback: this.triggerManualSync
+			});
+
+			// This adds a settings tab so the user can configure various aspects of the plugin
+			this.addSettingTab(new FitSettingTab(this.app, this));
+
+			// register interval to repeat auto check
+			await this.startOrUpdateAutoSyncInterval();
+
+			fitLogger.log('[Plugin] Plugin initialization completed successfully');
+		} catch (error) {
+			handleCriticalError('Plugin failed to load', error, {
+				logger: fitLogger,
+				showNotice: true
+			});
+			throw error;
 		}
-		fitLogger.setEnabled(this.settings.enableDebugLogging);
-
-		this.fit = new Fit(this.settings, this.localStore, this.app.vault);
-		this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
-		this.settingTab = new FitSettingTab(this.app, this);
-		this.loadRibbonIcons();
-
-		// Add command to command palette for fit sync
-		this.addCommand({
-			id: 'fit-sync',
-			name: 'Fit Sync',
-			callback: this.triggerManualSync
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new FitSettingTab(this.app, this));
-
-		// register interval to repeat auto check
-		await this.startOrUpdateAutoSyncInterval();
 	}
 
 	onunload() {

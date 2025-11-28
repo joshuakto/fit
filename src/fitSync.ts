@@ -1,12 +1,13 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates } from "./util/changeTracking";
 import { extractExtension } from "./utils";
-import { LocalStores } from "main";
+import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { detectNormalizationMismatches } from "./util/filePath";
 import { CommitSha } from "./util/hashing";
 
 // Helper to log SHA cache updates with provenance tracking
@@ -36,22 +37,19 @@ function logCacheUpdate(
 		warnings.push(`Local SHA cache jumped from 0 to ${newLocalCount} files - possible recovery from empty cache or first sync`);
 	}
 
-	fitLogger.log('[FitSync] Updating local store after ' + source, {
-		source,
-		oldLocalShaCount: oldLocalCount,
-		newLocalShaCount: newLocalCount,
-		oldRemoteShaCount: Object.keys(oldRemoteSha).length,
-		newRemoteShaCount: Object.keys(newRemoteSha).length,
-		localShaAdded,
-		localShaRemoved,
-		remoteShaAdded: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]),
-		remoteShaRemoved: Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]),
-		commitShaChanged: oldCommitSha !== newCommitSha,
-		oldCommitSha,
-		newCommitSha,
-		...(warnings.length > 0 && { warnings }),
-		...extraContext
-	});
+	const totalChanges = localShaAdded.length + localShaRemoved.length +
+		Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length +
+		Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length;
+
+	if (totalChanges > 0 || oldCommitSha !== newCommitSha || warnings.length > 0) {
+		fitLogger.log(`.. 📦 [Cache] Updating SHA cache after ${source}`, {
+			localChanges: localShaAdded.length + localShaRemoved.length,
+			remoteChanges: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length + Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length,
+			commitChanged: oldCommitSha !== newCommitSha,
+			...(warnings.length > 0 && { warnings }),
+			...extraContext
+		});
+	}
 }
 
 /**
@@ -527,6 +525,11 @@ export class FitSync implements IFitSync {
 		const clashes = this.fit.getClashedChanges(localChanges, remoteUpdate.remoteChanges);
 		const clashPaths = new Set(clashes.map(c => c.path));
 
+		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
+		const localPaths = Object.keys(currentLocalState);
+		const remotePaths = Object.keys(remoteUpdate.remoteTreeSha);
+		detectNormalizationMismatches(localPaths, remotePaths);
+
 		// Separate clashed remote changes from non-clashed ones
 		const remoteChangesToPull = remoteUpdate.remoteChanges.filter(c => !clashPaths.has(c.path));
 		const localChangesToPush = localChanges; // Push all, including conflicted
@@ -590,9 +593,9 @@ export class FitSync implements IFitSync {
 		};
 		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
 
-		fitLogger.log('[FitSync] Pushed local changes to remote', {
-			changesPushed: pushResult?.pushedChanges.length ?? 0
-		});
+		if (pushResult && pushResult.pushedChanges.length > 0) {
+			fitLogger.log(`.. ⬆️ [Push] Pushed ${pushResult.pushedChanges.length} changes to remote`);
+		}
 
 		let latestRemoteTreeSha: FileStates;
 		let latestCommitSha: CommitSha;
@@ -691,32 +694,57 @@ export class FitSync implements IFitSync {
 		try {
 			syncNotice.setMessage("Checking for changes...");
 
-			// Get local changes and current local state (with SHAs already computed)
-			const {changes: localChanges, state: currentLocalState} = await this.fit.getLocalChanges();
+			// Get local and remote changes in parallel
+			// Use allSettled to ensure both operations complete (or fail) before processing
+			// This prevents out-of-order logging when one operation fails quickly
+			fitLogger.log('🔄 [Sync] Checking local and remote changes (parallel)...');
+			const results = await Promise.allSettled([
+				this.fit.getLocalChanges(),
+				this.fit.getRemoteChanges()
+			]);
+
+			// Check for failures and throw the first error encountered
+			const [localResult, remoteResult] = results;
+			if (localResult.status === 'rejected') {
+				throw localResult.reason;
+			}
+			if (remoteResult.status === 'rejected') {
+				throw remoteResult.reason;
+			}
+
+			// Both succeeded, extract values
+			const {changes: localChanges, state: currentLocalState} = localResult.value;
+			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
+			fitLogger.log('.. ✅ [Sync] Change detection complete');
 			const filteredLocalChanges = localChanges.filter(c => this.fit.shouldSyncPath(c.path));
 
-			// Get remote changes (vault caching handles optimization)
-			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = await this.fit.getRemoteChanges();
+			// Log detected changes for diagnostics
+			const localCount = filteredLocalChanges.length;
+			const remoteCount = remoteChanges.length;
 
-			// Log sync decision for diagnostics
-			// Log all files involved upfront for crash diagnostics
-			const logData: Record<string, Record<string, string[]>> = {};
+			if (localCount > 0 || remoteCount > 0) {
+				const logData: Record<string, Record<string, string[]>> = {};
 
-			const localData: Record<string, string[]> = {};
-			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
-				const files = filteredLocalChanges.filter(c => c.type === changeType).map(c => c.path);
-				if (files.length > 0) localData[changeType] = files;
-			});
-			if (Object.keys(localData).length > 0) logData.local = localData;
+				if (localCount > 0) {
+					const localData: Record<string, string[]> = {};
+					['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
+						const files = filteredLocalChanges.filter(c => c.type === changeType).map(c => c.path);
+						if (files.length > 0) localData[changeType] = files;
+					});
+					logData.local = localData;
+				}
 
-			const remoteData: Record<string, string[]> = {};
-			['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
-				const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
-				if (files.length > 0) remoteData[changeType] = files;
-			});
-			if (Object.keys(remoteData).length > 0) logData.remote = remoteData;
+				if (remoteCount > 0) {
+					const remoteData: Record<string, string[]> = {};
+					['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
+						const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
+						if (files.length > 0) remoteData[changeType] = files;
+					});
+					logData.remote = remoteData;
+				}
 
-			fitLogger.log('[FitSync] Starting sync', logData);
+				fitLogger.log(`🔄 [FitSync] Syncing changes (${localCount} local, ${remoteCount} remote)`, logData);
+			}
 
 			// Execute sync (handles all clash detection, push, pull, persist)
 			const { localOps, remoteOps, conflicts } = await this.performSync(
@@ -850,21 +878,57 @@ export class FitSync implements IFitSync {
 	 * Converts technical sync errors into messages appropriate for end users.
 	 */
 	getSyncErrorMessage(syncError: SyncError): string {
-		// Handle VaultError types
+		let baseMessage: string;
+
+		// Handle VaultError types (thrown by LocalVault and RemoteGitHubVault)
 		if (syncError instanceof VaultError) {
 			switch (syncError.type) {
 				case 'network':
-					return `${syncError.message}. Please check your internet connection.`;
+					baseMessage = `${syncError.message}. Please check your internet connection.`;
+					break;
 				case 'authentication':
-					return `${syncError.message}. Check your GitHub personal access token.`;
+					baseMessage = `${syncError.message}. Check your GitHub personal access token.`;
+					break;
 				case 'remote_not_found':
-					return `${syncError.message}. Check your repo and branch settings.`;
+					baseMessage = `${syncError.message}. Check your repo and branch settings.`;
+					break;
 				case 'filesystem':
-					return `File system error: ${syncError.message}`;
+					baseMessage = `File system error: ${syncError.message}`;
+					break;
 			}
+
+			// Append per-file error details if available
+			if (syncError.details?.errors && syncError.details.errors.length > 0) {
+				const errorEntries = syncError.details.errors;
+				if (errorEntries.length <= 3) {
+					// Show all errors with details for small counts
+					baseMessage += '\n\nFailed files:';
+					for (const { path, error } of errorEntries) {
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						// Show only first line for multi-line errors (full error in console/logs)
+						const displayMsg = errorMsg.split('\n')[0];
+						baseMessage += `\n  • ${path}: ${displayMsg}`;
+					}
+				} else {
+					// Show first 3 with details, then summarize rest
+					baseMessage += `\n\nFailed files (${errorEntries.length} total):`;
+					for (let i = 0; i < 3; i++) {
+						const { path, error } = errorEntries[i];
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						const displayMsg = errorMsg.split('\n')[0];
+						baseMessage += `\n  • ${path}: ${displayMsg}`;
+					}
+					baseMessage += `\n  • ... and ${errorEntries.length - 3} more`;
+				}
+
+				// Add recovery guidance for per-file errors
+				baseMessage += '\n\n💡 To sync other files: Move problematic file(s) out of your vault temporarily, or use git to sync them manually. .gitignore support coming soon.';
+			}
+		} else {
+			// Handle SyncOrchestrationError (type === 'unknown' | 'already-syncing')
+			baseMessage = syncError.detailMessage;
 		}
 
-		// Handle sync orchestration errors (type === 'unknown' | 'already-syncing')
-		return syncError.detailMessage;
+		return baseMessage;
 	}
 }

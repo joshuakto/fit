@@ -12,7 +12,7 @@ import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
-import { FitSettings, LocalStores } from '../main';
+import { FitSettings, LocalStores } from '@main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
 import { FileContent } from './util/contentEncoding';
@@ -274,11 +274,6 @@ describe('FitSync', () => {
 		});
 		expect(remoteVault.getCommitSha()).not.toBe('initial-commit');
 
-		// Verify: Logger was called with appropriate tags during sync
-		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
-			expect.stringContaining('[Fit]'),
-			expect.anything()
-		);
 		expect(fitLoggerLogSpy).toHaveBeenCalledWith(
 			expect.stringContaining('[FitSync]'),
 			expect.anything()
@@ -1009,12 +1004,12 @@ describe('FitSync', () => {
 			const mockVault = {
 				adapter: {
 					exists: vi.fn().mockResolvedValue(false),
-					read: vi.fn().mockResolvedValue(''),
-					write: vi.fn().mockResolvedValue(undefined)
+					read: vi.fn().mockResolvedValue(null),
+					append: vi.fn().mockResolvedValue(undefined),
+					rename: vi.fn().mockResolvedValue(undefined)
 				}
 			};
-			fitLogger.setVault(mockVault as any);
-			fitLogger.setPluginDir('.obsidian/plugins/fit');
+			fitLogger.configure(mockVault as any, '.obsidian/plugins/fit');
 
 			const fitSync = createFitSync();
 			localVault.setFile('test.md', 'content');
@@ -1033,8 +1028,8 @@ describe('FitSync', () => {
 			await new Promise(resolve => setTimeout(resolve, 150));
 			expect(fitLoggerFlushSpy).toHaveBeenCalled();
 
-			// Verify: vault.adapter.write was called with log file path
-			expect(mockVault.adapter.write).toHaveBeenCalledWith(
+			// Verify: vault.adapter.append was called with log file path
+			expect(mockVault.adapter.append).toHaveBeenCalledWith(
 				'.obsidian/plugins/fit/debug.log',
 				expect.stringContaining('[FitSync]')
 			);
@@ -1169,6 +1164,140 @@ describe('FitSync', () => {
 
 			// Verify notice wasn't updated by second sync (it should return immediately)
 			expect(mockNotice2._calls).toEqual([]);
+		});
+	});
+
+	describe('Per-File Error Handling', () => {
+		it('should handle per-file read failures from local vault with detailed error message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('good-file.md', 'good content');
+			localVault.setFile('bad-file.md', 'bad content');
+			localVault.setFile('another-bad.md', 'more bad content');
+
+			// Mock writeFile to throw errors for specific files
+			localVault.setMockWriteFile(async (path) => {
+				if (path === 'bad-file.md') {
+					throw new Error('EACCES: permission denied');
+				}
+				if (path === 'another-bad.md') {
+					throw new Error('EIO: input/output error');
+				}
+			});
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify error message includes failed file paths
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Checking for changes...'] },
+				{
+					method: 'setMessage', args: [
+						expect.stringMatching(/^Sync failed:.*Failed to read 2 file\(s\) from local vault[\s\S]*(bad-file\.md[\s\S]*another-bad\.md|another-bad\.md[\s\S]*bad-file\.md)/),
+						true]
+				}
+			]);
+		});
+
+		it('should handle per-file write failures to local vault with detailed error message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+
+			// Set up remote files that will need to be written locally
+			remoteVault.setFile('good-file.md', 'content 1');
+			remoteVault.setFile('readonly-file.md', 'content 2');
+			remoteVault.setFile('another-readonly.md', 'content 3');
+
+			// Mock writeFile to throw errors for specific files
+			localVault.setMockWriteFile(async (path) => {
+				if (path === 'readonly-file.md') {
+					throw new Error('EACCES: permission denied');
+				}
+				if (path === 'another-readonly.md') {
+					throw new Error('EROFS: read-only file system');
+				}
+			});
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify error message shows which file failed to write (both files should be mentioned)
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Checking for changes...'] },
+				{ method: 'setMessage', args: ['Uploading local changes'] },
+				{ method: 'setMessage', args: ['Writing remote changes to local'] },
+				{
+					method: 'setMessage', args: [
+						expect.stringMatching(/Sync failed:[\s\S]*(readonly-file\.md[\s\S]*another-readonly\.md|another-readonly\.md[\s\S]*readonly-file\.md)/),
+						true]
+				}
+			]);
+		});
+
+		it('should handle remote write failures with file path in error message', async () => {
+			// Arrange
+			const fitSync = createFitSync();
+
+			// Set up local files that will need to be pushed to remote
+			localVault.setFile('file-to-push.md', 'local content');
+
+			// Mock remote vault to fail on write
+			remoteVault.setFailure(new Error('Failed to process file-to-push.md: API rate limit exceeded'));
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify error message includes the file path context
+			// Note: Remote write fails fast before "Uploading local changes" message
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Checking for changes...'] },
+				{
+					method: 'setMessage', args: [
+						expect.stringMatching(/Sync failed:.*file-to-push\.md/),
+						true]
+				}
+			]);
+		});
+
+		it('should show per-file errors with individual error messages in "Failed files:" section', async () => {
+			// This test verifies that per-file errors are properly displayed with
+			// both the file path and the specific error message for each file.
+
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('problematic-file.md', 'local content');
+
+			// Simulate RemoteGitHubVault error pattern: VaultError with errors array
+			const fileError = new Error('API error: rate limit exceeded');
+			const vaultError = VaultError.network(
+				'Failed to process 1 file(s) for remote upload',
+				{
+					errors: [{ path: 'problematic-file.md', error: fileError }],
+					failedPaths: ['problematic-file.md']
+				}
+			);
+			remoteVault.setFailure(vaultError);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - Verify the error message has the structured "Failed files:" section
+			const errorCall = mockNotice._calls.find(
+				(call: any) => call.method === 'setMessage' && call.args[1] === true
+			);
+			expect(errorCall).toBeDefined();
+			const errorMessage = errorCall!.args[0];
+
+			// Should have "Failed files:" section with bullet point and error message
+			expect(errorMessage).toMatch(/Failed files:\s+•\s+problematic-file\.md:\s+API error: rate limit exceeded/);
 		});
 	});
 

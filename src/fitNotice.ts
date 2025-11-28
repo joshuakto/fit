@@ -18,6 +18,15 @@ export default class FitNotice {
 		}
 	}
 
+	// Helper methods to encapsulate deprecated noticeEl access
+	private addClasses(classes: string[]): void {
+		this.notice?.noticeEl.addClasses(classes);
+	}
+
+	private removeClasses(classes: string[]): void {
+		this.notice?.noticeEl.removeClasses(classes);
+	}
+
 	mute(): void {
 		this.muted = true;
 		if (this.notice) {
@@ -33,7 +42,7 @@ export default class FitNotice {
 		if (!this.notice && !this.muted) {
 			const message = (initialMessage && initialMessage.length > 0)? initialMessage : " ";
 			this.notice = new Notice(message, duration);
-			this.notice.noticeEl.addClasses([...this.classes, ...addClasses]);
+			this.addClasses([...this.classes, ...addClasses]);
 		}
 	}
 
@@ -41,8 +50,8 @@ export default class FitNotice {
 		if (this.muted) {return;}
 		this.classes = this.classes.filter(c => !removeClasses.includes(c));
 		if (this.notice) {
-			this.notice.noticeEl.removeClasses(removeClasses);
-			this.notice.noticeEl.addClasses(addClasses);
+			this.removeClasses(removeClasses);
+			this.addClasses(addClasses);
 		}
 		this.classes = [...this.classes, ...addClasses];
 	}
@@ -52,9 +61,12 @@ export default class FitNotice {
 		if (isError) {
 			if (!this.notice) {
 				this.notice = new Notice(message, 0);
-				this.notice.noticeEl.addClasses(['fit-notice', 'error']);
+				this.addClasses(['fit-notice', 'error']);
 			} else {
 				this.notice.setMessage(message);
+				// Remove loading class and add error class
+				this.removeClasses(['loading']);
+				this.addClasses(['error']);
 			}
 		} else {
 			if (this.notice && !this.muted) {
@@ -65,11 +77,11 @@ export default class FitNotice {
 
 	remove(finalClass?: string, duration = 5000): void {
 		if (this.muted) {return;}
-		this.notice?.noticeEl.removeClasses(this.classes.filter(c => c !== "fit-notice"));
+		this.removeClasses(this.classes.filter(c => c !== "fit-notice"));
 		if (finalClass) {
-			this.notice?.noticeEl.addClass(finalClass);
+			this.addClasses([finalClass]);
 		} else {
-			this.notice?.noticeEl.addClass("done");
+			this.addClasses(["done"]);
 		}
 		setTimeout(() => this.notice?.hide(), duration);
 	}

@@ -14,6 +14,7 @@ import { TFile, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
 import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
+import { computeSha1 } from './util/hashing';
 
 // Type-safe mock that includes only the methods LocalVault uses
 type MockVault = Pick<Vault,
@@ -308,6 +309,43 @@ describe('LocalVault', () => {
 
 			expect(callOrder.filter(c => c.endsWith('-start')).length).toBe(2);
 			expect(firstEndIndex).toBeGreaterThan(firstStartIndex);
+		});
+	});
+
+	describe('Unicode normalization in fileSha1 (issue #51)', () => {
+		it('NFD and NFC forms now produce SAME SHA (bug fixed)', async () => {
+			const content = FileContent.fromPlainText("test content");
+
+			// Turkish filename with İ (capital I with dot) and ı (lowercase i without dot)
+			const turkishName = "Merhaba dünya ıııııııİİİİ.md";
+
+			// macOS/iOS typically use NFD (decomposed)
+			const nfdPath = turkishName.normalize('NFD');
+			// Windows/Linux/Android typically use NFC (composed)
+			const nfcPath = turkishName.normalize('NFC');
+
+			// Verify input paths are different byte sequences but visually identical
+			expect(nfdPath).not.toBe(nfcPath);
+			expect(nfdPath.length).not.toBe(nfcPath.length); // NFD has more codepoints
+
+			// FIXED: Both normalize to NFC before hashing, producing identical SHAs
+			const nfdSha = await LocalVault.fileSha1(nfdPath, content);
+			const nfcSha = await LocalVault.fileSha1(nfcPath, content);
+
+			// These SHAs are now the same, preventing file duplication
+			expect(nfdSha).toBe(nfcSha);
+		});
+
+		it('fileSha1 concatenates path + content before hashing', async () => {
+			const path = "dünya.md";
+			const content = FileContent.fromPlainText("test");
+
+			// LocalVault.fileSha1 does: computeSha1(path + content)
+			const sha = await LocalVault.fileSha1(path, content);
+
+			// Verify it's computing SHA of the concatenation
+			const manualSha = await computeSha1(path + "test");
+			expect(sha).toBe(manualSha);
 		});
 	});
 });

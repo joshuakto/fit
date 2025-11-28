@@ -5,6 +5,8 @@
  * Prevents accidentally mixing base64-encoded and plain text strings.
  */
 
+import { arrayBufferToBase64 } from "obsidian";
+
 /**
  * Plain text content (UTF-8 string)
  * Used for text files like .md, .txt when read from local vault
@@ -56,11 +58,27 @@ export const Content = {
 	/**
 	 * Convert PlainTextContent to Base64Content
 	 * Handles multi-byte UTF-8 characters (emojis, Chinese, etc.)
-	 * @see https://developer.mozilla.org/en-US/docs/Web/API/btoa#unicode_strings
+	 *
+	 * Uses Obsidian's arrayBufferToBase64 for cross-platform compatibility:
+	 * - Works on desktop (Electron) and mobile (iOS/Android)
+	 * - Avoids Node.js Buffer API which isn't available on mobile
+	 * - Handles large strings without spread operator (no call stack issues)
+	 *
+	 * @see https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder
 	 */
 	encodeToBase64: (plainText: string | PlainTextContent): Base64Content => {
-		// Convert UTF-8 string to bytes, then to base64
-		return Buffer.from(plainText, 'utf8').toString('base64') as Base64Content;
+		// Convert UTF-8 string to bytes using TextEncoder (cross-platform Web API)
+		const utf8Bytes = new TextEncoder().encode(plainText);
+		// Extract only the view's bytes, not the entire underlying buffer.
+		// While TextEncoder.encode() typically returns a view covering the full buffer,
+		// this is not guaranteed - the engine might use buffer pooling or return a slice.
+		// Using .buffer directly could include garbage data beyond byteOffset+byteLength.
+		const buffer = utf8Bytes.buffer.slice(
+			utf8Bytes.byteOffset,
+			utf8Bytes.byteOffset + utf8Bytes.byteLength
+		);
+		// Use Obsidian's base64 encoder (works on all platforms)
+		return Content.asBase64(arrayBufferToBase64(buffer));
 	},
 
 	/**
@@ -145,6 +163,21 @@ export class FileContent {
 
 	toRaw(): FileContentType {
 		return this.content;
+	}
+
+	/**
+	 * Get the size of the content in bytes (approximate for base64)
+	 */
+	size(): number {
+		const { encoding, content } = this.content;
+		if (encoding === 'plaintext') {
+			// For plain text, length is the byte count
+			return content.length;
+		} else {
+			// For base64, approximate byte size
+			// Base64 encoding: 4 chars represent 3 bytes
+			return Math.floor((content.length * 3) / 4);
+		}
 	}
 }
 

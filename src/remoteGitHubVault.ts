@@ -11,6 +11,9 @@ import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
+import { fitLogger } from "./logger";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -159,55 +162,25 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	// ===== Read Operations =====
 
 	/**
-	 * Get reference SHA for the current branch.
-	 * Throws VaultError (remote_not_found) on 404 (repository or branch not found).
+	 * Fetch commit SHA and tree SHA in one API call
+	 * More efficient than separate getRef() + getCommit() calls
 	 */
-	private async getRef(ref: string = `heads/${this.branch}`): Promise<CommitSha> {
-		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/git/ref/{ref}`, {
-					owner: this.owner,
-					repo: this.repo,
-					ref: ref,
-					headers: this.headers
-				});
-			return response.object.sha as CommitSha;
-		} catch (error: unknown) {
-			return await this.wrapOctokitError(error, 'repo-or-branch');
-		}
-	}
-
-	/**
-	 * Get the latest commit SHA from the current branch
-	 */
-	private async getLatestCommitSha(): Promise<CommitSha> {
-		return await this.getRef(`heads/${this.branch}`);
-	}
-
-	/**
-	 * Get full commit data from GitHub API
-	 */
-	private async getCommit(ref: string) {
+	private async getLatestCommitAndTreeSha(): Promise<{ commitSha: CommitSha; treeSha: TreeSha }> {
 		try {
 			const {data: commit} = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/commits/{ref}`, {
 					owner: this.owner,
 					repo: this.repo,
-					ref,
+					ref: this.branch,
 					headers: this.headers
 				});
-			return commit;
+			return {
+				commitSha: commit.sha as CommitSha,
+				treeSha: commit.commit.tree.sha as TreeSha
+			};
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
-	}
-
-	/**
-	 * Get tree SHA from a commit
-	 */
-	private async getCommitTreeSha(ref: CommitSha): Promise<TreeSha> {
-		const commit = await this.getCommit(ref);
-		return commit.commit.tree.sha as TreeSha;
 	}
 
 	/**
@@ -282,14 +255,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 */
 	private async createBlob(content: string, encoding: string): Promise<BlobSha> {
 		try {
-			const {data: blob} = await this.octokit.request(
-				`POST /repos/{owner}/{repo}/git/blobs`, {
-					owner: this.owner,
-					repo: this.repo,
-					content,
-					encoding,
-					headers: this.headers
-				});
+			const {data: blob} = await withSlowOperationMonitoring(
+				this.octokit.request(
+					`POST /repos/{owner}/{repo}/git/blobs`, {
+						owner: this.owner,
+						repo: this.repo,
+						content,
+						encoding,
+						headers: this.headers
+					}),
+				'GitHub blob creation'
+			);
 			return blob.sha as BlobSha;
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo');
@@ -334,8 +310,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 		// Addition/modification case
 		if (!encoding) {
-			const extension = path.split('.').pop() || '';
-			encoding = isBinaryExtension(extension) ? "base64" : "utf-8";
+			const filePath = FilePath.create(path);
+			const extension = FilePath.getExtension(filePath);
+			encoding = (extension && isBinaryExtension(extension)) ? "base64" : "utf-8";
 		}
 		const blobSha = await this.createBlob(rawContent, encoding);
 
@@ -527,29 +504,68 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		filesToDelete: Array<string>
 	): Promise<ApplyChangesResult<"remote">> {
 		// Get current state using cache when available
-		const { state: currentState, commitSha: parentCommitSha } = await this.readFromSource();
-		const parentTreeSha = await this.getCommitTreeSha(parentCommitSha);
+		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
-		// Create tree nodes for all changes
-		const treeNodePromises: Promise<TreeNode | null>[] = [];
+		// Create tree nodes for all changes, tracking metadata for error handling
+		const operations: Array<{
+			path: string;
+			sizeBytes: number | null;
+			promise: Promise<TreeNode | null>;
+		}> = [];
 
 		// Process file writes/updates
 		for (const {path, content} of filesToWrite) {
-			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, content, currentState)
-			);
+			operations.push({
+				path,
+				sizeBytes: content.size(),
+				promise: this.createTreeNodeFromContent(path, content, currentState)
+			});
 		}
 
 		// Process file deletions
 		for (const path of filesToDelete) {
-			treeNodePromises.push(
-				this.createTreeNodeFromContent(path, null, currentState)
-			);
+			operations.push({
+				path,
+				sizeBytes: null,  // No size for deletions
+				promise: this.createTreeNodeFromContent(path, null, currentState)
+			});
 		}
 
-		// Wait for all tree nodes and filter out nulls
-		const treeNodes = (await Promise.all(treeNodePromises))
-			.filter(node => node !== null) as TreeNode[];
+		// Wait for all tree nodes, collecting both successes and failures
+		const results = await Promise.allSettled(operations.map(op => op.promise));
+
+		// Extract successful nodes and collect per-file errors
+		const treeNodes: TreeNode[] = [];
+		const perFileErrors: Array<{ path: string; error: unknown }> = [];
+
+		results.forEach((result, index) => {
+			const { path, sizeBytes } = operations[index];
+			if (result.status === 'fulfilled' && result.value !== null) {
+				treeNodes.push(result.value);
+			} else if (result.status === 'rejected') {
+				let error = result.reason;
+				// Enhance 422 errors (input too large) with file size
+				if (sizeBytes !== null) {
+					const errorObj = error as { status?: number };
+					if (errorObj.status === 422) {
+						const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
+						const enhancedError = error instanceof Error ? error : new Error(String(error));
+						enhancedError.message = `${enhancedError.message} (file size: ${sizeMB} MB)`;
+						error = enhancedError;
+					}
+				}
+				perFileErrors.push({ path, error });
+			}
+		});
+
+		// If any files failed, throw VaultError with per-file details
+		if (perFileErrors.length > 0) {
+			const failedPaths = perFileErrors.map(e => e.path);
+			throw VaultError.network(
+				`Failed to process ${perFileErrors.length} file(s) for remote upload`,
+				{ errors: perFileErrors, failedPaths }
+			);
+		}
 
 		// If no changes needed, return empty result (currentState already from cache)
 		if (treeNodes.length === 0) {
@@ -630,22 +646,39 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
 	 */
 	async readFromSource(): Promise<VaultReadResult<"remote">> {
-		const commitSha = await this.getLatestCommitSha();
+		const { commitSha, treeSha } = await this.getLatestCommitAndTreeSha();
 
 		// Return cached state if remote hasn't changed
 		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
-			return { state: { ...this.latestKnownState }, commitSha };
+			fitLogger.log(`... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
+			return { state: { ...this.latestKnownState }, commitSha, treeSha };
 		}
 
 		// Fetch fresh state from GitHub
-		const treeSha = await this.getCommitTreeSha(commitSha);
-		const newState = await this.buildStateFromTree(treeSha);
+		if (this.latestKnownCommitSha === null) {
+			fitLogger.log(`... ⬇️ [RemoteVault] Fetching initial state from GitHub (${commitSha.slice(0, 7)})...`);
+		} else {
+			fitLogger.log(`... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
+		}
+		// Monitor for slow GitHub API operations
+		const newState = await withSlowOperationMonitoring(
+			this.buildStateFromTree(treeSha),
+			`Remote vault tree fetch from GitHub`,
+			{ warnAfterMs: 10000 }
+		);
 
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
 
-		return { state: { ...newState }, commitSha };
+		// Log completion with normalization diagnostics
+		const normalizationInfo = detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
+		fitLogger.log(
+			`... ☁️ [RemoteVault] Fetched ${Object.keys(newState).length} files`,
+			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
+		);
+
+		return { state: { ...newState }, commitSha, treeSha };
 	}
 
 	/**
@@ -662,12 +695,34 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			: await this.getTree(treeSha);
 
 		const state: FileStates = {};
+		const failedPaths: Array<{path: string, error: unknown}> = [];
+
 		for (const node of remoteTree) {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {
-				state[node.path] = node.sha;
+				try {
+					// TODO: Should this notice if there's a collision overwriting same path?
+					state[node.path] = node.sha;
+				} catch (error) {
+					failedPaths.push({ path: node.path, error });
+					fitLogger.log(`❌ [RemoteVault] Failed to process file: ${node.path}`, error);
+				}
 			}
 		}
+
+		// If any files failed, throw a VaultError with details
+		if (failedPaths.length > 0) {
+			throw new VaultError(
+				'network',
+				`Failed to process ${failedPaths.length} file(s) from remote vault: ${failedPaths.map(f => f.path).join(', ')}`,
+				{
+					originalError: failedPaths[0].error,
+					failedPaths: failedPaths.map(f => f.path),
+					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
+				}
+			);
+		}
+
 		return state;
 	}
 

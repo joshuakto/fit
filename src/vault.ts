@@ -16,10 +16,11 @@ type VaultReadResultMap = {
 	"local": {
 		state: FileStates;
 	};
-	/** Remote vault result - includes commit SHA */
+	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {
 		state: FileStates;
 		commitSha: CommitSha;
+		treeSha: TreeSha;
 	};
 };
 
@@ -81,7 +82,11 @@ export class VaultError extends Error {
 	constructor(
 		public type: VaultErrorType,
 		message: string,
-		public details?: { originalError?: unknown }
+		public details?: {
+			originalError?: unknown;
+			failedPaths?: string[];
+			errors?: Array<{ path: string; error: unknown }>;
+		}
 	) {
 		super(message);
 		this.name = 'VaultError';
@@ -89,7 +94,11 @@ export class VaultError extends Error {
 
 	// Generic factory helper
 	private static create(type: VaultErrorType) {
-		return (message: string, details?: { originalError?: unknown }) =>
+		return (message: string, details?: {
+			originalError?: unknown;
+			failedPaths?: string[];
+			errors?: Array<{ path: string; error: unknown }>;
+		}) =>
 			new VaultError(type, message, details);
 	}
 

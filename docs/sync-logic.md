@@ -867,80 +867,99 @@ sequenceDiagram
 
 **Multi-device:** Not prevented - GitHub handles conflicts, sync retries after pull
 
+## ⚡ Performance Characteristics
+
+### What Affects Sync Speed
+
+1. **Network latency to GitHub** (usually the bottleneck)
+   - Cache hit (no remote changes): 1 API call
+   - Cache miss (remote changed): 2 API calls
+   - International networks can add significant latency
+
+2. **Vault size**
+   - Local file scanning scales linearly with file count
+   - Remote tree fetch scales with repository size
+
+3. **Slow operations** (monitored automatically, see debug logs for warnings)
+   - GitHub API calls taking > 10 seconds
+   - Local SHA computation taking > 10 seconds (hundreds of files on mobile)
+
+### Optimizations
+
+- ✅ **Remote vault caching** - Returns cached state if commit SHA unchanged
+- ✅ **In-memory SHA computation** - Avoids re-reading files
+- ✅ **Parallel local + remote fetch** - Scans local vault while fetching remote state
+- ✅ **Batched filesystem operations** - Groups safety checks for efficiency
+
+**Implementation:** [src/remoteGitHubVault.ts:605-640](../src/remoteGitHubVault.ts#L605-L640), [src/fitSync.ts:697-707](../src/fitSync.ts#L697-L707)
+
 ## Debug Logging
 
-### Provenance Tracking
+When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugins/fit/debug.log`.
 
-When debug logging is enabled (Settings → Enable debug logging), FIT writes a complete audit trail to `.obsidian/plugins/fit/debug.log`:
-
-**Logged events:**
-1. **SHA cache load:** Where caches came from (plugin data.json)
-2. **SHA computation:** Files scanned from vault
-3. **Change detection:** Files involved in sync (logged upfront for crash diagnostics)
-4. **Sync outcomes:** Operations performed and conflicts detected
-5. **State updates:** Final state persisted after successful sync
-
-**Example log trace for initial sync with remote changes:**
+**Example sync with 5 local files, cache hit (fast ~500ms):**
 ```
-[2025-11-04T10:30:15.234Z] [Fit] SHA caches loaded from storage: {
-  "source": "plugin data.json",
-  "localShaCount": 0,
-  "remoteShaCount": 0,
-  "lastCommit": null
+[2025-01-19T04:36:49.120Z] .. 📦 [Fit/Cache] Loaded SHA caches from storage: {
+  "localShaCount": 4, "remoteShaCount": 5, "lastCommit": "23be92a..."
 }
+[2025-01-19T04:36:49.542Z] 🔄 [Sync] Checking local and remote changes (parallel)...
+[2025-01-19T04:36:49.543Z] .. 💾 [LocalVault] Scanning files...
+[2025-01-19T04:36:49.543Z] .. ☁️ [RemoteVault] Fetching from GitHub...
+[2025-01-19T04:36:49.552Z] ... 💾 [LocalVault] Scanned 5 files
+[2025-01-19T04:36:50.018Z] ... 📦 [RemoteVault] Using cached state (23be92a)
+[2025-01-19T04:36:50.019Z] .. ✅ [Sync] Change detection complete
+[2025-01-19T04:36:50.020Z] 🔄 [FitSync] Syncing changes (1 local, 0 remote): {
+  "local": { "MODIFIED": ["note.md"] }
+}
+[2025-01-19T04:36:50.597Z] .. ⬆️ [Push] Pushed 1 changes to remote
+[2025-01-19T04:36:50.598Z] .. 📦 [Cache] Updating SHA cache after sync
+```
 
-[2025-11-04T10:30:15.456Z] [LocalVault] Computed local SHAs from filesystem: {
-  "source": "vault files",
-  "fileCount": 0
-}
+**Performance insights from timestamps:**
+- Local scan: ~10ms (5 files, very fast)
+- Remote fetch: ~466ms (GitHub API call - cache hit, 1 API call)
+- Parallel execution visible: both operations start at :543ms
+- Push operation: ~577ms (GitHub API to create commit)
+- Total sync: ~1 second
 
-[2025-11-04T10:30:16.789Z] [Fit] Remote changes detected: {
-  "ADDED": 195,
-  "MODIFIED": 0,
-  "REMOVED": 0,
-  "total": 195
-}
-
-[2025-11-04T10:30:16.790Z] [FitSync] Starting sync: {
-  "remote": {
-    "ADDED": [
-      "README.md",
-      "notes/daily/2025-01-15.md",
-      ...
-    ]
-  }
-}
-
-[2025-11-04T10:37:19.456Z] [FitSync] Computed SHAs from in-memory content (skipped re-reading files): {
-  "filesProcessed": 195,
-  "totalFilesInState": 195
-}
-
-[2025-11-04T10:37:19.789Z] [FitSync] Updating local store after successful sync: {
-  "localShaCount": 195,
-  "remoteShaCount": 195,
-  "commitSha": "a1b2c3d4..."
-}
+**Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
+```
+[timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
+[timestamp] ... ⬇️ [RemoteVault] Fetching initial state from GitHub (a1b2c3d)...
+[timestamp] ... ☁️ [RemoteVault] Fetched 195 files
+[timestamp] 🔄 [FitSync] Syncing changes (0 local, 195 remote): { ... }
+[timestamp] .. ⬇️ [Pull] Pulled 195 remote changes to local
 ```
 
 **Example log trace with conflicts:**
 ```
-[2025-11-04T10:45:20.123Z] [FitSync] Starting sync: {
+🚀 [SYNC START] Manual sync requested
+.. 💾 [LocalVault] Scanned 6 files
+.. ☁️ [RemoteVault] Fetching from GitHub...
+.... ⬇️ [RemoteVault] New commit detected (b80f023), fetching tree...
+🔄 [FitSync] Syncing changes (1 local, 2 remote): {
   "local": {
-    "changed": ["file1.md"]
+    "MODIFIED": ["file1.md"]
   },
   "remote": {
     "MODIFIED": ["file1.md", "file2.md"]
   }
 }
-
-[2025-11-04T10:45:21.456Z] [FitSync] Sync completed with conflicts: {
-  "conflictCount": 1,
-  "conflicts": [
+.. ⬆️ [Push] Pushed 1 changes to remote
+.. 📦 [Cache] Updating SHA cache after sync: {
+  "localChanges": 2,
+  "remoteChanges": 0,
+  "commitChanged": true
+}
+✅ [SYNC COMPLETE] Success with conflicts: {
+  "duration": "2.34s",
+  "totalOperations": 2,
+  "conflicts": 1,
+  "unresolvedConflicts": [
     {
       "path": "file1.md",
-      "local": "changed",
-      "remote": "MODIFIED"
+      "localState": "changed",
+      "remoteOp": "MODIFIED"
     }
   ]
 }

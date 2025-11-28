@@ -12,11 +12,61 @@ npm run dev
 
 **Testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
 
-**Unit Tests**: Run `npm test` to execute Jest unit tests, or `npm run test:watch` for development.
+**Unit Tests**: Run `npm test` to execute unit tests (Vitest), or `npm run test:watch` for development with file watching.
 
 ## Architecture
 
 See [`architecture.md`](./architecture.md) for system design, data flow, and component relationships.
+
+## Roadmap & Priorities
+
+### Current Release
+**Milestone**: [1.4.0](https://github.com/joshuakto/fit/milestone/1)
+
+Check the milestone for current release priorities and progress.
+
+### Long-Term Strategic Priorities
+
+**🛡️ Core Stability** (always active):
+- **Data loss prevention** - Filesystem safety, reliable deletion handling
+- **Sync reliability** - Handle edge cases, large files, encoding issues
+- **Error diagnostics** - Clear per-file error feedback, actionable messages
+- **Performance** - Fast syncs, efficient API usage, mobile optimization
+
+**🚀 Platform Expansion**:
+- **Hidden file support** - Enable syncing dotfiles (`.gitignore`, etc.)
+- **Selective `.obsidian/` sync** - Sync plugins/settings without exposing secrets
+- **Multi-platform backends** - GitLab, Gitea, self-hosted Git servers
+- **Multi-repo sync** - Multiple vaults or vault partitions
+
+**🔒 Security & Privacy**:
+- **Encrypted PAT storage** - Platform-native keychains (Keychain, Credential Manager)
+- **End-to-end encryption** - Optional encrypted remote storage
+
+**💡 User Experience**:
+- **Conflict resolution UX** - Auto-merge, resolution strategies, better workflows
+- **Auto-sync triggers** - On save, on open, configurable intervals
+- **Settings UI improvements** - Visual examples, notification customization
+
+**🔧 Developer Experience**:
+- **E2E testing** - Real Obsidian environment tests
+- **Performance benchmarking** - Automated regression detection
+
+### Browse Issues by Category
+
+**By priority:**
+- [Current milestone](https://github.com/joshuakto/fit/milestone/1) - Active release work
+- [Help wanted](https://github.com/joshuakto/fit/labels/help%20wanted) - Community contribution opportunities
+- [Good first issue](https://github.com/joshuakto/fit/labels/good%20first%20issue) - Newcomer-friendly tasks
+
+**By type:**
+- [Bugs](https://github.com/joshuakto/fit/labels/bug) - Reported issues
+- [Enhancements](https://github.com/joshuakto/fit/labels/enhancement) - Feature requests
+- [Documentation](https://github.com/joshuakto/fit/labels/documentation) - Docs improvements
+- [Needs reproduction](https://github.com/joshuakto/fit/labels/needs-repro) - Awaiting user data
+
+**By platform:**
+- [Mobile](https://github.com/joshuakto/fit/labels/mobile) - Mobile-specific issues
 
 ## Getting Help
 

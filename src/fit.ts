@@ -5,7 +5,7 @@
  * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
  */
 
-import { LocalStores, FitSettings } from "main";
+import { LocalStores, FitSettings } from "@main";
 import { FileChange, FileClash, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
@@ -75,7 +75,7 @@ export class Fit {
 		}
 
 		// Log SHA cache provenance for debugging
-		fitLogger.log('[Fit] SHA caches loaded from storage', {
+		fitLogger.log('.. 📦 [Cache] Loaded SHA caches from storage', {
 			source: 'plugin data.json',
 			localShaCount: localCount,
 			remoteShaCount: remoteCount,
@@ -131,6 +131,7 @@ export class Fit {
 	}
 
 	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
+		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
 		const changes = compareFileStates(currentState, this.localSha);
@@ -146,6 +147,7 @@ export class Fit {
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
 	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha}> {
+		fitLogger.log('.. ☁️ [RemoteVault] Fetching from GitHub...');
 		const { state, commitSha } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
