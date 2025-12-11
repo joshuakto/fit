@@ -326,14 +326,39 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	/**
 	 * Set file content directly (for test setup).
-	 * Always normalizes to plaintext (simulates how Obsidian stores text files).
+	 * Simulates Obsidian's storage behavior:
+	 * - Text files: stored as plaintext (decodes base64 if needed)
+	 * - Binary files: stored as base64 (detected via decoding failure or null bytes)
 	 */
 	setFile(path: string, content: string | PlainTextContent | FileContent): void {
-		// Normalize to plaintext - Obsidian stores text files as text, not base64
-		const plainText = content instanceof FileContent
-			? content.toPlainText()
-			: content;
-		this.files.set(path, FileContent.fromPlainText(plainText));
+		if (!(content instanceof FileContent)) {
+			// Raw string, treat as plaintext
+			this.files.set(path, FileContent.fromPlainText(content));
+			return;
+		}
+
+		const raw = content.toRaw();
+		if (raw.encoding === 'plaintext') {
+			// Already plaintext, store as-is
+			this.files.set(path, content);
+			return;
+		}
+
+		// Base64 content - try to decode as text (simulates Obsidian's behavior)
+		try {
+			const decoded = content.toPlainText();
+			// Check for null bytes (binary indicator)
+			if (decoded.includes('\0')) {
+				// Binary file, keep as base64
+				this.files.set(path, content);
+			} else {
+				// Valid text, store as plaintext
+				this.files.set(path, FileContent.fromPlainText(decoded));
+			}
+		} catch {
+			// Decoding failed - binary file, keep as base64
+			this.files.set(path, content);
+		}
 	}
 
 	/**
