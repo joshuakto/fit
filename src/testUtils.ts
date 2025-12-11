@@ -6,9 +6,8 @@ import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
-import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
+import { FileContent, Base64Content, Content, PlainTextContent } from './util/contentEncoding';
 import { FilePath } from './util/filePath';
-import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
@@ -327,23 +326,14 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	/**
 	 * Set file content directly (for test setup).
+	 * Always normalizes to plaintext (simulates how Obsidian stores text files).
 	 */
 	setFile(path: string, content: string | PlainTextContent | FileContent): void {
-		// Normalize to logical encoding based on path (for convenient test assertions).
-		const detectedExtension = extractExtension(path);
-		const isBinary = detectedExtension && isBinaryExtension(detectedExtension);
-
-		let fileContent: FileContent;
-		if (content instanceof FileContent) {
-			// Normalize: binary files stay as-is, text files convert to plaintext
-			fileContent = isBinary ? content : FileContent.fromPlainText(content.toPlainText());
-		} else {
-			// Create FileContent from string: binary → base64, text → plaintext
-			fileContent = isBinary
-				? FileContent.fromBase64(Content.encodeToBase64(content))
-				: FileContent.fromPlainText(content);
-		}
-		this.files.set(path, fileContent);
+		// Normalize to plaintext - Obsidian stores text files as text, not base64
+		const plainText = content instanceof FileContent
+			? content.toPlainText()
+			: content;
+		this.files.set(path, FileContent.fromPlainText(plainText));
 	}
 
 	/**
