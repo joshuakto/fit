@@ -35,10 +35,23 @@ export async function readFileContent(
 	try {
 		const plainText = await vault.read(file);
 		return FileContent.fromPlainText(plainText);
-	} catch {
-		// Obsidian throws when file isn't valid UTF-8 text
-		// Example: "The file couldn't be opened because it isn't in the correct format"
-		const base64 = arrayBufferToBase64(await vault.readBinary(file));
-		return FileContent.fromBase64(base64);
+	} catch (textError) {
+		// Try binary fallback; if it fails again, throw combined error
+		try {
+			const base64 = arrayBufferToBase64(await vault.readBinary(file));
+			return FileContent.fromBase64(base64);
+		} catch (binaryError) {
+			const cause ={
+				asTextError: textError instanceof Error ? textError.message : String(textError),
+				asBinaryError: binaryError instanceof Error ? binaryError.message : String(binaryError),
+			};
+
+			const error = new Error(
+				`Failed to read file "${path}": text read failed (${cause.asTextError}), binary read also failed (${cause.asBinaryError})`
+			) as Error & { cause?: unknown };
+
+			error.cause = cause;
+			throw error;
+		}
 	}
 }
