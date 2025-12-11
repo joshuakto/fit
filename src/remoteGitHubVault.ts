@@ -10,8 +10,8 @@ import { retry } from "@octokit/plugin-retry";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
-import { FileContent, isBinaryExtension } from "./util/contentEncoding";
-import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { FileContent } from "./util/contentEncoding";
+import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { fitLogger } from "./logger";
 
@@ -309,12 +309,8 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		}
 
 		// Addition/modification case
-		if (!encoding) {
-			const filePath = FilePath.create(path);
-			const extension = FilePath.getExtension(filePath);
-			encoding = (extension && isBinaryExtension(extension)) ? "base64" : "utf-8";
-		}
-		const blobSha = await this.createBlob(rawContent, encoding);
+		// encoding is always set from FileContent.toRaw() above
+		const blobSha = await this.createBlob(rawContent, encoding!);
 
 		// Skip if file on remote is identical
 		if (currentState[path] === blobSha) {

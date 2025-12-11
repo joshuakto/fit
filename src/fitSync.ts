@@ -1,12 +1,11 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates } from "./util/changeTracking";
-import { extractExtension } from "./utils";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
-import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
 import { CommitSha } from "./util/hashing";
 
@@ -133,19 +132,14 @@ export class FitSync implements IFitSync {
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
-	private generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content): ConflictReport {
-		const detectedExtension = extractExtension(path);
-		if (detectedExtension && isBinaryExtension(detectedExtension)) {
+	private generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content, isBinary: boolean): ConflictReport {
+		if (isBinary) {
 			return {
 				path,
 				resolutionStrategy: "binary",
 				remoteContent
 			};
 		}
-		// assume file encoding is utf8 if extension is not known
-		// Note: Both localContent and remoteContent are Base64Content
-		// For local: if it's a text file, localVault returns PlainTextContent, but we need to handle that upstream
-		// For remote: remoteVault ALWAYS returns Base64Content
 		return {
 			path,
 			resolutionStrategy: "utf-8",
@@ -233,7 +227,8 @@ export class FitSync implements IFitSync {
 			const remoteBase64 = remoteContent.toBase64();
 
 			if (remoteBase64 !== localBase64) {
-				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64);
+				const isBinary = localFileContent.toRaw().encoding === 'base64';
+				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64, isBinary);
 				const conflictFile = this.prepareConflictFile(clash.path, report.remoteContent);
 				return {path: clash.path, conflictFile};
 			}
