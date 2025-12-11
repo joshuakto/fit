@@ -182,42 +182,6 @@ export class FileContent {
 }
 
 /**
- * Check if a file extension indicates binary content.
- * Binary files are treated as opaque (no diffs, special conflict handling).
- *
- * @param extension - File extension WITHOUT leading dot (e.g., "png", "pdf", not ".png")
- *                    Leading dots are automatically stripped if present.
- */
-export function isBinaryExtension(extension: string): boolean {
-	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
-	return RECOGNIZED_BINARY_EXT.has(normalized.toLowerCase());
-}
-
-/**
- * File extensions that should be treated as binary/opaque content.
- * Used for:
- * 1. Reading files correctly from Obsidian (prefer readBinary for these)
- * 2. User-facing decisions (don't show diffs, treat conflicts as opaque)
- *
- * CURRENT LIMITATIONS:
- * - Small hardcoded list means unknown binary types (.zip, .sqlite, .webp, etc.)
- *   are mishandled as text, which can cause corruption
- * - Extension-based detection is inherently limited (files without extensions,
- *   misnamed files, etc.)
- *
- * TODO: Implement content-based binary detection instead of extension guessing:
- * 1. Technical reading (Obsidian API):
- *    - Try vault.read() first, catch UTF-8 decode errors
- *    - Fall back to vault.readBinary() if decode fails
- *    - Or always use readBinary() and decode as UTF-8, checking for invalid sequences
- * 2. Semantic binary detection (user-facing):
- *    - Detect actual binary content (null bytes, high ratio of non-printable chars)
- *    - Use for conflict resolution UI (show diffs vs "binary file changed")
- * 3. Alternative: Use mime-type library for better extension coverage as interim solution
- */
-const RECOGNIZED_BINARY_EXT = new Set(["png", "jpg", "jpeg", "pdf"]);
-
-/**
  * Normalize base64 string by removing all whitespace (newlines, spaces, tabs).
  *
  * Different sources may format base64 differently:

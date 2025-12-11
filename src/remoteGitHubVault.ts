@@ -10,8 +10,8 @@ import { retry } from "@octokit/plugin-retry";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
-import { FileContent, isBinaryExtension } from "./util/contentEncoding";
-import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { FileContent } from "./util/contentEncoding";
+import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { fitLogger } from "./logger";
 
@@ -286,16 +286,8 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		content: FileContent | null,
 		currentState: FileStates
 	): Promise<TreeNode | null> {
-		let rawContent: string | null = null;
-		let encoding: 'base64' | 'utf-8' | undefined;
-		if (content !== null) {
-			const rawContentObj = content.toRaw();
-			rawContent = rawContentObj.content;
-			encoding = rawContentObj.encoding === 'base64' ? 'base64' : 'utf-8';
-		}
-
 		// Deletion case (content is null)
-		if (rawContent === null) {
+		if (content === null) {
 			// Skip deletion if file doesn't exist on remote
 			if (!(path in currentState)) {
 				return null;
@@ -309,11 +301,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		}
 
 		// Addition/modification case
-		if (!encoding) {
-			const filePath = FilePath.create(path);
-			const extension = FilePath.getExtension(filePath);
-			encoding = (extension && isBinaryExtension(extension)) ? "base64" : "utf-8";
-		}
+		const rawContentObj = content.toRaw();
+		const rawContent = rawContentObj.content;
+		const encoding = rawContentObj.encoding === 'base64' ? 'base64' : 'utf-8';
 		const blobSha = await this.createBlob(rawContent, encoding);
 
 		// Skip if file on remote is identical
