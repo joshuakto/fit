@@ -145,6 +145,10 @@ describe('LocalVault', () => {
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// read() throws for binary files, triggering fallback to readBinary()
+			mockVault.read.mockRejectedValue(
+				new Error("The file couldn't be opened because it isn't in the correct format")
+			);
 			mockVault.readBinary.mockResolvedValue(new ArrayBuffer(8));
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
@@ -163,7 +167,7 @@ describe('LocalVault', () => {
 			expect(state['image.png']).toMatchInlineSnapshot(
 				`"fe954d839c04f84471b6dd90c945e55a6035de80"`);
 			expect(state['archive.zip']).toMatchInlineSnapshot(
-				`"e67146506d2b18d3414a28ddc204c9dda6267080"`);
+				`"a93c48b470cca6e238405a1aad306434aa9618a2"`);
 		});
 
 		it('should handle empty vault', async () => {
@@ -197,18 +201,23 @@ describe('LocalVault', () => {
 			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
 		});
 
-		it('should read binary file content as base64', async () => {
+		it('should fall back to readBinary when read() throws an exception', async () => {
 			const mockFile = StubTFile.ofPath('image.png');
 			const binaryData = new ArrayBuffer(8);
 
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			// Obsidian throws when trying to read binary file as text
+			mockVault.read.mockRejectedValue(
+				new Error("The file couldn't be opened because it isn't in the correct format")
+			);
 			mockVault.readBinary.mockResolvedValue(binaryData);
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('image.png');
 
-			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
+			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
+			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
 		});
 
 		it('should throw error if file not found', async () => {
@@ -219,6 +228,21 @@ describe('LocalVault', () => {
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
 				'File not found: missing.md'
 			);
+		});
+
+		it('should not call readBinary when read() succeeds for text file', async () => {
+			const mockFile = StubTFile.ofPath('note.txt');
+			const textContent = 'I am simple text file';
+
+			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			mockVault.read.mockResolvedValue(textContent);
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const content = await localVault.readFileContent('note.txt');
+
+			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
+			expect(mockVault.readBinary).not.toHaveBeenCalled();
+			expect(content).toEqual(FileContent.fromPlainText(textContent));
 		});
 	});
 
