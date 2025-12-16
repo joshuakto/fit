@@ -83,17 +83,29 @@ export class LocalVault implements IVault<"local"> {
 	 * configurable via settings with an opt-out for users who encounter issues.
 	 */
 	shouldTrackState(filePath: string): boolean {
-		// Exclude hidden files/directories (any path component starting with .)
-		// This is critical because Obsidian's Vault API can write hidden files
-		// but cannot read them back (getAbstractFileByPath returns null)
-		//
-		// Obsidian vault paths always use forward slashes (even on Windows)
-		const parts = filePath.split('/');
-		if (parts.some(part => part.startsWith('.'))) {
+		// Exclude .obsidian/plugins/fit/ directory (contains GitHub token)
+		// This exclusion is handled here and in shouldSyncPath for defense in depth
+		if (filePath.startsWith('.obsidian/plugins/fit/')) {
 			return false;
 		}
 
 		return true;
+	}
+
+	/**
+	 * Recursively get all file paths from adapter.list() results
+	 */
+	private async getAllFilePaths(listResult: {files: string[], folders: string[]}): Promise<string[]> {
+		const allFiles: string[] = [...listResult.files];
+
+		// Recursively list all subfolders
+		for (const folder of listResult.folders) {
+			const subList = await this.vault.adapter.list(folder);
+			const subFiles = await this.getAllFilePaths(subList);
+			allFiles.push(...subFiles);
+		}
+
+		return allFiles;
 	}
 
 	/**
@@ -118,15 +130,22 @@ export class LocalVault implements IVault<"local"> {
 	 * Scan vault, update latest known state, and return it
 	 */
 	async readFromSource(): Promise<VaultReadResult> {
-		const allFiles = this.vault.getFiles();
+		// Use adapter.list() to get ALL files including hidden ones
+		// vault.getFiles() only returns non-hidden files
+		const allFilesAndFolders = await this.vault.adapter.list('/');
+		const allPaths = await this.getAllFilePaths(allFilesAndFolders);
 
-		// Filter to only tracked paths
-		const allPaths = allFiles.map(f => f.path);
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
 		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
-		// Create map for quick file size lookups
-		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
+		// Get file sizes for all tracked paths
+		const fileSizeMap = new Map<string, number>();
+		for (const path of trackedPaths) {
+			const stat = await this.vault.adapter.stat(path);
+			if (stat && stat.type === 'file') {
+				fileSizeMap.set(path, stat.size);
+			}
+		}
 
 		if (ignoredPaths.length > 0) {
 			fitLogger.log('[LocalVault] Ignored paths in local scan', {

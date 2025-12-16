@@ -610,9 +610,11 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	shouldTrackState(path: string): boolean {
-		// Exclude hidden files (same as LocalVault)
-		const parts = path.split('/');
-		return !parts.some(part => part.startsWith('.'));
+		// Exclude .obsidian/plugins/fit/ (same as LocalVault)
+		if (path.startsWith('.obsidian/plugins/fit/')) {
+			return false;
+		}
+		return true;
 	}
 }
 

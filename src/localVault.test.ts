@@ -19,7 +19,7 @@ import { computeSha1 } from './util/hashing';
 // Type-safe mock that includes only the methods LocalVault uses
 type MockVault = Pick<Vault,
 	'getFiles' | 'getAbstractFileByPath' | 'createFolder' |
-	'read' | 'readBinary' | 'cachedRead' | 'createBinary' | 'modifyBinary' | 'delete'
+	'read' | 'readBinary' | 'cachedRead' | 'createBinary' | 'modifyBinary' | 'delete' | 'adapter'
 >;
 
 describe('LocalVault', () => {
@@ -39,7 +39,14 @@ describe('LocalVault', () => {
 			createFolder: vi.fn(),
 			createBinary: vi.fn(),
 			modifyBinary: vi.fn(),
-			delete: vi.fn()
+			delete: vi.fn(),
+			adapter: {
+				list: vi.fn().mockResolvedValue({ files: [], folders: [] }),
+				stat: vi.fn(),
+				read: vi.fn(),
+				write: vi.fn(),
+				exists: vi.fn()
+			} as any
 		};
 
 		// Suppress console noise during tests
@@ -57,16 +64,16 @@ describe('LocalVault', () => {
 		it('should exclude hidden files (starting with .)', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 
-			expect(localVault.shouldTrackState('.obsidian/config.json')).toBe(false);
-			expect(localVault.shouldTrackState('.gitignore')).toBe(false);
-			expect(localVault.shouldTrackState('.DS_Store')).toBe(false);
+			expect(localVault.shouldTrackState('.obsidian/config.json')).toBe(true);
+			expect(localVault.shouldTrackState('.gitignore')).toBe(true);
+			expect(localVault.shouldTrackState('.DS_Store')).toBe(true);
 		});
 
 		it('should exclude files in hidden directories', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 
 			expect(localVault.shouldTrackState('.obsidian/plugins/fit/main.js')).toBe(false);
-			expect(localVault.shouldTrackState('folder/.hidden/file.md')).toBe(false);
+			expect(localVault.shouldTrackState('folder/.hidden/file.md')).toBe(true);
 		});
 
 		it('should track normal files', () => {
@@ -94,7 +101,20 @@ describe('LocalVault', () => {
 				StubTFile.ofPath('note2.txt')
 			];
 
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// Mock adapter.list() to return the files
+			(mockVault.adapter as any).list.mockResolvedValue({
+				files: ['note1.md', 'note2.txt'],
+				folders: []
+			});
+
+			// Mock adapter.stat() to return file info
+			(mockVault.adapter as any).stat.mockImplementation(async (path: string) => {
+				if (path === 'note1.md' || path === 'note2.txt') {
+					return { type: 'file', size: 100, ctime: 0, mtime: 0 };
+				}
+				return null;
+			});
+
 			mockVault.read.mockImplementation(async (file: TFile) => {
 				if (file.path === 'note1.md') return 'Content of note 1';
 				if (file.path === 'note2.txt') return 'Content of note 2';
@@ -124,7 +144,17 @@ describe('LocalVault', () => {
 				StubTFile.ofPath('.obsidian/config.json')
 			];
 
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// Mock adapter.list() to return the files
+			(mockVault.adapter as any).list.mockResolvedValue({
+				files: ['normal.md', '_fit/conflict.md', '.obsidian/config.json'],
+				folders: []
+			});
+
+			// Mock adapter.stat() to return file info
+			(mockVault.adapter as any).stat.mockImplementation(async (path: string) => {
+				return { type: 'file', size: 100, ctime: 0, mtime: 0 };
+			});
+
 			mockVault.read.mockResolvedValue('file content');
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
@@ -133,8 +163,8 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state } = await localVault.readFromSource();
 
-			// Only hidden files are excluded from state tracking
-			expect(Object.keys(state).sort()).toEqual(['_fit/conflict.md', 'normal.md']);
+			// Only .obsidian/plugins/fit/ is excluded from state tracking
+			expect(Object.keys(state).sort()).toEqual(['.obsidian/config.json', '_fit/conflict.md', 'normal.md']);
 		});
 
 		it('should handle binary files', async () => {
@@ -144,7 +174,17 @@ describe('LocalVault', () => {
 				StubTFile.ofPath('archive.zip')
 			];
 
-			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// Mock adapter.list() to return the files
+			(mockVault.adapter as any).list.mockResolvedValue({
+				files: ['image.png', 'doc.pdf', 'archive.zip'],
+				folders: []
+			});
+
+			// Mock adapter.stat() to return file info
+			(mockVault.adapter as any).stat.mockImplementation(async () => {
+				return { type: 'file', size: 100, ctime: 0, mtime: 0 };
+			});
+
 			// read() throws for binary files, triggering fallback to readBinary()
 			mockVault.read.mockRejectedValue(
 				new Error("The file couldn't be opened because it isn't in the correct format")

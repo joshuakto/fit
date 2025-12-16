@@ -24,9 +24,17 @@ export async function readFileContent(
 	path: string
 ): Promise<FileContent> {
 	const file = vault.getAbstractFileByPath(path);
+
+	// For hidden files (not visible via Vault API), use adapter directly
 	if (!file) {
-		throw new Error(`File not found: ${path}`);
+		try {
+			const base64 = arrayBufferToBase64(await vault.adapter.readBinary(path));
+			return FileContent.fromBase64(base64);
+		} catch (error) {
+			throw new Error(`File not found: ${path}`);
+		}
 	}
+
 	if (!(file instanceof TFile)) {
 		throw new Error(`Path is not a file: ${path}`);
 	}

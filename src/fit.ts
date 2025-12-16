@@ -105,8 +105,8 @@ export class Fit {
 			return false;
 		}
 
-		// Exclude .obsidian/ directory (Obsidian workspace settings and plugins)
-		if (path.startsWith(".obsidian/")) {
+		// Exclude .obsidian/plugins/fit/ directory (contains GitHub token)
+		if (path.startsWith(".obsidian/plugins/fit/")) {
 			return false;
 		}
 

@@ -289,8 +289,9 @@ describe('FitSync', () => {
 			const fitSync = createFitSync();
 
 			// === STEP 1: Remote has files in .obsidian/ directory ===
-			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
+			// Only .obsidian/plugins/fit/ is filtered by shouldSyncPath
 			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{"token":"secret"}') },
 				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
 				{ path: '.obsidian/app.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
@@ -300,31 +301,36 @@ describe('FitSync', () => {
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Sync succeeded with protected files treated as clashes
+			// Verify: Sync succeeded with .obsidian/plugins/fit/ treated as clash
 			expect(result).toEqual(expect.objectContaining({ success: true }));
-			// Protected/hidden files are now treated as clashes and get appropriate messaging
+			// Protected path (.obsidian/plugins/fit/) is treated as clash
 			expect(mockNotice._calls).toContainEqual({
 				method: 'setMessage',
 				args: ['Synced with remote, unresolved conflicts written to _fit']
 			});
 
-			// Verify: .obsidian/ files saved to _fit/ for safety, normal file pulled directly
+			// Verify: .obsidian/plugins/fit/ saved to _fit/, other .obsidian/ files synced normally
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// .obsidian/ files saved to _fit/ (protected path - never write directly to .obsidian/)
-				'_fit/.obsidian/app.json': '{"theme":"dark"}',
-				'_fit/.obsidian/plugins/plugin1/main.js': 'Plugin code',
+				// .obsidian/plugins/fit/ saved to _fit/ (contains token - never sync)
+				'_fit/.obsidian/plugins/fit/data.json': '{"token":"secret"}',
+				// Other .obsidian/ files synced normally
+				'.obsidian/plugins/plugin1/main.js': 'Plugin code',
+				'.obsidian/app.json': '{"theme":"dark"}',
 				// Normal file pulled directly
 				'normal.md': 'Normal file'
 			});
 
-			// Verify: LocalStores - .obsidian/ files NOT tracked (filtered by shouldSyncPath)
-			// Protected paths (.obsidian/, _fit/) are excluded from both local and remote caches
+			// Verify: LocalStores - only .obsidian/plugins/fit/ NOT tracked (filtered by shouldSyncPath)
 			expect(localStoreState).toMatchObject({
 				localSha: {
-					'normal.md': expect.any(String)  // Only normal file
+					'.obsidian/plugins/plugin1/main.js': expect.any(String),
+					'.obsidian/app.json': expect.any(String),
+					'normal.md': expect.any(String)
 				},
 				lastFetchedRemoteSha: {
-					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
+					'.obsidian/plugins/plugin1/main.js': expect.any(String),
+					'.obsidian/app.json': expect.any(String),
+					'normal.md': expect.any(String)
 				}
 			});
 		});
@@ -427,15 +433,15 @@ describe('FitSync', () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
-			// === STEP 1: Create both hidden and normal files locally ===
-			localVault.setFile('.hidden-file.md', 'Local hidden content');
+			// === STEP 1: Create both .obsidian/plugins/fit/ and normal files locally ===
+			localVault.setFile('.obsidian/plugins/fit/data.json', '{"token":"secret"}');
 			localVault.setFile('visible.md', 'Visible content');
 
 			// === STEP 2: Sync - should only push visible file ===
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Only visible file was synced (hidden file silently ignored)
+			// Verify: Only visible file was synced (.obsidian/plugins/fit/ silently ignored)
 			expect(result).toEqual(expect.objectContaining({
 				success: true,
 				changeGroups: expect.arrayContaining([
@@ -446,21 +452,21 @@ describe('FitSync', () => {
 				])
 			}));
 
-			// Verify: Remote does NOT have hidden file
+			// Verify: Remote does NOT have .obsidian/plugins/fit/ file
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
 
 			// Verify: LocalStores only track visible file
 			expect(Object.keys(localStoreState.localSha)).toEqual(['visible.md']);
 			expect(Object.keys(localStoreState.lastFetchedRemoteSha)).toEqual(['visible.md']);
 
-			// === STEP 3: Modify hidden file locally ===
-			localVault.setFile('.hidden-file.md', 'Updated hidden content');
+			// === STEP 3: Modify .obsidian/plugins/fit/ file locally ===
+			localVault.setFile('.obsidian/plugins/fit/data.json', '{"token":"newsecret"}');
 
-			// === STEP 4: Sync again - hidden file modification should be ignored ===
+			// === STEP 4: Sync again - .obsidian/plugins/fit/ modification should be ignored ===
 			const mockNotice2 = createMockNotice();
 			const result2 = await syncAndHandleResult(fitSync, mockNotice2);
 
-			// Verify: No changes detected (hidden file ignored)
+			// Verify: No changes detected (.obsidian/plugins/fit/ ignored)
 			expect(result2).toEqual(expect.objectContaining({
 				success: true,
 				changeGroups: [
@@ -495,20 +501,19 @@ describe('FitSync', () => {
 			};
 			const fitSync = createFitSync();
 
-			// === STEP 1: Create hidden file locally (not tracked by LocalVault) ===
-			// This simulates a hidden file that exists on disk but is not indexed by Obsidian
-			localVault.setFile('.hidden-config.json', 'Local version');
+			// === STEP 1: Create .obsidian/plugins/fit/ file locally (not tracked by LocalVault) ===
+			localVault.setFile('.obsidian/plugins/fit/data.json', 'Local version');
 
-			// === STEP 2: Another device pushes the same hidden file to remote ===
+			// === STEP 2: Another device pushes the same file to remote ===
 			await remoteVault.applyChanges([
-				{ path: '.hidden-config.json', content: FileContent.fromPlainText('Remote version') }
+				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('Remote version') }
 			], []);
 
-			// === STEP 3: Attempt sync - should succeed and save hidden file clash to _fit/ ===
+			// === STEP 3: Attempt sync - should succeed and save file clash to _fit/ ===
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Sync succeeds with clash detected (hidden file treated as untracked conflict)
+			// Verify: Sync succeeds with clash detected (.obsidian/plugins/fit/ treated as untracked conflict)
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(mockNotice._calls).toContainEqual({
 				method: 'setMessage',
@@ -517,31 +522,31 @@ describe('FitSync', () => {
 
 			// Verify: Local vault wrote as clash
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
-				// Local hidden file NOT overwritten (kept local version)
-				'.hidden-config.json': 'Local version',
+				// Local .obsidian/plugins/fit/ file NOT overwritten (kept local version)
+				'.obsidian/plugins/fit/data.json': 'Local version',
 				// Remote version saved to _fit/ directory
-				'_fit/.hidden-config.json': 'Remote version',
+				'_fit/.obsidian/plugins/fit/data.json': 'Remote version',
 			});
 
 			// Verify: Remote still has the remote version
-			expect(remoteVault.getFile('.hidden-config.json')).toBe('Remote version');
+			expect(remoteVault.getFile('.obsidian/plugins/fit/data.json')).toBe('Remote version');
 
 			// Verify: LocalStores updated with normal file
-			// Hidden file is NOT in localSha (not tracked)
+			// .obsidian/plugins/fit/ file is NOT in localSha (not tracked)
 			expect(Object.keys(localStoreState.localSha)).toEqual(['normal.md']);
-			// Hidden file IS in lastFetchedRemoteSha (asymmetric behavior)
-			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['.hidden-config.json', 'normal.md']);
+			// .obsidian/plugins/fit/ file IS in lastFetchedRemoteSha (asymmetric behavior)
+			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['.obsidian/plugins/fit/data.json', 'normal.md']);
 		});
 
 		it('should conservatively save remote hidden files to _fit/ even when no local version exists', async () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
-			// === STEP 1: Remote has a hidden file ===
+			// === STEP 1: Remote has a .obsidian/plugins/fit/ file ===
 			await remoteVault.applyChanges([
 				{
-					path: '.hidden-config.json',
-					content: FileContent.fromPlainText('Remote hidden content')
+					path: '.obsidian/plugins/fit/data.json',
+					content: FileContent.fromPlainText('Remote protected content')
 				},
 				{ path: 'visible.md', content: FileContent.fromPlainText('Visible content') }
 			], []);
@@ -553,19 +558,19 @@ describe('FitSync', () => {
 			// Verify: Sync succeeded
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// Verify: Both files pulled normally (hidden file doesn't exist locally, so safe to write)
+			// Verify: .obsidian/plugins/fit/ saved to _fit/, visible file synced normally
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.hidden-config.json': 'Remote hidden content',
+				'_fit/.obsidian/plugins/fit/data.json': 'Remote protected content',
 				'visible.md': 'Visible content'
 			});
 
-			// Verify: LocalStores has asymmetric tracking (hidden files in remote but not local)
+			// Verify: LocalStores has asymmetric tracking (.obsidian/plugins/fit/ in remote but not local)
 			expect(localStoreState).toMatchObject({
 				localSha: {
-					'visible.md': expect.any(String)  // Only visible file (hidden filtered by shouldTrackState)
+					'visible.md': expect.any(String)  // Only visible file (.obsidian/plugins/fit/ filtered by shouldTrackState)
 				},
 				lastFetchedRemoteSha: {
-					'.hidden-config.json': expect.any(String),  // Hidden file tracked (passes shouldSyncPath)
+					'.obsidian/plugins/fit/data.json': expect.any(String),  // .obsidian/plugins/fit/ tracked (passes shouldSyncPath)
 					'visible.md': expect.any(String)            // Visible file tracked
 				}
 			});
@@ -594,18 +599,18 @@ describe('FitSync', () => {
 			// using vault.adapter.exists() (bypasses Vault API filtering, sees ALL files).
 
 			// === SETUP: Simulate state mismatch ===
-			// Remote has a hidden file (exists in lastFetchedRemoteSha)
+			// Remote has a .obsidian/plugins/fit/ file (exists in lastFetchedRemoteSha)
 			localStoreState.lastFetchedRemoteSha = {
-				'.env': 'fake-sha-for-old-remote-value' as BlobSha
+				'.obsidian/plugins/fit/data.json': 'fake-sha-for-old-remote-value' as BlobSha
 			};
 			localStoreState.localSha = {}; // File NOT in localSha (not tracked during scan)
 
 			// Local vault has the file with user modifications (exists on filesystem)
-			localVault.setFile('.env', 'API_KEY=local-secret-data');
+			localVault.setFile('.obsidian/plugins/fit/data.json', '{"token":"local-secret"}');
 
 			// Remote now has a different version
 			await remoteVault.applyChanges([
-				{ path: '.env', content: FileContent.fromPlainText('API_KEY=new-remote-value') }
+				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{"token":"remote"}') }
 			], []);
 
 			// === CRITICAL TEST ===
@@ -630,14 +635,14 @@ describe('FitSync', () => {
 			// Verify: remote changes saved to _fit
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
 				// ✅ CRITICAL: Local file MUST still have user's modifications (not blindly overwritten)
-				'.env': 'API_KEY=local-secret-data',
+				'.obsidian/plugins/fit/data.json': '{"token":"local-secret"}',
 				// ✅ CRITICAL: Remote version should be saved to _fit/ as a clash
 				// (Because shouldTrackState filters it, pull logic treats as untracked → clash)
-				'_fit/.env': 'API_KEY=new-remote-value'
+				'_fit/.obsidian/plugins/fit/data.json': '{"token":"remote"}'
 			});
 
 			// Verify: Remote file unchanged
-			expect(remoteVault.getFile('.env')).toBe('API_KEY=new-remote-value');
+			expect(remoteVault.getFile('.obsidian/plugins/fit/data.json')).toBe('{"token":"remote"}');
 
 			// NOTE: Current protection works because shouldTrackState correctly returns false
 			// for hidden files, triggering the clash detection logic in FitSync.applyRemoteChanges().
@@ -668,33 +673,33 @@ describe('FitSync', () => {
 			// Expected: Local file preserved (not deleted) because we can't verify it's safe to delete
 			// This prevents data loss when a file isn't tracked in localSha
 
-			// === SETUP: Initial synced state with hidden file ===
-			const hiddenFileContent = 'important local config';
-			localVault.setFile('.gitignore', hiddenFileContent);
+			// === SETUP: Initial synced state with .obsidian/plugins/fit/ file ===
+			const protectedFileContent = '{"token":"important-local"}';
+			localVault.setFile('.obsidian/plugins/fit/data.json', protectedFileContent);
 			localVault.setFile('README.md', 'readme v1');
 
-			remoteVault.setFile('.gitignore', 'remote version');
+			remoteVault.setFile('.obsidian/plugins/fit/data.json', 'remote version');
 			remoteVault.setFile('README.md', 'readme v1');
 
 			const { state: initialRemoteState } = await remoteVault.readFromSource();
 			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
-				// localSha: .gitignore NOT tracked (hidden file)
+				// localSha: .obsidian/plugins/fit/ NOT tracked
 				localSha: {
 					'README.md': initialLocalState['README.md']
 				},
-				// lastFetchedRemoteSha: .gitignore IS tracked (asymmetric)
+				// lastFetchedRemoteSha: .obsidian/plugins/fit/ IS tracked (asymmetric)
 				lastFetchedRemoteSha: {
-					'.gitignore': initialRemoteState['.gitignore'],
+					'.obsidian/plugins/fit/data.json': initialRemoteState['.obsidian/plugins/fit/data.json'],
 					'README.md': initialRemoteState['README.md']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};
 
-			// === STEP 1: Remote deletes .gitignore ===
+			// === STEP 1: Remote deletes .obsidian/plugins/fit/ ===
 			await remoteVault.applyChanges(
 				[],
-				['.gitignore']);
+				['.obsidian/plugins/fit/data.json']);
 
 			// === STEP 2: Sync (pull) ===
 			const fitSync = createFitSync();
@@ -704,14 +709,14 @@ describe('FitSync', () => {
 			// === VERIFY: Sync succeeded ===
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// === VERIFY: Local .gitignore NOT deleted (safety - can't verify it's safe) ===
+			// === VERIFY: Local .obsidian/plugins/fit/ NOT deleted (safety - can't verify it's safe) ===
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.gitignore': hiddenFileContent,  // Preserved (untracked, deletion skipped)
+				'.obsidian/plugins/fit/data.json': protectedFileContent,  // Preserved (untracked, deletion skipped)
 				'README.md': 'readme v1'          // Unchanged
 			});
 
 			// === VERIFY: Remote state updated ===
-			expect(remoteVault.getFile('.gitignore')).toBeUndefined();
+			expect(remoteVault.getFile('.obsidian/plugins/fit/data.json')).toBeUndefined();
 		});
 
 		it('should treat remote file as new when missing from lastFetchedRemoteSha cache', async () => {
@@ -721,19 +726,19 @@ describe('FitSync', () => {
 			// Expected: Should detect conflict and save remote version to _fit/
 
 			// === SETUP: File exists remotely but not tracked in cache ===
-			const localGitignoreContent = 'local-version';
-			const remoteGitignoreContent = 'remote-version';
+			const localProtectedContent = '{"token":"local"}';
+			const remoteProtectedContent = '{"token":"remote"}';
 
-			// Local: .gitignore exists but not tracked
-			localVault.setFile('.gitignore', localGitignoreContent);
+			// Local: .obsidian/plugins/fit/ exists but not tracked
+			localVault.setFile('.obsidian/plugins/fit/data.json', localProtectedContent);
 			localVault.setFile('README.md', 'readme v1');
 
-			// Remote: .gitignore and README.md exist
-			remoteVault.setFile('.gitignore', remoteGitignoreContent);
+			// Remote: .obsidian/plugins/fit/ and README.md exist
+			remoteVault.setFile('.obsidian/plugins/fit/data.json', remoteProtectedContent);
 			remoteVault.setFile('README.md', 'readme v1');
 
-			// Simulate state where README.md is tracked but .gitignore is missing from cache
-			// This represents old buggy behavior where hidden files weren't indexed
+			// Simulate state where README.md is tracked but .obsidian/plugins/fit/ is missing from cache
+			// This represents old buggy behavior where protected files weren't indexed
 			const { state: initialRemoteState } = await remoteVault.readFromSource();
 			const { state: initialLocalState } = await localVault.readFromSource();
 			localStoreState = {
@@ -742,9 +747,9 @@ describe('FitSync', () => {
 					'README.md': initialLocalState['README.md']
 				},
 				lastFetchedRemoteSha: {
-					// BUG: .gitignore is missing even though it exists in the commit
+					// BUG: .obsidian/plugins/fit/ is missing even though it exists in the commit
 					'README.md': initialRemoteState['README.md']
-					// '.gitignore' is missing from cache
+					// '.obsidian/plugins/fit/data.json' is missing from cache
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};
@@ -765,34 +770,34 @@ describe('FitSync', () => {
 
 			// === VERIFY: Final local vault state ===
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
-				// Local .gitignore preserved (conflict - remote ADDED, local exists with different content)
-				'.gitignore': localGitignoreContent,
+				// Local .obsidian/plugins/fit/ preserved (conflict - remote ADDED, local exists with different content)
+				'.obsidian/plugins/fit/data.json': localProtectedContent,
 				// README.md updated (was tracked, remote changed, no conflict)
 				'README.md': 'readme v2',
-				// Remote .gitignore version saved to _fit/ (conflict resolution)
-				'_fit/.gitignore': remoteGitignoreContent
+				// Remote .obsidian/plugins/fit/ version saved to _fit/ (conflict resolution)
+				'_fit/.obsidian/plugins/fit/data.json': remoteProtectedContent
 			});
 
-			// Verify stat performance: README.md already in localSha (no stat), .gitignore not in localSha (needs stat)
-			// Note: .gitignore gets stat checked because it's not in localSha (was missing from cache)
+			// Verify stat performance: README.md already in localSha (no stat), .obsidian/plugins/fit/ not in localSha (needs stat)
+			// Note: .obsidian/plugins/fit/ gets stat checked because it's not in localSha (was missing from cache)
 			const statLog = localVault.getStatLog();
 			// Should not stat README.md (already tracked in localSha)
 			expect(statLog).not.toContain('README.md');
 		});
 
 		it('should save remote file to _fit/ when stat fails to check local existence (addition)', async () => {
-			// Hidden files aren't in localSha but DO pass shouldSyncPath(), so we stat() them.
+			// .obsidian/plugins/fit/ files aren't in localSha but DO pass shouldSyncPath(), so we stat() them.
 			// If stat() fails, conservatively treat file as "may exist" → save to _fit/.
 
 			// === SETUP: Empty initial state ===
 			const fitSync = createFitSync();
 
-			// === STEP 1: Remote adds a hidden file ===
-			remoteVault.setFile('.envrc', 'export PATH=$PWD/bin:$PATH');
+			// === STEP 1: Remote adds a .obsidian/plugins/fit/ file ===
+			remoteVault.setFile('.obsidian/plugins/fit/data.json', '{"token":"remote"}');
 
 			// === STEP 2: Simulate stat() failing for this path ===
 			const statError = new Error('EACCES: permission denied');
-			// When stat is called for '.envrc', it should throw an error
+			// When stat is called for '.obsidian/plugins/fit/data.json', it should throw an error
 			localVault.seedFailureScenario('stat', statError);
 
 			// === STEP 3: Sync (pull) ===
@@ -805,8 +810,8 @@ describe('FitSync', () => {
 			// === VERIFY: File saved to _fit/ (conservative fallback) ===
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
 				// File should be in _fit/ because we couldn't verify it doesn't exist
-				'_fit/.envrc': 'export PATH=$PWD/bin:$PATH'
-				// .envrc is NOT written directly (could be overwriting existing file)
+				'_fit/.obsidian/plugins/fit/data.json': '{"token":"remote"}'
+				// .obsidian/plugins/fit/data.json is NOT written directly (could be overwriting existing file)
 			});
 
 			// Verify consolidated stat failure logging
@@ -814,7 +819,7 @@ describe('FitSync', () => {
 				'[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash',
 				{
 					error: statError,
-					filesMovedToFit: ['.envrc']
+					filesMovedToFit: ['.obsidian/plugins/fit/data.json']
 				}
 			);
 
@@ -822,7 +827,7 @@ describe('FitSync', () => {
 			expect(result).toMatchObject({
 				clash: expect.arrayContaining([
 					expect.objectContaining({
-						path: '.envrc',
+						path: '.obsidian/plugins/fit/data.json',
 						localState: 'untracked',
 						remoteOp: 'ADDED'
 					})
@@ -845,12 +850,12 @@ describe('FitSync', () => {
 
 			const fitSync = createFitSync();
 
-			// Remote has a hidden file initially
-			await remoteVault.setFile('.editorconfig', '# Config\n');
+			// Remote has a .obsidian/plugins/fit/ file initially
+			await remoteVault.setFile('.obsidian/plugins/fit/data.json', '{"token":"initial"}');
 			await syncAndHandleResult(fitSync, createMockNotice());
 
-			// Remote deletes the hidden file
-			await remoteVault.applyChanges([], ['.editorconfig']);
+			// Remote deletes the .obsidian/plugins/fit/ file
+			await remoteVault.applyChanges([], ['.obsidian/plugins/fit/data.json']);
 
 			// Simulate stat() failing
 			const statError = new Error('EIO: input/output error');
@@ -865,7 +870,7 @@ describe('FitSync', () => {
 
 			// Verify deletion was skipped (file still exists from first sync)
 			expect(localVault.getAllFilesAsRaw()).toMatchObject({
-				'.editorconfig': '# Config\n'
+				'_fit/.obsidian/plugins/fit/data.json': '{"token":"initial"}'
 			});
 
 			// Verify consolidated stat failure logging
@@ -873,7 +878,7 @@ describe('FitSync', () => {
 				'[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash',
 				{
 					error: statError,
-					deletionsSkipped: ['.editorconfig']
+					deletionsSkipped: ['.obsidian/plugins/fit/data.json']
 				}
 			);
 		});
@@ -929,12 +934,12 @@ describe('FitSync', () => {
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {
-			// Scenario: Plugin version changes filtering rules (e.g., starts ignoring certain file types)
+			// Scenario: Plugin version changes filtering rules (e.g., starts filtering .obsidian/plugins/fit/)
 			// Expected: Deletion NOT pushed to remote (file exists on filesystem but filtered from scan)
 
-			const hiddenFileContent = 'hidden content';
-			localVault.setFile('.hidden', hiddenFileContent);
-			remoteVault.setFile('.hidden', hiddenFileContent);
+			const protectedFileContent = '{"token":"secret"}';
+			localVault.setFile('.obsidian/plugins/fit/data.json', protectedFileContent);
+			remoteVault.setFile('.obsidian/plugins/fit/data.json', protectedFileContent);
 
 			// Simulate v1 tracking the file (before filtering rule change)
 			const originalShouldTrackState = localVault.shouldTrackState.bind(localVault);
@@ -945,15 +950,15 @@ describe('FitSync', () => {
 
 			localStoreState = {
 				localSha: {
-					'.hidden': initialLocalState.state['.hidden']
+					'.obsidian/plugins/fit/data.json': initialLocalState.state['.obsidian/plugins/fit/data.json']
 				},
 				lastFetchedRemoteSha: {
-					'.hidden': initialRemoteState.state['.hidden']
+					'.obsidian/plugins/fit/data.json': initialRemoteState.state['.obsidian/plugins/fit/data.json']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};
 
-			// Simulate v2: filtering rule changed (now excludes hidden files)
+			// Simulate v2: filtering rule changed (now excludes .obsidian/plugins/fit/)
 			localVault.shouldTrackState = originalShouldTrackState;
 
 			// Sync after filtering rule change
@@ -964,13 +969,13 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({success: true}));
 
 			// File should still exist locally (not deleted)
-			expect(localVault.getAllFilesAsRaw()).toMatchObject({'.hidden': hiddenFileContent});
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({'.obsidian/plugins/fit/data.json': protectedFileContent});
 
 			// File should NOT be deleted from remote (safeguard prevents data loss)
-			expect(remoteVault.getFile('.hidden')).toBe(hiddenFileContent);
+			expect(remoteVault.getFile('.obsidian/plugins/fit/data.json')).toBe(protectedFileContent);
 
-			// localSha should exclude .hidden (new filtering rules)
-			expect(localStoreState.localSha).not.toHaveProperty('.hidden');
+			// localSha should exclude .obsidian/plugins/fit/data.json (new filtering rules)
+			expect(localStoreState.localSha).not.toHaveProperty('.obsidian/plugins/fit/data.json');
 		});
 	});
 
