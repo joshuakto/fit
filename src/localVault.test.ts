@@ -218,6 +218,56 @@ describe('LocalVault', () => {
 
 			expect(state).toEqual({});
 		});
+
+		it('should recursively scan nested folders with correct paths', async () => {
+			const mockFiles = [
+				StubTFile.ofPath('root.md'),
+				StubTFile.ofPath('notes/meeting.md'),
+				StubTFile.ofPath('notes/deep/nested.md')
+			];
+
+			// Mock adapter.list() to return different results based on path
+			(mockVault.adapter as any).list.mockImplementation(async (path: string) => {
+				if (path === '/') {
+					return {
+						files: ['root.md'],
+						folders: ['notes']
+					};
+				}
+				if (path === 'notes') {
+					return {
+						files: ['notes/meeting.md'],
+						folders: ['notes/deep']
+					};
+				}
+				if (path === 'notes/deep') {
+					return {
+						files: ['notes/deep/nested.md'],
+						folders: []
+					};
+				}
+				return { files: [], folders: [] };
+			});
+
+			(mockVault.adapter as any).stat.mockResolvedValue({
+				type: 'file', size: 100, ctime: 0, mtime: 0
+			});
+
+			mockVault.read.mockResolvedValue('file content');
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				return mockFiles.find(f => f.path === path) as TFile;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const { state } = await localVault.readFromSource();
+
+			// Verify all files have correct full paths
+			expect(Object.keys(state).sort()).toEqual([
+				'notes/deep/nested.md',
+				'notes/meeting.md',
+				'root.md'
+			]);
+		});
 	});
 
 	describe('readFileContent', () => {

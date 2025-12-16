@@ -138,14 +138,17 @@ export class LocalVault implements IVault<"local"> {
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
 		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
-		// Get file sizes for all tracked paths
-		const fileSizeMap = new Map<string, number>();
-		for (const path of trackedPaths) {
-			const stat = await this.vault.adapter.stat(path);
-			if (stat && stat.type === 'file') {
-				fileSizeMap.set(path, stat.size);
-			}
-		}
+		// Get file sizes for all tracked paths (parallel)
+		const fileSizeEntries = await Promise.all(
+			trackedPaths.map(async (path) => {
+				const stat = await this.vault.adapter.stat(path);
+				const size = stat?.type === 'file' ? stat.size : null;
+				return [path, size] as const;
+			})
+		);
+		const fileSizeMap = new Map(
+			fileSizeEntries.filter((entry): entry is [string, number] => entry[1] !== null)
+		);
 
 		if (ignoredPaths.length > 0) {
 			fitLogger.log('[LocalVault] Ignored paths in local scan', {
