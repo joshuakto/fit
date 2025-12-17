@@ -6,7 +6,7 @@ import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
-import { FileContent, Base64Content, Content, PlainTextContent } from './util/contentEncoding';
+import { FileContent, Base64Content, PlainTextContent } from './util/contentEncoding';
 import { FilePath } from './util/filePath';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';

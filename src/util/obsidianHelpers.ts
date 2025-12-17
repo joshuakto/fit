@@ -36,21 +36,15 @@ export async function readFileContent(
 		const plainText = await vault.read(file);
 		return FileContent.fromPlainText(plainText);
 	} catch (textError) {
-		// Try binary fallback; if it fails again, throw combined error
+		// Try binary fallback; if it fails again, throw with primary error
 		try {
 			const base64 = arrayBufferToBase64(await vault.readBinary(file));
 			return FileContent.fromBase64(base64);
 		} catch (binaryError) {
-			const cause ={
-				asTextError: textError instanceof Error ? textError.message : String(textError),
-				asBinaryError: binaryError instanceof Error ? binaryError.message : String(binaryError),
-			};
-
-			const error = new Error(
-				`Failed to read file "${path}": text read failed (${cause.asTextError}), binary read also failed (${cause.asBinaryError})`
-			) as Error & { cause?: unknown };
-
-			error.cause = cause;
+			// Binary read is the "real" failure - text read was expected to fail for binary files
+			// Attach text error as context in case it's useful for debugging
+			const error = binaryError as Error & { textReadError?: unknown };
+			error.textReadError = textError;
 			throw error;
 		}
 	}
