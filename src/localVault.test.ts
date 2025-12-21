@@ -372,4 +372,113 @@ describe('LocalVault', () => {
 			expect(sha).toBe(manualSha);
 		});
 	});
+
+	describe('Encoding corruption detection (issue #51)', () => {
+		it('should detect suspicious correspondence when remote file matches local pattern', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const localPath = 'Küçük.md';
+			const corruptedPath = 'K眉莽眉k.md';
+			const content = FileContent.fromPlainText('test content');
+
+			// Set up vault to have the local file
+			vault.getFiles.mockReturnValue([{ path: localPath } as any]);
+			// Corrupted file doesn't exist yet (will be created)
+			vault.getAbstractFileByPath.mockImplementation((path: string) => {
+				if (path === corruptedPath) return null; // File doesn't exist
+				return { path } as any;
+			});
+			// Mock file operations to avoid actual writes
+			vault.cachedRead.mockResolvedValue('');
+			vault.modifyBinary.mockResolvedValue(undefined);
+
+			// Apply changes with corrupted remote file
+			const result = await localVault.applyChanges(
+				[{ path: corruptedPath, content }],
+				[]
+			);
+
+			// Should return user warning
+			expect(result.userWarning).toBeDefined();
+			expect(result.userWarning).toContain('⚠️ Encoding Issue Detected');
+			expect(result.userWarning).toContain('Suspicious filename patterns');
+		});
+
+		it('should NOT warn for legitimate CJK filenames without ASCII sandwich', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			// Two different Chinese filenames - pattern "*.md" has no sandwich
+			vault.getFiles.mockReturnValue([{ path: '文件.md' } as any]);
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(
+				[{ path: '档案.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (no ASCII sandwich)
+			expect(result.userWarning).toBeUndefined();
+		});
+
+		it('should detect multiple suspicious correspondences', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const localFiles = ['Küçük.md', 'Büyük.md', 'İstanbul.md'];
+			const corruptedFiles = [
+				{ path: 'K眉莽眉k.md', content: FileContent.fromPlainText('file1') },
+				{ path: 'Byk.md', content: FileContent.fromPlainText('file2') },
+				{ path: '脹stanbul.md', content: FileContent.fromPlainText('file3') }
+			];
+
+			vault.getFiles.mockReturnValue(localFiles.map(path => ({ path } as any)));
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(corruptedFiles, []);
+
+			// Should detect all 3 corruptions
+			expect(result.userWarning).toBeDefined();
+			expect(result.userWarning).toContain('⚠️ Encoding Issue Detected');
+		});
+
+		it('should NOT warn when file already exists locally', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const mockFile = StubTFile.ofPath('K眉莽眉k.md');
+
+			vault.getFiles.mockReturnValue([{ path: 'Küçük.md' } as any]);
+			// File already exists - return a TFile object
+			vault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			// Mock file operations
+			vault.cachedRead.mockResolvedValue('old content');
+			vault.modifyBinary.mockResolvedValue(undefined);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'K眉莽眉k.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (file already exists, this is an update not creation)
+			expect(result.userWarning).toBeUndefined();
+		});
+
+		it('should NOT warn for pure ASCII filenames', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			vault.getFiles.mockReturnValue([{ path: 'test.md' } as any]);
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'other.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (no non-ASCII chars)
+			expect(result.userWarning).toBeUndefined();
+		});
+	});
 });

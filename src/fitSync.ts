@@ -354,6 +354,12 @@ export class FitSync implements IFitSync {
 		// Apply changes (filtered to save conflicts to _fit/)
 		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
 
+		// Show user warning if encoding issues detected
+		if (result.userWarning) {
+			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
+			warningNotice.show();
+		}
+
 		return { result, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
 	}
 
@@ -828,6 +834,12 @@ export class FitSync implements IFitSync {
 		}
 
 		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
+
+		// Show user warning if encoding issues detected during upload
+		if (result.userWarning) {
+			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
+			warningNotice.show();
+		}
 
 		// If no operations were performed, return null
 		// This can happen when local SHA differs from cache but content matches remote
