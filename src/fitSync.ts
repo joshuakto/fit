@@ -83,12 +83,6 @@ type SyncExecutionResult = {
 
 type ConflictReport = {
 	path: string
-	resolutionStrategy: "utf-8"
-	localContent: Base64Content
-	remoteContent: Base64Content
-} | {
-	resolutionStrategy: "binary",
-	path: string,
 	remoteContent: Base64Content
 };
 
@@ -132,18 +126,9 @@ export class FitSync implements IFitSync {
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
-	private generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content, isBinary: boolean): ConflictReport {
-		if (isBinary) {
-			return {
-				path,
-				resolutionStrategy: "binary",
-				remoteContent
-			};
-		}
+	private generateConflictReport(path: string, remoteContent: Base64Content): ConflictReport {
 		return {
 			path,
-			resolutionStrategy: "utf-8",
-			localContent,
 			remoteContent,
 		};
 	}
@@ -227,8 +212,7 @@ export class FitSync implements IFitSync {
 			const remoteBase64 = remoteContent.toBase64();
 
 			if (remoteBase64 !== localBase64) {
-				const isBinary = localFileContent.toRaw().encoding === 'base64';
-				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64, isBinary);
+				const report = this.generateConflictReport(clash.path, remoteBase64);
 				const conflictFile = this.prepareConflictFile(clash.path, report.remoteContent);
 				return {path: clash.path, conflictFile};
 			}
