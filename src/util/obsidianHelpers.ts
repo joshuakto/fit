@@ -43,7 +43,8 @@ export async function readFileContent(
 		} catch (binaryError) {
 			// Binary read is the "real" failure - text read was expected to fail for binary files
 			// Attach text error as context in case it's useful for debugging
-			const error = binaryError as Error & { textReadError?: unknown };
+			// Ensure we have an Error object (promise can reject with primitives)
+			const error = (binaryError instanceof Error ? binaryError : new Error(String(binaryError))) as Error & { textReadError?: unknown };
 			error.textReadError = textError;
 			throw error;
 		}
