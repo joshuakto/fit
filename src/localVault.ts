@@ -233,19 +233,29 @@ export class LocalVault implements IVault<"local"> {
 			// At root, no parent to create
 			return;
 		}
-		const checkExists = () => {
-			const folder = this.vault.getAbstractFileByPath(folderPath);
-			return !!folder;
-		};
-		if (!checkExists()) {
-			try {
-				await this.vault.createFolder(folderPath);
-			} catch (error) {
-				// Race condition safeguard: if folder already exists, ignore error and treat as
-				// success. This can happen if a concurrent operation created the same folder.
-				if (!checkExists()) {
-					throw error;
-				}
+
+		// Check if path exists and verify it's a folder, not a file
+		const existing = this.vault.getAbstractFileByPath(folderPath);
+		if (existing) {
+			// If it's a file, we can't create a folder at this path
+			if (existing instanceof TFile) {
+				throw new Error(`Cannot create folder at ${folderPath}: a file already exists at this path`);
+			}
+			// If it's already a folder, we're done
+			if (existing instanceof TFolder) {
+				return;
+			}
+			// Unknown type - shouldn't happen but be defensive
+		}
+
+		// Path doesn't exist, create the folder
+		try {
+			await this.vault.createFolder(folderPath);
+		} catch (error) {
+			// Race condition safeguard: if folder was created concurrently, ignore error
+			const recheckExisting = this.vault.getAbstractFileByPath(folderPath);
+			if (!recheckExisting || !(recheckExisting instanceof TFolder)) {
+				throw error;
 			}
 		}
 	}

@@ -829,6 +829,28 @@ lastFetchedRemoteSha = {
 
 **Recovery:** All operations are idempotent, safe to retry
 
+### File-at-Folder-Path Conflicts
+
+**Scenario:** A file exists where a folder is needed for nested path creation
+
+**Example from Issue #153:**
+- Conflict file created at `_fit/.obsidian` (a **file**, not folder)
+- Next sync tries to write `_fit/.obsidian/workspace.json`
+- System needs `_fit/.obsidian` to be a folder
+
+**Problem:**
+Obsidian's `getAbstractFileByPath()` returns truthy for both files and folders, causing naive existence checks to miss type mismatches.
+
+**Original Error:**
+"Error: Failed to write to _fit/.obsidian/workspace.json: Folder already exists."
+
+This confusing message comes from Obsidian's Vault API when `createBinary()` finds a file blocking the folder path.
+
+**Fix:**
+`ensureFolderExists()` now validates type with `instanceof TFile` / `instanceof TFolder` checks, explicitly failing fast with clear error message when a file blocks folder creation.
+
+**Related:** PR #108 (race condition fix)
+
 ### Encoding Corruption (Issue #51)
 
 **Scenario:** Filenames with non-ASCII characters (Turkish, etc.) get corrupted during sync on Windows
