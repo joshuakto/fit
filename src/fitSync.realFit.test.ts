@@ -17,6 +17,7 @@ import { VaultError } from './vault';
 import { fitLogger } from './logger';
 import { FileContent } from './util/contentEncoding';
 import { BlobSha, CommitSha } from './util/hashing';
+import FitNotice from './fitNotice';
 
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
@@ -1531,6 +1532,44 @@ describe('FitSync', () => {
 				noticeCount: 0, // Cleaned up after last completes
 				activeSyncRequests: 0,
 			});
+		});
+	});
+
+	describe('🔤 Encoding corruption detection (Issue #51)', () => {
+		it('should create FitNotice when localVault.applyChanges returns userWarning', async () => {
+			// Test that FitSync properly handles userWarning from vault operations
+			// Actual detection logic is tested in localVault.test.ts
+
+			// Mock FitNotice to avoid DOM dependencies
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+
+			// Mock localVault.applyChanges to return a userWarning
+			const mockApplyChanges = vi.spyOn(localVault, 'applyChanges').mockResolvedValue({
+				changes: [{ path: 'test.md', type: 'ADDED' }],
+				writtenStates: Promise.resolve({ 'test.md': 'mock-sha' as BlobSha }),
+				userWarning: '⚠️ Encoding Issue Detected\nSuspicious filename patterns found during sync.'
+			});
+
+			// Setup a simple sync scenario
+			remoteVault.setFile('test.md', 'content');
+			localStoreState = {
+				localSha: {},
+				lastFetchedRemoteSha: {},
+				lastFetchedCommitSha: remoteVault.getCommitSha()
+			};
+
+			const fitSync = createFitSync();
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// Sync should succeed (warnings are informational, not errors)
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Verify FitNotice.show() was called (warning notice was created and shown)
+			expect(fitNoticeSpy).toHaveBeenCalled();
+
+			mockApplyChanges.mockRestore();
+			fitNoticeSpy.mockRestore();
 		});
 	});
 });

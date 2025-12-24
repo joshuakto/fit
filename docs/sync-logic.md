@@ -829,6 +829,87 @@ lastFetchedRemoteSha = {
 
 **Recovery:** All operations are idempotent, safe to retry
 
+### File-at-Folder-Path Conflicts
+
+**Scenario:** A file exists where a folder is needed for nested path creation
+
+**Example from Issue #153:**
+- Conflict file created at `_fit/.obsidian` (a **file**, not folder)
+- Next sync tries to write `_fit/.obsidian/workspace.json`
+- System needs `_fit/.obsidian` to be a folder
+
+**Problem:**
+Obsidian's `getAbstractFileByPath()` returns truthy for both files and folders, causing naive existence checks to miss type mismatches.
+
+**Original Error:**
+"Error: Failed to write to _fit/.obsidian/workspace.json: Folder already exists."
+
+This confusing message comes from Obsidian's Vault API when `createBinary()` finds a file blocking the folder path.
+
+**Fix:**
+`ensureFolderExists()` now validates type with `instanceof TFile` / `instanceof TFolder` checks, explicitly failing fast with clear error message when a file blocks folder creation.
+
+**Related:** PR #108 (race condition fix)
+
+### Encoding Corruption (Issue #51)
+
+**Scenario:** Filenames with non-ASCII characters (Turkish, etc.) get corrupted during sync on Windows
+
+**Example:**
+- Correct filename: `Küçük.md` (Turkish)
+- Corrupted: `K眉莽眉k.md` (mojibake - Chinese characters)
+
+**Root Cause:**
+UTF-8 bytes of filename misinterpreted as GBK (Chinese charset):
+```
+Original: "Küçük" → UTF-8 bytes: 0x4B C3BC C3A7 C3BC 6B
+Corrupted: Same bytes decoded as GBK → "K眉莽眉k"
+```
+
+**Evidence from user reports:**
+- Files **already existed correctly in GitHub** before using FIT
+- Corruption appears **only on Windows**, not Linux
+- Corrupted filenames appear in **GitHub's web interface** after sync
+- "Duplicated files don't appear inside Obsidian (on Windows), but they do appear in the file system" (Windows filesystem aliasing)
+- GitHub shows both original AND corrupted versions after sync
+
+**Likely cause:**
+- Node.js/Electron HTTP client on Windows may default to system charset for JSON encoding/decoding
+- Octokit may not explicitly force UTF-8 for request/response bodies
+- Unknown which system locale triggers this (possibly Chinese, but could be other non-UTF-8 defaults)
+
+**Effect:**
+- Creates duplicate files in remote repository
+- Files appear in GitHub but may not show in Obsidian UI on Windows
+- Subsequent syncs see both versions, creating conflicts
+
+**Detection & Logging:**
+FIT includes diagnostic system (v1.4.0-beta.3+) that detects suspicious filename patterns:
+- **Upload detection**: Compares intended paths vs GitHub's echo-back response ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts))
+  - Logs: `🔴 [RemoteVault] Encoding corruption detected during upload!`
+  - Shows which files had path mismatches with pattern details
+- **Download detection**: Checks remote files being created against existing local files ([src/localVault.ts](../src/localVault.ts))
+  - Logs: `⚠️ [LocalVault] Suspicious filenames detected during sync!`
+  - Lists matching patterns between remote and local filenames
+- **Pattern matching**: ASCII-sandwich algorithm to find suspicious correspondences ([src/util/pathPattern.ts](../src/util/pathPattern.ts))
+
+When detected, FIT:
+1. Logs detailed warnings to debug log (enable in settings)
+2. Shows user notification with link to issue #51
+3. Provides pattern matching details to help identify corrupted filenames
+
+**To help isolate the issue:**
+- Enable debug logging in FIT settings
+- Check `.obsidian/plugins/fit/debug.log` for corruption warnings
+- Look for patterns like `"Küçük.md" ↔ "K眉莽眉k.md"`
+- Report findings with system locale info to issue #51
+
+**Status:** Diagnostics implemented, root fix pending (requires custom fetch with explicit UTF-8)
+
+**References:**
+- GitHub issue: https://github.com/joshuakto/fit/issues/51
+- Detailed analysis: Check Serena memory `encoding_corruption_issue_51` (if created)
+
 ## 🔒 Concurrency Control
 
 **Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [main.ts](../main.ts) entry points.

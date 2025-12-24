@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock, MockInstance } from 'vitest';
 import { LocalVault } from './localVault';
-import { TFile, Vault } from 'obsidian';
+import { TFile, TFolder, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
 import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
@@ -145,6 +145,10 @@ describe('LocalVault', () => {
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// read() throws for binary files, triggering fallback to readBinary()
+			mockVault.read.mockRejectedValue(
+				new Error("The file couldn't be opened because it isn't in the correct format")
+			);
 			mockVault.readBinary.mockResolvedValue(new ArrayBuffer(8));
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
@@ -163,7 +167,7 @@ describe('LocalVault', () => {
 			expect(state['image.png']).toMatchInlineSnapshot(
 				`"fe954d839c04f84471b6dd90c945e55a6035de80"`);
 			expect(state['archive.zip']).toMatchInlineSnapshot(
-				`"e67146506d2b18d3414a28ddc204c9dda6267080"`);
+				`"a93c48b470cca6e238405a1aad306434aa9618a2"`);
 		});
 
 		it('should handle empty vault', async () => {
@@ -197,18 +201,23 @@ describe('LocalVault', () => {
 			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
 		});
 
-		it('should read binary file content as base64', async () => {
+		it('should fall back to readBinary when read() throws an exception', async () => {
 			const mockFile = StubTFile.ofPath('image.png');
 			const binaryData = new ArrayBuffer(8);
 
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			// Obsidian throws when trying to read binary file as text
+			mockVault.read.mockRejectedValue(
+				new Error("The file couldn't be opened because it isn't in the correct format")
+			);
 			mockVault.readBinary.mockResolvedValue(binaryData);
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('image.png');
 
-			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
+			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
+			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
 		});
 
 		it('should throw error if file not found', async () => {
@@ -219,6 +228,21 @@ describe('LocalVault', () => {
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
 				'File not found: missing.md'
 			);
+		});
+
+		it('should not call readBinary when read() succeeds for text file', async () => {
+			const mockFile = StubTFile.ofPath('note.txt');
+			const textContent = 'I am simple text file';
+
+			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			mockVault.read.mockResolvedValue(textContent);
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const content = await localVault.readFileContent('note.txt');
+
+			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
+			expect(mockVault.readBinary).not.toHaveBeenCalled();
+			expect(content).toEqual(FileContent.fromPlainText(textContent));
 		});
 	});
 
@@ -310,6 +334,64 @@ describe('LocalVault', () => {
 			expect(callOrder.filter(c => c.endsWith('-start')).length).toBe(2);
 			expect(firstEndIndex).toBeGreaterThan(firstStartIndex);
 		});
+
+		it('should detect when parent folder path exists as a file (issue #153)', async () => {
+			// Scenario: _fit/.obsidian exists as a FILE, not a folder
+			// Trying to write _fit/.obsidian/workspace.json should fail with clear error
+			const existingFile = StubTFile.ofPath('.obsidian');
+
+			mockVault.getAbstractFileByPath.mockImplementation((path) => {
+				// Parent path exists as a file (not a folder)
+				if (path === '_fit/.obsidian') return existingFile as TFile;
+				// The target file doesn't exist yet
+				if (path === '_fit/.obsidian/workspace.json') return null;
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			// Should throw error detecting file at folder path
+			await expect(
+				localVault.applyChanges(
+					[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+					[]
+				)
+			).rejects.toThrow(/file already exists at this path/);
+		});
+
+		it('should succeed when parent folder already exists as a folder (issue #153)', async () => {
+			// Scenario: _fit/.obsidian exists as a FOLDER (correct state)
+			// Writing _fit/.obsidian/workspace.json should succeed
+			const existingFolder = Object.create(TFolder.prototype);
+			existingFolder.path = '_fit/.obsidian';
+
+			mockVault.getAbstractFileByPath.mockImplementation((path) => {
+				// Parent path exists as a folder (correct)
+				if (path === '_fit/.obsidian') return existingFolder;
+				// The target file doesn't exist yet
+				if (path === '_fit/.obsidian/workspace.json') return null;
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+				[]
+			);
+
+			// Should succeed and create the file
+			expect(result.changes).toEqual([
+				{ path: '_fit/.obsidian/workspace.json', type: 'ADDED' }
+			]);
+			// Should NOT try to create folder (it already exists)
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+			// Should create the file
+			expect(mockVault.createBinary).toHaveBeenCalledWith(
+				'_fit/.obsidian/workspace.json',
+				expect.anything()
+			);
+		});
 	});
 
 	describe('Unicode normalization in fileSha1 (issue #51)', () => {
@@ -346,6 +428,115 @@ describe('LocalVault', () => {
 			// Verify it's computing SHA of the concatenation
 			const manualSha = await computeSha1(path + "test");
 			expect(sha).toBe(manualSha);
+		});
+	});
+
+	describe('Encoding corruption detection (issue #51)', () => {
+		it('should detect suspicious correspondence when remote file matches local pattern', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const localPath = 'Küçük.md';
+			const corruptedPath = 'K眉莽眉k.md';
+			const content = FileContent.fromPlainText('test content');
+
+			// Set up vault to have the local file
+			vault.getFiles.mockReturnValue([{ path: localPath } as any]);
+			// Corrupted file doesn't exist yet (will be created)
+			vault.getAbstractFileByPath.mockImplementation((path: string) => {
+				if (path === corruptedPath) return null; // File doesn't exist
+				return { path } as any;
+			});
+			// Mock file operations to avoid actual writes
+			vault.cachedRead.mockResolvedValue('');
+			vault.modifyBinary.mockResolvedValue(undefined);
+
+			// Apply changes with corrupted remote file
+			const result = await localVault.applyChanges(
+				[{ path: corruptedPath, content }],
+				[]
+			);
+
+			// Should return user warning
+			expect(result.userWarning).toBeDefined();
+			expect(result.userWarning).toContain('⚠️ Encoding Issue Detected');
+			expect(result.userWarning).toContain('Suspicious filename patterns');
+		});
+
+		it('should NOT warn for legitimate CJK filenames without ASCII sandwich', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			// Two different Chinese filenames - pattern "*.md" has no sandwich
+			vault.getFiles.mockReturnValue([{ path: '文件.md' } as any]);
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(
+				[{ path: '档案.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (no ASCII sandwich)
+			expect(result.userWarning).toBeUndefined();
+		});
+
+		it('should detect multiple suspicious correspondences', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const localFiles = ['Küçük.md', 'Büyük.md', 'İstanbul.md'];
+			const corruptedFiles = [
+				{ path: 'K眉莽眉k.md', content: FileContent.fromPlainText('file1') },
+				{ path: 'Byk.md', content: FileContent.fromPlainText('file2') },
+				{ path: '脹stanbul.md', content: FileContent.fromPlainText('file3') }
+			];
+
+			vault.getFiles.mockReturnValue(localFiles.map(path => ({ path } as any)));
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(corruptedFiles, []);
+
+			// Should detect all 3 corruptions
+			expect(result.userWarning).toBeDefined();
+			expect(result.userWarning).toContain('⚠️ Encoding Issue Detected');
+		});
+
+		it('should NOT warn when file already exists locally', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			const mockFile = StubTFile.ofPath('K眉莽眉k.md');
+
+			vault.getFiles.mockReturnValue([{ path: 'Küçük.md' } as any]);
+			// File already exists - return a TFile object
+			vault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
+			// Mock file operations
+			vault.cachedRead.mockResolvedValue('old content');
+			vault.modifyBinary.mockResolvedValue(undefined);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'K眉莽眉k.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (file already exists, this is an update not creation)
+			expect(result.userWarning).toBeUndefined();
+		});
+
+		it('should NOT warn for pure ASCII filenames', async () => {
+			const vault = mockVault;
+			const localVault = new LocalVault(vault as any);
+
+			vault.getFiles.mockReturnValue([{ path: 'test.md' } as any]);
+			vault.getAbstractFileByPath.mockReturnValue(null);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'other.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			// Should NOT warn (no non-ASCII chars)
+			expect(result.userWarning).toBeUndefined();
 		});
 	});
 });

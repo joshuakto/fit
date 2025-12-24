@@ -1,12 +1,11 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates } from "./util/changeTracking";
-import { extractExtension } from "./utils";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
-import { Base64Content, FileContent, isBinaryExtension } from "./util/contentEncoding";
+import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
 import { CommitSha } from "./util/hashing";
 
@@ -84,12 +83,6 @@ type SyncExecutionResult = {
 
 type ConflictReport = {
 	path: string
-	resolutionStrategy: "utf-8"
-	localContent: Base64Content
-	remoteContent: Base64Content
-} | {
-	resolutionStrategy: "binary",
-	path: string,
 	remoteContent: Base64Content
 };
 
@@ -133,23 +126,9 @@ export class FitSync implements IFitSync {
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
-	private generateConflictReport(path: string, localContent: Base64Content, remoteContent: Base64Content): ConflictReport {
-		const detectedExtension = extractExtension(path);
-		if (detectedExtension && isBinaryExtension(detectedExtension)) {
-			return {
-				path,
-				resolutionStrategy: "binary",
-				remoteContent
-			};
-		}
-		// assume file encoding is utf8 if extension is not known
-		// Note: Both localContent and remoteContent are Base64Content
-		// For local: if it's a text file, localVault returns PlainTextContent, but we need to handle that upstream
-		// For remote: remoteVault ALWAYS returns Base64Content
+	private generateConflictReport(path: string, remoteContent: Base64Content): ConflictReport {
 		return {
 			path,
-			resolutionStrategy: "utf-8",
-			localContent,
 			remoteContent,
 		};
 	}
@@ -233,7 +212,7 @@ export class FitSync implements IFitSync {
 			const remoteBase64 = remoteContent.toBase64();
 
 			if (remoteBase64 !== localBase64) {
-				const report = this.generateConflictReport(clash.path, localBase64, remoteBase64);
+				const report = this.generateConflictReport(clash.path, remoteBase64);
 				const conflictFile = this.prepareConflictFile(clash.path, report.remoteContent);
 				return {path: clash.path, conflictFile};
 			}
@@ -374,6 +353,12 @@ export class FitSync implements IFitSync {
 
 		// Apply changes (filtered to save conflicts to _fit/)
 		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+
+		// Show user warning if encoding issues detected
+		if (result.userWarning) {
+			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
+			warningNotice.show();
+		}
 
 		return { result, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
 	}
@@ -849,6 +834,12 @@ export class FitSync implements IFitSync {
 		}
 
 		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
+
+		// Show user warning if encoding issues detected during upload
+		if (result.userWarning) {
+			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
+			warningNotice.show();
+		}
 
 		// If no operations were performed, return null
 		// This can happen when local SHA differs from cache but content matches remote

@@ -6,9 +6,8 @@ import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
-import { FileContent, Base64Content, Content, PlainTextContent, isBinaryExtension } from './util/contentEncoding';
+import { FileContent, Base64Content, PlainTextContent } from './util/contentEncoding';
 import { FilePath } from './util/filePath';
-import { extractExtension } from './utils';
 import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
@@ -327,23 +326,39 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	/**
 	 * Set file content directly (for test setup).
+	 * Simulates Obsidian's storage behavior:
+	 * - Text files: stored as plaintext (decodes base64 if needed)
+	 * - Binary files: stored as base64 (detected via decoding failure or null bytes)
 	 */
 	setFile(path: string, content: string | PlainTextContent | FileContent): void {
-		// Normalize to logical encoding based on path (for convenient test assertions).
-		const detectedExtension = extractExtension(path);
-		const isBinary = detectedExtension && isBinaryExtension(detectedExtension);
-
-		let fileContent: FileContent;
-		if (content instanceof FileContent) {
-			// Normalize: binary files stay as-is, text files convert to plaintext
-			fileContent = isBinary ? content : FileContent.fromPlainText(content.toPlainText());
-		} else {
-			// Create FileContent from string: binary → base64, text → plaintext
-			fileContent = isBinary
-				? FileContent.fromBase64(Content.encodeToBase64(content))
-				: FileContent.fromPlainText(content);
+		if (!(content instanceof FileContent)) {
+			// Raw string, treat as plaintext
+			this.files.set(path, FileContent.fromPlainText(content));
+			return;
 		}
-		this.files.set(path, fileContent);
+
+		const raw = content.toRaw();
+		if (raw.encoding === 'plaintext') {
+			// Already plaintext, store as-is
+			this.files.set(path, content);
+			return;
+		}
+
+		// Base64 content - try to decode as text (simulates Obsidian's behavior)
+		try {
+			const decoded = content.toPlainText();
+			// Check for null bytes (binary indicator)
+			if (decoded.includes('\0')) {
+				// Binary file, keep as base64
+				this.files.set(path, content);
+			} else {
+				// Valid text, store as plaintext
+				this.files.set(path, FileContent.fromPlainText(decoded));
+			}
+		} catch {
+			// Decoding failed - binary file, keep as base64
+			this.files.set(path, content);
+		}
 	}
 
 	/**

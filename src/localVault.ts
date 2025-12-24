@@ -13,6 +13,7 @@ import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
 import { BlobSha, computeSha1 } from "./util/hashing";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
+import { findSuspiciousCorrespondences } from "./util/pathPattern";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -232,19 +233,29 @@ export class LocalVault implements IVault<"local"> {
 			// At root, no parent to create
 			return;
 		}
-		const checkExists = () => {
-			const folder = this.vault.getAbstractFileByPath(folderPath);
-			return !!folder;
-		};
-		if (!checkExists()) {
-			try {
-				await this.vault.createFolder(folderPath);
-			} catch (error) {
-				// Race condition safeguard: if folder already exists, ignore error and treat as
-				// success. This can happen if a concurrent operation created the same folder.
-				if (!checkExists()) {
-					throw error;
-				}
+
+		// Check if path exists and verify it's a folder, not a file
+		const existing = this.vault.getAbstractFileByPath(folderPath);
+		if (existing) {
+			// If it's a file, we can't create a folder at this path
+			if (existing instanceof TFile) {
+				throw new Error(`Cannot create folder at ${folderPath}: a file already exists at this path`);
+			}
+			// If it's already a folder, we're done
+			if (existing instanceof TFolder) {
+				return;
+			}
+			// Unknown type - shouldn't happen but be defensive
+		}
+
+		// Path doesn't exist, create the folder
+		try {
+			await this.vault.createFolder(folderPath);
+		} catch (error) {
+			// Race condition safeguard: if folder was created concurrently, ignore error
+			const recheckExisting = this.vault.getAbstractFileByPath(folderPath);
+			if (!recheckExisting || !(recheckExisting instanceof TFolder)) {
+				throw error;
 			}
 		}
 	}
@@ -335,6 +346,49 @@ export class LocalVault implements IVault<"local"> {
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>
 	): Promise<ApplyChangesResult<"local">> {
+		// Diagnostic logging: detect suspicious filename correspondences (Issue #51)
+		// Check if any files being created have non-ASCII chars and match existing local files
+		// Note: vault.getFiles() may be unavailable in test mocks
+		const allExistingPaths = this.vault.getFiles?.()?.map(f => f.path) ?? [];
+		const suspiciousWrites: Array<{remote: string, local: string, pattern: string}> = [];
+
+		for (const {path: remotePath} of filesToWrite) {
+			// Only check files with non-ASCII characters that don't already exist
+			if (!/[^\x00-\x7F]/.test(remotePath)) continue;
+			if (this.vault.getAbstractFileByPath(remotePath)) continue;
+
+			// Find correspondences with existing files
+			const matches = findSuspiciousCorrespondences(remotePath, allExistingPaths);
+			for (const match of matches) {
+				suspiciousWrites.push({
+					remote: match.candidate,
+					local: match.existing,
+					pattern: match.pattern
+				});
+			}
+		}
+
+		if (suspiciousWrites.length > 0) {
+			fitLogger.log(
+				`⚠️  [LocalVault] Suspicious filenames detected during sync!\n` +
+				`Attempting to create ${suspiciousWrites.length} local file(s), each matching an existing local file:\n` +
+				suspiciousWrites.map(({remote, local, pattern}, i) =>
+					`  ${i + 1}. Remote: "${remote}" ↔ Local: "${local}"\n` +
+					`     Match: "${pattern}" = "${pattern}" ✅`
+				).join('\n') +
+				`\nThis may indicate encoding corruption from a previous sync.\n` +
+				`If the remote filenames look wrong, check GitHub and delete corrupted versions.\n` +
+				`See Issue #51: https://github.com/joshuakto/fit/issues/51`,
+				{ suspiciousWrites, issue: 'https://github.com/joshuakto/fit/issues/51' }
+			);
+		}
+
+		const userWarning = suspiciousWrites.length > 0
+			? `⚠️ Encoding Issue Detected\n` +
+				`Suspicious filename patterns found during sync. ` +
+				`Check console logs for details or see Issue #51.`
+			: undefined;
+
 		// Process file additions or updates
 		// Monitor for slow file write operations
 		const writeSettledResults = await withSlowOperationMonitoring(
@@ -427,7 +481,8 @@ export class LocalVault implements IVault<"local"> {
 
 		return {
 			changes,
-			writtenStates
+			writtenStates,
+			userWarning
 		};
 	}
 }
