@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock, MockInstance } from 'vitest';
 import { LocalVault } from './localVault';
-import { TFile, Vault } from 'obsidian';
+import { TFile, TFolder, Vault } from 'obsidian';
 import { StubTFile } from './testUtils';
 import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
@@ -333,6 +333,64 @@ describe('LocalVault', () => {
 
 			expect(callOrder.filter(c => c.endsWith('-start')).length).toBe(2);
 			expect(firstEndIndex).toBeGreaterThan(firstStartIndex);
+		});
+
+		it('should detect when parent folder path exists as a file (issue #153)', async () => {
+			// Scenario: _fit/.obsidian exists as a FILE, not a folder
+			// Trying to write _fit/.obsidian/workspace.json should fail with clear error
+			const existingFile = StubTFile.ofPath('.obsidian');
+
+			mockVault.getAbstractFileByPath.mockImplementation((path) => {
+				// Parent path exists as a file (not a folder)
+				if (path === '_fit/.obsidian') return existingFile as TFile;
+				// The target file doesn't exist yet
+				if (path === '_fit/.obsidian/workspace.json') return null;
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			// Should throw error detecting file at folder path
+			await expect(
+				localVault.applyChanges(
+					[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+					[]
+				)
+			).rejects.toThrow(/file already exists at this path/);
+		});
+
+		it('should succeed when parent folder already exists as a folder (issue #153)', async () => {
+			// Scenario: _fit/.obsidian exists as a FOLDER (correct state)
+			// Writing _fit/.obsidian/workspace.json should succeed
+			const existingFolder = Object.create(TFolder.prototype);
+			existingFolder.path = '_fit/.obsidian';
+
+			mockVault.getAbstractFileByPath.mockImplementation((path) => {
+				// Parent path exists as a folder (correct)
+				if (path === '_fit/.obsidian') return existingFolder;
+				// The target file doesn't exist yet
+				if (path === '_fit/.obsidian/workspace.json') return null;
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+				[]
+			);
+
+			// Should succeed and create the file
+			expect(result.changes).toEqual([
+				{ path: '_fit/.obsidian/workspace.json', type: 'ADDED' }
+			]);
+			// Should NOT try to create folder (it already exists)
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+			// Should create the file
+			expect(mockVault.createBinary).toHaveBeenCalledWith(
+				'_fit/.obsidian/workspace.json',
+				expect.anything()
+			);
 		});
 	});
 
