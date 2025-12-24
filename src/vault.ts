@@ -59,6 +59,8 @@ type ApplyChangesResultMap = {
 export type ApplyChangesResult<T extends VaultCategory> =
 	{
 		changes: FileChange[];
+		/** Optional user-facing warning message to display after sync */
+		userWarning?: string;
 	} & ApplyChangesResultMap[T];
 
 // ===== Vault Error Types =====

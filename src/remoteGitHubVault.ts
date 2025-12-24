@@ -14,6 +14,7 @@ import { FileContent } from "./util/contentEncoding";
 import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { fitLogger } from "./logger";
+import { detectSuspiciousCorrespondence } from "./util/pathPattern";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -321,12 +322,18 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 
 	/**
 	 * Create a new tree from tree nodes
+	 * @returns Object with treeSha and optional userWarning if encoding corruption detected
 	 */
 	private async createTree(
 		treeNodes: TreeNode[],
 		base_tree_sha: TreeSha
-	): Promise<TreeSha> {
+	): Promise<{ treeSha: TreeSha; userWarning?: string }> {
 		try {
+			// Diagnostic logging: capture intended paths BEFORE any corruption (Issue #51)
+			// Tree nodes are created correctly in JavaScript memory (UTF-16 strings)
+			// Corruption happens during HTTP request encoding (JSON serialization → bytes)
+			const pathsWeIntendedToSend = treeNodes.map(n => n.path).filter(Boolean);
+
 			const {data: newTree} = await this.octokit.request(
 				`POST /repos/{owner}/{repo}/git/trees`, {
 					owner: this.owner,
@@ -336,7 +343,69 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 					headers: this.headers
 				}
 			);
-			return newTree.sha as TreeSha;
+
+			// Diagnostic logging: compare INTENDED paths vs echoed paths to detect encoding corruption
+			// GitHub echoes back what it received, so if it differs from what we intended to send,
+			// we know corruption happened during the request (UTF-8→GBK encoding issue)
+			// Note: GitHub API does NOT guarantee response order, so we match by pattern instead of index
+			const echoedPaths = newTree.tree?.map((n: {path?: string}) => n.path).filter((p): p is string => !!p) ?? [];
+			const suspiciousMatches: Array<{intended: string, echoed: string, pattern: string}> = [];
+
+			const intendedPathsSet = new Set(pathsWeIntendedToSend);
+			const echoedPathsSet = new Set(echoedPaths);
+
+			// Find paths that were intended but are not present verbatim in the echoed response.
+			// These are candidates for having been corrupted.
+			for (const intended of intendedPathsSet) {
+				if (echoedPathsSet.has(intended)) {
+					continue; // Path was sent and received correctly.
+				}
+
+				// This path is missing. Check if any of the echoed paths are a corrupted version of it.
+				for (const echoed of echoedPathsSet) {
+					const match = detectSuspiciousCorrespondence(intended, echoed);
+					if (match) {
+						suspiciousMatches.push({ intended, echoed, pattern: match.pattern });
+						// Once a match is found, we can stop checking this intended path against other echoed paths.
+						break;
+					}
+				}
+			}
+
+			let userWarning: string | undefined;
+
+			if (suspiciousMatches.length > 0) {
+				// For diagnostic logging, convert strings to UTF-8 byte arrays
+				// Using Buffer (Node.js/Electron API) which is available in Obsidian desktop & mobile
+				const details = suspiciousMatches.map(({intended, echoed, pattern}) => ({
+					intended,
+					echoed,
+					pattern,
+					intendedBytes: Array.from(Buffer.from(intended, 'utf8')),
+					echoedBytes: Array.from(Buffer.from(echoed, 'utf8'))
+				}));
+
+				fitLogger.log(
+					`🔴 [RemoteVault] Encoding corruption detected during upload!\n` +
+					`Attempted to upload ${suspiciousMatches.length} file(s) but GitHub received different paths:\n` +
+					suspiciousMatches.map(({intended, echoed, pattern}) =>
+						`  - Intended: "${intended}" → Received: "${echoed}"\n    Pattern match: "${pattern}" = "${pattern}" ✅`
+					).join('\n') +
+					`\nThis indicates UTF-8→GBK corruption during request encoding. See logs and Issue #51.`,
+					{ details, issue: 'https://github.com/joshuakto/fit/issues/51' }
+				);
+
+				// Create user warning for immediate notification
+				userWarning = `🔴 Upload Encoding Corruption Detected!\n` +
+					`${suspiciousMatches.length} file(s) uploaded with corrupted names to GitHub.\n` +
+					`Check debug logs immediately and report to Issue #51.\n\n` +
+					`Affected files:\n` +
+					suspiciousMatches.map(({intended, echoed}) =>
+						`  • "${intended}" became "${echoed}"`
+					).join('\n');
+			}
+
+			return { treeSha: newTree.sha as TreeSha, userWarning };
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo');
 		}
@@ -568,7 +637,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		}
 
 		// Create tree, commit, and update ref
-		const newTreeSha = await this.createTree(treeNodes, parentTreeSha);
+		const { treeSha: newTreeSha, userWarning } = await this.createTree(treeNodes, parentTreeSha);
 		const newCommitSha = await this.createCommit(newTreeSha, parentCommitSha);
 		await this.updateRef(newCommitSha);
 
@@ -607,7 +676,8 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			changes,
 			commitSha: newCommitSha,
 			treeSha: newTreeSha,
-			newState
+			newState,
+			userWarning
 		};
 	}
 
