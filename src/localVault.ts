@@ -34,9 +34,24 @@ function collectSettledFailures<T>(
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
- * IMPORTANT: This list is FROZEN to ensure SHA calculations remain stable even if
- * contentEncoding.ts adds new binary extensions in the future. Adding new extensions
- * there should NOT change how we compute SHAs for existing files.
+ *
+ * IMPORTANT: This list is FROZEN to prevent spurious sync operations.
+ *
+ * Why this matters:
+ * - Before PR #XXX: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
+ *   CORRUPTED plaintext (with replacement characters �) because toPlainText()
+ *   silently corrupted binary data
+ * - After PR #XXX: toPlainText() throws on binary, fileSha1() catches and uses base64
+ * - Problem: Existing .zip files will get DIFFERENT SHAs (corrupted vs correct)
+ * - Result: Plugin detects "change" and tries to sync the same file again
+ *
+ * Solution:
+ * - Keep list FROZEN to avoid batch SHA changes for existing users
+ * - New fatal:true logic handles unlisted extensions gracefully via try/catch
+ * - Users with .zip files will see ONE spurious sync after upgrading (acceptable)
+ *
+ * Future: Implement SHA migration strategy to expand this list safely
+ * (e.g., version stores, detect and re-hash on upgrade, warn users)
  *
  * DO NOT modify this list unless you implement a SHA migration strategy.
  */
@@ -215,11 +230,26 @@ export class LocalVault implements IVault<"local"> {
 		const normalizedPath = FilePath.create(path);
 		const extension = FilePath.getExtension(normalizedPath);
 
-		const contentToHash = (extension && isBinaryExtensionForSha(extension))
+		let contentToHash: string;
+		if (extension && isBinaryExtensionForSha(extension)) {
 			// Use base64 representation for consistent hashing
-			? fileContent.toBase64()
+			contentToHash = fileContent.toBase64();
+		} else {
 			// Preserve plaintext SHA logic for non-binary case.
-			: fileContent.toPlainText();
+			// NOTE: For non-FROZEN extensions like .zip, if content is binary,
+			// toPlainText() will now throw (due to fatal:true in decodeFromBase64).
+			// We intentionally fall back to base64 to avoid corruption.
+			// This may cause SHA changes for existing .zip files, but prevents
+			// silent replacement character corruption in SHA computation.
+			// TODO(future): Implement SHA migration strategy to expand FROZEN_BINARY_EXT_FOR_SHA
+			// to include all common binary extensions (.zip, .exe, .bin, etc.)
+			try {
+				contentToHash = fileContent.toPlainText();
+			} catch {
+				// Binary content detected (invalid UTF-8) - fall back to base64
+				contentToHash = fileContent.toBase64();
+			}
+		}
 		return computeSha1(normalizedPath + contentToHash) as Promise<BlobSha>;
 	}
 
@@ -269,9 +299,13 @@ export class LocalVault implements IVault<"local"> {
 
 	/**
 	 * Write or update a file and optionally compute its SHA.
+	 * Uses the appropriate Obsidian API based on file encoding:
+	 * - Plaintext files: vault.create() / vault.modify()
+	 * - Binary files: vault.createBinary() / vault.modifyBinary()
+	 *
 	 * @param path - File path
 	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
-	 * @param originalContent - The FileContent object we're writing (for SHA computation)
+	 * @param originalContent - The FileContent object we're writing (for SHA computation and encoding detection)
 	 * @returns Record of file operation performed and SHA promise (if trackable)
 	 */
 	private async writeFile(
@@ -281,12 +315,24 @@ export class LocalVault implements IVault<"local"> {
 	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
+			const rawContent = originalContent.toRaw();
+			const isPlaintext = rawContent.encoding === 'plaintext';
 
 			if (file && file instanceof TFile) {
-				await this.vault.modifyBinary(file, contentToArrayBuffer(content));
+				// Modify existing file
+				if (isPlaintext) {
+					await this.vault.modify(file, rawContent.content);
+				} else {
+					await this.vault.modifyBinary(file, contentToArrayBuffer(content));
+				}
 			} else if (!file) {
+				// Create new file
 				await this.ensureFolderExists(path);
-				await this.vault.createBinary(path, contentToArrayBuffer(content));
+				if (isPlaintext) {
+					await this.vault.create(path, rawContent.content);
+				} else {
+					await this.vault.createBinary(path, contentToArrayBuffer(content));
+				}
 			} else {
 				// File exists but is not a TFile - check if it's a folder
 				if (file instanceof TFolder) {

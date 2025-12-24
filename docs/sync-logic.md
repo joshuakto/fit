@@ -910,6 +910,86 @@ When detected, FIT:
 - GitHub issue: https://github.com/joshuakto/fit/issues/51
 - Detailed analysis: Check Serena memory `encoding_corruption_issue_51` (if created)
 
+### Binary File Content Corruption (Issue #156)
+
+**Scenario:** Binary files (JPG, PNG, PDF, etc.) corrupted during sync, appearing as gibberish text in GitHub
+
+**Example:**
+- Local file: `photo.jpg` (valid JPEG image)
+- After sync: GitHub shows text like `����JFIF��4ExifMM*�i�0232���http:`
+- Cause: File read as text instead of binary, then base64-encoded corrupted text
+
+**Root Cause:**
+PR #161 changed binary detection from extension-based to dynamic (try `vault.read()` first, fallback to `vault.readBinary()`). However, Obsidian's `vault.read()` can **succeed** on binary files on some platforms (particularly iOS), returning corrupted "text" data with replacement characters.
+
+**Flow of Corruption:**
+```typescript
+// BEFORE FIX (PR #161 behavior)
+1. vault.read(photo.jpg) → succeeds (should fail!)
+2. Returns corrupted string: "����JFIF��..."
+3. FileContent.fromPlainText() → encoding='plaintext'
+4. Push to GitHub → sends corrupted text as UTF-8
+5. GitHub displays garbage text instead of image
+
+// AFTER FIX (Issue #156)
+1. vault.readBinary(photo.jpg) → raw bytes
+2. Check for null bytes in first 8KB
+3. Found 0x00 byte → it's binary
+4. FileContent.fromBase64() → encoding='base64'
+5. Push to GitHub → sends proper base64
+6. GitHub displays image correctly
+```
+
+**Fix (v1.4.0):**
+Uses Git's proven null byte heuristic for binary detection:
+
+```typescript
+// Always read as binary first
+const arrayBuffer = await vault.readBinary(file);
+
+// Check first ~8KB for null bytes (0x00)
+const bytes = new Uint8Array(arrayBuffer.slice(0, Math.min(8192, arrayBuffer.byteLength)));
+const hasNullByte = bytes.some(b => b === 0);
+
+if (hasNullByte) {
+  // Binary file - return as base64
+  return FileContent.fromBase64(base64);
+}
+
+// No null bytes - try UTF-8 decode
+try {
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
+  return FileContent.fromPlainText(text);
+} catch {
+  // Invalid UTF-8 - treat as binary
+  return FileContent.fromBase64(base64);
+}
+```
+
+**Why This Works:**
+- **Git uses the same approach** - null bytes reliably indicate binary content
+- Works for all common binary formats:
+  - Images: JPEG (has null bytes at offset 4), PNG, GIF, BMP
+  - Documents: PDF, Office files
+  - Archives: ZIP, RAR, tar.gz
+  - Executables: .exe, .dll, .so
+- Handles edge cases where `vault.read()` incorrectly succeeds
+- Fast single read operation (no try/catch fallback needed)
+
+**Recovery:**
+If you have corrupted binary files in GitHub:
+1. Delete the corrupted versions from GitHub
+2. Update to v1.4.0+ with the fix
+3. Re-sync - files will upload correctly as binary
+
+**Future Enhancement:**
+GitHub's tree API includes a `mode` field indicating binary vs text. Could use this metadata to override local detection for already-tracked files, but null byte heuristic is sufficient.
+
+**References:**
+- GitHub issue: https://github.com/joshuakto/fit/issues/156
+- Fix PR: (pending)
+- Related: PR #161 (introduced the bug)
+
 ## 🔒 Concurrency Control
 
 **Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [main.ts](../main.ts) entry points.
