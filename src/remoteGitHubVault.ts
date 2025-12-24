@@ -347,17 +347,28 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			// Diagnostic logging: compare INTENDED paths vs echoed paths to detect encoding corruption
 			// GitHub echoes back what it received, so if it differs from what we intended to send,
 			// we know corruption happened during the request (UTF-8→GBK encoding issue)
-			// Note: newTree.tree may be undefined in test mocks
-			const echoedPaths = newTree.tree?.map((n: {path?: string}) => n.path).filter(Boolean) ?? [];
+			// Note: GitHub API does NOT guarantee response order, so we match by pattern instead of index
+			const echoedPaths = newTree.tree?.map((n: {path?: string}) => n.path).filter((p): p is string => !!p) ?? [];
 			const suspiciousMatches: Array<{intended: string, echoed: string, pattern: string}> = [];
 
-			for (let i = 0; i < Math.min(pathsWeIntendedToSend.length, echoedPaths.length); i++) {
-				const intended = pathsWeIntendedToSend[i]!;
-				const echoed = echoedPaths[i]!;
+			const intendedPathsSet = new Set(pathsWeIntendedToSend);
+			const echoedPathsSet = new Set(echoedPaths);
 
-				const match = detectSuspiciousCorrespondence(intended, echoed);
-				if (match) {
-					suspiciousMatches.push({ intended, echoed, pattern: match.pattern });
+			// Find paths that were intended but are not present verbatim in the echoed response.
+			// These are candidates for having been corrupted.
+			for (const intended of intendedPathsSet) {
+				if (echoedPathsSet.has(intended)) {
+					continue; // Path was sent and received correctly.
+				}
+
+				// This path is missing. Check if any of the echoed paths are a corrupted version of it.
+				for (const echoed of echoedPathsSet) {
+					const match = detectSuspiciousCorrespondence(intended, echoed);
+					if (match) {
+						suspiciousMatches.push({ intended, echoed, pattern: match.pattern });
+						// Once a match is found, we can stop checking this intended path against other echoed paths.
+						break;
+					}
 				}
 			}
 
