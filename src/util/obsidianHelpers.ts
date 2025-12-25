@@ -43,7 +43,18 @@ export async function readFileContent(
 	// Read raw bytes (reliable on all platforms, unlike vault.read())
 	const arrayBuffer = await vault.readBinary(file);
 
-	// Try UTF-8 decode with fatal:true (throws on null bytes or invalid UTF-8)
+	// Check first ~8KB for null bytes (0x00) - Git's proven binary detection heuristic
+	// Null bytes are valid UTF-8 (U+0000) but reliably indicate binary files
+	const bytes = new Uint8Array(arrayBuffer.slice(0, Math.min(8192, arrayBuffer.byteLength)));
+	const hasNullByte = bytes.some(b => b === 0);
+
+	if (hasNullByte) {
+		// Binary file - return as base64
+		const base64 = arrayBufferToBase64(arrayBuffer);
+		return FileContent.fromBase64(base64);
+	}
+
+	// No null bytes - try UTF-8 decode with fatal:true (throws on invalid UTF-8)
 	try {
 		const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
 		return FileContent.fromPlainText(text);
