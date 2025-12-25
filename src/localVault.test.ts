@@ -19,7 +19,8 @@ import { computeSha1 } from './util/hashing';
 // Type-safe mock that includes only the methods LocalVault uses
 type MockVault = Pick<Vault,
 	'getFiles' | 'getAbstractFileByPath' | 'createFolder' |
-	'read' | 'readBinary' | 'cachedRead' | 'createBinary' | 'modifyBinary' | 'delete'
+	'read' | 'readBinary' | 'cachedRead' |
+	'create' | 'createBinary' | 'modify' | 'modifyBinary' | 'delete'
 >;
 
 describe('LocalVault', () => {
@@ -37,7 +38,9 @@ describe('LocalVault', () => {
 			cachedRead: vi.fn(),
 			getAbstractFileByPath: vi.fn(),
 			createFolder: vi.fn(),
+			create: vi.fn(),
 			createBinary: vi.fn(),
+			modify: vi.fn(),
 			modifyBinary: vi.fn(),
 			delete: vi.fn()
 		};
@@ -95,10 +98,10 @@ describe('LocalVault', () => {
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockImplementation(async (file: TFile) => {
-				if (file.path === 'note1.md') return 'Content of note 1';
-				if (file.path === 'note2.txt') return 'Content of note 2';
-				return '';
+			mockVault.readBinary.mockImplementation(async (file: TFile) => {
+				if (file.path === 'note1.md') return new TextEncoder().encode('Content of note 1').buffer;
+				if (file.path === 'note2.txt') return new TextEncoder().encode('Content of note 2').buffer;
+				return new ArrayBuffer(0);
 			});
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
@@ -125,7 +128,7 @@ describe('LocalVault', () => {
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			mockVault.read.mockResolvedValue('file content');
+			mockVault.readBinary.mockResolvedValue(new TextEncoder().encode('file content').buffer);
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
 			});
@@ -145,11 +148,9 @@ describe('LocalVault', () => {
 			];
 
 			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
-			// read() throws for binary files, triggering fallback to readBinary()
-			mockVault.read.mockRejectedValue(
-				new Error("The file couldn't be opened because it isn't in the correct format")
-			);
-			mockVault.readBinary.mockResolvedValue(new ArrayBuffer(8));
+			// Return binary data (all zeros like old test for SHA compatibility)
+			const binaryData = new ArrayBuffer(8);
+			mockVault.readBinary.mockResolvedValue(binaryData);
 			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
 				return mockFiles.find(f => f.path === path) as TFile;
 			});
@@ -162,6 +163,7 @@ describe('LocalVault', () => {
 				'image.png': expect.anything(),
 				'archive.zip': expect.anything()
 			});
+			// SHAs should be stable (uses base64 encoding for all three)
 			expect(state['doc.pdf']).toMatchInlineSnapshot(
 				`"acf8daf266d952b03fb02280dc5c92d8e4e51ad7"`);
 			expect(state['image.png']).toMatchInlineSnapshot(
@@ -178,6 +180,54 @@ describe('LocalVault', () => {
 
 			expect(state).toEqual({});
 		});
+
+		it('should detect binary files with unknown extensions via null bytes', async () => {
+			const mockFiles = [StubTFile.ofPath('unknown.xyz')];
+
+			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			// Binary data with null byte - should be detected as binary
+			const binaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0x00, 0x10]).buffer;
+			mockVault.readBinary.mockResolvedValue(binaryData);
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				return mockFiles.find(f => f.path === path) as TFile;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const { state } = await localVault.readFromSource();
+
+			// Should succeed without throwing (binary detection works)
+			expect(state).toMatchObject({
+				'unknown.xyz': expect.any(String)
+			});
+			// SHA should use base64 (binary encoding)
+			// We can't predict exact SHA without knowing implementation details,
+			// but it should be stable
+			const sha = state['unknown.xyz'];
+			expect(sha).toBeTruthy();
+			expect(sha.length).toBe(40); // SHA-1 hex length
+		});
+
+		it('should read text files with unknown extensions as plaintext', async () => {
+			const mockFiles = [StubTFile.ofPath('notes.xyz')];
+			const textContent = 'Hello, this is plain text!';
+
+			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			mockVault.readBinary.mockResolvedValue(new TextEncoder().encode(textContent).buffer);
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				return mockFiles.find(f => f.path === path) as TFile;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const { state } = await localVault.readFromSource();
+
+			// Should succeed without throwing (text detection works)
+			expect(state).toMatchObject({
+				'notes.xyz': expect.any(String)
+			});
+			// Should compute SHA using plaintext (not base64)
+			const sha = state['notes.xyz'];
+			expect(sha).toBeTruthy();
+		});
 	});
 
 	describe('readFileContent', () => {
@@ -190,32 +240,31 @@ describe('LocalVault', () => {
 		it('should read text file content', async () => {
 			const mockFile = StubTFile.ofPath('note.md');
 			const expectedContent = 'This is a text file';
+			const textBytes = new TextEncoder().encode(expectedContent);
 
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
-			mockVault.read.mockResolvedValue(expectedContent);
+			mockVault.readBinary.mockResolvedValue(textBytes.buffer);
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('note.md');
 
 			expect(content).toEqual(FileContent.fromPlainText(expectedContent));
-			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
+			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
 		});
 
-		it('should fall back to readBinary when read() throws an exception', async () => {
+		it('should detect binary files via null bytes (issue #156)', async () => {
 			const mockFile = StubTFile.ofPath('image.png');
-			const binaryData = new ArrayBuffer(8);
+			// Create binary data with null byte (0x00) - typical for images
+			const binaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0x00, 0x10, 0x4A, 0x46, 0x49]).buffer;
 
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
-			// Obsidian throws when trying to read binary file as text
-			mockVault.read.mockRejectedValue(
-				new Error("The file couldn't be opened because it isn't in the correct format")
-			);
 			mockVault.readBinary.mockResolvedValue(binaryData);
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('image.png');
 
-			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
+			// Should always use readBinary and detect as binary via null byte
+			expect(mockVault.read).not.toHaveBeenCalled();
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
 			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
 		});
@@ -230,18 +279,23 @@ describe('LocalVault', () => {
 			);
 		});
 
-		it('should not call readBinary when read() succeeds for text file', async () => {
-			const mockFile = StubTFile.ofPath('note.txt');
-			const textContent = 'I am simple text file';
+
+		it('should decode text files without null bytes as plaintext (issue #156)', async () => {
+			const mockFile = StubTFile.ofPath('note.md');
+			const textContent = 'Hello World';
+			// Convert text to ArrayBuffer (no null bytes)
+			const textBytes = new TextEncoder().encode(textContent);
+			const arrayBuffer = textBytes.buffer;
 
 			mockVault.getAbstractFileByPath.mockReturnValue(mockFile as TFile);
-			mockVault.read.mockResolvedValue(textContent);
+			mockVault.readBinary.mockResolvedValue(arrayBuffer);
 
 			const localVault = new LocalVault(mockVault as any as Vault);
-			const content = await localVault.readFileContent('note.txt');
+			const content = await localVault.readFileContent('note.md');
 
-			expect(mockVault.read).toHaveBeenCalledWith(mockFile);
-			expect(mockVault.readBinary).not.toHaveBeenCalled();
+			// Should use readBinary but decode as text (no null bytes)
+			expect(mockVault.read).not.toHaveBeenCalled();
+			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
 			expect(content).toEqual(FileContent.fromPlainText(textContent));
 		});
 	});
@@ -305,7 +359,7 @@ describe('LocalVault', () => {
 
 			// Track call order - if parallel, all should start before any finish
 			const callOrder: string[] = [];
-			mockVault.modifyBinary = vi.fn().mockImplementation(async () => {
+			mockVault.modify = vi.fn().mockImplementation(async () => {
 				callOrder.push('modify-start');
 				await new Promise(resolve => setTimeout(resolve, 10));
 				callOrder.push('modify-end');
@@ -333,6 +387,48 @@ describe('LocalVault', () => {
 
 			expect(callOrder.filter(c => c.endsWith('-start')).length).toBe(2);
 			expect(firstEndIndex).toBeGreaterThan(firstStartIndex);
+		});
+
+		it('should use text API for plaintext files and binary API for binary files', async () => {
+			// This test verifies the fix for PR #161 binary file corruption
+			// Text files should use vault.create/modify (not createBinary/modifyBinary)
+			// Binary files should use vault.createBinary/modifyBinary
+			const binaryFile = StubTFile.ofPath('image.jpg');
+
+			mockVault.getAbstractFileByPath.mockImplementation((path) => {
+				if (path === 'note.md') return null;  // New file
+				if (path === 'image.jpg') return binaryFile as TFile;  // Existing file
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			// Write text file (plaintext encoding)
+			await localVault.applyChanges(
+				[{ path: 'note.md', content: FileContent.fromPlainText('Hello world') }],
+				[]
+			);
+
+			// Should use create() for plaintext
+			expect(mockVault.create).toHaveBeenCalledWith('note.md', 'Hello world');
+			expect(mockVault.createBinary).not.toHaveBeenCalled();
+
+			// Reset mocks
+			mockVault.create.mockClear();
+			mockVault.modify.mockClear();
+			mockVault.createBinary.mockClear();
+			mockVault.modifyBinary.mockClear();
+
+			// Write binary file (base64 encoding)
+			const binaryData = 'SGVsbG8gd29ybGQ=';  // "Hello world" in base64
+			await localVault.applyChanges(
+				[{ path: 'image.jpg', content: FileContent.fromBase64(binaryData) }],
+				[]
+			);
+
+			// Should use modifyBinary() for binary
+			expect(mockVault.modifyBinary).toHaveBeenCalledWith(binaryFile, expect.anything());
+			expect(mockVault.modify).not.toHaveBeenCalled();
 		});
 
 		it('should detect when parent folder path exists as a file (issue #153)', async () => {
@@ -386,10 +482,10 @@ describe('LocalVault', () => {
 			]);
 			// Should NOT try to create folder (it already exists)
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
-			// Should create the file
-			expect(mockVault.createBinary).toHaveBeenCalledWith(
+			// Should create the file using text API (JSON is plaintext)
+			expect(mockVault.create).toHaveBeenCalledWith(
 				'_fit/.obsidian/workspace.json',
-				expect.anything()
+				'{}'
 			);
 		});
 	});

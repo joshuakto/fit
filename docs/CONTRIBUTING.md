@@ -14,9 +14,11 @@ npm run dev
 
 **Unit Tests**: Run `npm test` to execute unit tests (Vitest), or `npm run test:watch` for development with file watching.
 
-## Architecture
+## Documentation
 
-See [`architecture.md`](./architecture.md) for system design, data flow, and component relationships.
+- **[architecture.md](./architecture.md)** - System design, data flow, component relationships
+- **[sync-logic.md](./sync-logic.md)** - SHA caching, change detection, conflict resolution, edge cases
+- **[api-compatibility.md](./api-compatibility.md)** - Web API safety, cross-platform compatibility, forbidden patterns
 
 ## Roadmap & Priorities
 

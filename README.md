@@ -90,6 +90,25 @@ You should also take care with security tokens you use to ensure they don't leak
 
 </details>
 
+<details>
+<summary><b>🖼️ Images/PDFs showing as corrupted text in GitHub</b></summary>
+
+**Symptoms:** Binary files (JPG, PNG, PDF) appear as gibberish text in GitHub like `����JFIF��...` instead of displaying properly
+
+**Cause:** Bug in v1.4.0-beta.3 where binary files were incorrectly read as text on some platforms
+
+**Solution:**
+1. Check file history in GitHub to find bad changes
+2. Use git to restore previous versions OR manually copy from history
+3. Update to v1.4 stable when available or a different beta version
+4. Re-sync - files will upload correctly
+
+**Note:** This only affected beta versions. Images and PDFs sync correctly in v1.4+.
+
+**More info:** See https://github.com/joshuakto/fit/issues/156 about the regression and older "correct format" error.
+
+</details>
+
 ## Roadmap
 
 See [CONTRIBUTING.md](https://github.com/joshuakto/fit/blob/main/docs/CONTRIBUTING.md#roadmap--priorities) for current milestone and long-term priorities.
