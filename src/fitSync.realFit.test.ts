@@ -527,14 +527,121 @@ describe('FitSync', () => {
 			// Verify: Remote still has the remote version
 			expect(remoteVault.getFile('.hidden-config.json')).toBe('Remote version');
 
-			// Verify: LocalStores updated with normal file
-			// Hidden file is NOT in localSha (not tracked)
-			expect(Object.keys(localStoreState.localSha)).toEqual(['normal.md']);
-			// Hidden file IS in lastFetchedRemoteSha (asymmetric behavior)
+			// Verify: LocalStores updated with both files
+			// Hidden file IS in localSha (baseline recorded for clash, #169)
+			expect(Object.keys(localStoreState.localSha).sort()).toEqual(['.hidden-config.json', 'normal.md']);
+			// Hidden file IS in lastFetchedRemoteSha
 			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual(['.hidden-config.json', 'normal.md']);
 		});
 
-		it('should conservatively save remote hidden files to _fit/ even when no local version exists', async () => {
+		it('should update directly after user accepts _fit/ version (#169)', async () => {
+			// Test: Clash → User accepts _fit/ version → Next sync updates directly
+			//
+			// === SETUP: Start from empty state, then create clash ===
+			localStoreState = {
+				localSha: {},
+				lastFetchedRemoteSha: {},
+				lastFetchedCommitSha: (await remoteVault.readFromSource()).commitSha
+			};
+
+			// Local has hidden file, remote adds same file with different content
+			localVault.setFile('.hidden', 'Local content');
+			await remoteVault.setFile('.hidden', 'Remote content v1');
+
+			const fitSync = createFitSync();
+
+			// === STEP 1: Sync - clashes to _fit/ and records baseline ===
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'.hidden': 'Local content', // Local version preserved
+				'_fit/.hidden': 'Remote content v1' // Remote version saved to _fit/
+			});
+			expect(localStoreState.localSha['.hidden']).toBeDefined(); // Baseline recorded
+
+			// === STEP 2: User accepts remote version and deletes _fit/ file ===
+			localVault.setFile('.hidden', 'Remote content v1');
+			await localVault.applyChanges([], ['_fit/.hidden']);
+
+			// === STEP 3: Remote updates file ===
+			await remoteVault.setFile('.hidden', 'Remote content v2');
+
+			// === STEP 4: Sync - should update directly (local matches baseline) ===
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.hidden': 'Remote content v2', // Updated directly, no new clash
+				// Note: No _fit/.hidden file created
+			});
+		});
+
+		it('should write remote hidden file directly when local unchanged from baseline (#169)', async () => {
+			// === SETUP: Initial synced state (no hidden file yet) ===
+			const initialContent = 'Initial config v1';
+			localVault.setFile('normal.md', 'Normal content');
+			await remoteVault.setFile('normal.md', 'Normal content');
+
+			let remoteResult = await remoteVault.readFromSource();
+			localStoreState = {
+				localSha: await localVault.readFromSource().then(r => r.state),
+				lastFetchedRemoteSha: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha
+			};
+			const fitSync = createFitSync();
+
+			// === STEP 1: Device A creates hidden file and syncs ===
+			await remoteVault.setFile('.hidden-config.json', initialContent);
+
+			// === STEP 2: Device B syncs - pulls hidden file ===
+			// File doesn't exist locally, so written directly (not a clash)
+			let mockNotice = createMockNotice();
+			let result = await syncAndHandleResult(fitSync, mockNotice);
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Verify: File was written directly
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'.hidden-config.json': initialContent,
+				'normal.md': 'Normal content'
+			});
+			// Baseline SHA now stored for future syncs
+			expect(localStoreState.localSha).toHaveProperty('.hidden-config.json');
+
+			// === STEP 3: Device A modifies hidden file and pushes ===
+			const updatedContent = 'Updated config v2';
+			await remoteVault.setFile('.hidden-config.json', updatedContent);
+
+			// === STEP 4: Device B syncs again - local unchanged from baseline ===
+			// Local file still has initial content (unchanged from baseline SHA)
+			// Remote file has updated content
+			// Expected: Apply remote changes directly (no clash) - this is the #169 fix!
+			mockNotice = createMockNotice();
+			result = await syncAndHandleResult(fitSync, mockNotice);
+
+			// Verify: Sync succeeds and file was written directly (not to _fit/)
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'.hidden-config.json': updatedContent,
+				'normal.md': 'Normal content'
+			});
+			// No second clash file created
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('_fit/.hidden-config.json');
+
+			// Verify: LocalStores updated with hidden file SHA (now includes hidden files in localSha)
+			expect(localStoreState).toMatchObject({
+				localSha: {
+					'.hidden-config.json': expect.anything(),
+				},
+				lastFetchedRemoteSha: {
+					'.hidden-config.json': expect.anything(),
+					'normal.md': expect.anything(),
+				},
+			});
+		});
+
+		it('should write remote hidden files directly when no local version exists (#169)', async () => {
+			// Test: Remote adds hidden file → written directly (not to _fit/)
+			// Baseline SHA recorded in localSha for future comparison
+			//
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
@@ -547,27 +654,25 @@ describe('FitSync', () => {
 				{ path: 'visible.md', content: FileContent.fromPlainText('Visible content') }
 			], []);
 
-			// === STEP 2: Attempt sync ===
+			// === STEP 2: Sync - both files written directly ===
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Sync succeeded
 			expect(result).toEqual(expect.objectContaining({ success: true }));
-
-			// Verify: Both files pulled normally (hidden file doesn't exist locally, so safe to write)
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.hidden-config.json': 'Remote hidden content',
+				'.hidden-config.json': 'Remote hidden content',  // Written directly (doesn't exist locally)
 				'visible.md': 'Visible content'
 			});
 
-			// Verify: LocalStores has asymmetric tracking (hidden files in remote but not local)
+			// Verify: Baseline SHA recorded for hidden file (#169)
 			expect(localStoreState).toMatchObject({
 				localSha: {
-					'visible.md': expect.any(String)  // Only visible file (hidden filtered by shouldTrackState)
+					'.hidden-config.json': expect.any(String),  // NEW: Baseline recorded for direct write
+					'visible.md': expect.any(String)
 				},
 				lastFetchedRemoteSha: {
-					'.hidden-config.json': expect.any(String),  // Hidden file tracked (passes shouldSyncPath)
-					'visible.md': expect.any(String)            // Visible file tracked
+					'.hidden-config.json': expect.any(String),
+					'visible.md': expect.any(String)
 				}
 			});
 		});

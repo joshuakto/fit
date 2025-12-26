@@ -17,10 +17,14 @@ export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as Tree
 
 /**
  * Compute SHA-1 hash of content.
- * Generic SHA-1 helper used for git-like blob hashing and file content comparison.
+ * Generic SHA-1 helper used for FIT's local blob hashing.
  *
- * NOTE: this content hashing doesn't exactly match git's and doesn't need to. It just needs to
- * remain consistent with previous hashes of the same file/content.
+ * IMPORTANT: FIT uses a CUSTOM local SHA algorithm (path + content) that does NOT match
+ * Git's blob SHA format. Local SHAs and remote SHAs use different algorithms and cannot
+ * be compared. See docs/architecture.md "SHA Algorithms and Change Detection".
+ *
+ * This function just computes SHA1 of the input string. The local SHA algorithm is
+ * implemented in LocalVault.fileSha1() which calls this with (normalizedPath + content).
  *
  * @param content - String content to hash
  * @returns Hex-encoded SHA-1 hash
