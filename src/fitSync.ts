@@ -65,12 +65,10 @@ export interface IFitSync {
 }
 
 /**
- * Result of sync execution including operations applied and any conflicts.
- * Used by both low-level execution (executeSyncPlan) and high-level coordination (executeSync).
+ * Result of sync execution (Phase 3) including operations applied and any conflicts.
  *
- * The `conflicts` field may contain:
- * - Newly discovered conflicts (when returned from executeSyncPlan)
- * - All unresolved conflicts, both upfront and newly discovered (when returned from executeSync)
+ * Returned by executeSync() after pushing local changes, pulling remote changes,
+ * and persisting state. The `conflicts` field contains clashes that were written to _fit/.
  */
 type SyncExecutionResult = {
 	/** Operations applied to local vault (from remote changes) */
@@ -133,19 +131,33 @@ export class FitSync implements IFitSync {
 
 	/**
 	 * Apply remote changes to local vault with comprehensive safety checks.
-	 * Handles protected paths, untracked files, and stat verification.
+	 * Handles protected paths, untracked files, clashes, and stat verification.
 	 *
+	 * @param clashFiles - Conflict files to write to _fit/ (from clash detection)
 	 * @returns File operations performed and stat failure tracking
 	 */
 	private async applyRemoteChanges(
 		addToLocalNonClashed: Array<{path: string, content: FileContent}>,
 		deleteFromLocalNonClashed: string[],
+		clashFiles: Array<{path: string, content: FileContent}>,
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
 		syncNotice: FitNotice
 	): Promise<ApplyChangesResult<"local">> {
-		syncNotice.setMessage("Writing remote changes to local");
+		if (clashFiles.length > 0) {
+			syncNotice.setMessage('Change conflicts detected');
+		} else {
+			syncNotice.setMessage("Writing remote changes to local");
+		}
 
 		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
+		const pathsToWriteToFit = new Set<string>(); // Track which paths should go to _fit/
+
+		// Add all clash files - these already have _fit/ prefix from prepareConflictFile()
+		// so we DON'T add them to pathsToWriteToFit (that would double-prefix them)
+		for (const clashFile of clashFiles) {
+			resolvedChanges.push(clashFile);
+		}
+
 		for (const change of addToLocalNonClashed) {
 			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
 			// These paths should never be written directly to the vault to avoid:
@@ -234,8 +246,8 @@ export class FitSync implements IFitSync {
 		const addToLocal = resolvedChanges;
 		const deleteFromLocal = safeDeleteFromLocal;
 
-		// Apply changes (filtered to save conflicts to _fit/)
-		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: new Set() });
+		// Apply changes with clashPaths to write protected/unsafe paths to _fit/
+		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: pathsToWriteToFit });
 
 		// Show user warning if encoding issues detected
 		if (result.userWarning) {
@@ -368,7 +380,7 @@ export class FitSync implements IFitSync {
 			});
 		}
 
-		fitLogger.log('[FitSync] Phase 2 resolution complete', {
+		fitLogger.log('[FitSync] Conflict detection complete', {
 			safeLocal: safeLocal.length,
 			safeRemote: safeRemote.length,
 			clashes: clashes.length
@@ -410,7 +422,8 @@ export class FitSync implements IFitSync {
 				}))
 		);
 
-		// Phase 3: Resolve clashes (write to _fit/)
+		// Phase 3: Execute sync operations
+		// Prepare clash files for writing to _fit/ directory
 		const clashFiles = await Promise.all(
 			clashes
 				.filter(c => c.remoteOp !== 'REMOVED') // Skip deletions
@@ -420,24 +433,6 @@ export class FitSync implements IFitSync {
 				})
 		);
 
-		let clashOps: FileChange[] = [];
-		if (clashFiles.length > 0) {
-			syncNotice.setMessage('Change conflicts detected');
-			const result = await this.fit.localVault.applyChanges(clashFiles, [], { clashPaths: new Set() });
-			clashOps = result.changes;
-			// NOTE: result.writtenStates contains SHAs for _fit/ paths, which we intentionally
-			// discard because _fit/ files are excluded from localSha cache (see filterSyncedState).
-			// Future enhancement: Could record baseline SHAs for original paths here (#169).
-		}
-
-		if (clashes.length > 0) {
-			fitLogger.log('[FitSync] Resolved clashes', {
-				clashCount: clashes.length,
-				filesWrittenToFit: clashOps.length
-			});
-		}
-
-		// Phase 3: Execute sync operations
 		// 3a. Push local changes to remote
 		syncNotice.setMessage("Uploading local changes");
 		const pushUpdate = {
@@ -459,8 +454,8 @@ export class FitSync implements IFitSync {
 			latestCommitSha = pushResult.lastFetchedCommitSha;
 			pushedChanges = pushResult.pushedChanges;
 		} else {
-			// No changes were pushed
-			// TODO: Should we abort the sync if plan.localChangesToPush had changes but nothing was pushed?
+			// No changes were pushed (pushChangedFilesToRemote returned null)
+			// TODO: Should we abort the sync if safeLocal had changes but nothing was pushed?
 			// This could indicate a push failure that we're silently ignoring. If we continue and persist
 			// the new remote state, we might incorrectly mark those local changes as synced.
 			latestRemoteTreeSha = remoteUpdate.remoteTreeSha;
@@ -468,18 +463,20 @@ export class FitSync implements IFitSync {
 			pushedChanges = [];
 		}
 
-		// 3b. Pull remote changes to local (with safety checks)
+		// 3b. Pull remote changes to local (with safety checks and clash resolution)
 		const localFileOpsRecord = await this.applyRemoteChanges(
 			addToLocalNonClashed,
 			deleteFromLocalNonClashed,
+			clashFiles,
 			existenceMap,
 			syncNotice
 		);
 
-		if (addToLocalNonClashed.length > 0 || deleteFromLocalNonClashed.length > 0) {
-			fitLogger.log('[FitSync] Pulled remote changes to local', {
+		if (addToLocalNonClashed.length > 0 || deleteFromLocalNonClashed.length > 0 || clashFiles.length > 0) {
+			fitLogger.log('.. ⬇️ [Pull] Applied remote changes to local', {
 				filesWritten: addToLocalNonClashed.length,
-				filesDeleted: deleteFromLocalNonClashed.length
+				filesDeleted: deleteFromLocalNonClashed.length,
+				clashesWrittenToFit: clashFiles.length
 			});
 		}
 
@@ -488,12 +485,12 @@ export class FitSync implements IFitSync {
 		// Benefits: avoids redundant I/O, prevents race conditions, no normalization in Obsidian.
 		// Only trackable files included (hidden files excluded to avoid spurious deletions).
 		// Note: We await the SHA promise here (not earlier) to allow parallel computation with other sync operations.
-		const writtenFileShas = await localFileOpsRecord.writtenStates;
+		const newBaselineShas = await localFileOpsRecord.newBaselineStates;
 
 		// Update local state: start with current state, apply writes, remove deletes
 		const newLocalState = {
 			...currentLocalState, // Start with state from beginning of sync (includes all existing files)
-			...writtenFileShas // Update SHAs for files we just wrote (only trackable ones)
+			...newBaselineShas // Update SHAs for all files written (non-clashed + clashes) (#169)
 		};
 
 		// Remove deleted files from state
@@ -501,9 +498,9 @@ export class FitSync implements IFitSync {
 			delete newLocalState[path];
 		}
 
-		if (Object.keys(writtenFileShas).length > 0) {
+		if (Object.keys(newBaselineShas).length > 0) {
 			fitLogger.log('[FitSync] Updated local state with SHAs from written files', {
-				filesProcessed: Object.keys(writtenFileShas).length,
+				filesProcessed: Object.keys(newBaselineShas).length,
 				totalFilesInState: Object.keys(newLocalState).length
 			});
 		}
@@ -522,11 +519,14 @@ export class FitSync implements IFitSync {
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: latestRemoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha: latestCommitSha,
+			// TODO: Remove filterSyncedState after fixing bug where remote _fit/ files are passed to applyChanges
+			// Currently remote _fit/ paths bypass shouldSyncPath filtering and get SHAs computed.
+			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
 			localSha: this.fit.filterSyncedState(newLocalState)
 		});
 
 		return {
-			localOps: localFileOpsRecord.changes.concat(clashOps),
+			localOps: localFileOpsRecord.changes,
 			remoteOps: pushedChanges,
 			conflicts: clashes
 		};

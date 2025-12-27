@@ -43,7 +43,7 @@ type ApplyChangesResultMap = {
 	"local": {
 		/** Promise for file SHAs (computed from in-memory content during writes).
 		 * Await when ready to update local state - allows parallelization on mobile. */
-		writtenStates: Promise<FileStates>;
+		newBaselineStates: Promise<FileStates>;
 	};
 	/** Remote vault result - includes commit metadata and new state */
 	"remote": {
@@ -143,7 +143,7 @@ export class VaultError extends Error {
  *   [{path: 'new-file.md', content: 'content'}],  // files to write
  *   ['old-file.md']                                // files to delete
  * );
- * // result.writtenStates is available (ApplyChangesResult<"local">)
+ * // result.newBaselineStates is available (ApplyChangesResult<"local">)
  *
  * // Update vault cache after sync (scan and update internal state atomically)
  * const newLocalState = await localVault.readFromSource();
@@ -184,7 +184,7 @@ export interface IVault<T extends VaultCategory> {
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
 	 *   - Converts FileContent to base64 and writes via Obsidian API
-	 *   - Returns writtenStates for efficient state updates
+	 *   - Returns newBaselineStates for efficient state updates
 	 *   - Clash files written to _fit/ subdirectory, SHA computed for original path
 	 *
 	 * For RemoteGitHubVault: Creates a single commit with all changes
