@@ -425,6 +425,9 @@ export class FitSync implements IFitSync {
 			syncNotice.setMessage('Change conflicts detected');
 			const result = await this.fit.localVault.applyChanges(clashFiles, []);
 			clashOps = result.changes;
+			// NOTE: result.writtenStates contains SHAs for _fit/ paths, which we intentionally
+			// discard because _fit/ files are excluded from localSha cache (see filterSyncedState).
+			// Future enhancement: Could record baseline SHAs for original paths here (#169).
 		}
 
 		if (clashes.length > 0) {
