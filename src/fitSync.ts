@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash, FileStates } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, determineChecksNeeded, determineBlockedPaths, resolveAllChanges } from "./util/changeTracking";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
@@ -81,15 +81,9 @@ type SyncExecutionResult = {
 	conflicts: FileClash[];
 };
 
-type ConflictReport = {
-	path: string
-	remoteContent: Base64Content
-};
-
 export type ConflictResolutionResult = {
 	path: string;
 	conflictFile?: { path: string; content: FileContent; }; // Conflict to write to _fit/ (always _fit/ prefixed)
-	directWrite?: { path: string; content: FileContent; }; // Safe direct write (no conflict, untracked file that doesn't exist)
 };
 
 /**
@@ -126,13 +120,6 @@ export class FitSync implements IFitSync {
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
 	}
 
-	private generateConflictReport(path: string, remoteContent: Base64Content): ConflictReport {
-		return {
-			path,
-			remoteContent,
-		};
-	}
-
 	/**
 	 * Prepare conflict file for writing to _fit/ directory.
 	 * Returns the path and content, but doesn't write yet (caller batches all writes).
@@ -142,86 +129,6 @@ export class FitSync implements IFitSync {
 			path: `_fit/${path}`,
 			content: FileContent.fromBase64(content)
 		};
-	}
-
-	private async resolveFileConflict(
-		clash: FileClash,
-		existenceMap?: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<ConflictResolutionResult> {
-		if (clash.localState === "REMOVED" && clash.remoteOp === "REMOVED") {
-			return {path: clash.path};
-		} else if (clash.localState === "REMOVED") {
-			const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
-			const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-			return {path: clash.path, conflictFile};
-		} else if (clash.localState === "untracked") {
-			// File is protected path or hidden - can't verify local state via tracking
-			if (clash.remoteOp === "REMOVED") {
-				// Remote deleted, local untracked - check if file exists before deciding
-				// Use stat map if provided, otherwise file might exist (conservative)
-				const stat = existenceMap?.get(clash.path);
-				const fileExists = stat === 'file' || stat === 'folder' || stat === undefined;
-
-				if (!fileExists) {
-					// File doesn't exist locally - deletion is a no-op
-					fitLogger.log('[FitSync] Untracked file already deleted locally', {
-						path: clash.path
-					});
-				}
-				// Either file exists (don't delete) or doesn't exist (already deleted)
-				return {path: clash.path};
-			} else {
-				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
-
-				// Protected paths (e.g., .obsidian/) should ALWAYS go to _fit/, never written directly
-				if (!this.fit.shouldSyncPath(clash.path)) {
-					const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-					return {path: clash.path, conflictFile};
-				}
-
-				// Unprotected but untracked (e.g., hidden files) - check if file actually exists locally
-				// If it doesn't exist, we can write it directly instead of to _fit/
-				const stat = existenceMap?.get(clash.path);
-				const locallyExists = stat === 'file' || stat === 'folder' || stat === undefined;
-
-				if (locallyExists) {
-					// File exists locally (or unknown) - save remote version to _fit/ to avoid overwriting
-					const conflictFile = this.prepareConflictFile(clash.path, remoteContent.toBase64());
-					return {path: clash.path, conflictFile};
-				} else {
-					// File doesn't exist locally - safe to write directly
-					// This is NOT a conflict - it's a remote add that can be applied directly
-					fitLogger.log('[FitSync] Untracked file doesn\'t exist locally - will write directly (not a conflict)', {
-						path: clash.path
-					});
-					return {
-						path: clash.path,
-						directWrite: { path: clash.path, content: remoteContent }
-					};
-				}
-			}
-		}
-
-		const localFileContent = await this.fit.localVault.readFileContent(clash.path);
-
-		// Remote file was MODIFIED (not deleted)
-		if (clash.remoteOp !== "REMOVED") {
-			const remoteContent = await this.fit.remoteVault.readFileContent(clash.path);
-			// TODO: Should we really need to force to base64 to compare, even if hypothetically both were already plaintext?
-			const localBase64 = localFileContent.toBase64();
-			const remoteBase64 = remoteContent.toBase64();
-
-			if (remoteBase64 !== localBase64) {
-				const report = this.generateConflictReport(clash.path, remoteBase64);
-				const conflictFile = this.prepareConflictFile(clash.path, report.remoteContent);
-				return {path: clash.path, conflictFile};
-			}
-			return { path: clash.path };
-		} else {
-			// Remote file was deleted, local file has changes - no file to write but this is still a "conflict"
-			// (User needs to be aware remote deleted their locally-changed file)
-			return { path: clash.path };
-		}
 	}
 
 	/**
@@ -234,19 +141,9 @@ export class FitSync implements IFitSync {
 		addToLocalNonClashed: Array<{path: string, content: FileContent}>,
 		deleteFromLocalNonClashed: string[],
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
-		statError: unknown,
-		filesMovedToFitDueToStatFailureClashes: string[],
-		deletionsSkippedDueToStatFailureClashes: string[],
 		syncNotice: FitNotice
-	): Promise<{
-		result: ApplyChangesResult<"local">,
-		filesMovedToFitDueToStatFailure: string[],
-		deletionsSkippedDueToStatFailure: string[]
-	}> {
+	): Promise<ApplyChangesResult<"local">> {
 		syncNotice.setMessage("Writing remote changes to local");
-
-		// Track files saved to _fit/ due to stat failures for consolidated logging
-		const filesMovedToFitDueToStatFailure: string[] = [];
 
 		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
 		for (const change of addToLocalNonClashed) {
@@ -280,7 +177,7 @@ export class FitSync implements IFitSync {
 				const stat = existenceMap.get(change.path);
 				if (stat === undefined) {
 					// Could not verify file existence - be conservative and save to _fit/
-					filesMovedToFitDueToStatFailure.push(change.path);
+					// Note: This shouldn't happen if Phase 2 checked all needed paths
 					resolvedChanges.push({
 						path: `_fit/${change.path}`,
 						content: change.content
@@ -302,9 +199,6 @@ export class FitSync implements IFitSync {
 		}
 
 		// SAFETY: Never delete protected or untracked files from local
-		// Track files where deletion was skipped due to stat failures
-		const deletionsSkippedDueToStatFailure: string[] = [];
-
 		const safeDeleteFromLocal = [];
 		for (const path of deleteFromLocalNonClashed) {
 			// Skip deletion of protected paths (shouldn't exist locally, but be safe)
@@ -324,7 +218,7 @@ export class FitSync implements IFitSync {
 				const stat = existenceMap.get(path);
 				if (stat === undefined) {
 					// Could not verify file existence - be conservative and skip deletion
-					deletionsSkippedDueToStatFailure.push(path);
+					// Note: This shouldn't happen if Phase 2 checked all needed paths
 					continue; // Don't delete if we can't verify it's safe
 				} else if (stat === 'file' || stat === 'folder') {
 					// File exists but not tracked - don't delete (tracking state inconsistency)
@@ -335,17 +229,6 @@ export class FitSync implements IFitSync {
 			}
 
 			safeDeleteFromLocal.push(path); // Safe to delete
-		}
-
-		// Log consolidated stat failure information if any occurred
-		const allFilesMovedToFit = [...filesMovedToFitDueToStatFailureClashes, ...filesMovedToFitDueToStatFailure];
-		const allDeletionsSkipped = [...deletionsSkippedDueToStatFailureClashes, ...deletionsSkippedDueToStatFailure];
-		if (statError !== null || allFilesMovedToFit.length > 0 || allDeletionsSkipped.length > 0) {
-			fitLogger.log('[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash', {
-				error: statError,
-				filesMovedToFit: allFilesMovedToFit,
-				deletionsSkipped: allDeletionsSkipped
-			});
 		}
 
 		const addToLocal = resolvedChanges;
@@ -360,105 +243,7 @@ export class FitSync implements IFitSync {
 			warningNotice.show();
 		}
 
-		return { result, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
-	}
-
-	/**
-	 * Resolve all clashes by writing conflicted files to _fit/ directory.
-	 * Tracks which files were affected by stat failures during resolution.
-	 *
-	 * @returns File operations performed, unresolved conflicts, and stat failure tracking
-	 */
-	private async resolveClashes(
-		clashes: FileClash[],
-		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
-		syncNotice: FitNotice
-	): Promise<{
-		changes: FileChange[],
-		unresolved: FileClash[],
-		filesMovedToFitDueToStatFailure: string[],
-		deletionsSkippedDueToStatFailure: string[]
-	}> {
-		if (clashes.length === 0) {
-			return {
-				changes: [],
-				unresolved: [],
-				filesMovedToFitDueToStatFailure: [],
-				deletionsSkippedDueToStatFailure: []
-			};
-		}
-
-
-		const fileResolutions = await Promise.all(
-			clashes.map(async (clash) => {
-				try {
-					return await this.resolveFileConflict(clash, existenceMap);
-				} catch (error) {
-					fitLogger.log('[FitSync] Error resolving conflict for file', {
-						path: clash.path,
-						localStatus: clash.localState,
-						remoteOp: clash.remoteOp,
-						error: error instanceof Error ? error.message : String(error)
-					});
-					throw error;
-				}
-			}));
-
-		// Track which files were affected by stat failures
-		const filesMovedToFitDueToStatFailure: string[] = [];
-		const deletionsSkippedDueToStatFailure: string[] = [];
-
-		for (let i = 0; i < clashes.length; i++) {
-			const clash = clashes[i];
-			const res = fileResolutions[i];
-
-			if (clash.localState === 'untracked') {
-				const stat = existenceMap.get(clash.path);
-				if (stat === undefined) {
-					// Stat failed for this path
-					if (clash.remoteOp === 'REMOVED') {
-						deletionsSkippedDueToStatFailure.push(clash.path);
-					} else if (res.conflictFile && res.conflictFile.path.startsWith('_fit/')) {
-						filesMovedToFitDueToStatFailure.push(clash.path);
-					}
-				}
-			}
-		}
-
-		// conflictFile = written to _fit/ (user-facing conflict)
-		// directWrite = written directly (safe, no conflict)
-		const conflictFilesToWrite = fileResolutions
-			.filter(r => r.conflictFile)
-			.map(r => r.conflictFile!);
-
-		const directWrites = fileResolutions
-			.filter(r => r.directWrite)
-			.map(r => r.directWrite!);
-
-		// Conflicts are determined by presence of conflictFile (always goes to _fit/)
-		const unresolved = fileResolutions
-			.map((res, i) => res.conflictFile ? clashes[i] : null)
-			.filter(Boolean) as Array<FileClash>;
-
-		const changes: FileChange[] = [];
-
-		// TODO: Consolidate to call applyChanges once?
-		if (conflictFilesToWrite.length > 0) {
-			const result = await this.fit.localVault.applyChanges(conflictFilesToWrite, []);
-			changes.push(...result.changes);
-		}
-
-		if (directWrites.length > 0) {
-			const result = await this.fit.localVault.applyChanges(directWrites, []);
-			changes.push(...result.changes);
-		}
-
-		// Show "Change conflicts detected" notice if any conflicts will be written to _fit/
-		if (conflictFilesToWrite.length > 0) {
-			syncNotice.setMessage(`Change conflicts detected`);
-		}
-
-		return { changes, unresolved, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure };
+		return result;
 	}
 
 	/**
@@ -489,40 +274,135 @@ export class FitSync implements IFitSync {
 	}
 
 	/**
-	 * Execute a sync plan: push local changes, pull remote changes, and persist state.
-	 * This is the unified execution path for both compatible and conflicted syncs.
+	 * Phase 2: Compare & Resolve changes to determine safe vs clashed operations.
 	 *
-	 * The operation is atomic: if any step fails, no state is persisted.
+	 * Performs the full Phase 2 workflow:
+	 * - 2a: Determine what filesystem checks are needed
+	 * - 2b: Batch collect filesystem state for verification
+	 * - 2c: Resolve all changes to final safe/clash categorization
+	 * - Log any stat failures that caused conservative clash treatment
 	 *
-	 * @returns The operations that were applied and any conflicts discovered during execution
+	 * @returns Safe changes, clashes, and filesystem state for Phase 3 execution
 	 */
-	private async performSync(
+	private async compareAndResolveChanges(
 		localChanges: FileChange[],
-		remoteUpdate: {
-			remoteChanges: FileChange[],
-			remoteTreeSha: FileStates,
-			latestRemoteCommitSha: CommitSha
-		},
+		remoteChanges: FileChange[],
+		localScanPaths: Set<string>,
+		remoteScanPaths: Set<string>
+	) {
+		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
+		detectNormalizationMismatches(Array.from(localScanPaths), Array.from(remoteScanPaths));
+
+		// Phase 2a: Determine what filesystem checks are needed
+		const { needsFilesystemCheck } = determineChecksNeeded(
+			localChanges,
+			remoteChanges,
+			localScanPaths
+		);
+
+		// Phase 2b: Batch collect filesystem state for all paths needing verification
+		const pathsToStat = new Set<string>();
+		needsFilesystemCheck.forEach(item => pathsToStat.add(item.path));
+
+		// Also check local deletions for version migration safety
+		localChanges
+			.filter(c => c.type === 'REMOVED')
+			.forEach(c => pathsToStat.add(c.path));
+
+		const { existenceMap, statError } = await this.collectFilesystemState(Array.from(pathsToStat));
+
+		// Convert existenceMap to format expected by resolveAllChanges (true/false/null)
+		// existenceMap values: "file" | "folder" | "nonexistent" | undefined
+		const filesystemState = new Map<string, boolean | null>();
+		for (const path of pathsToStat) {
+			const state = existenceMap.get(path);
+			if (state === undefined) {
+				filesystemState.set(path, null); // stat failed
+			} else {
+				filesystemState.set(path, state !== "nonexistent");
+			}
+		}
+
+		// Phase 2b (part 2): Determine which paths should block remote changes
+		const localChangePaths = new Set(localChanges.map(c => c.path));
+		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
+		const blockedPaths = determineBlockedPaths(
+			remoteChanges,
+			localChangePaths,
+			filesystemState,
+			isProtectedPath
+		);
+
+		// Phase 2c: Simple clash detection
+		const shouldBlockRemote = (path: string) => blockedPaths.has(path);
+		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
+			localChanges,
+			remoteChanges,
+			shouldBlockRemote
+		);
+
+		// Track stat failures for logging
+		const filesMovedToFitDueToStatFailure: string[] = [];
+		const deletionsSkippedDueToStatFailure: string[] = [];
+		for (const clash of clashes) {
+			if (clash.localState === 'untracked') {
+				const stat = filesystemState.get(clash.path);
+				if (stat === null) {
+					// Stat failed - conservative clash
+					if (clash.remoteOp === 'REMOVED') {
+						deletionsSkippedDueToStatFailure.push(clash.path);
+					} else {
+						filesMovedToFitDueToStatFailure.push(clash.path);
+					}
+				}
+			}
+		}
+
+		// Log consolidated stat failures
+		if (statError !== null || filesMovedToFitDueToStatFailure.length > 0 ||
+			deletionsSkippedDueToStatFailure.length > 0) {
+			fitLogger.log('[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash', {
+				error: statError,
+				filesMovedToFit: filesMovedToFitDueToStatFailure,
+				deletionsSkipped: deletionsSkippedDueToStatFailure
+			});
+		}
+
+		fitLogger.log('[FitSync] Phase 2 resolution complete', {
+			safeLocal: safeLocal.length,
+			safeRemote: safeRemote.length,
+			clashes: clashes.length
+		});
+
+		return {
+			safeLocal, safeRemote, clashes, statError, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure, existenceMap
+		};
+	}
+
+	/**
+	 * Phase 3: Execute sync operations - push, pull, persist state.
+	 *
+	 * Takes the resolved safe/clash categorization from Phase 2 and executes:
+	 * - Write clashes to _fit/ directory
+	 * - Push safe local changes to remote
+	 * - Pull safe remote changes to local
+	 * - Persist updated state (atomic - if any step fails, no state is saved)
+	 *
+	 * @returns The operations that were applied and conflicts discovered
+	 */
+	private async executeSync(
 		currentLocalState: FileStates,
+		remoteUpdate: { remoteChanges?: FileChange[]; remoteTreeSha: FileStates; latestRemoteCommitSha: CommitSha; },
+		safeLocal: FileChange[],
+		safeRemote: FileChange[],
+		clashes: FileClash[],
+		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
 	): Promise<SyncExecutionResult> {
-		// Phase 1: Detect all clashes between local and remote changes
-		const clashes = this.fit.getClashedChanges(localChanges, remoteUpdate.remoteChanges);
-		const clashPaths = new Set(clashes.map(c => c.path));
-
-		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
-		const localPaths = Object.keys(currentLocalState);
-		const remotePaths = Object.keys(remoteUpdate.remoteTreeSha);
-		detectNormalizationMismatches(localPaths, remotePaths);
-
-		// Separate clashed remote changes from non-clashed ones
-		const remoteChangesToPull = remoteUpdate.remoteChanges.filter(c => !clashPaths.has(c.path));
-		const localChangesToPush = localChanges; // Push all, including conflicted
-
-		// Phase 2: Prepare non-clashed remote changes and collect filesystem state
-		const deleteFromLocalNonClashed = remoteChangesToPull.filter(c => c.type === "REMOVED").map(c => c.path);
+		// Prepare safe remote changes for pulling
+		const deleteFromLocalNonClashed = safeRemote.filter(c => c.type === "REMOVED").map(c => c.path);
 		const addToLocalNonClashed = await Promise.all(
-			remoteChangesToPull
+			safeRemote
 				.filter(c => c.type !== "REMOVED")
 				.map(async (change) => ({
 					path: change.path,
@@ -530,50 +410,38 @@ export class FitSync implements IFitSync {
 				}))
 		);
 
-		// Collect all paths that need filesystem existence checking across all phases
-		const pathsToStat = new Set<string>();
+		// Phase 3: Resolve clashes (write to _fit/)
+		const clashFiles = await Promise.all(
+			clashes
+				.filter(c => c.remoteOp !== 'REMOVED') // Skip deletions
+				.map(async (clash) => {
+					const content = await this.fit.remoteVault.readFileContent(clash.path);
+					return this.prepareConflictFile(clash.path, content.toBase64());
+				})
+		);
 
-		// From clashes: untracked files need stat checking
-		clashes.filter(c => c.localState === 'untracked').forEach(c => pathsToStat.add(c.path));
-
-		// From remote changes: files not in localSha need stat checking
-		addToLocalNonClashed
-			.filter(c => this.fit.shouldSyncPath(c.path))
-			.filter(c => !this.fit.localSha.hasOwnProperty(c.path))
-			.forEach(c => pathsToStat.add(c.path));
-		deleteFromLocalNonClashed
-			.filter(p => this.fit.shouldSyncPath(p))
-			.filter(p => !this.fit.localSha.hasOwnProperty(p))
-			.forEach(p => pathsToStat.add(p));
-
-		// From local changes: deletions need verification (version migration safety)
-		localChangesToPush
-			.filter(c => c.type === 'REMOVED')
-			.forEach(c => pathsToStat.add(c.path));
-
-		// Batch stat all paths at once
-		const {existenceMap, statError} = await this.collectFilesystemState(Array.from(pathsToStat));
-
-		// Phase 3: Resolve all clashes (writes to _fit/ if needed)
-		const {
-			changes: resolvedConflictOps,
-			unresolved: unresolvedConflicts,
-			filesMovedToFitDueToStatFailure: filesMovedToFitDueToStatFailureClashes,
-			deletionsSkippedDueToStatFailure: deletionsSkippedDueToStatFailureClashes
-		} = await this.resolveClashes(clashes, existenceMap, syncNotice);
+		let clashOps: FileChange[] = [];
+		if (clashFiles.length > 0) {
+			syncNotice.setMessage('Change conflicts detected');
+			const result = await this.fit.localVault.applyChanges(clashFiles, []);
+			clashOps = result.changes;
+			// NOTE: result.writtenStates contains SHAs for _fit/ paths, which we intentionally
+			// discard because _fit/ files are excluded from localSha cache (see filterSyncedState).
+			// Future enhancement: Could record baseline SHAs for original paths here (#169).
+		}
 
 		if (clashes.length > 0) {
 			fitLogger.log('[FitSync] Resolved clashes', {
 				clashCount: clashes.length,
-				unresolvedCount: unresolvedConflicts.length,
-				filesWrittenToFit: resolvedConflictOps.length
+				filesWrittenToFit: clashOps.length
 			});
 		}
 
-		// Phase 4: Push local changes to remote
+		// Phase 3: Execute sync operations
+		// 3a. Push local changes to remote
 		syncNotice.setMessage("Uploading local changes");
 		const pushUpdate = {
-			localChanges: localChangesToPush,
+			localChanges: safeLocal,
 			parentCommitSha: remoteUpdate.latestRemoteCommitSha
 		};
 		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
@@ -600,14 +468,11 @@ export class FitSync implements IFitSync {
 			pushedChanges = [];
 		}
 
-		// Phase 5: Pull remote changes to local (with safety checks)
-		const {result: localFileOpsRecord} = await this.applyRemoteChanges(
+		// 3b. Pull remote changes to local (with safety checks)
+		const localFileOpsRecord = await this.applyRemoteChanges(
 			addToLocalNonClashed,
 			deleteFromLocalNonClashed,
 			existenceMap,
-			statError,
-			filesMovedToFitDueToStatFailureClashes,
-			deletionsSkippedDueToStatFailureClashes,
 			syncNotice
 		);
 
@@ -618,7 +483,7 @@ export class FitSync implements IFitSync {
 			});
 		}
 
-		// Phase 6: Update local state using SHAs computed by LocalVault (performance optimization)
+		// 3c. Update local state using SHAs computed by LocalVault (performance optimization)
 		// LocalVault computed SHAs from in-memory content during file writes (see docs/sync-logic.md).
 		// Benefits: avoids redundant I/O, prevents race conditions, no normalization in Obsidian.
 		// Only trackable files included (hidden files excluded to avoid spurious deletions).
@@ -661,9 +526,9 @@ export class FitSync implements IFitSync {
 		});
 
 		return {
-			localOps: localFileOpsRecord.changes.concat(resolvedConflictOps),
+			localOps: localFileOpsRecord.changes.concat(clashOps),
 			remoteOps: pushedChanges,
-			conflicts: unresolvedConflicts
+			conflicts: clashes
 		};
 	}
 
@@ -731,15 +596,28 @@ export class FitSync implements IFitSync {
 				fitLogger.log(`🔄 [FitSync] Syncing changes (${localCount} local, ${remoteCount} remote)`, logData);
 			}
 
-			// Execute sync (handles all clash detection, push, pull, persist)
-			const { localOps, remoteOps, conflicts } = await this.performSync(
+			// Phase 2: Compare & Resolve - determine safe vs clashed changes
+			const localScanPaths = new Set(Object.keys(currentLocalState));
+			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
+			const { safeLocal, safeRemote, clashes, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
+				remoteChanges,
+				localScanPaths,
+				remoteScanPaths
+			);
+
+			// Phase 3: Execute - push, pull, persist (atomic operation)
+			const { localOps, remoteOps, conflicts } = await this.executeSync(
+				currentLocalState,
 				{
 					remoteChanges,
 					remoteTreeSha,
 					latestRemoteCommitSha: remoteCommitSha
 				},
-				currentLocalState,
+				safeLocal,
+				safeRemote,
+				clashes,
+				existenceMap,
 				syncNotice
 			);
 

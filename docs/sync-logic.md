@@ -328,18 +328,18 @@ compareFileStates(newScan, localSha) // // → reports ".gitignore" as REMOVED
 
 ```typescript
 // In FitSync.performSync()
-// Phase 2: Batch stat all paths needing verification (including deletions)
+// Phase 2b: Batch stat all paths needing verification (including deletions)
 const pathsToStat = new Set<string>();
-localChangesToPush
+localChanges
   .filter(c => c.type === 'REMOVED')
   .forEach(c => pathsToStat.add(c.path));
 const {existenceMap} = await this.collectFilesystemState(Array.from(pathsToStat));
 
-// Phase 4: Push local changes with safeguard
-for (const change of localChanges) {
+// Phase 3: Push local changes with safeguard
+for (const change of safeLocal) {
   if (change.type === 'REMOVED') {
-    const existence = existenceMap.get(change.path);
-    const physicallyExists = existence === 'file' || existence === 'folder';
+    const state = existenceMap.get(change.path);
+    const physicallyExists = state === 'file' || state === 'folder';
     if (physicallyExists) {
       // File exists but filtered - NOT a real deletion
       continue; // Don't push to remote
@@ -361,37 +361,67 @@ for (const change of localChanges) {
 - **Protection ADDED**: Local filtered before push, remote saved to `_fit/`
 - **Protection REMOVED**: Files appear as new on both sides → clash detection handles it
 
-**Implementation:** [src/fitSync.ts:564-586](../src/fitSync.ts#L564-L586) (path collection), [src/fitSync.ts:756-769](../src/fitSync.ts#L756-L769) (safeguard check)
+**Implementation:** [src/fitSync.ts:387-396](../src/fitSync.ts#L387-L396) (path collection), [src/fitSync.ts:726-743](../src/fitSync.ts#L726-L743) (safeguard check)
 
 ## Sync Decision Tree
 
 ### Unified Sync Flow
 
-FIT uses a unified sync flow that handles all scenarios in one consistent path:
+FIT uses a **phased sync architecture** that maintains clear boundaries between data collection, comparison, verification, and execution:
 
 ```mermaid
 flowchart TD
-    Start[Start Sync] --> Gather[Gather local & remote changes]
-    Gather --> EarlyExit{Any changes?}
+    Start[Start Sync] --> Phase1[Phase 1: Collect State]
+    Phase1 --> Gather1[💾 Scan local vault<br/>tracked files only]
+    Gather1 --> Gather2[☁️ Read remote tree<br/>all files]
+
+    Gather2 --> Phase2[Phase 2: Compare & Resolve]
+    Phase2 --> EarlyExit{Any changes?}
 
     EarlyExit -->|No| InSync[✓ In Sync]
-    EarlyExit -->|Yes| DetectClashes[Detect ALL clashes upfront]
+    EarlyExit -->|Yes| Classify[Classify changes:<br/>✓ Safe tracked<br/>🔀 Tracked clashes<br/>❓ Untracked needs verification]
 
-    DetectClashes --> BatchStat[Batch stat filesystem<br/>for safety verification]
-    BatchStat --> ResolveConflicts[Resolve conflicts<br/>📁 Write to _fit/]
+    Classify --> Resolve[Resolve ambiguities:<br/>Batch stat filesystem]
+    Resolve --> Verify[Verify untracked files:<br/>protected? exists? baseline SHA?]
+    Verify --> Reclassify[Reclassify:<br/>❓ → ✓ Safe or 🔀 Clash]
 
+    Reclassify --> Phase3[Phase 3: Execute Sync]
+    Phase3 --> ResolveConflicts[Resolve clashes<br/>📁 Write to _fit/]
     ResolveConflicts --> Push[⬆️ Push local changes]
-    Push --> Pull[⬇️ Pull remote changes<br/>with safety checks]
+    Push --> Pull[⬇️ Pull safe remote changes]
     Pull --> Persist[Persist state atomically]
 
     InSync --> Done[Done]
     Persist --> Done
 ```
 
-**Key improvements:**
-- **Single execution path**: Compatible changes and conflicts handled in unified flow
-- **Batch operations**: All filesystem stat checks done in one batch for efficiency
-- **Atomic persistence**: State only updated on successful completion
+**Architecture Principles:**
+
+1. **Phase 1 (Collect)**: Gather state from vaults in isolation
+   - Local: Only tracked files (efficient Obsidian API scan)
+   - Remote: All files (GitHub tree)
+   - No filesystem checks yet
+
+2. **Phase 2 (Compare & Resolve)**: Determine outcomes and resolve ambiguities
+   - **Compare**: Classify changes based on vault state
+     - Tracked files with changes on both sides → **Clash** (definite conflict)
+     - Tracked files changed on one side → **Safe** (can apply directly)
+     - Untracked remote changes → **Needs Verification** (insufficient info)
+   - **Resolve**: Resolve ambiguity for untracked files
+     - Batch collect filesystem state (one `stat` call for all paths)
+     - Check: Is path protected? Does file exist locally? Baseline SHA match?
+     - Reclassify: Needs Verification → Safe or Clash
+
+3. **Phase 3 (Execute)**: Apply changes and persist state
+   - Resolve real clashes (write to `_fit/`)
+   - Push and pull safe changes
+   - Atomically update SHA cache
+
+**Key Benefits:**
+- **Principled boundaries**: Each phase has clear inputs/outputs
+- **Efficient batching**: Single filesystem stat for all verification needs
+- **Future-proof**: Supports planned features (`.gitignore`, continuous sync, explicit tracking)
+- **Testable**: Phases can be tested independently
 
 **Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
 
@@ -463,13 +493,23 @@ remoteChanges = [
 
 ## 🔀 Conflict Resolution
 
-### Clash Detection
+### Clash Detection (Phase 2)
 
-Files clash when BOTH local and remote have changes to the same path.
+**Phase 2a**: Identifies paths needing filesystem verification (remote changes not in local scan)
 
-**Implementation:** [`getClashedChanges()` in fit.ts](../src/fit.ts)
+**Phase 2b**: Batch collects filesystem state for all paths needing verification
 
-**Logic:** For each file changed locally, check if there's also a remote change to the same path. If yes, it's a clash.
+**Phase 2c**: Resolves all changes to final safe/clash outcomes:
+- **Tracked files**: Both sides changed → clash
+- **Untracked files**: Checks filesystem existence, protection rules, and (future: baseline SHA)
+  - Exists locally or protected → clash
+  - Doesn't exist and not protected → safe
+  - Stat failed → conservative clash
+
+**Implementation:**
+- Phase 2a: [`determineChecksNeeded()` in changeTracking.ts](../src/util/changeTracking.ts)
+- Phase 2b: [`collectFilesystemState()` in fitSync.ts](../src/fitSync.ts)
+- Phase 2c: [`resolveAllChanges()` in changeTracking.ts](../src/util/changeTracking.ts)
 
 ### 🔀 Conflict Resolution Decision Tree
 
@@ -908,7 +948,6 @@ When detected, FIT:
 
 **References:**
 - GitHub issue: https://github.com/joshuakto/fit/issues/51
-- Detailed analysis: Check Serena memory `encoding_corruption_issue_51` (if created)
 
 ### Binary File Content Corruption (Issue #156)
 
