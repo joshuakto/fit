@@ -314,6 +314,10 @@ export class LocalVault implements IVault<"local"> {
 		originalContent: FileContent,
 		shaPath?: string
 	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
+		// Use shaPath for SHA computation if provided (for clash files written to _fit/)
+		// Why: Local SHA algorithm is path-dependent: SHA1(path + content)
+		// When we write .hidden to _fit/.hidden, we must compute SHA for .hidden (not _fit/.hidden)
+		// to establish correct baseline. See docs/architecture.md "SHA Algorithms".
 		const pathForSha = shaPath ?? path;
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
