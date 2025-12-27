@@ -120,11 +120,12 @@ export class FitSync implements IFitSync {
 
 	/**
 	 * Prepare conflict file for writing to _fit/ directory.
-	 * Returns the path and content, but doesn't write yet (caller batches all writes).
+	 * Returns the ORIGINAL path (not prefixed) - caller adds to clashPaths set.
+	 * This enables correct SHA keying by original path (issue #169).
 	 */
 	private prepareConflictFile(path: string, content: Base64Content): { path: string, content: FileContent } {
 		return {
-			path: `_fit/${path}`,
+			path: path,  // Return original path, not _fit/ prefixed
 			content: FileContent.fromBase64(content)
 		};
 	}
@@ -150,11 +151,12 @@ export class FitSync implements IFitSync {
 		}
 
 		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
-		const pathsToWriteToFit = new Set<string>(); // Track which paths should go to _fit/
+		const clashPaths = new Set<string>(); // Track which paths should go to _fit/
 
-		// Add all clash files - these already have _fit/ prefix from prepareConflictFile()
-		// so we DON'T add them to pathsToWriteToFit (that would double-prefix them)
+		// Add all clash files to clashPaths set and resolvedChanges.
+		// The clashPaths set tells applyChanges to write to _fit/ AND compute SHA using original path.
 		for (const clashFile of clashFiles) {
+			clashPaths.add(clashFile.path);
 			resolvedChanges.push(clashFile);
 		}
 
@@ -169,10 +171,8 @@ export class FitSync implements IFitSync {
 					path: change.path,
 					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
 				});
-				resolvedChanges.push({
-					path: `_fit/${change.path}`,
-					content: change.content
-				});
+				clashPaths.add(change.path);
+				resolvedChanges.push(change);
 				continue; // Don't write to protected path
 			}
 
@@ -190,17 +190,13 @@ export class FitSync implements IFitSync {
 				if (stat === undefined) {
 					// Could not verify file existence - be conservative and save to _fit/
 					// Note: This shouldn't happen if Phase 2 checked all needed paths
-					resolvedChanges.push({
-						path: `_fit/${change.path}`,
-						content: change.content
-					});
+					clashPaths.add(change.path);
+					resolvedChanges.push(change);
 					continue; // Don't risk overwriting if file might exist
 				} else if (stat === 'file' || stat === 'folder') {
 					// File exists - save to _fit/ for safety (tracking state inconsistency)
-					resolvedChanges.push({
-						path: `_fit/${change.path}`,
-						content: change.content
-					});
+					clashPaths.add(change.path);
+					resolvedChanges.push(change);
 					continue; // Don't risk overwriting local version
 				}
 				// File doesn't exist locally (stat === 'nonexistent') - safe to write directly
@@ -247,7 +243,7 @@ export class FitSync implements IFitSync {
 		const deleteFromLocal = safeDeleteFromLocal;
 
 		// Apply changes with clashPaths to write protected/unsafe paths to _fit/
-		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: pathsToWriteToFit });
+		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths });
 
 		// Show user warning if encoding issues detected
 		if (result.userWarning) {
