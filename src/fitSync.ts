@@ -235,7 +235,7 @@ export class FitSync implements IFitSync {
 		const deleteFromLocal = safeDeleteFromLocal;
 
 		// Apply changes (filtered to save conflicts to _fit/)
-		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal);
+		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: new Set() });
 
 		// Show user warning if encoding issues detected
 		if (result.userWarning) {
@@ -423,7 +423,7 @@ export class FitSync implements IFitSync {
 		let clashOps: FileChange[] = [];
 		if (clashFiles.length > 0) {
 			syncNotice.setMessage('Change conflicts detected');
-			const result = await this.fit.localVault.applyChanges(clashFiles, []);
+			const result = await this.fit.localVault.applyChanges(clashFiles, [], { clashPaths: new Set() });
 			clashOps = result.changes;
 			// NOTE: result.writtenStates contains SHAs for _fit/ paths, which we intentionally
 			// discard because _fit/ files are excluded from localSha cache (see filterSyncedState).
@@ -711,7 +711,7 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete);
+		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete, { clashPaths: new Set() });
 
 		// Show user warning if encoding issues detected during upload
 		if (result.userWarning) {

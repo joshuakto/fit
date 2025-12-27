@@ -493,8 +493,10 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
-		filesToDelete: Array<string>
+		filesToDelete: Array<string>,
+		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
+		const clashPaths = options?.clashPaths ?? new Set();
 		const error = this.failureScenarios.get('write');
 		if (error) {
 			this.clearFailure('write');
@@ -506,9 +508,12 @@ export class FakeLocalVault implements IVault<"local"> {
 		// Use Promise.allSettled to match real LocalVault behavior
 		const writeSettledResults = await Promise.allSettled(
 			filesToWrite.map(async (file) => {
+				// If path is in clashPaths, write to _fit/ subdirectory (like real LocalVault)
+				const writePath = clashPaths.has(file.path) ? `_fit/${file.path}` : file.path;
+
 				// Call mock if provided (allows test to inject failures)
 				if (this.mockWriteFile) {
-					await this.mockWriteFile(file.path);
+					await this.mockWriteFile(writePath);
 				}
 
 				// Simulate file/folder conflicts that occur in real filesystems:
@@ -518,24 +523,25 @@ export class FakeLocalVault implements IVault<"local"> {
 				const existingPaths = Array.from(this.files.keys());
 
 				// Check #1: File path conflicts with existing folder
-				if (existingPaths.some(p => p.startsWith(file.path + '/'))) {
+				if (existingPaths.some(p => p.startsWith(writePath + '/'))) {
 					throw VaultError.filesystem(
-						`Cannot create file "${file.path}" - a folder with this name already exists`
+						`Cannot create file "${writePath}" - a folder with this name already exists`
 					);
 				}
 
 				// Check #2: Parent folder path conflicts with existing file
-				const parentFolder = file.path.includes('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : null;
+				const parentFolder = writePath.includes('/') ? writePath.substring(0, writePath.lastIndexOf('/')) : null;
 				if (parentFolder && this.files.has(parentFolder)) {
 					throw VaultError.filesystem(
-						`Cannot create folder "${parentFolder}" for file "${file.path}" - a file with this name already exists`
+						`Cannot create folder "${parentFolder}" for file "${writePath}" - a file with this name already exists`
 					);
 				}
 
-				const existed = this.files.has(file.path);
-				this.setFile(file.path, file.content);
+				const existed = this.files.has(writePath);
+				this.setFile(writePath, file.content);
 				const changeType: 'MODIFIED' | 'ADDED' = existed ? 'MODIFIED' : 'ADDED';
-				return { path: file.path, type: changeType };
+				// Return FileChange with write path (matches real LocalVault)
+				return { path: writePath, type: changeType };
 			})
 		);
 
@@ -770,7 +776,8 @@ export class FakeRemoteVault implements IVault<"remote"> {
 
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
-		filesToDelete: Array<string>
+		filesToDelete: Array<string>,
+		_options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"remote">> {
 		if (this.failureError) {
 			const error = this.failureError;

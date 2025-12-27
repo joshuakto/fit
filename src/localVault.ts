@@ -311,8 +311,14 @@ export class LocalVault implements IVault<"local"> {
 	private async writeFile(
 		path: string,
 		content: Base64Content,
-		originalContent: FileContent
+		originalContent: FileContent,
+		shaPath?: string
 	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
+		// Use shaPath for SHA computation if provided (for clash files written to _fit/)
+		// Why: Local SHA algorithm is path-dependent: SHA1(path + content)
+		// When we write .hidden to _fit/.hidden, we must compute SHA for .hidden (not _fit/.hidden)
+		// to establish correct baseline. See docs/architecture.md "SHA Algorithms".
+		const pathForSha = shaPath ?? path;
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			const rawContent = originalContent.toRaw();
@@ -346,9 +352,10 @@ export class LocalVault implements IVault<"local"> {
 
 			// Compute SHA from in-memory content if file should be tracked
 			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
+			// For clash files: compute SHA for original path (pathForSha), not _fit/ path
 			let shaPromise: Promise<BlobSha> | null = null;
-			if (this.shouldTrackState(path)) {
-				shaPromise = LocalVault.fileSha1(path, originalContent);
+			if (this.shouldTrackState(pathForSha)) {
+				shaPromise = LocalVault.fileSha1(pathForSha, originalContent);
 			}
 
 			return { change, shaPromise };
@@ -387,11 +394,16 @@ export class LocalVault implements IVault<"local"> {
 	/**
 	 * Apply a batch of changes (writes and deletes)
 	 * Expects all content to be Base64Content (from GitHub API)
+	 *
+	 * @param options.clashPaths - Set of paths that should be written as clash files.
+	 *   Writes to `_fit/{path}` but computes SHA for original `{path}`.
 	 */
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
-		filesToDelete: Array<string>
+		filesToDelete: Array<string>,
+		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
+		const clashPaths = options?.clashPaths ?? new Set();
 		// Diagnostic logging: detect suspicious filename correspondences (Issue #51)
 		// Check if any files being created have non-ASCII chars and match existing local files
 		// Note: vault.getFiles() may be unavailable in test mocks
@@ -439,7 +451,12 @@ export class LocalVault implements IVault<"local"> {
 		// Monitor for slow file write operations
 		const writeSettledResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				filesToWrite.map(async ({path, content}) => this.writeFile(path, content.toBase64(), content))
+				filesToWrite.map(async ({path, content}) => {
+					// If path is in clashPaths, write to _fit/ subdirectory
+					const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
+					// Always compute SHA for original path (not _fit/ path)
+					return this.writeFile(writePath, content.toBase64(), content, path);
+				})
 			),
 			`Local vault file writes (${filesToWrite.length} files)`,
 			{ warnAfterMs: 10000 }
