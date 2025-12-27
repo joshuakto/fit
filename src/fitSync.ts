@@ -356,7 +356,7 @@ export class FitSync implements IFitSync {
 		// Phase 2b (part 2): Resolve untracked state from filesystem checks
 		const localChangePaths = new Set(localChanges.map(c => c.path));
 		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
-		const { untrackedLocalChanges, blockedPaths } = resolveUntrackedState(
+		const blockedPaths = resolveUntrackedState(
 			remoteChanges,
 			localChangePaths,
 			filesystemState,
@@ -365,13 +365,10 @@ export class FitSync implements IFitSync {
 			isProtectedPath
 		);
 
-		// Combine tracked and untracked local changes
-		const completeLocalChanges = [...localChanges, ...untrackedLocalChanges];
-
 		// Phase 2c: Simple clash detection
 		const shouldBlockRemote = (path: string) => blockedPaths.has(path);
 		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
-			completeLocalChanges,
+			localChanges,
 			remoteChanges,
 			shouldBlockRemote
 		);

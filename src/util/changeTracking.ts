@@ -95,7 +95,7 @@ export function determineChecksNeeded(
  * @param baselineShas - Baseline SHA cache for detecting unchanged files (#169)
  * @param currentShas - Current SHAs for files that exist locally
  * @param isProtectedPath - Function to check if path is protected
- * @returns Untracked local changes and paths that block remote
+ * @returns Set of paths that should block remote changes
  */
 export function resolveUntrackedState(
 	remoteChanges: FileChange[],
@@ -104,11 +104,7 @@ export function resolveUntrackedState(
 	baselineShas: FileStates,
 	currentShas: Map<string, BlobSha>,
 	isProtectedPath: (path: string) => boolean
-): {
-	untrackedLocalChanges: FileChange[];
-	blockedPaths: Set<string>;
-} {
-	const untrackedLocalChanges: FileChange[] = [];
+): Set<string> {
 	const blockedPaths = new Set<string>();
 
 	for (const remoteChange of remoteChanges) {
@@ -152,20 +148,11 @@ export function resolveUntrackedState(
 			continue;
 		}
 
-		// Either no baseline OR file changed - this is an actual local MODIFIED
-		if (!baselineSha || !currentSha) {
-			// No baseline or couldn't read - block conservatively
-			blockedPaths.add(remoteChange.path);
-		} else {
-			// Has baseline and current SHA differs - real local change
-			untrackedLocalChanges.push({
-				path: remoteChange.path,
-				type: 'MODIFIED'
-			});
-		}
+		// Either no baseline OR file changed from baseline - block to prevent data loss
+		blockedPaths.add(remoteChange.path);
 	}
 
-	return { untrackedLocalChanges, blockedPaths };
+	return blockedPaths;
 }
 
 /**

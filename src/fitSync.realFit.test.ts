@@ -992,7 +992,7 @@ describe('FitSync', () => {
 				'[FitSync] Couldn\'t check if some paths exist locally - conservatively treating as clash',
 				{
 					error: statError,
-					deletionsSkipped: ['.editorconfig']
+					deletionsSkipped: ['.editorconfig'] // Untracked files with baselines are protected from deletion
 				}
 			);
 		});
