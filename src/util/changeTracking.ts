@@ -143,7 +143,7 @@ export function resolveUntrackedState(
 		const baselineSha = baselineShas[remoteChange.path];
 		const currentSha = currentShas.get(remoteChange.path);
 
-		if (baselineSha && currentSha && currentSha === baselineSha) {
+		if (baselineSha !== undefined && currentSha !== undefined && currentSha === baselineSha) {
 			// Unchanged from baseline - clear for remote (no action needed)
 			continue;
 		}
