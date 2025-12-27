@@ -557,11 +557,15 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Apply a batch of changes to remote (creates commit and pushes)
 	 * This is the primary write operation - creates a single commit with all changes
 	 * Accepts PlainTextContent for text files or Base64Content for binary files
+	 *
+	 * @param options.clashPaths - Ignored by RemoteVault (no _fit/ concept on remote)
 	 */
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
-		filesToDelete: Array<string>
+		filesToDelete: Array<string>,
+		_options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"remote">> {
+		// Note: clashPaths is ignored - remote doesn't have _fit/ directory concept
 		// Get current state using cache when available
 		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
