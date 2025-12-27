@@ -50,6 +50,41 @@ A "vault" represents a complete collection of synced files, whether stored local
   - Creates commits via `applyChanges()` (creates blobs, builds trees, creates commits, updates refs)
   - Handles empty repository case
 
+### SHA Algorithms and Change Detection
+
+**CRITICAL: Local and Remote SHAs are INCOMPATIBLE**
+
+FIT uses different SHA algorithms for local and remote file tracking:
+
+- **Local SHA** (`LocalVault.fileSha1`): `SHA1(normalizedPath + content)`
+  - Used for detecting local changes between syncs
+  - Stored in `localSha` cache (part of LocalStores in data.json)
+  - Custom algorithm designed for consistent cross-platform hashing
+  - Does NOT match Git's blob SHA format
+
+- **Remote SHA** (from GitHub API): Git blob SHA format `SHA1("blob " + size + "\0" + content)`
+  - Used for detecting remote changes between syncs
+  - Stored in `lastFetchedRemoteSha` cache (part of LocalStores in data.json)
+  - Standard Git blob object format
+  - Computed by GitHub when files are committed
+
+**Why different algorithms?**
+- Local SHA predates understanding of Git blob format
+- Changing local SHA algorithm would invalidate all existing caches
+- Local SHA includes path in hash (helps with Unicode normalization tracking, issue #51)
+- Both algorithms serve the same purpose: detect when file content changed
+
+**Important consequences:**
+- ❌ **NEVER compare local SHA directly with remote SHA** - they will never match even for identical files
+- ❌ **NEVER copy remote SHA into localSha** - will break change detection
+- ✅ When recording baseline for remote content, always compute using `LocalVault.fileSha1()`
+- ✅ Each SHA cache uses its own algorithm consistently
+
+**Code references:**
+- Local SHA: [src/localVault.ts:228 `fileSha1()`](../src/localVault.ts#L228)
+- Algorithm note: [src/util/hashing.ts:22](../src/util/hashing.ts#L22)
+- Baseline recording: [src/fitSync.ts:538-547](../src/fitSync.ts#L538)
+
 ### Sync Engine (fitSync.ts, fit.ts)
 **Purpose**: Core synchronization logic
 - **Fit**: Coordinator between vaults with clean abstractions

@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash, FileStates, determineChecksNeeded, determineBlockedPaths, resolveAllChanges } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, determineChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
@@ -7,7 +7,8 @@ import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
-import { CommitSha } from "./util/hashing";
+import { BlobSha, CommitSha } from "./util/hashing";
+import { LocalVault } from "./localVault";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -126,7 +127,7 @@ export class FitSync implements IFitSync {
 	 */
 	private prepareConflictFile(path: string, content: Base64Content): { path: string, content: FileContent } {
 		return {
-			path: `_fit/${path}`,
+			path: path, // Original path - applyChanges will write to _fit/ if in clashPaths
 			content: FileContent.fromBase64(content)
 		};
 	}
@@ -146,6 +147,8 @@ export class FitSync implements IFitSync {
 		syncNotice.setMessage("Writing remote changes to local");
 
 		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
+		const pathsToWriteToFit = new Set<string>(); // Track which paths should go to _fit/
+
 		for (const change of addToLocalNonClashed) {
 			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
 			// These paths should never be written directly to the vault to avoid:
@@ -157,10 +160,8 @@ export class FitSync implements IFitSync {
 					path: change.path,
 					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
 				});
-				resolvedChanges.push({
-					path: `_fit/${change.path}`,
-					content: change.content
-				});
+				resolvedChanges.push(change); // Keep original path
+				pathsToWriteToFit.add(change.path); // Mark for _fit/ write
 				continue; // Don't write to protected path
 			}
 
@@ -178,17 +179,13 @@ export class FitSync implements IFitSync {
 				if (stat === undefined) {
 					// Could not verify file existence - be conservative and save to _fit/
 					// Note: This shouldn't happen if Phase 2 checked all needed paths
-					resolvedChanges.push({
-						path: `_fit/${change.path}`,
-						content: change.content
-					});
+					resolvedChanges.push(change); // Keep original path
+					pathsToWriteToFit.add(change.path); // Mark for _fit/ write
 					continue; // Don't risk overwriting if file might exist
 				} else if (stat === 'file' || stat === 'folder') {
 					// File exists - save to _fit/ for safety (tracking state inconsistency)
-					resolvedChanges.push({
-						path: `_fit/${change.path}`,
-						content: change.content
-					});
+					resolvedChanges.push(change); // Keep original path
+					pathsToWriteToFit.add(change.path); // Mark for _fit/ write
 					continue; // Don't risk overwriting local version
 				}
 				// File doesn't exist locally (stat === 'nonexistent') - safe to write directly
@@ -234,8 +231,8 @@ export class FitSync implements IFitSync {
 		const addToLocal = resolvedChanges;
 		const deleteFromLocal = safeDeleteFromLocal;
 
-		// Apply changes (filtered to save conflicts to _fit/)
-		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: new Set() });
+		// Apply changes with clashPaths to write protected/unsafe paths to _fit/
+		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths: pathsToWriteToFit });
 
 		// Show user warning if encoding issues detected
 		if (result.userWarning) {
@@ -323,20 +320,46 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Phase 2b (part 2): Determine which paths should block remote changes
+		// Phase 2b (continued): Batch SHA reads for untracked files with baselines (#169)
+		// For files that exist locally AND have a baseline SHA, read and compute current SHA
+		// This allows baseline comparison to prevent unnecessary clashes
+		const pathsNeedingShaCheck = Array.from(pathsToStat).filter(path =>
+			filesystemState.get(path) === true &&
+			this.fit.localSha[path] !== undefined
+		);
+
+		const currentShas = new Map<string, BlobSha>();
+		for (const path of pathsNeedingShaCheck) {
+			try {
+				const content = await this.fit.localVault.readFileContent(path);
+				const sha = await LocalVault.fileSha1(path, content);
+				currentShas.set(path, sha);
+			} catch (error) {
+				// If we can't read the file for SHA computation, skip it
+				// The file will be treated as changed (conservative behavior)
+				fitLogger.log(`⚠️ [FitSync] Could not read file for SHA check: ${path}`, error);
+			}
+		}
+
+		// Phase 2b (part 2): Resolve untracked state from filesystem checks
 		const localChangePaths = new Set(localChanges.map(c => c.path));
 		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
-		const blockedPaths = determineBlockedPaths(
+		const { untrackedLocalChanges, blockedPaths } = resolveUntrackedState(
 			remoteChanges,
 			localChangePaths,
 			filesystemState,
+			this.fit.localSha,
+			currentShas,
 			isProtectedPath
 		);
+
+		// Combine tracked and untracked local changes
+		const completeLocalChanges = [...localChanges, ...untrackedLocalChanges];
 
 		// Phase 2c: Simple clash detection
 		const shouldBlockRemote = (path: string) => blockedPaths.has(path);
 		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
-			localChanges,
+			completeLocalChanges,
 			remoteChanges,
 			shouldBlockRemote
 		);
@@ -411,23 +434,34 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 3: Resolve clashes (write to _fit/)
-		const clashFiles = await Promise.all(
+		// Also compute local SHAs for clashed remote content to establish baseline (#169)
+		const clashFilesAndShas = await Promise.all(
 			clashes
 				.filter(c => c.remoteOp !== 'REMOVED') // Skip deletions
 				.map(async (clash) => {
 					const content = await this.fit.remoteVault.readFileContent(clash.path);
-					return this.prepareConflictFile(clash.path, content.toBase64());
+					const conflictFile = this.prepareConflictFile(clash.path, content.toBase64());
+					// Compute local SHA for original path + remote content
+					// This establishes baseline so future syncs can detect if user accepted remote version
+					const localSha = await LocalVault.fileSha1(clash.path, content);
+					return { conflictFile, originalPath: clash.path, localSha };
 				})
+		);
+
+		const clashFiles = clashFilesAndShas.map(x => x.conflictFile);
+		const clashBaselines = new Map(
+			clashFilesAndShas.map(x => [x.originalPath, x.localSha])
 		);
 
 		let clashOps: FileChange[] = [];
 		if (clashFiles.length > 0) {
 			syncNotice.setMessage('Change conflicts detected');
-			const result = await this.fit.localVault.applyChanges(clashFiles, [], { clashPaths: new Set() });
+			// Pass clashPaths so applyChanges writes to _fit/ but computes SHA for original path
+			const clashPaths = new Set(clashBaselines.keys());
+			const result = await this.fit.localVault.applyChanges(clashFiles, [], { clashPaths });
 			clashOps = result.changes;
-			// NOTE: result.writtenStates contains SHAs for _fit/ paths, which we intentionally
-			// discard because _fit/ files are excluded from localSha cache (see filterSyncedState).
-			// Future enhancement: Could record baseline SHAs for original paths here (#169).
+			// NOTE: result.writtenStates contains SHAs for ORIGINAL paths (not _fit/ paths)
+			// These SHAs establish baselines that allow future syncs to detect user acceptance
 		}
 
 		if (clashes.length > 0) {
@@ -499,6 +533,20 @@ export class FitSync implements IFitSync {
 		// Remove deleted files from state
 		for (const path of deleteFromLocalNonClashed) {
 			delete newLocalState[path];
+		}
+
+		// Record local SHAs of remote content as baseline for clashed files (#169)
+		// Even though clashed files are written to _fit/, we store the local SHA of the
+		// remote content as the baseline for the original path. This enables future syncs
+		// to detect if the user accepted the _fit/ version (local matches baseline → safe
+		// to update) or kept their own version (local differs from baseline → clash again).
+		// NOTE: We must use local SHA algorithm (path + content), NOT remote SHA, since
+		// they use different algorithms and cannot be compared. See docs/architecture.md.
+		// TODO: Consider applying same logic to TRACKED files that clash. Currently tracked
+		// files self-heal on next sync after user accepts _fit/ (baseline updated from local
+		// scan), but may cause spurious clashes if remote changes again before that next sync.
+		for (const [path, localSha] of clashBaselines) {
+			newLocalState[path] = localSha;
 		}
 
 		if (Object.keys(writtenFileShas).length > 0) {

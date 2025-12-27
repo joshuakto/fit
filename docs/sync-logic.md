@@ -87,6 +87,34 @@ sequenceDiagram
 
 See [SHA Computation Strategy](#sha-computation-strategy) below for detailed rationale.
 
+### Baseline Recording for Untracked Files (#169)
+
+**Problem:** Hidden files (starting with `.`) are not tracked by LocalVault but can be changed remotely. Without baselines, they clash on every sync even when unchanged.
+
+**Solution:** Record local SHAs for ALL files directly written from remote, including untracked ones:
+
+1. **When remote file is written directly** (doesn't exist locally):
+   - LocalVault computes SHA during write (standard behavior)
+   - SHA gets recorded in `localSha` cache
+   - Future syncs can compare current vs baseline
+
+2. **When remote file clashes and goes to `_fit/`**:
+   - Compute local SHA of remote content using `LocalVault.fileSha1(path, content)`
+   - Store in `localSha` as if file was written directly
+   - If user accepts `_fit/` version later, next sync detects local matches baseline → updates directly
+   - If user keeps local version, next sync detects mismatch → clashes again
+
+**CRITICAL:** Must use local SHA algorithm (`SHA1(normalizedPath + content)`), NOT remote SHA from GitHub API. They use different algorithms and cannot be compared. See [docs/architecture.md](./architecture.md) "SHA Algorithms and Change Detection".
+
+**Implementation:**
+- Clash baseline recording: [src/fitSync.ts:440-458](../src/fitSync.ts#L440-L458) (compute SHAs in parallel with reading remote content)
+- State update: [src/fitSync.ts:538-547](../src/fitSync.ts#L538-L547) (merge clash baselines into newLocalState)
+- Local SHA algorithm: [src/localVault.ts:235](../src/localVault.ts#L235) (`fileSha1()`)
+
+**Test coverage:**
+- Direct write scenario: [src/fitSync.realFit.test.ts:572](../src/fitSync.realFit.test.ts#L572) (remote adds → direct write → remote updates → direct update)
+- Clash acceptance scenario: [src/fitSync.realFit.test.ts:537](../src/fitSync.realFit.test.ts#L537) (clash → user accepts → remote updates → direct update)
+
 ### Why SHA Comparison?
 
 **Problem with timestamps:**

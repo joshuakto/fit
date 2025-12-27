@@ -134,7 +134,23 @@ export class Fit {
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
-		const changes = compareFileStates(currentState, this.localSha);
+		// Filter both states to only trackable files for comparison (#169)
+		// This prevents hidden files (stored for baseline checking) from appearing as spurious changes
+		// Filter cached state to exclude hidden files
+		const trackableLocalSha: FileStates = {};
+		for (const [path, sha] of Object.entries(this.localSha)) {
+			if (this.localVault.shouldTrackState(path)) {
+				trackableLocalSha[path] = sha;
+			}
+		}
+		// Filter current state to exclude hidden files (defensive against bugs)
+		const trackableCurrentState: FileStates = {};
+		for (const [path, sha] of Object.entries(currentState)) {
+			if (this.localVault.shouldTrackState(path)) {
+				trackableCurrentState[path] = sha;
+			}
+		}
+		const changes = compareFileStates(trackableCurrentState, trackableLocalSha);
 		return { changes, state: currentState };
 	}
 

@@ -599,13 +599,13 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	/**
 	 * Compute SHAs for files that were just written.
-	 * Only tracks files that shouldTrackState (will appear in future scans).
+	 * Computes for ALL files (including hidden) to support clash detection (#169).
+	 * Filtering happens at save time via filterSyncedState().
 	 */
 	private async computeWrittenFileShas(
 		filesToWrite: Array<{path: string, content: FileContent}>
 	): Promise<FileStates> {
 		const shaPromises = filesToWrite
-			.filter(({path}) => this.shouldTrackState(path))
 			.map(async ({path, content}) => {
 				const sha = await LocalVault.fileSha1(path, content);
 				return [path, sha] as const;
