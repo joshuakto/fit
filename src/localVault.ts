@@ -397,7 +397,7 @@ export class LocalVault implements IVault<"local"> {
 	 *
 	 * @param options.clashPaths - Set of paths that should be written as clash files to `_fit/{path}`.
 	 *   For tracked files: computes SHA for original path (enables baseline tracking).
-	 *   For untracked files: no SHA computed (limitation to be fixed in #169 next phase).
+	 *   For untracked files: SHA computed for original path (enables baseline tracking).
 	 *   Returned newBaselineStates uses original path as key, not write path.
 	 */
 	async applyChanges(

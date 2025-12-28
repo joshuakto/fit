@@ -81,30 +81,34 @@ export function determineChecksNeeded(
 }
 
 /**
- * Phase 2b (part 2): Determine which paths should block remote changes
+ * Phase 2b (part 2): Resolve untracked state from filesystem checks
  *
- * Examines remote changes for paths not in tracked local changes to determine
- * which should be blocked (stat failed, protected, or file exists locally).
+ * Examines remote changes for paths not in tracked local changes to determine:
+ * 1. Which paths represent actual local MODIFIED changes (untracked files that changed)
+ * 2. Which paths should block remote changes (protected, stat failed, or can't verify)
  *
- * This is a simplified version without SHA baseline checking - it blocks all
- * untracked files that exist locally, without checking if they're unchanged.
+ * This separates state discovery from clash detection, making Phase 2c simpler.
  *
  * @param remoteChanges - Changes detected in remote vault
  * @param localChangePaths - Set of paths from tracked local changes
  * @param filesystemState - Map of path -> exists (true/false) or null if stat failed
+ * @param baselineShas - Baseline SHA cache for detecting unchanged files (#169)
+ * @param currentShas - Current SHAs for files that exist locally
  * @param isProtectedPath - Function to check if path is protected
  * @returns Set of paths that should block remote changes
  */
-export function determineBlockedPaths(
+export function resolveUntrackedState(
 	remoteChanges: FileChange[],
 	localChangePaths: Set<string>,
 	filesystemState: Map<string, boolean | null>,
+	baselineShas: FileStates,
+	currentShas: Map<string, BlobSha>,
 	isProtectedPath: (path: string) => boolean
 ): Set<string> {
 	const blockedPaths = new Set<string>();
 
 	for (const remoteChange of remoteChanges) {
-		// Skip paths already in tracked local changes (will be handled as clashes)
+		// Skip paths already in tracked local changes (will be handled as clashes in Phase 2c)
 		if (localChangePaths.has(remoteChange.path)) {
 			continue;
 		}
@@ -117,10 +121,35 @@ export function determineBlockedPaths(
 			continue;
 		}
 
-		// Block if: stat failed, protected path, or file exists locally
-		if (existsLocally === null || isProtectedPath(remoteChange.path) || existsLocally === true) {
+		// Case 1: Stat failed - can't verify, block conservatively
+		if (existsLocally === null) {
 			blockedPaths.add(remoteChange.path);
+			continue;
 		}
+
+		// Case 2: Protected path - policy block
+		if (isProtectedPath(remoteChange.path)) {
+			blockedPaths.add(remoteChange.path);
+			continue;
+		}
+
+		// Case 3: File doesn't exist locally - clear for remote (no action needed)
+		if (existsLocally === false) {
+			continue;
+		}
+
+		// Case 4: File exists locally but wasn't in scan (untracked)
+		// Check if it's unchanged from baseline (#169)
+		const baselineSha = baselineShas[remoteChange.path];
+		const currentSha = currentShas.get(remoteChange.path);
+
+		if (baselineSha !== undefined && currentSha !== undefined && currentSha === baselineSha) {
+			// Unchanged from baseline - clear for remote (no action needed)
+			continue;
+		}
+
+		// Either no baseline OR file changed from baseline - block to prevent data loss
+		blockedPaths.add(remoteChange.path);
 	}
 
 	return blockedPaths;
@@ -129,12 +158,12 @@ export function determineBlockedPaths(
 /**
  * Phase 2c: Resolve all changes to final safe/clash outcomes
  *
- * Simple clash detection between local and remote changes, with additional
- * blocking for paths that can't be verified.
+ * Simple clash detection between complete local changes (tracked + untracked)
+ * and remote changes, with additional blocking for paths that can't be verified.
  *
- * @param localChanges - Changes detected in local vault
+ * @param localChanges - All local changes (tracked + untracked from resolveUntrackedState)
  * @param remoteChanges - Changes detected in remote vault
- * @param shouldBlockRemote - Predicate for paths that block remote changes
+ * @param shouldBlockRemote - Predicate for paths that block remote (from resolveUntrackedState)
  * @returns Final categorization into safe changes and clashes
  */
 export function resolveAllChanges(
@@ -177,7 +206,7 @@ export function resolveAllChanges(
 		}
 
 		if (shouldBlockRemote(remoteChange.path)) {
-			// Blocked (stat failed, protected, or exists locally) - treat as clash
+			// Blocked (stat failed, protected, or can't verify) - treat as clash
 			clashes.push({
 				path: remoteChange.path,
 				localState: 'untracked',

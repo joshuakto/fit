@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash, FileStates, determineChecksNeeded, determineBlockedPaths, resolveAllChanges } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, determineChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
@@ -7,7 +7,8 @@ import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
-import { CommitSha } from "./util/hashing";
+import { BlobSha, CommitSha } from "./util/hashing";
+import { LocalVault } from "./localVault";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -331,13 +332,36 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Phase 2b (part 2): Determine which paths should block remote changes
+		// Phase 2b (continued): Batch SHA reads for untracked files with baselines (#169)
+		// For files that exist locally AND have a baseline SHA, read and compute current SHA
+		// This allows baseline comparison to prevent unnecessary clashes
+		const pathsNeedingShaCheck = Array.from(pathsToStat).filter(path =>
+			filesystemState.get(path) === true &&
+			this.fit.localSha[path] !== undefined
+		);
+
+		const currentShas = new Map<string, BlobSha>();
+		for (const path of pathsNeedingShaCheck) {
+			try {
+				const content = await this.fit.localVault.readFileContent(path);
+				const sha = await LocalVault.fileSha1(path, content);
+				currentShas.set(path, sha);
+			} catch (error) {
+				// If we can't read the file for SHA computation, skip it
+				// The file will be treated as changed (conservative behavior)
+				fitLogger.log(`⚠️ [FitSync] Could not read file for SHA check: ${path}`, error);
+			}
+		}
+
+		// Phase 2b (part 2): Resolve untracked state from filesystem checks
 		const localChangePaths = new Set(localChanges.map(c => c.path));
 		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
-		const blockedPaths = determineBlockedPaths(
+		const blockedPaths = resolveUntrackedState(
 			remoteChanges,
 			localChangePaths,
 			filesystemState,
+			this.fit.localSha,
+			currentShas,
 			isProtectedPath
 		);
 
