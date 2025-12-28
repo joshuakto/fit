@@ -330,7 +330,7 @@ describe('LocalVault', () => {
 			}));
 
 			// Verify SHA computation promise
-			expect(await results.writtenStates).toEqual({
+			expect(await results.newBaselineStates).toEqual({
 				'new.md': expect.any(String),
 				'existing.md': expect.any(String),
 				// Note no 'delete.md' (Deleted files should not have SHAs)
@@ -342,7 +342,7 @@ describe('LocalVault', () => {
 			const results = await localVault.applyChanges([], []);
 
 			expect(results.changes).toEqual([]);
-			expect(await results.writtenStates).toEqual({});
+			expect(await results.newBaselineStates).toEqual({});
 		});
 
 		it('should process writes and deletes in parallel', async () => {

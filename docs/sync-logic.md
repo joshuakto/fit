@@ -1099,8 +1099,11 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 
 **Example sync with 5 local files, cache hit (fast ~500ms):**
 ```
-[2025-01-19T04:36:49.120Z] .. 📦 [Fit/Cache] Loaded SHA caches from storage: {
-  "localShaCount": 4, "remoteShaCount": 5, "lastCommit": "23be92a..."
+[2025-01-19T04:36:49.120Z] .. 📦 [Cache] Loaded SHA caches from storage: {
+  "source": "plugin data.json",
+  "localShaCount": 5,
+  "remoteShaCount": 5,
+  "lastCommit": "23be92a..."
 }
 [2025-01-19T04:36:49.542Z] 🔄 [Sync] Checking local and remote changes (parallel)...
 [2025-01-19T04:36:49.543Z] .. 💾 [LocalVault] Scanning files...
@@ -1111,8 +1114,17 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 [2025-01-19T04:36:50.020Z] 🔄 [FitSync] Syncing changes (1 local, 0 remote): {
   "local": { "MODIFIED": ["note.md"] }
 }
+[2025-01-19T04:36:50.021Z] [FitSync] Conflict detection complete: {
+  "safeLocal": 1, "safeRemote": 0, "clashes": 0
+}
 [2025-01-19T04:36:50.597Z] .. ⬆️ [Push] Pushed 1 changes to remote
-[2025-01-19T04:36:50.598Z] .. 📦 [Cache] Updating SHA cache after sync
+[2025-01-19T04:36:50.598Z] .. 📦 [Cache] Updating SHA cache after sync: {
+  "localChanges": 1,
+  "remoteChanges": 1,
+  "commitChanged": true,
+  "localOpsApplied": 0,
+  "remoteOpsPushed": 1
+}
 ```
 
 **Performance insights from timestamps:**
@@ -1124,19 +1136,33 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 
 **Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
 ```
+[timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
+[timestamp] .. 💾 [LocalVault] Scanning files...
 [timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
+[timestamp] ... 💾 [LocalVault] Scanned 0 files
 [timestamp] ... ⬇️ [RemoteVault] Fetching initial state from GitHub (a1b2c3d)...
 [timestamp] ... ☁️ [RemoteVault] Fetched 195 files
+[timestamp] .. ✅ [Sync] Change detection complete
 [timestamp] 🔄 [FitSync] Syncing changes (0 local, 195 remote): { ... }
-[timestamp] .. ⬇️ [Pull] Pulled 195 remote changes to local
+[timestamp] [FitSync] Conflict detection complete: {
+  "safeLocal": 0, "safeRemote": 195, "clashes": 0
+}
+[timestamp] .. ⬇️ [Pull] Applied remote changes to local: {
+  "filesWritten": 195, "filesDeleted": 0, "clashesWrittenToFit": 0
+}
+[timestamp] .. 📦 [Cache] Updating SHA cache after sync: { ... }
 ```
 
 **Example log trace with conflicts:**
 ```
 🚀 [SYNC START] Manual sync requested
-.. 💾 [LocalVault] Scanned 6 files
+🔄 [Sync] Checking local and remote changes (parallel)...
+.. 💾 [LocalVault] Scanning files...
 .. ☁️ [RemoteVault] Fetching from GitHub...
+... 💾 [LocalVault] Scanned 6 files
 .... ⬇️ [RemoteVault] New commit detected (b80f023), fetching tree...
+... ☁️ [RemoteVault] Fetched 6 files
+.. ✅ [Sync] Change detection complete
 🔄 [FitSync] Syncing changes (1 local, 2 remote): {
   "local": {
     "MODIFIED": ["file1.md"]
@@ -1145,11 +1171,19 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
     "MODIFIED": ["file1.md", "file2.md"]
   }
 }
+[FitSync] Conflict detection complete: {
+  "safeLocal": 1, "safeRemote": 1, "clashes": 1
+}
 .. ⬆️ [Push] Pushed 1 changes to remote
+.. ⬇️ [Pull] Applied remote changes to local: {
+  "filesWritten": 1, "filesDeleted": 0, "clashesWrittenToFit": 1
+}
 .. 📦 [Cache] Updating SHA cache after sync: {
   "localChanges": 2,
-  "remoteChanges": 0,
-  "commitChanged": true
+  "remoteChanges": 2,
+  "commitChanged": true,
+  "localOpsApplied": 2,
+  "remoteOpsPushed": 1
 }
 ✅ [SYNC COMPLETE] Success with conflicts: {
   "duration": "2.34s",

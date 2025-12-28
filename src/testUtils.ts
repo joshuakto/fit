@@ -589,30 +589,43 @@ export class FakeLocalVault implements IVault<"local"> {
 
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans
-		const writtenStates = this.computeWrittenFileShas(filesToWrite);
+		const newBaselineStates = this.computeWrittenFileShas(filesToWrite, clashPaths);
 
 		return {
 			changes,
-			writtenStates
+			newBaselineStates
 		};
 	}
 
 	/**
 	 * Compute SHAs for files that were just written.
-	 * Only tracks files that shouldTrackState (will appear in future scans).
+	 * Mirrors LocalVault behavior: computes for direct writes + untracked clashes to enable baseline tracking (#169).
+	 * Tracked clash files self-heal via local scan, so SHAs are not computed for them.
+	 * Uses pathForSha to compute SHA for original path when file written as clash.
 	 */
 	private async computeWrittenFileShas(
-		filesToWrite: Array<{path: string, content: FileContent}>
+		filesToWrite: Array<{path: string, content: FileContent}>,
+		clashPaths: Set<string>
 	): Promise<FileStates> {
 		const shaPromises = filesToWrite
-			.filter(({path}) => this.shouldTrackState(path))
 			.map(async ({path, content}) => {
-				const sha = await LocalVault.fileSha1(path, content);
-				return [path, sha] as const;
+				const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
+				const shaPath = clashPaths.has(path) ? path : undefined;
+				const pathForSha = shaPath ?? writePath;
+
+				// Only compute SHA for:
+				// 1. Direct writes (shaPath === undefined), OR
+				// 2. Untracked clash files (shaPath defined AND !shouldTrackState)
+				// Tracked clash files self-heal via local scan, so skip SHA computation
+				if (shaPath === undefined || !this.shouldTrackState(pathForSha)) {
+					const sha = await LocalVault.fileSha1(pathForSha, content);
+					return [path, sha] as const;
+				}
+				return null;
 			});
 
 		const results = await Promise.all(shaPromises);
-		return Object.fromEntries(results);
+		return Object.fromEntries(results.filter((r): r is [string, BlobSha] => r !== null));
 	}
 
 	shouldTrackState(path: string): boolean {

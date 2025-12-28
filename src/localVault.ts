@@ -303,10 +303,11 @@ export class LocalVault implements IVault<"local"> {
 	 * - Plaintext files: vault.create() / vault.modify()
 	 * - Binary files: vault.createBinary() / vault.modifyBinary()
 	 *
-	 * @param path - File path
+	 * @param path - File path (where to write the file)
 	 * @param content - File content (always Base64Content - GitHub API returns all blobs as base64)
 	 * @param originalContent - The FileContent object we're writing (for SHA computation and encoding detection)
-	 * @returns Record of file operation performed and SHA promise (if trackable)
+	 * @param shaPath - Optional path to use for SHA computation (if different from write path, for clash files)
+	 * @returns Record of file operation performed and SHA promise (always computed for baseline tracking)
 	 */
 	private async writeFile(
 		path: string,
@@ -314,11 +315,6 @@ export class LocalVault implements IVault<"local"> {
 		originalContent: FileContent,
 		shaPath?: string
 	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
-		// Use shaPath for SHA computation if provided (for clash files written to _fit/)
-		// Why: Local SHA algorithm is path-dependent: SHA1(path + content)
-		// When we write .hidden to _fit/.hidden, we must compute SHA for .hidden (not _fit/.hidden)
-		// to establish correct baseline. See docs/architecture.md "SHA Algorithms".
-		const pathForSha = shaPath ?? path;
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			const rawContent = originalContent.toRaw();
@@ -350,11 +346,15 @@ export class LocalVault implements IVault<"local"> {
 
 			const change: FileChange = { path, type: file ? "MODIFIED" : "ADDED" };
 
-			// Compute SHA from in-memory content if file should be tracked
+			// Compute SHA from in-memory content for baseline tracking
 			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
-			// For clash files: compute SHA for original path (pathForSha), not _fit/ path
+			// Compute SHA if:
+			// 1. Direct write (shaPath === undefined), OR
+			// 2. Untracked clash file (shaPath defined AND !shouldTrackState)
+			// Tracked clash files self-heal via local scan, so skip SHA computation (#169)
+			const pathForSha = shaPath ?? path;
 			let shaPromise: Promise<BlobSha> | null = null;
-			if (this.shouldTrackState(pathForSha)) {
+			if (shaPath === undefined || !this.shouldTrackState(pathForSha)) {
 				shaPromise = LocalVault.fileSha1(pathForSha, originalContent);
 			}
 
@@ -395,8 +395,10 @@ export class LocalVault implements IVault<"local"> {
 	 * Apply a batch of changes (writes and deletes)
 	 * Expects all content to be Base64Content (from GitHub API)
 	 *
-	 * @param options.clashPaths - Set of paths that should be written as clash files.
-	 *   Writes to `_fit/{path}` but computes SHA for original `{path}`.
+	 * @param options.clashPaths - Set of paths that should be written as clash files to `_fit/{path}`.
+	 *   For tracked files: computes SHA for original path (enables baseline tracking).
+	 *   For untracked files: no SHA computed (limitation to be fixed in #169 next phase).
+	 *   Returned newBaselineStates uses original path as key, not write path.
 	 */
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
@@ -454,8 +456,8 @@ export class LocalVault implements IVault<"local"> {
 				filesToWrite.map(async ({path, content}) => {
 					// If path is in clashPaths, write to _fit/ subdirectory
 					const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
-					// Always compute SHA for original path (not _fit/ path)
-					return this.writeFile(writePath, content.toBase64(), content, path);
+					const shaPath = clashPaths.has(path) ? path : undefined;
+					return this.writeFile(writePath, content.toBase64(), content, shaPath);
 				})
 			),
 			`Local vault file writes (${filesToWrite.length} files)`,
@@ -525,17 +527,22 @@ export class LocalVault implements IVault<"local"> {
 		const changes = [...writeOps, ...deletionOps];
 
 		// Collect SHA promises from write operations (started asynchronously in writeFile)
-		// Map: path -> SHA promise (only for trackable files)
+		// Map: original path -> SHA promise (keyed by original path, not write path for clash files)
+		// Only includes files with SHA computations (direct writes + untracked clashes) (#169)
+		// Tracked clash files are excluded (null shaPromise) as they self-heal via local scan
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
-		for (const result of writeResults) {
+		for (let i = 0; i < writeResults.length; i++) {
+			const result = writeResults[i];
 			if (result.shaPromise) {
-				shaPromiseMap[result.change.path] = result.shaPromise;
+				// Key by original path from filesToWrite, not the write path (which may be _fit/...)
+				const originalPath = filesToWrite[i].path;
+				shaPromiseMap[originalPath] = result.shaPromise;
 			}
 		}
 
 		// Return SHA computations as promise for caller to await when ready
 		// This allows SHA computation (CPU-intensive) to run in parallel with other sync operations
-		const writtenStates = Promise.all(
+		const newBaselineStates = Promise.all(
 			Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
 				const sha = await shaPromise;
 				return [path, sha] as const;
@@ -544,7 +551,7 @@ export class LocalVault implements IVault<"local"> {
 
 		return {
 			changes,
-			writtenStates,
+			newBaselineStates,
 			userWarning
 		};
 	}
