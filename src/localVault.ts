@@ -218,11 +218,18 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
-	 * Compute SHA-1 hash of file path + content
-	 * (Matches GitHub's blob SHA format)
+	 * Compute SHA-1 hash of file path + content (LOCAL SHA ALGORITHM)
 	 *
-	 * Path is normalized to NFC before hashing to prevent
-	 * duplication issues with Unicode normalization (issue #51)
+	 * IMPORTANT: This uses a CUSTOM algorithm that does NOT match Git's blob SHA format.
+	 * Local SHAs cannot be compared with remote SHAs from GitHub API.
+	 * See docs/architecture.md "SHA Algorithms and Change Detection" for details.
+	 *
+	 * Algorithm: SHA1(normalizedPath + content)
+	 * - Path is normalized to NFC before hashing to prevent duplication issues
+	 *   with Unicode normalization (issue #51)
+	 * - Path is included in hash (unlike Git blobs which only hash content)
+	 *
+	 * This algorithm is used for all local SHA caching (localSha in data.json).
 	 */
 	// NOTE: Public visibility for tests.
 	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
@@ -344,6 +351,8 @@ export class LocalVault implements IVault<"local"> {
 				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
 			}
 
+			// Return FileChange with the write path (where file was physically written)
+			// Note: For clash files, this will be _fit/ path, but shaPath is the original
 			const change: FileChange = { path, type: file ? "MODIFIED" : "ADDED" };
 
 			// Compute SHA from in-memory content for baseline tracking
@@ -474,7 +483,7 @@ export class LocalVault implements IVault<"local"> {
 		);
 
 		// Collect successful operations and failures
-		const writeResults: Array<{change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
+		const writeResults: Array<{change: FileChange, shaPromise: Promise<BlobSha> | null}> = [];
 		const writeFailures = collectSettledFailures(writeSettledResults, filesToWrite.map(f => f.path));
 
 		for (let i = 0; i < writeSettledResults.length; i++) {
@@ -483,7 +492,7 @@ export class LocalVault implements IVault<"local"> {
 
 			if (result.status === 'fulfilled') {
 				const {change, shaPromise} = result.value;
-				writeResults.push({ change, shaPromise: shaPromise ?? undefined });
+				writeResults.push({ change, shaPromise });
 			} else {
 				const failure = writeFailures.find(f => f.path === path);
 				fitLogger.log(`❌ [LocalVault] Failed to write file: ${path}`, failure?.error);
@@ -533,7 +542,7 @@ export class LocalVault implements IVault<"local"> {
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
 		for (let i = 0; i < writeResults.length; i++) {
 			const result = writeResults[i];
-			if (result.shaPromise) {
+			if (result.shaPromise !== null) {
 				// Key by original path from filesToWrite, not the write path (which may be _fit/...)
 				const originalPath = filesToWrite[i].path;
 				shaPromiseMap[originalPath] = result.shaPromise;
