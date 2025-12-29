@@ -320,45 +320,55 @@ export class LocalVault implements IVault<"local"> {
 			const rawContent = originalContent.toRaw();
 			const isPlaintext = rawContent.encoding === 'plaintext';
 
+			let changeType: 'ADDED' | 'MODIFIED';
+
 			if (file && file instanceof TFile) {
-				// Modify existing file
+				// File is in vault index - use standard modify
 				if (isPlaintext) {
 					await this.vault.modify(file, rawContent.content);
 				} else {
 					await this.vault.modifyBinary(file, contentToArrayBuffer(content));
 				}
-			} else if (!file) {
-				// Create new file
-				await this.ensureFolderExists(path);
-				if (isPlaintext) {
-					await this.vault.create(path, rawContent.content);
-				} else {
-					await this.vault.createBinary(path, contentToArrayBuffer(content));
-				}
-			} else {
-				// File exists but is not a TFile - check if it's a folder
-				if (file instanceof TFolder) {
-					throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
-				}
+				changeType = 'MODIFIED';
+			} else if (file instanceof TFolder) {
+				// Path exists as a folder
+				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+			} else if (file) {
 				// Unknown type - future-proof for new Obsidian abstract file types
 				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
+			} else {
+				// File not in vault index - check if it exists on disk (hidden files)
+				// See docs/api-compatibility.md "Reading Untracked Files"
+				let existsOnDisk = false;
+				try {
+					await this.vault.adapter.stat(path);
+					existsOnDisk = true;
+				} catch {
+					// File doesn't exist - will create
+				}
+
+				if (existsOnDisk) {
+					// File exists but not in index - use adapter to modify
+					const dataToWrite = isPlaintext ? rawContent.content : new TextDecoder().decode(contentToArrayBuffer(content));
+					await this.vault.adapter.write(path, dataToWrite);
+					changeType = 'MODIFIED';
+				} else {
+					// File doesn't exist - create new
+					await this.ensureFolderExists(path);
+					if (isPlaintext) {
+						await this.vault.create(path, rawContent.content);
+					} else {
+						await this.vault.createBinary(path, contentToArrayBuffer(content));
+					}
+					changeType = 'ADDED';
+				}
 			}
 
-			const change: FileChange = { path, type: file ? "MODIFIED" : "ADDED" };
-
-			// Compute SHA from in-memory content for baseline tracking
-			// See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale
-			// Compute SHA if:
-			// 1. Direct write (shaPath === undefined), OR
-			// 2. Untracked clash file (shaPath defined AND !shouldTrackState)
-			// Tracked clash files self-heal via local scan, so skip SHA computation (#169)
-			const pathForSha = shaPath ?? path;
-			let shaPromise: Promise<BlobSha> | null = null;
-			if (shaPath === undefined || !this.shouldTrackState(pathForSha)) {
-				shaPromise = LocalVault.fileSha1(pathForSha, originalContent);
-			}
-
-			return { change, shaPromise };
+			// Compute SHA once at the end for all paths
+			return {
+				change: { path, type: changeType },
+				shaPromise: this.computeShaIfNeeded(shaPath, path, originalContent)
+			};
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
@@ -370,6 +380,26 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
+	 * Compute SHA for a file if needed based on tracking rules.
+	 * See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale.
+	 */
+	private computeShaIfNeeded(
+		shaPath: string | undefined,
+		writePath: string,
+		content: FileContent
+	): Promise<BlobSha> | null {
+		// Compute SHA if:
+		// 1. Direct write (shaPath === undefined), OR
+		// 2. Untracked clash file (shaPath defined AND !shouldTrackState)
+		// Tracked clash files self-heal via local scan, so skip SHA computation (#169)
+		const pathForSha = shaPath ?? writePath;
+		if (shaPath === undefined || !this.shouldTrackState(pathForSha)) {
+			return LocalVault.fileSha1(pathForSha, content);
+		}
+		return null;
+	}
+
+	/**
 	 * Delete a file
 	 * @returns Record of file operation performed
 	 */
@@ -377,10 +407,19 @@ export class LocalVault implements IVault<"local"> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
+				// File is in vault index - use standard deletion
 				await this.vault.delete(file);
 				return {path, type: "REMOVED"};
+			} else if (file instanceof TFolder) {
+				throw new Error(`Cannot delete ${path}: it is a folder, not a file`);
+			} else if (file) {
+				throw new Error(`Cannot delete ${path}: unknown file type (${file.constructor.name})`);
 			}
-			throw new Error(`Attempting to delete ${path} from local but not successful, file is of type ${typeof file}.`);
+
+			// File not in vault index - use adapter to delete (hidden files)
+			// See docs/api-compatibility.md "Reading Untracked Files"
+			await this.vault.adapter.remove(path);
+			return {path, type: "REMOVED"};
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {

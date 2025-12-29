@@ -104,6 +104,44 @@ const hasNullByte = new Uint8Array(arrayBuffer).some(b => b === 0);
 
 **Fix:** [src/util/obsidianHelpers.ts:26-60](../src/util/obsidianHelpers.ts#L26-L60) - Always use `readBinary()` + null byte heuristic
 
+### ⚠️ Reading Untracked Files (Hidden Files)
+
+**Issue:** `vault.getAbstractFileByPath()` only returns files tracked in Obsidian's vault index
+
+Hidden files (starting with `.`) are excluded from `vault.getFiles()` and aren't tracked in the index, so:
+
+```typescript
+// ❌ FAILS for hidden files: Returns null even when file exists
+const file = vault.getAbstractFileByPath('.hidden');
+// file === null, even though .hidden exists on disk
+
+// ✅ WORKS: stat() and adapter.readBinary() can see all filesystem files
+const stat = await vault.adapter.stat('.hidden');  // Returns {type: 'file', ...}
+const content = await vault.adapter.readBinary('.hidden');  // Reads successfully
+```
+
+**When to use adapter APIs:**
+- Reading files that may not be in Obsidian's index (e.g., hidden files for baseline SHA comparison)
+- Checking file existence on filesystem independent of Obsidian's tracking
+
+**Best practice:** Try indexed read first (faster), fall back to adapter:
+
+```typescript
+// Try indexed read first (faster when available)
+const file = vault.getAbstractFileByPath(path);
+if (file && file instanceof TFile) {
+    return readFileContent(vault, path);  // Standard path
+}
+
+// File not in index - use adapter (handles hidden files)
+const arrayBuffer = await vault.adapter.readBinary(path);
+// ... decode as needed
+```
+
+**Example:** [src/localVault.ts:310-340](../src/localVault.ts#L310-L340) - `readFileContentDirect()` implements this pattern
+
+**Related:** Issue #169 - Baseline tracking for untracked files requires reading hidden files for SHA comparison
+
 ## Automated Validation (TODO)
 
 Currently, compatibility issues are caught by:

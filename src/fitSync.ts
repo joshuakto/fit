@@ -343,6 +343,7 @@ export class FitSync implements IFitSync {
 		const currentShas = new Map<string, BlobSha>();
 		for (const path of pathsNeedingShaCheck) {
 			try {
+				// readFileContent now handles both indexed and unindexed files (hidden files)
 				const content = await this.fit.localVault.readFileContent(path);
 				const sha = await LocalVault.fileSha1(path, content);
 				currentShas.set(path, sha);
