@@ -45,6 +45,18 @@ const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
 - **Browser support:** Universal
 - **Note:** Only handles Latin1 strings, use with TextEncoder/TextDecoder for UTF-8
 
+**⚠️ CRITICAL: Avoid spread operator with large Uint8Arrays**
+
+```typescript
+// ❌ STACK OVERFLOW for arrays > ~128KB
+const str = String.fromCharCode(...uint8Array);
+
+// ✅ SAFE: Use Array.from or iterate
+const str = Array.from(uint8Array, byte => String.fromCharCode(byte)).join('');
+```
+
+**Why:** JavaScript engines limit function arguments (~128,000). Spreading large arrays exceeds this limit, causing "Maximum call stack size exceeded" errors. This applies to ANY function call with spread on large arrays, not just `String.fromCharCode()`.
+
 ### ✅ Obsidian API Functions
 
 **Status:** Safe - Cross-platform guaranteed by Obsidian
@@ -103,6 +115,45 @@ const hasNullByte = new Uint8Array(arrayBuffer).some(b => b === 0);
 **Issue:** Issue #156 - `vault.read()` succeeded on JPEG files on iOS, returning corrupted text.
 
 **Fix:** [src/util/obsidianHelpers.ts:26-60](../src/util/obsidianHelpers.ts#L26-L60) - Always use `readBinary()` + null byte heuristic
+
+### ⚠️ Reading Untracked Files (Hidden Files)
+
+**Issue:** `vault.getAbstractFileByPath()` only returns files tracked in Obsidian's vault index
+
+Hidden files (starting with `.`) are excluded from `vault.getFiles()` and aren't tracked in the index, so:
+
+```typescript
+// ❌ FAILS for hidden files: Returns null even when file exists
+const file = vault.getAbstractFileByPath('.hidden');
+// file === null, even though .hidden exists on disk
+
+// ✅ WORKS: stat() and adapter.readBinary() can see all filesystem files
+const stat = await vault.adapter.stat('.hidden');  // Returns {type: 'file', ...}
+const content = await vault.adapter.readBinary('.hidden');  // Reads successfully
+```
+
+**When to use adapter APIs:**
+- Reading files that may not be in Obsidian's index (e.g., hidden files for baseline SHA comparison)
+- Checking file existence on filesystem independent of Obsidian's tracking
+
+**Best practice:** Try indexed read first (faster), fall back to adapter:
+
+```typescript
+// Try indexed read first (faster when available)
+const file = vault.getAbstractFileByPath(path);
+if (file && file instanceof TFile) {
+    return readFileContent(vault, path);  // Standard path
+}
+
+// File not in index - use adapter (handles hidden files)
+// Note: wrap in try-catch to handle file-not-found and I/O errors
+const arrayBuffer = await vault.adapter.readBinary(path);
+// ... decode as needed
+```
+
+**Example:** [src/localVault.ts:310-340](../src/localVault.ts#L310-L340) - `readFileContentDirect()` implements this pattern
+
+**Related:** Issue #169 - Baseline tracking for untracked files requires reading hidden files for SHA comparison
 
 ## Automated Validation (TODO)
 

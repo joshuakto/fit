@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock, MockInstance } from 'vitest';
 import { LocalVault } from './localVault';
 import { TFile, TFolder, Vault } from 'obsidian';
-import { StubTFile } from './testUtils';
+import { FakeObsidianVault, StubTFile } from './testUtils';
 import { FileContent } from './util/contentEncoding';
 import { arrayBufferToContent } from './util/obsidianHelpers';
 import { computeSha1 } from './util/hashing';
@@ -271,11 +271,15 @@ describe('LocalVault', () => {
 
 		it('should throw error if file not found', async () => {
 			mockVault.getAbstractFileByPath.mockReturnValue(null);
+			// Mock adapter to simulate file not found
+			(mockVault as any).adapter = {
+				readBinary: vi.fn().mockRejectedValue(new Error('ENOENT: no such file or directory'))
+			};
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 
 			await expect(localVault.readFileContent('missing.md')).rejects.toThrow(
-				'File not found: missing.md'
+				'Failed to read missing.md: ENOENT: no such file or directory'
 			);
 		});
 
@@ -633,6 +637,96 @@ describe('LocalVault', () => {
 
 			// Should NOT warn (no non-ASCII chars)
 			expect(result.userWarning).toBeUndefined();
+		});
+	});
+
+	describe('Hidden file operations (untracked files)', () => {
+		// These tests verify handling of hidden files (files not in vault index)
+		// vault.getAbstractFileByPath() returns null for hidden files even when they exist
+		// See docs/api-compatibility.md "Reading Untracked Files" for details
+
+		it('should modify existing hidden files (second sync)', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: .gitignore exists on disk from previous sync
+			await fakeVault.adapter.write('.gitignore', '*.log\n');
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			const result = await localVault.applyChanges(
+				[{ path: '.gitignore', content: FileContent.fromPlainText('*.log\n*.tmp\n') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.gitignore', type: 'MODIFIED' }
+			]);
+			// Verify file was actually updated on disk
+			const updated = await fakeVault.adapter.readBinary('.gitignore');
+			expect(new TextDecoder().decode(updated)).toBe('*.log\n*.tmp\n');
+		});
+
+		it('should delete hidden files', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: .gitignore exists on disk
+			await fakeVault.adapter.write('.gitignore', '*.log\n');
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			const result = await localVault.applyChanges(
+				[],
+				['.gitignore']
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.gitignore', type: 'REMOVED' }
+			]);
+			// Verify file was actually deleted from disk
+			await expect(fakeVault.adapter.stat('.gitignore')).rejects.toThrow('ENOENT');
+		});
+
+		it('should create new hidden files (first sync)', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: .editorconfig doesn't exist yet
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			const result = await localVault.applyChanges(
+				[{ path: '.editorconfig', content: FileContent.fromPlainText('[*.ts]\nindent_style = tab\n') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.editorconfig', type: 'ADDED' }
+			]);
+			// Verify file was actually created on disk
+			const created = await fakeVault.adapter.readBinary('.editorconfig');
+			expect(new TextDecoder().decode(created)).toBe('[*.ts]\nindent_style = tab\n');
+			});
+
+		it('should handle binary hidden files without corruption', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: binary hidden file exists (e.g., .DS_Store icon data)
+			const binaryData = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG header
+			await fakeVault.adapter.writeBinary('.image-cache.png', binaryData.buffer);
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			// Update the binary file
+			const newBinaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+			// Convert to base64 without stack overflow (avoid spread operator for large arrays)
+			const binaryString = Array.from(newBinaryData, byte => String.fromCharCode(byte)).join('');
+			const result = await localVault.applyChanges(
+				[{ path: '.image-cache.png', content: FileContent.fromBase64(btoa(binaryString)) }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.image-cache.png', type: 'MODIFIED' }
+			]);
+			// Verify binary data was written correctly without corruption
+			const updated = await fakeVault.adapter.readBinary('.image-cache.png');
+			const updatedBytes = new Uint8Array(updated);
+			expect(Array.from(updatedBytes)).toEqual([0xFF, 0xD8, 0xFF, 0xE0]);
 		});
 	});
 });
