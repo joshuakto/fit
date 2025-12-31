@@ -49,18 +49,18 @@ export type FileClash = {
 /**
  * Phase 2a: Determine what filesystem checks are needed
  *
- * Compares local and remote changes to identify paths that need
- * filesystem verification before we can determine if they're safe or clashed.
+ * Identifies remote changes that need local filesystem verification,
+ * excluding protected paths (which are blocked by policy regardless of local state).
  *
- * @param localChanges - Changes detected in local vault scan
  * @param remoteChanges - Changes detected in remote vault scan
  * @param localScanPaths - Set of paths found in local scan (tracked files)
+ * @param isProtectedPath - Function to check if path is protected by sync policy
  * @returns Paths that need filesystem existence checks
  */
-export function determineChecksNeeded(
-	localChanges: FileChange[],
+export function determineLocalChecksNeeded(
 	remoteChanges: FileChange[],
-	localScanPaths: Set<string>
+	localScanPaths: Set<string>,
+	isProtectedPath: (path: string) => boolean
 ): {
 	needsFilesystemCheck: { path: string; remoteOp: ChangeOperation }[];
 } {
@@ -68,8 +68,9 @@ export function determineChecksNeeded(
 
 	// Remote changes for paths not in local scan need filesystem checks
 	// (we can't tell if they exist locally and would clash)
+	// Skip protected paths - they're blocked by policy regardless of local state
 	for (const change of remoteChanges) {
-		if (!localScanPaths.has(change.path)) {
+		if (!localScanPaths.has(change.path) && !isProtectedPath(change.path)) {
 			needsFilesystemCheck.push({
 				path: change.path,
 				remoteOp: change.type
@@ -117,6 +118,13 @@ export function resolveUntrackedState(
 			continue;
 		}
 
+		// Case 1: Protected path - policy block (checked first, before filesystem state)
+		// Protected paths are never stat'd, so check this before accessing filesystemState
+		if (isProtectedPath(remoteChange.path)) {
+			protectedPaths.add(remoteChange.path);
+			continue;
+		}
+
 		const existsLocally = filesystemState.get(remoteChange.path);
 
 		// If path wasn't stat'd, it means it was in the local scan (tracked file)
@@ -125,15 +133,9 @@ export function resolveUntrackedState(
 			continue;
 		}
 
-		// Case 1: Stat failed - can't verify, block conservatively
+		// Case 2: Stat failed - can't verify, block conservatively
 		if (existsLocally === null) {
 			untrackedPaths.add(remoteChange.path);
-			continue;
-		}
-
-		// Case 2: Protected path - policy block
-		if (isProtectedPath(remoteChange.path)) {
-			protectedPaths.add(remoteChange.path);
 			continue;
 		}
 
