@@ -1689,4 +1689,124 @@ describe('FitSync', () => {
 			fitNoticeSpy.mockRestore();
 		});
 	});
+
+	describe('Fit settings - repoOwner', () => {
+		it('should use repoOwner when set (contributor repo)', () => {
+			const settingsWithRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: 'repo-owner-org'
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should be created with repoOwner, not owner
+			expect(fit.remoteVault.getOwner()).toBe('repo-owner-org');
+		});
+
+		it('should fall back to owner when repoOwner is empty', () => {
+			const settingsWithoutRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithoutRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should use owner as fallback
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
+		it('should update remoteVault when loadSettings is called with new repoOwner', () => {
+			const initialSettings = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: 'initial-owner'
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('initial-owner');
+
+			// Update settings with new repoOwner
+			fit.loadSettings({
+				...initialSettings,
+				repoOwner: 'new-owner'
+			});
+
+			expect(fit.remoteVault.getOwner()).toBe('new-owner');
+		});
+
+		it('should trim whitespace from owner values', () => {
+			const settingsWithWhitespace = {
+				...testSettings,
+				owner: '  authenticated-user  ',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithWhitespace,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should use trimmed owner
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
+		it('should fall back to owner when repoOwner is whitespace-only', () => {
+			const settingsWithWhitespaceRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: '   ' // Whitespace-only
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithWhitespaceRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should trim repoOwner, see it's empty, and use owner as fallback
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
+		it('should not update remoteVault when owner is whitespace-only', () => {
+			const initialSettings = {
+				...testSettings,
+				owner: 'valid-owner',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+
+			// Try to update with whitespace-only owner - should preserve existing remoteVault
+			fit.loadSettings({
+				...initialSettings,
+				owner: '   ',
+				repoOwner: '   '
+			});
+
+			// remoteVault should still have the original owner
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+		});
+	});
 });
