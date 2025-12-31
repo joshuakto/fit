@@ -194,10 +194,9 @@ export default class FitSettingTab extends PluginSettingTab {
 					this.manualRepoNameSetting.settingEl.toggle(value);
 
 					if (!value) {
-						// Switching back to dropdown mode - reset repoOwner to authenticated user
-						this.plugin.settings.repoOwner = this.plugin.settings.owner;
-						await this.plugin.saveSettings();
-						await this.refreshFields('branch(1)');
+						// Switching back to dropdown mode - refresh the list of owned repos and their branches
+						// Don't reset repoOwner here; it will be set when user selects from dropdown
+						await this.refreshFields('repo(0)');
 					}
 				}));
 

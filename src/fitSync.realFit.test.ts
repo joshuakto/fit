@@ -1766,6 +1766,23 @@ describe('FitSync', () => {
 			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
 		});
 
+		it('should fall back to owner when repoOwner is whitespace-only', () => {
+			const settingsWithWhitespaceRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: '   ' // Whitespace-only
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithWhitespaceRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should trim repoOwner, see it's empty, and use owner as fallback
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
 		it('should not update remoteVault when owner is whitespace-only', () => {
 			const initialSettings = {
 				...testSettings,

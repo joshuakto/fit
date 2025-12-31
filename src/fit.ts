@@ -48,7 +48,8 @@ export class Fit {
 		// TODO: Use DI to pass the right impl from FitSync caller.
 		// Use repoOwner for API calls (may differ from authenticated user for contributor repos)
 		// Trim and validate owner to handle empty/whitespace-only strings
-		const rawOwner = (setting.repoOwner || setting.owner || '').trim();
+		// Note: Trim repoOwner BEFORE the || check to handle whitespace-only strings correctly
+		const rawOwner = (setting.repoOwner?.trim() || setting.owner || '').trim();
 		if (!rawOwner) {
 			// Do not instantiate RemoteGitHubVault with an invalid owner, as it will cause all API calls to fail.
 			// This preserves the existing (potentially valid) remoteVault instance.
