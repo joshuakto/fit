@@ -134,6 +134,7 @@ if (file && file instanceof TFile) {
 }
 
 // File not in index - use adapter (handles hidden files)
+// Note: wrap in try-catch to handle file-not-found and I/O errors
 const arrayBuffer = await vault.adapter.readBinary(path);
 // ... decode as needed
 ```

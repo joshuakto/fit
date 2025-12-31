@@ -63,7 +63,7 @@ export class StubTFile extends TFile {
  * This is more realistic than simple mocks and can be used across test files.
  */
 export class FakeObsidianVault {
-	private filesOnDisk = new Map<string, string>(); // path -> content
+	private filesOnDisk = new Map<string, ArrayBuffer>(); // path -> binary content
 	private vaultIndex = new Set<string>(); // Paths in vault index (non-hidden)
 
 	getAbstractFileByPath(path: string) {
@@ -75,16 +75,19 @@ export class FakeObsidianVault {
 	adapter = {
 		stat: async (path: string) => {
 			if (this.filesOnDisk.has(path)) {
-				return { type: 'file', size: this.filesOnDisk.get(path)!.length, ctime: 0, mtime: 0 };
+				return { type: 'file', size: this.filesOnDisk.get(path)!.byteLength, ctime: 0, mtime: 0 };
 			}
 			throw new Error('ENOENT: no such file');
 		},
 		readBinary: async (path: string) => {
 			const content = this.filesOnDisk.get(path);
 			if (!content) throw new Error('ENOENT: no such file');
-			return new TextEncoder().encode(content).buffer;
+			return content;
 		},
 		write: async (path: string, data: string) => {
+			this.filesOnDisk.set(path, new TextEncoder().encode(data).buffer);
+		},
+		writeBinary: async (path: string, data: ArrayBuffer) => {
 			this.filesOnDisk.set(path, data);
 		},
 		remove: async (path: string) => {
@@ -96,27 +99,27 @@ export class FakeObsidianVault {
 	readBinary = async (file: TFile) => {
 		const content = this.filesOnDisk.get(file.path);
 		if (!content) throw new Error('File not found');
-		return new TextEncoder().encode(content).buffer;
+		return content;
 	};
 
 	create = async (path: string, data: string) => {
 		if (this.filesOnDisk.has(path)) throw new Error('File already exists.');
-		this.filesOnDisk.set(path, data);
+		this.filesOnDisk.set(path, new TextEncoder().encode(data).buffer);
 		if (!path.startsWith('.')) this.vaultIndex.add(path);
 	};
 
 	createBinary = async (path: string, data: ArrayBuffer) => {
 		if (this.filesOnDisk.has(path)) throw new Error('File already exists.');
-		this.filesOnDisk.set(path, new TextDecoder().decode(data));
+		this.filesOnDisk.set(path, data);
 		if (!path.startsWith('.')) this.vaultIndex.add(path);
 	};
 
 	modify = async (file: TFile, data: string) => {
-		this.filesOnDisk.set(file.path, data);
+		this.filesOnDisk.set(file.path, new TextEncoder().encode(data).buffer);
 	};
 
 	modifyBinary = async (file: TFile, data: ArrayBuffer) => {
-		this.filesOnDisk.set(file.path, new TextDecoder().decode(data));
+		this.filesOnDisk.set(file.path, data);
 	};
 
 	delete = async (file: TFile) => {

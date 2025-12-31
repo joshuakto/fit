@@ -701,6 +701,30 @@ describe('LocalVault', () => {
 			// Verify file was actually created on disk
 			const created = await fakeVault.adapter.readBinary('.editorconfig');
 			expect(new TextDecoder().decode(created)).toBe('[*.ts]\nindent_style = tab\n');
+			});
+
+		it('should handle binary hidden files without corruption', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: binary hidden file exists (e.g., .DS_Store icon data)
+			const binaryData = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // PNG header
+			await fakeVault.adapter.writeBinary('.image-cache.png', binaryData.buffer);
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			// Update the binary file
+			const newBinaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+			const result = await localVault.applyChanges(
+				[{ path: '.image-cache.png', content: FileContent.fromBase64(btoa(String.fromCharCode(...newBinaryData))) }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.image-cache.png', type: 'MODIFIED' }
+			]);
+			// Verify binary data was written correctly without corruption
+			const updated = await fakeVault.adapter.readBinary('.image-cache.png');
+			const updatedBytes = new Uint8Array(updated);
+			expect(Array.from(updatedBytes)).toEqual([0xFF, 0xD8, 0xFF, 0xE0]);
 		});
 	});
 });

@@ -349,8 +349,11 @@ export class LocalVault implements IVault<"local"> {
 
 				if (existsOnDisk) {
 					// File exists but not in index - use adapter to modify
-					const dataToWrite = isPlaintext ? rawContent.content : new TextDecoder().decode(contentToArrayBuffer(content));
-					await this.vault.adapter.write(path, dataToWrite);
+					if (isPlaintext) {
+						await this.vault.adapter.write(path, rawContent.content);
+					} else {
+						await this.vault.adapter.writeBinary(path, contentToArrayBuffer(content));
+					}
 					changeType = 'MODIFIED';
 				} else {
 					// File doesn't exist - create new
