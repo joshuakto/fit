@@ -21,11 +21,27 @@ type MockVault = Pick<Vault,
 	'getFiles' | 'getAbstractFileByPath' | 'createFolder' |
 	'read' | 'readBinary' | 'cachedRead' |
 	'create' | 'createBinary' | 'modify' | 'modifyBinary' | 'delete'
->;
+> & {
+	adapter: {
+		stat: Mock;
+		mkdir: Mock;
+		write: Mock;
+		writeBinary: Mock;
+		remove: Mock;
+	};
+};
 
 describe('LocalVault', () => {
 	let mockVault: {
-		[K in keyof MockVault]: Mock;
+		[K in keyof Omit<MockVault, 'adapter'>]: Mock;
+	} & {
+		adapter: {
+			stat: Mock;
+			mkdir: Mock;
+			write: Mock;
+			writeBinary: Mock;
+			remove: Mock;
+		};
 	};
 	let consoleLogSpy: MockInstance<typeof console.log>;
 	let consoleErrorSpy: MockInstance<typeof console.error>;
@@ -42,7 +58,14 @@ describe('LocalVault', () => {
 			createBinary: vi.fn(),
 			modify: vi.fn(),
 			modifyBinary: vi.fn(),
-			delete: vi.fn()
+			delete: vi.fn(),
+			adapter: {
+				stat: vi.fn().mockResolvedValue(null), // Default: path doesn't exist
+				mkdir: vi.fn().mockResolvedValue(undefined),
+				write: vi.fn().mockResolvedValue(undefined),
+				writeBinary: vi.fn().mockResolvedValue(undefined),
+				remove: vi.fn().mockResolvedValue(undefined)
+			}
 		};
 
 		// Suppress console noise during tests
@@ -448,6 +471,13 @@ describe('LocalVault', () => {
 				return null;
 			});
 
+			// Mock adapter.stat to return file type for the parent path
+			mockVault.adapter.stat.mockImplementation(async (path) => {
+				if (path === '_fit') return null; // _fit doesn't exist
+				if (path === '_fit/.obsidian') return { type: 'file' }; // exists as file
+				return null;
+			});
+
 			const localVault = new LocalVault(mockVault as any as Vault);
 
 			// Should throw error detecting file at folder path
@@ -473,6 +503,13 @@ describe('LocalVault', () => {
 				return null;
 			});
 
+			// Mock adapter.stat to return folder type for parent paths
+			mockVault.adapter.stat.mockImplementation(async (path) => {
+				if (path === '_fit') return { type: 'folder' };
+				if (path === '_fit/.obsidian') return { type: 'folder' };
+				return null;
+			});
+
 			const localVault = new LocalVault(mockVault as any as Vault);
 
 			const result = await localVault.applyChanges(
@@ -486,11 +523,80 @@ describe('LocalVault', () => {
 			]);
 			// Should NOT try to create folder (it already exists)
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
+			expect(mockVault.adapter.mkdir).not.toHaveBeenCalled();
 			// Should create the file using text API (JSON is plaintext)
 			expect(mockVault.create).toHaveBeenCalledWith(
 				'_fit/.obsidian/workspace.json',
 				'{}'
 			);
+		});
+
+		it('should create deeply nested directories recursively', async () => {
+			// Scenario: Writing to a/b/c/d/file.md where none of the directories exist
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+			mockVault.adapter.stat.mockResolvedValue(null); // Nothing exists
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'a/b/c/d/file.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: 'a/b/c/d/file.md', type: 'ADDED' }
+			]);
+			// Should create all parent directories
+			expect(mockVault.createFolder).toHaveBeenCalledWith('a');
+			expect(mockVault.createFolder).toHaveBeenCalledWith('a/b');
+			expect(mockVault.createFolder).toHaveBeenCalledWith('a/b/c');
+			expect(mockVault.createFolder).toHaveBeenCalledWith('a/b/c/d');
+			expect(mockVault.createFolder).toHaveBeenCalledTimes(4);
+		});
+
+		it('should use adapter.mkdir for hidden directories', async () => {
+			// Scenario: Writing to .github/workflows/ci.yml (hidden directory)
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+			mockVault.adapter.stat.mockResolvedValue(null); // Nothing exists
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: '.github/workflows/ci.yml', content: FileContent.fromPlainText('name: CI') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.github/workflows/ci.yml', type: 'ADDED' }
+			]);
+			// Should use adapter.mkdir for hidden directories (not vault.createFolder)
+			expect(mockVault.adapter.mkdir).toHaveBeenCalledWith('.github');
+			expect(mockVault.adapter.mkdir).toHaveBeenCalledWith('.github/workflows');
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+		});
+
+		it('should skip creating directories that already exist', async () => {
+			// Scenario: Writing to existing/path/new-file.md where existing/path already exists
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+			mockVault.adapter.stat.mockImplementation(async (path) => {
+				if (path === 'existing') return { type: 'folder' };
+				if (path === 'existing/path') return { type: 'folder' };
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'existing/path/new-file.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: 'existing/path/new-file.md', type: 'ADDED' }
+			]);
+			// Should NOT create any folders (they already exist)
+			expect(mockVault.createFolder).not.toHaveBeenCalled();
+			expect(mockVault.adapter.mkdir).not.toHaveBeenCalled();
 		});
 	});
 
@@ -680,8 +786,8 @@ describe('LocalVault', () => {
 			expect(result.changes).toEqual([
 				{ path: '.gitignore', type: 'REMOVED' }
 			]);
-			// Verify file was actually deleted from disk
-			await expect(fakeVault.adapter.stat('.gitignore')).rejects.toThrow('ENOENT');
+			// Verify file was actually deleted from disk (stat returns null for non-existent files)
+			expect(await fakeVault.adapter.stat('.gitignore')).toBeNull();
 		});
 
 		it('should create new hidden files (first sync)', async () => {
@@ -701,7 +807,7 @@ describe('LocalVault', () => {
 			// Verify file was actually created on disk
 			const created = await fakeVault.adapter.readBinary('.editorconfig');
 			expect(new TextDecoder().decode(created)).toBe('[*.ts]\nindent_style = tab\n');
-			});
+		});
 
 		it('should handle binary hidden files without corruption', async () => {
 			const fakeVault = new FakeObsidianVault();
@@ -727,6 +833,47 @@ describe('LocalVault', () => {
 			const updated = await fakeVault.adapter.readBinary('.image-cache.png');
 			const updatedBytes = new Uint8Array(updated);
 			expect(Array.from(updatedBytes)).toEqual([0xFF, 0xD8, 0xFF, 0xE0]);
+		});
+
+		it('should create nested hidden directories (e.g., .github/workflows)', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: .github/workflows/ci.yml doesn't exist yet
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			const result = await localVault.applyChanges(
+				[{ path: '.github/workflows/ci.yml', content: FileContent.fromPlainText('name: CI\non: push') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: '.github/workflows/ci.yml', type: 'ADDED' }
+			]);
+			// Verify file was created
+			const created = await fakeVault.adapter.readBinary('.github/workflows/ci.yml');
+			expect(new TextDecoder().decode(created)).toBe('name: CI\non: push');
+			// Verify directories were created (stat returns folder type)
+			expect(await fakeVault.adapter.stat('.github')).toEqual(expect.objectContaining({ type: 'folder' }));
+			expect(await fakeVault.adapter.stat('.github/workflows')).toEqual(expect.objectContaining({ type: 'folder' }));
+		});
+
+		it('should create deeply nested normal directories', async () => {
+			const fakeVault = new FakeObsidianVault();
+			// Simulate: The Starforged (NickArrow)/Characters/attachments/file.png doesn't exist
+
+			const localVault = new LocalVault(fakeVault as any);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'The Starforged (NickArrow)/Characters/attachments/profile.png', content: FileContent.fromPlainText('fake-image') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: 'The Starforged (NickArrow)/Characters/attachments/profile.png', type: 'ADDED' }
+			]);
+			// Verify file was created
+			const created = await fakeVault.adapter.readBinary('The Starforged (NickArrow)/Characters/attachments/profile.png');
+			expect(new TextDecoder().decode(created)).toBe('fake-image');
 		});
 	});
 });

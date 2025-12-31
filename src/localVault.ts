@@ -254,7 +254,8 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
-	 * Ensure folder exists for a given file path
+	 * Ensure folder exists for a given file path (creates parent directories recursively)
+	 * Uses vault.adapter for hidden folders (starting with .) since Vault API can't handle them
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
@@ -264,28 +265,40 @@ export class LocalVault implements IVault<"local"> {
 			return;
 		}
 
-		// Check if path exists and verify it's a folder, not a file
-		const existing = this.vault.getAbstractFileByPath(folderPath);
-		if (existing) {
-			// If it's a file, we can't create a folder at this path
-			if (existing instanceof TFile) {
-				throw new Error(`Cannot create folder at ${folderPath}: a file already exists at this path`);
-			}
-			// If it's already a folder, we're done
-			if (existing instanceof TFolder) {
-				return;
-			}
-			// Unknown type - shouldn't happen but be defensive
-		}
+		// Split path into parts and create each level if needed
+		const parts = folderPath.split('/');
+		let currentPath = '';
 
-		// Path doesn't exist, create the folder
-		try {
-			await this.vault.createFolder(folderPath);
-		} catch (error) {
-			// Race condition safeguard: if folder was created concurrently, ignore error
-			const recheckExisting = this.vault.getAbstractFileByPath(folderPath);
-			if (!recheckExisting || !(recheckExisting instanceof TFolder)) {
-				throw error;
+		for (const part of parts) {
+			currentPath = currentPath ? `${currentPath}/${part}` : part;
+			const isHiddenPath = part.startsWith('.');
+
+			// Check if folder exists using adapter (works for both hidden and normal folders)
+			const stat = await this.vault.adapter.stat(currentPath);
+			if (stat) {
+				if (stat.type === 'file') {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// Folder exists, continue to next level
+				continue;
+			}
+
+			// Folder doesn't exist, create it
+			// Use adapter for hidden folders, vault API for normal folders
+			try {
+				if (isHiddenPath || currentPath.split('/').some(p => p.startsWith('.'))) {
+					// Hidden path - use adapter directly
+					await this.vault.adapter.mkdir(currentPath);
+				} else {
+					// Normal path - use vault API (keeps vault index in sync)
+					await this.vault.createFolder(currentPath);
+				}
+			} catch (error) {
+				// Race condition safeguard: if folder was created concurrently, ignore error
+				const recheckStat = await this.vault.adapter.stat(currentPath);
+				if (!recheckStat || recheckStat.type !== 'folder') {
+					throw error;
+				}
 			}
 		}
 	}
@@ -341,10 +354,12 @@ export class LocalVault implements IVault<"local"> {
 				// See docs/api-compatibility.md "Reading Untracked Files"
 				let existsOnDisk = false;
 				try {
-					await this.vault.adapter.stat(path);
-					existsOnDisk = true;
+					// stat() can throw or return null for non-existent files depending on adapter implementation.
+					// A successful stat returns a Stat object, which is truthy.
+					existsOnDisk = !!(await this.vault.adapter.stat(path));
 				} catch {
-					// File doesn't exist - will create
+					// If it throws, the file doesn't exist.
+					existsOnDisk = false;
 				}
 
 				if (existsOnDisk) {
