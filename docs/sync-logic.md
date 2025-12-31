@@ -87,6 +87,20 @@ sequenceDiagram
 
 See [SHA Computation Strategy](#sha-computation-strategy) below for detailed rationale.
 
+### Baseline Recording for Untracked Files (#169)
+
+**Problem:** Hidden files (starting with `.`) are not tracked by `LocalVault.readFromSource()` but can be changed remotely. Without baseline SHAs, they clash on every sync even when unchanged.
+
+**Solution:** Record baseline SHAs for untracked files when they're written from remote:
+- Direct writes: SHA computed during write (standard path)
+- Clashed files: SHA computed from remote content even when written to `_fit/`
+
+This enables future syncs to compare current local SHA vs baseline to determine if the file changed locally.
+
+**CRITICAL:** Must use local SHA algorithm (`SHA1(normalizedPath + content)`), NOT remote SHA from GitHub API. See [docs/architecture.md](./architecture.md) "SHA Algorithms and Change Detection".
+
+**Note:** Reading hidden files for baseline comparison requires using `vault.adapter` API instead of `vault.getAbstractFileByPath()`. See [docs/api-compatibility.md](./api-compatibility.md) "Reading Untracked Files".
+
 ### Why SHA Comparison?
 
 **Problem with timestamps:**
@@ -328,18 +342,18 @@ compareFileStates(newScan, localSha) // // → reports ".gitignore" as REMOVED
 
 ```typescript
 // In FitSync.performSync()
-// Phase 2: Batch stat all paths needing verification (including deletions)
+// Phase 2b: Batch stat all paths needing verification (including deletions)
 const pathsToStat = new Set<string>();
-localChangesToPush
+localChanges
   .filter(c => c.type === 'REMOVED')
   .forEach(c => pathsToStat.add(c.path));
 const {existenceMap} = await this.collectFilesystemState(Array.from(pathsToStat));
 
-// Phase 4: Push local changes with safeguard
-for (const change of localChanges) {
+// Phase 3: Push local changes with safeguard
+for (const change of safeLocal) {
   if (change.type === 'REMOVED') {
-    const existence = existenceMap.get(change.path);
-    const physicallyExists = existence === 'file' || existence === 'folder';
+    const state = existenceMap.get(change.path);
+    const physicallyExists = state === 'file' || state === 'folder';
     if (physicallyExists) {
       // File exists but filtered - NOT a real deletion
       continue; // Don't push to remote
@@ -361,37 +375,67 @@ for (const change of localChanges) {
 - **Protection ADDED**: Local filtered before push, remote saved to `_fit/`
 - **Protection REMOVED**: Files appear as new on both sides → clash detection handles it
 
-**Implementation:** [src/fitSync.ts:564-586](../src/fitSync.ts#L564-L586) (path collection), [src/fitSync.ts:756-769](../src/fitSync.ts#L756-L769) (safeguard check)
+**Implementation:** [src/fitSync.ts:387-396](../src/fitSync.ts#L387-L396) (path collection), [src/fitSync.ts:726-743](../src/fitSync.ts#L726-L743) (safeguard check)
 
 ## Sync Decision Tree
 
 ### Unified Sync Flow
 
-FIT uses a unified sync flow that handles all scenarios in one consistent path:
+FIT uses a **phased sync architecture** that maintains clear boundaries between data collection, comparison, verification, and execution:
 
 ```mermaid
 flowchart TD
-    Start[Start Sync] --> Gather[Gather local & remote changes]
-    Gather --> EarlyExit{Any changes?}
+    Start[Start Sync] --> Phase1[Phase 1: Collect State]
+    Phase1 --> Gather1[💾 Scan local vault<br/>tracked files only]
+    Gather1 --> Gather2[☁️ Read remote tree<br/>all files]
+
+    Gather2 --> Phase2[Phase 2: Compare & Resolve]
+    Phase2 --> EarlyExit{Any changes?}
 
     EarlyExit -->|No| InSync[✓ In Sync]
-    EarlyExit -->|Yes| DetectClashes[Detect ALL clashes upfront]
+    EarlyExit -->|Yes| Classify[Classify changes:<br/>✓ Safe tracked<br/>🔀 Tracked clashes<br/>❓ Untracked needs verification]
 
-    DetectClashes --> BatchStat[Batch stat filesystem<br/>for safety verification]
-    BatchStat --> ResolveConflicts[Resolve conflicts<br/>📁 Write to _fit/]
+    Classify --> Resolve[Resolve ambiguities:<br/>Batch stat filesystem]
+    Resolve --> Verify[Verify untracked files:<br/>protected? exists? baseline SHA?]
+    Verify --> Reclassify[Reclassify:<br/>❓ → ✓ Safe or 🔀 Clash]
 
+    Reclassify --> Phase3[Phase 3: Execute Sync]
+    Phase3 --> ResolveConflicts[Resolve clashes<br/>📁 Write to _fit/]
     ResolveConflicts --> Push[⬆️ Push local changes]
-    Push --> Pull[⬇️ Pull remote changes<br/>with safety checks]
+    Push --> Pull[⬇️ Pull safe remote changes]
     Pull --> Persist[Persist state atomically]
 
     InSync --> Done[Done]
     Persist --> Done
 ```
 
-**Key improvements:**
-- **Single execution path**: Compatible changes and conflicts handled in unified flow
-- **Batch operations**: All filesystem stat checks done in one batch for efficiency
-- **Atomic persistence**: State only updated on successful completion
+**Architecture Principles:**
+
+1. **Phase 1 (Collect)**: Gather state from vaults in isolation
+   - Local: Only tracked files (efficient Obsidian API scan)
+   - Remote: All files (GitHub tree)
+   - No filesystem checks yet
+
+2. **Phase 2 (Compare & Resolve)**: Determine outcomes and resolve ambiguities
+   - **Compare**: Classify changes based on vault state
+     - Tracked files with changes on both sides → **Clash** (definite conflict)
+     - Tracked files changed on one side → **Safe** (can apply directly)
+     - Untracked remote changes → **Needs Verification** (insufficient info)
+   - **Resolve**: Resolve ambiguity for untracked files
+     - Batch collect filesystem state (one `stat` call for all paths)
+     - Check: Is path protected? Does file exist locally? Baseline SHA match?
+     - Reclassify: Needs Verification → Safe or Clash
+
+3. **Phase 3 (Execute)**: Apply changes and persist state
+   - Resolve real clashes (write to `_fit/`)
+   - Push and pull safe changes
+   - Atomically update SHA cache
+
+**Key Benefits:**
+- **Principled boundaries**: Each phase has clear inputs/outputs
+- **Efficient batching**: Single filesystem stat for all verification needs
+- **Future-proof**: Supports planned features (`.gitignore`, continuous sync, explicit tracking)
+- **Testable**: Phases can be tested independently
 
 **Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
 
@@ -463,13 +507,23 @@ remoteChanges = [
 
 ## 🔀 Conflict Resolution
 
-### Clash Detection
+### Clash Detection (Phase 2)
 
-Files clash when BOTH local and remote have changes to the same path.
+**Phase 2a**: Identifies paths needing filesystem verification (remote changes not in local scan)
 
-**Implementation:** [`getClashedChanges()` in fit.ts](../src/fit.ts)
+**Phase 2b**: Batch collects filesystem state for all paths needing verification
 
-**Logic:** For each file changed locally, check if there's also a remote change to the same path. If yes, it's a clash.
+**Phase 2c**: Resolves all changes to final safe/clash outcomes:
+- **Tracked files**: Both sides changed → clash
+- **Untracked files**: Checks filesystem existence, protection rules, and (future: baseline SHA)
+  - Exists locally or protected → clash
+  - Doesn't exist and not protected → safe
+  - Stat failed → conservative clash
+
+**Implementation:**
+- Phase 2a: [`determineLocalChecksNeeded()` in changeTracking.ts](../src/util/changeTracking.ts)
+- Phase 2b: [`collectFilesystemState()` in fitSync.ts](../src/fitSync.ts)
+- Phase 2c: [`resolveAllChanges()` in changeTracking.ts](../src/util/changeTracking.ts)
 
 ### 🔀 Conflict Resolution Decision Tree
 
@@ -908,7 +962,86 @@ When detected, FIT:
 
 **References:**
 - GitHub issue: https://github.com/joshuakto/fit/issues/51
-- Detailed analysis: Check Serena memory `encoding_corruption_issue_51` (if created)
+
+### Binary File Content Corruption (Issue #156)
+
+**Scenario:** Binary files (JPG, PNG, PDF, etc.) corrupted during sync, appearing as gibberish text in GitHub
+
+**Example:**
+- Local file: `photo.jpg` (valid JPEG image)
+- After sync: GitHub shows text like `����JFIF��4ExifMM*�i�0232���http:`
+- Cause: File read as text instead of binary, then base64-encoded corrupted text
+
+**Root Cause:**
+PR #161 changed binary detection from extension-based to dynamic (try `vault.read()` first, fallback to `vault.readBinary()`). However, Obsidian's `vault.read()` can **succeed** on binary files on some platforms (particularly iOS), returning corrupted "text" data with replacement characters.
+
+**Flow of Corruption:**
+```typescript
+// BEFORE FIX (PR #161 behavior)
+1. vault.read(photo.jpg) → succeeds (should fail!)
+2. Returns corrupted string: "����JFIF��..."
+3. FileContent.fromPlainText() → encoding='plaintext'
+4. Push to GitHub → sends corrupted text as UTF-8
+5. GitHub displays garbage text instead of image
+
+// AFTER FIX (Issue #156)
+1. vault.readBinary(photo.jpg) → raw bytes
+2. Check for null bytes in first 8KB
+3. Found 0x00 byte → it's binary
+4. FileContent.fromBase64() → encoding='base64'
+5. Push to GitHub → sends proper base64
+6. GitHub displays image correctly
+```
+
+**Fix (v1.4.0):**
+Uses Git's proven null byte heuristic for binary detection:
+
+```typescript
+// Always read as binary first
+const arrayBuffer = await vault.readBinary(file);
+
+// Check first ~8KB for null bytes (0x00)
+const bytes = new Uint8Array(arrayBuffer.slice(0, Math.min(8192, arrayBuffer.byteLength)));
+const hasNullByte = bytes.some(b => b === 0);
+
+if (hasNullByte) {
+  // Binary file - return as base64
+  return FileContent.fromBase64(base64);
+}
+
+// No null bytes - try UTF-8 decode
+try {
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
+  return FileContent.fromPlainText(text);
+} catch {
+  // Invalid UTF-8 - treat as binary
+  return FileContent.fromBase64(base64);
+}
+```
+
+**Why This Works:**
+- **Git uses the same approach** - null bytes reliably indicate binary content
+- Works for all common binary formats:
+  - Images: JPEG (has null bytes at offset 4), PNG, GIF, BMP
+  - Documents: PDF, Office files
+  - Archives: ZIP, RAR, tar.gz
+  - Executables: .exe, .dll, .so
+- Handles edge cases where `vault.read()` incorrectly succeeds
+- Fast single read operation (no try/catch fallback needed)
+
+**Recovery:**
+If you have corrupted binary files in GitHub:
+1. Delete the corrupted versions from GitHub
+2. Update to v1.4.0+ with the fix
+3. Re-sync - files will upload correctly as binary
+
+**Future Enhancement:**
+GitHub's tree API includes a `mode` field indicating binary vs text. Could use this metadata to override local detection for already-tracked files, but null byte heuristic is sufficient.
+
+**References:**
+- GitHub issue: https://github.com/joshuakto/fit/issues/156
+- Fix PR: (pending)
+- Related: PR #161 (introduced the bug)
 
 ## 🔒 Concurrency Control
 
@@ -980,8 +1113,11 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 
 **Example sync with 5 local files, cache hit (fast ~500ms):**
 ```
-[2025-01-19T04:36:49.120Z] .. 📦 [Fit/Cache] Loaded SHA caches from storage: {
-  "localShaCount": 4, "remoteShaCount": 5, "lastCommit": "23be92a..."
+[2025-01-19T04:36:49.120Z] .. 📦 [Cache] Loaded SHA caches from storage: {
+  "source": "plugin data.json",
+  "localShaCount": 5,
+  "remoteShaCount": 5,
+  "lastCommit": "23be92a..."
 }
 [2025-01-19T04:36:49.542Z] 🔄 [Sync] Checking local and remote changes (parallel)...
 [2025-01-19T04:36:49.543Z] .. 💾 [LocalVault] Scanning files...
@@ -992,8 +1128,17 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 [2025-01-19T04:36:50.020Z] 🔄 [FitSync] Syncing changes (1 local, 0 remote): {
   "local": { "MODIFIED": ["note.md"] }
 }
+[2025-01-19T04:36:50.021Z] [FitSync] Conflict detection complete: {
+  "safeLocal": 1, "safeRemote": 0, "clashes": 0
+}
 [2025-01-19T04:36:50.597Z] .. ⬆️ [Push] Pushed 1 changes to remote
-[2025-01-19T04:36:50.598Z] .. 📦 [Cache] Updating SHA cache after sync
+[2025-01-19T04:36:50.598Z] .. 📦 [Cache] Updating SHA cache after sync: {
+  "localChanges": 1,
+  "remoteChanges": 1,
+  "commitChanged": true,
+  "localOpsApplied": 0,
+  "remoteOpsPushed": 1
+}
 ```
 
 **Performance insights from timestamps:**
@@ -1005,19 +1150,33 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 
 **Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
 ```
+[timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
+[timestamp] .. 💾 [LocalVault] Scanning files...
 [timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
+[timestamp] ... 💾 [LocalVault] Scanned 0 files
 [timestamp] ... ⬇️ [RemoteVault] Fetching initial state from GitHub (a1b2c3d)...
 [timestamp] ... ☁️ [RemoteVault] Fetched 195 files
+[timestamp] .. ✅ [Sync] Change detection complete
 [timestamp] 🔄 [FitSync] Syncing changes (0 local, 195 remote): { ... }
-[timestamp] .. ⬇️ [Pull] Pulled 195 remote changes to local
+[timestamp] [FitSync] Conflict detection complete: {
+  "safeLocal": 0, "safeRemote": 195, "clashes": 0
+}
+[timestamp] .. ⬇️ [Pull] Applied remote changes to local: {
+  "filesWritten": 195, "filesDeleted": 0, "clashesWrittenToFit": 0
+}
+[timestamp] .. 📦 [Cache] Updating SHA cache after sync: { ... }
 ```
 
 **Example log trace with conflicts:**
 ```
 🚀 [SYNC START] Manual sync requested
-.. 💾 [LocalVault] Scanned 6 files
+🔄 [Sync] Checking local and remote changes (parallel)...
+.. 💾 [LocalVault] Scanning files...
 .. ☁️ [RemoteVault] Fetching from GitHub...
+... 💾 [LocalVault] Scanned 6 files
 .... ⬇️ [RemoteVault] New commit detected (b80f023), fetching tree...
+... ☁️ [RemoteVault] Fetched 6 files
+.. ✅ [Sync] Change detection complete
 🔄 [FitSync] Syncing changes (1 local, 2 remote): {
   "local": {
     "MODIFIED": ["file1.md"]
@@ -1026,11 +1185,19 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
     "MODIFIED": ["file1.md", "file2.md"]
   }
 }
+[FitSync] Conflict detection complete: {
+  "safeLocal": 1, "safeRemote": 1, "clashes": 1
+}
 .. ⬆️ [Push] Pushed 1 changes to remote
+.. ⬇️ [Pull] Applied remote changes to local: {
+  "filesWritten": 1, "filesDeleted": 0, "clashesWrittenToFit": 1
+}
 .. 📦 [Cache] Updating SHA cache after sync: {
   "localChanges": 2,
-  "remoteChanges": 0,
-  "commitChanged": true
+  "remoteChanges": 2,
+  "commitChanged": true,
+  "localOpsApplied": 2,
+  "remoteOpsPushed": 1
 }
 ✅ [SYNC COMPLETE] Success with conflicts: {
   "duration": "2.34s",

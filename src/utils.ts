@@ -53,7 +53,8 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 		ADDED: "create",
 		MODIFIED: "change",
 		REMOVED: "delete",
-		untracked: "untracked"
+		untracked: "untracked",
+		protected: "protected"
 	};
 	const remoteStatusMap: Record<ChangeOperation, string> = {
 		ADDED:  "create",
@@ -91,4 +92,17 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 		.setText("Remote changes in _fit");
 	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
 		.setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.");
+
+	// Add explanatory notes for special local states
+	const hasProtected = clashedFiles.some(c => c.localState === 'protected');
+	const hasUntracked = clashedFiles.some(c => c.localState === 'untracked');
+
+	if (hasProtected) {
+		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+			.setText("Protected: Paths excluded from sync by policy (.obsidian/, _fit/)");
+	}
+	if (hasUntracked) {
+		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+			.setText("Untracked: Could not verify local state - check logs for details");
+	}
 }

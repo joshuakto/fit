@@ -35,7 +35,32 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 NOTE: For security, it's recommended to limit the token scope to only the necessary repository for your vault and avoid sharing your entire plugin settings file that contains this token.
 
-## Notes about the first sync
+## How Sync Works
+
+### What gets synced
+
+**✅ Synced files:**
+- Regular markdown files (.md)
+- Attachments (images, PDFs, etc.)
+- Any files in your vault root
+
+**❌ NOT synced (protected paths):**
+- `.obsidian/` folder (Obsidian settings and plugins)
+- `_fit/` folder (conflict resolution area)
+- Hidden files like `.gitignore`, `.env` (not currently supported - see [#92](https://github.com/joshuakto/fit/issues/92) for planned opt-in support)
+
+### Conflict handling
+
+When the same file is modified both locally and remotely, FIT:
+- Keeps your local version in place
+- Saves the remote version to `_fit/path/to/file.md`
+- You can manually compare and merge the versions
+- If the same file clashes again before you resolve it, the `_fit/` version is overwritten with the latest remote version (sync doesn't fail)
+
+See [Common Issues](#common-issues) below for detailed conflict resolution steps.
+
+### First sync
+
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
 
@@ -43,9 +68,7 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 
 The FIT maintainers make every effort to protect your security and protect against data loss. However, mistakes can happen. Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
 
-You should also take care with security tokens you use to ensure they don't leak, because anyone with access to those can read and write your vault repository even if it's private (or worse if you configure broad unrestricted permissions on your token). In particular, **avoid syncing your .obsidian/ files** with other tools if you don't know what you're doing, and consider adding .gitignore rules to ignore .obsidian/ paths if you'll be syncing anything using git.
-
-⚠️ NOTE: The FIT plugin currently will NOT sync .obsidian/ paths, but will not protect you from some other tool syncing them.
+You should also take care with security tokens you use to ensure they don't leak, because anyone with access to those can read and write your vault repository even if it's private (or worse if you configure broad unrestricted permissions on your token). In particular, **avoid syncing your .obsidian/ files** with other tools if you don't know what you're doing, and consider adding .gitignore rules to ignore .obsidian/ paths if you'll be syncing anything using git (FIT itself never syncs `.obsidian/` - see [How Sync Works](#how-sync-works)).
 
 ## Common Issues
 
@@ -87,6 +110,25 @@ You should also take care with security tokens you use to ensure they don't leak
 5. Sync again
 
 **Prevention:** Sync regularly (enable auto-sync) and avoid editing the same file on multiple devices simultaneously.
+
+</details>
+
+<details>
+<summary><b>🖼️ Images/PDFs showing as corrupted text in GitHub</b></summary>
+
+**Symptoms:** Binary files (JPG, PNG, PDF) appear as gibberish text in GitHub like `����JFIF��...` instead of displaying properly
+
+**Cause:** Bug in v1.4.0-beta.3 where binary files were incorrectly read as text on some platforms
+
+**Solution:**
+1. Check file history in GitHub to find bad changes
+2. Use git to restore previous versions OR manually copy from history
+3. Update to v1.4 stable when available or a different beta version
+4. Re-sync - files will upload correctly
+
+**Note:** This only affected beta versions. Images and PDFs sync correctly in v1.4+.
+
+**More info:** See https://github.com/joshuakto/fit/issues/156 about the regression and older "correct format" error.
 
 </details>
 

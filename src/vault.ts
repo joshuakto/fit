@@ -43,7 +43,7 @@ type ApplyChangesResultMap = {
 	"local": {
 		/** Promise for file SHAs (computed from in-memory content during writes).
 		 * Await when ready to update local state - allows parallelization on mobile. */
-		writtenStates: Promise<FileStates>;
+		newBaselineStates: Promise<FileStates>;
 	};
 	/** Remote vault result - includes commit metadata and new state */
 	"remote": {
@@ -143,7 +143,7 @@ export class VaultError extends Error {
  *   [{path: 'new-file.md', content: 'content'}],  // files to write
  *   ['old-file.md']                                // files to delete
  * );
- * // result.writtenStates is available (ApplyChangesResult<"local">)
+ * // result.newBaselineStates is available (ApplyChangesResult<"local">)
  *
  * // Update vault cache after sync (scan and update internal state atomically)
  * const newLocalState = await localVault.readFromSource();
@@ -184,19 +184,25 @@ export interface IVault<T extends VaultCategory> {
 	 *
 	 * For LocalVault: Applies changes to Obsidian vault files
 	 *   - Converts FileContent to base64 and writes via Obsidian API
-	 *   - Returns writtenStates for efficient state updates
+	 *   - Returns newBaselineStates for efficient state updates
+	 *   - Clash files written to _fit/ subdirectory, SHA computed for original path
 	 *
 	 * For RemoteGitHubVault: Creates a single commit with all changes
 	 *   - Uses FileContent's existing encoding (plaintext or base64)
 	 *   - Returns new commitSha and treeSha
+	 *   - Ignores clashPaths (remote doesn't have _fit/ concept)
 	 *
-	 * @param filesToWrite - Files to write or update with their content
-	 * @param filesToDelete - Files to delete
+	 * @param filesToWrite - Files to write or update with their ORIGINAL paths
+	 * @param filesToDelete - Files to delete (original paths)
+	 * @param options.clashPaths - Set of paths that should be written as clash files.
+	 *   For LocalVault: writes to `_fit/{path}` but computes SHA for `{path}`.
+	 *   For RemoteVault: ignored (no clash concept on remote).
 	 * @returns Operations performed and vault-specific metadata (type determined by T)
 	 */
 	applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
-		filesToDelete: Array<string>
+		filesToDelete: Array<string>,
+		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<T>>;
 
 	// ===== Metadata =====

@@ -85,13 +85,16 @@ export const Content = {
 	 * Convert Base64Content to PlainTextContent
 	 * Handles multi-byte UTF-8 characters (emojis, Chinese, etc.)
 	 * @throws {DOMException} If content is not valid base64
+	 * @throws {TypeError} If decoded bytes are not valid UTF-8 (binary data)
 	 * @see https://developer.mozilla.org/en-US/docs/Web/API/atob#unicode_strings
 	 */
 	decodeFromBase64: (base64: string | Base64Content): PlainTextContent => {
 		// Decode base64 to bytes, then decode UTF-8
 		const binaryString = atob(base64);
 		const utf8Bytes = Uint8Array.from(binaryString, char => char.charCodeAt(0));
-		return new TextDecoder().decode(utf8Bytes) as PlainTextContent;
+		// fatal: true prevents silent replacement character corruption
+		// Will throw TypeError if bytes aren't valid UTF-8 (e.g., binary data)
+		return new TextDecoder('utf-8', { fatal: true }).decode(utf8Bytes) as PlainTextContent;
 	},
 };
 
