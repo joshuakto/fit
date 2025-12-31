@@ -14,9 +14,12 @@ export default class FitSettingTab extends PluginSettingTab {
 	ownerSetting: Setting;
 	repoSetting: Setting;
 	branchSetting: Setting;
+	manualRepoOwnerSetting: Setting;
+	manualRepoNameSetting: Setting;
 	existingRepos: Array<string>;
 	existingBranches: Array<string>;
 	repoLink: string;
+	useManualRepoEntry: boolean;
 
 	constructor(app: App, plugin: FitPlugin) {
 		super(app, plugin);
@@ -25,12 +28,16 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.authenticating = false;
 		this.existingRepos = [];
 		this.existingBranches = [];
+		// Enable manual entry mode if repoOwner differs from authenticated owner (contributor repo)
+		this.useManualRepoEntry = this.plugin.settings.repoOwner !== "" &&
+			this.plugin.settings.repoOwner !== this.plugin.settings.owner;
 	}
 
 	getLatestLink = (): string => {
-		const {owner, repo, branch} = this.plugin.settings;
-		if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
-			return `https://github.com/${owner}/${repo}/tree/${branch}`;
+		const {repoOwner, repo, branch} = this.plugin.settings;
+		// Use repoOwner for the link (this is the actual repo owner, which may differ from authenticated user)
+		if (repoOwner.length > 0 && repo.length > 0 && branch.length > 0) {
+			return `https://github.com/${repoOwner}/${repo}/tree/${branch}`;
 		}
 		return "";
 	};
@@ -49,6 +56,10 @@ export default class FitSettingTab extends PluginSettingTab {
 			if (owner !== this.plugin.settings.owner) {
 				this.plugin.settings.owner = owner;
 				this.plugin.settings.avatarUrl = avatarUrl;
+				// Only reset repoOwner if not in manual entry mode
+				if (!this.useManualRepoEntry) {
+					this.plugin.settings.repoOwner = owner;
+				}
 				this.plugin.settings.repo = "";
 				this.plugin.settings.branch = "";
 				this.existingBranches = [];
@@ -63,6 +74,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
 			this.plugin.settings.owner = "";
 			this.plugin.settings.avatarUrl = "";
+			this.plugin.settings.repoOwner = "";
 			this.plugin.settings.repo = "";
 			this.plugin.settings.branch = "";
 			this.existingBranches = [];
@@ -150,6 +162,28 @@ export default class FitSettingTab extends PluginSettingTab {
 					window.open(`https://github.com/new`, '_blank');
 				}));
 
+		// Toggle for manual repo entry (for contributor repos)
+		new Setting(containerEl)
+			.setName('Manual repository entry')
+			.setDesc('Enable to manually enter a repository name. Use this for repos where you have contributor access but are not the owner.')
+			.addToggle(toggle => toggle
+				.setValue(this.useManualRepoEntry)
+				.onChange(async (value) => {
+					this.useManualRepoEntry = value;
+					// Show/hide the appropriate settings
+					this.repoSetting.settingEl.toggle(!value);
+					this.manualRepoOwnerSetting.settingEl.toggle(value);
+					this.manualRepoNameSetting.settingEl.toggle(value);
+
+					if (!value) {
+						// Switching back to dropdown mode - reset repoOwner to authenticated user
+						this.plugin.settings.repoOwner = this.plugin.settings.owner;
+						await this.plugin.saveSettings();
+						await this.refreshFields('branch(1)');
+					}
+				}));
+
+		// Dropdown for owned repos (default mode)
 		this.repoSetting = new Setting(containerEl)
 			.setName('Github repository name')
 			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
@@ -162,15 +196,47 @@ export default class FitSettingTab extends PluginSettingTab {
 					const repoChanged = value !== this.plugin.settings.repo;
 					if (repoChanged) {
 						this.plugin.settings.repo = value;
+						// For owned repos, repoOwner is the authenticated user
+						this.plugin.settings.repoOwner = this.plugin.settings.owner;
 						await this.plugin.saveSettings();
 						await this.refreshFields('branch(1)');
 					}
 				});
 			});
 
+		// Manual entry fields for contributor repos
+		// Note: These fields do NOT auto-refresh branches on keystroke to avoid API spam.
+		// Users should click the section's refresh button after entering details.
+		this.manualRepoOwnerSetting = new Setting(containerEl)
+			.setName('Repository owner')
+			.setDesc('The GitHub username or organization that owns the repository. Click refresh above after entering.')
+			.addText(text => text
+				.setPlaceholder('owner-username')
+				.setValue(this.plugin.settings.repoOwner)
+				.onChange(async (value) => {
+					this.plugin.settings.repoOwner = value;
+					await this.plugin.saveSettings();
+				}));
+
+		this.manualRepoNameSetting = new Setting(containerEl)
+			.setName('Repository name')
+			.setDesc('The name of the repository you have contributor access to. Click refresh above after entering.')
+			.addText(text => text
+				.setPlaceholder('repo-name')
+				.setValue(this.plugin.settings.repo)
+				.onChange(async (value) => {
+					this.plugin.settings.repo = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Initially show/hide based on mode
+		this.repoSetting.settingEl.toggle(!this.useManualRepoEntry);
+		this.manualRepoOwnerSetting.settingEl.toggle(this.useManualRepoEntry);
+		this.manualRepoNameSetting.settingEl.toggle(this.useManualRepoEntry);
+
 		this.branchSetting = new Setting(containerEl)
 			.setName('Branch name')
-			.setDesc('Select a repo above to view existing branches.')
+			.setDesc('Enter repository details above, then refresh to view existing branches.')
 			.addDropdown(dropdown => {
 				dropdown.selectEl.addClass('branch-dropdown');
 				dropdown.setDisabled(this.existingBranches.length === 0);
