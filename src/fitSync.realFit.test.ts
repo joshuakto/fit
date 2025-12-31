@@ -1748,5 +1748,48 @@ describe('FitSync', () => {
 
 			expect(fit.remoteVault.getOwner()).toBe('new-owner');
 		});
+
+		it('should trim whitespace from owner values', () => {
+			const settingsWithWhitespace = {
+				...testSettings,
+				owner: '  authenticated-user  ',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithWhitespace,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should use trimmed owner
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
+		it('should not update remoteVault when owner is whitespace-only', () => {
+			const initialSettings = {
+				...testSettings,
+				owner: 'valid-owner',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+
+			// Try to update with whitespace-only owner - should preserve existing remoteVault
+			fit.loadSettings({
+				...initialSettings,
+				owner: '   ',
+				repoOwner: '   '
+			});
+
+			// remoteVault should still have the original owner
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+		});
 	});
 });

@@ -205,28 +205,28 @@ export default class FitSettingTab extends PluginSettingTab {
 			});
 
 		// Manual entry fields for contributor repos
+		// Note: These fields do NOT auto-refresh branches on keystroke to avoid API spam.
+		// Users should click the section's refresh button after entering details.
 		this.manualRepoOwnerSetting = new Setting(containerEl)
 			.setName('Repository owner')
-			.setDesc('The GitHub username or organization that owns the repository.')
+			.setDesc('The GitHub username or organization that owns the repository. Click refresh above after entering.')
 			.addText(text => text
 				.setPlaceholder('owner-username')
 				.setValue(this.plugin.settings.repoOwner)
 				.onChange(async (value) => {
 					this.plugin.settings.repoOwner = value;
 					await this.plugin.saveSettings();
-					await this.refreshFields('branch(1)');
 				}));
 
 		this.manualRepoNameSetting = new Setting(containerEl)
 			.setName('Repository name')
-			.setDesc('The name of the repository you have contributor access to.')
+			.setDesc('The name of the repository you have contributor access to. Click refresh above after entering.')
 			.addText(text => text
 				.setPlaceholder('repo-name')
 				.setValue(this.plugin.settings.repo)
 				.onChange(async (value) => {
 					this.plugin.settings.repo = value;
 					await this.plugin.saveSettings();
-					await this.refreshFields('branch(1)');
 				}));
 
 		// Initially show/hide based on mode

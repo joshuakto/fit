@@ -352,8 +352,15 @@ export class LocalVault implements IVault<"local"> {
 			} else {
 				// File not in vault index - check if it exists on disk (hidden files)
 				// See docs/api-compatibility.md "Reading Untracked Files"
-				const stat = await this.vault.adapter.stat(path);
-				const existsOnDisk = stat !== null;
+				let existsOnDisk = false;
+				try {
+					// stat() can throw or return null for non-existent files depending on adapter implementation.
+					// A successful stat returns a Stat object, which is truthy.
+					existsOnDisk = !!(await this.vault.adapter.stat(path));
+				} catch {
+					// If it throws, the file doesn't exist.
+					existsOnDisk = false;
+				}
 
 				if (existsOnDisk) {
 					// File exists but not in index - use adapter to modify
