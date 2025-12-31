@@ -6,7 +6,7 @@
  */
 
 import { LocalStores, FitSettings } from "@main";
-import { FileChange, FileClash, FileStates, compareFileStates } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
@@ -95,6 +95,8 @@ export class Fit {
 	 *
 	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
 	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
+	 *
+	 * TODO: Rename to isProtectedPath() and invert logic (return true for protected paths)
 	 *
 	 * @param path - File path to check
 	 * @returns true if path should be included in sync
@@ -193,9 +195,13 @@ export class Fit {
 			if (this.shouldSyncPath(remoteChange.path) && this.localVault.shouldTrackState(remoteChange.path)) {
 				trackedRemoteChanges.push(remoteChange);
 			} else {
+				// Determine if blocked by sync policy or untracked
+				const localState: LocalClashState = !this.shouldSyncPath(remoteChange.path)
+					? 'protected'
+					: 'untracked';
 				clashes.push({
 					path: remoteChange.path,
-					localState: 'untracked',
+					localState,
 					remoteOp: remoteChange.type
 				});
 			}

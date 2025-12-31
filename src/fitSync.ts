@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash, FileStates, determineChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, determineLocalChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
 import { LocalStores } from "@main";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
@@ -303,10 +303,11 @@ export class FitSync implements IFitSync {
 		detectNormalizationMismatches(Array.from(localScanPaths), Array.from(remoteScanPaths));
 
 		// Phase 2a: Determine what filesystem checks are needed
-		const { needsFilesystemCheck } = determineChecksNeeded(
-			localChanges,
+		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
+		const { needsFilesystemCheck } = determineLocalChecksNeeded(
 			remoteChanges,
-			localScanPaths
+			localScanPaths,
+			isProtectedPath
 		);
 
 		// Phase 2b: Batch collect filesystem state for all paths needing verification
@@ -356,8 +357,7 @@ export class FitSync implements IFitSync {
 
 		// Phase 2b (part 2): Resolve untracked state from filesystem checks
 		const localChangePaths = new Set(localChanges.map(c => c.path));
-		const isProtectedPath = (path: string) => !this.fit.shouldSyncPath(path);
-		const blockedPaths = resolveUntrackedState(
+		const { protectedPaths, untrackedPaths } = resolveUntrackedState(
 			remoteChanges,
 			localChangePaths,
 			filesystemState,
@@ -367,11 +367,11 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 2c: Simple clash detection
-		const shouldBlockRemote = (path: string) => blockedPaths.has(path);
 		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
 			localChanges,
 			remoteChanges,
-			shouldBlockRemote
+			protectedPaths,
+			untrackedPaths
 		);
 
 		// Track stat failures for logging
@@ -644,6 +644,8 @@ export class FitSync implements IFitSync {
 
 			// Log conflicts if any (these are real unresolved conflicts, not temporary clashes)
 			if (conflicts.length > 0) {
+				const protectedConflicts = conflicts.filter(c => c.localState === 'protected');
+
 				fitLogger.log('[FitSync] Sync completed with conflicts', {
 					conflictCount: conflicts.length,
 					conflicts: conflicts.map(c => ({
@@ -652,6 +654,12 @@ export class FitSync implements IFitSync {
 						remote: c.remoteOp
 					}))
 				});
+
+				if (protectedConflicts.length > 0) {
+					fitLogger.log(`[FitSync] ${protectedConflicts.length} path(s) blocked by sync policy`, {
+						protectedPaths: protectedConflicts.map(c => c.path)
+					});
+				}
 			}
 
 			// Set appropriate success message

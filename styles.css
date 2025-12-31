@@ -348,7 +348,7 @@
     padding: 3px;
 }
 
-.file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after, .file-conflict-untracked::after {
+.file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after, .file-conflict-untracked::after, .file-conflict-protected::after {
     padding: 4px;
     border-radius: 20%;
     content: "     ";
@@ -369,6 +369,10 @@
 }
 .file-conflict-untracked::after {
     background-color: rgba(128, 128, 128, 0.3);
+}
+.file-conflict-protected::after {
+    content: "🚫";
+    background-color: rgba(255, 165, 0, 0.2);
 }
 .file-conflict-note {
     padding-left: 5px;

@@ -521,7 +521,7 @@ remoteChanges = [
   - Stat failed → conservative clash
 
 **Implementation:**
-- Phase 2a: [`determineChecksNeeded()` in changeTracking.ts](../src/util/changeTracking.ts)
+- Phase 2a: [`determineLocalChecksNeeded()` in changeTracking.ts](../src/util/changeTracking.ts)
 - Phase 2b: [`collectFilesystemState()` in fitSync.ts](../src/fitSync.ts)
 - Phase 2c: [`resolveAllChanges()` in changeTracking.ts](../src/util/changeTracking.ts)
 

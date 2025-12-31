@@ -383,7 +383,7 @@ describe('FitSync', () => {
 				]),
 				clash: [{
 					path: '_fit/remote-conflict.md',
-					localState: 'untracked',
+					localState: 'protected',
 					remoteOp: 'ADDED'
 				}]
 			});

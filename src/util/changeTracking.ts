@@ -32,10 +32,10 @@ export type FileStates = Record<string, BlobSha>;
  *
  * When detecting clashes, we need to know the local state:
  * - ChangeOperation: File has a tracked change (ADDED/MODIFIED/REMOVED)
- * - "untracked": File exists but isn't tracked by shouldTrackState(),
- *   so we can't determine its actual state (e.g., hidden files, protected paths)
+ * - "untracked": File exists but state can't be determined (stat failed, hidden files)
+ * - "protected": File is blocked by sync policy (shouldSyncPath returns false)
  */
-export type LocalClashState = ChangeOperation | "untracked";
+export type LocalClashState = ChangeOperation | "untracked" | "protected";
 
 /** Represents a clash between local and remote changes to the same file */
 export type FileClash = {
@@ -49,18 +49,18 @@ export type FileClash = {
 /**
  * Phase 2a: Determine what filesystem checks are needed
  *
- * Compares local and remote changes to identify paths that need
- * filesystem verification before we can determine if they're safe or clashed.
+ * Identifies remote changes that need local filesystem verification,
+ * excluding protected paths (which are blocked by policy regardless of local state).
  *
- * @param localChanges - Changes detected in local vault scan
  * @param remoteChanges - Changes detected in remote vault scan
  * @param localScanPaths - Set of paths found in local scan (tracked files)
+ * @param isProtectedPath - Function to check if path is protected by sync policy
  * @returns Paths that need filesystem existence checks
  */
-export function determineChecksNeeded(
-	localChanges: FileChange[],
+export function determineLocalChecksNeeded(
 	remoteChanges: FileChange[],
-	localScanPaths: Set<string>
+	localScanPaths: Set<string>,
+	isProtectedPath: (path: string) => boolean
 ): {
 	needsFilesystemCheck: { path: string; remoteOp: ChangeOperation }[];
 } {
@@ -68,8 +68,9 @@ export function determineChecksNeeded(
 
 	// Remote changes for paths not in local scan need filesystem checks
 	// (we can't tell if they exist locally and would clash)
+	// Skip protected paths - they're blocked by policy regardless of local state
 	for (const change of remoteChanges) {
-		if (!localScanPaths.has(change.path)) {
+		if (!localScanPaths.has(change.path) && !isProtectedPath(change.path)) {
 			needsFilesystemCheck.push({
 				path: change.path,
 				remoteOp: change.type
@@ -95,7 +96,7 @@ export function determineChecksNeeded(
  * @param baselineShas - Baseline SHA cache for detecting unchanged files (#169)
  * @param currentShas - Current SHAs for files that exist locally
  * @param isProtectedPath - Function to check if path is protected
- * @returns Set of paths that should block remote changes
+ * @returns Sets of paths categorized by block reason
  */
 export function resolveUntrackedState(
 	remoteChanges: FileChange[],
@@ -104,12 +105,23 @@ export function resolveUntrackedState(
 	baselineShas: FileStates,
 	currentShas: Map<string, BlobSha>,
 	isProtectedPath: (path: string) => boolean
-): Set<string> {
-	const blockedPaths = new Set<string>();
+): {
+	protectedPaths: Set<string>;
+	untrackedPaths: Set<string>;
+} {
+	const protectedPaths = new Set<string>();
+	const untrackedPaths = new Set<string>();
 
 	for (const remoteChange of remoteChanges) {
 		// Skip paths already in tracked local changes (will be handled as clashes in Phase 2c)
 		if (localChangePaths.has(remoteChange.path)) {
+			continue;
+		}
+
+		// Case 1: Protected path - policy block (checked first, before filesystem state)
+		// Protected paths are never stat'd, so check this before accessing filesystemState
+		if (isProtectedPath(remoteChange.path)) {
+			protectedPaths.add(remoteChange.path);
 			continue;
 		}
 
@@ -121,15 +133,9 @@ export function resolveUntrackedState(
 			continue;
 		}
 
-		// Case 1: Stat failed - can't verify, block conservatively
+		// Case 2: Stat failed - can't verify, block conservatively
 		if (existsLocally === null) {
-			blockedPaths.add(remoteChange.path);
-			continue;
-		}
-
-		// Case 2: Protected path - policy block
-		if (isProtectedPath(remoteChange.path)) {
-			blockedPaths.add(remoteChange.path);
+			untrackedPaths.add(remoteChange.path);
 			continue;
 		}
 
@@ -149,10 +155,10 @@ export function resolveUntrackedState(
 		}
 
 		// Either no baseline OR file changed from baseline - block to prevent data loss
-		blockedPaths.add(remoteChange.path);
+		untrackedPaths.add(remoteChange.path);
 	}
 
-	return blockedPaths;
+	return { protectedPaths, untrackedPaths };
 }
 
 /**
@@ -163,13 +169,15 @@ export function resolveUntrackedState(
  *
  * @param localChanges - All local changes (tracked + untracked from resolveUntrackedState)
  * @param remoteChanges - Changes detected in remote vault
- * @param shouldBlockRemote - Predicate for paths that block remote (from resolveUntrackedState)
+ * @param protectedPaths - Paths blocked by sync policy (shouldSyncPath)
+ * @param untrackedPaths - Paths with unknown state (stat failed or untracked changes)
  * @returns Final categorization into safe changes and clashes
  */
 export function resolveAllChanges(
 	localChanges: FileChange[],
 	remoteChanges: FileChange[],
-	shouldBlockRemote: (path: string) => boolean
+	protectedPaths: Set<string>,
+	untrackedPaths: Set<string>
 ): {
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
@@ -205,11 +213,19 @@ export function resolveAllChanges(
 			continue;
 		}
 
-		if (shouldBlockRemote(remoteChange.path)) {
-			// Blocked (stat failed, protected, or can't verify) - treat as clash
+		// Determine local state based on block reason
+		let localState: LocalClashState | null = null;
+		if (protectedPaths.has(remoteChange.path)) {
+			localState = 'protected';
+		} else if (untrackedPaths.has(remoteChange.path)) {
+			localState = 'untracked';
+		}
+
+		if (localState !== null) {
+			// Blocked - treat as clash
 			clashes.push({
 				path: remoteChange.path,
-				localState: 'untracked',
+				localState,
 				remoteOp: remoteChange.type
 			});
 		} else {
