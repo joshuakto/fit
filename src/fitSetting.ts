@@ -20,6 +20,7 @@ export default class FitSettingTab extends PluginSettingTab {
 	existingBranches: Array<string>;
 	repoLink: string;
 	useManualRepoEntry: boolean;
+	private manualEntryDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(app: App, plugin: FitPlugin) {
 		super(app, plugin);
@@ -32,6 +33,23 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.useManualRepoEntry = this.plugin.settings.repoOwner !== "" &&
 			this.plugin.settings.repoOwner !== this.plugin.settings.owner;
 	}
+
+	/**
+	 * Debounced refresh for manual entry fields.
+	 * Waits 500ms after user stops typing before fetching branches.
+	 */
+	private debouncedRefreshBranches = () => {
+		if (this.manualEntryDebounceTimer) {
+			clearTimeout(this.manualEntryDebounceTimer);
+		}
+		this.manualEntryDebounceTimer = setTimeout(async () => {
+			this.manualEntryDebounceTimer = null;
+			// Only refresh if both owner and repo are filled in
+			if (this.plugin.settings.repoOwner && this.plugin.settings.repo) {
+				await this.refreshFields('branch(1)');
+			}
+		}, 500);
+	};
 
 	getLatestLink = (): string => {
 		const {repoOwner, repo, branch} = this.plugin.settings;
@@ -205,28 +223,29 @@ export default class FitSettingTab extends PluginSettingTab {
 			});
 
 		// Manual entry fields for contributor repos
-		// Note: These fields do NOT auto-refresh branches on keystroke to avoid API spam.
-		// Users should click the section's refresh button after entering details.
+		// Uses debounced refresh to fetch branches after user stops typing (500ms delay)
 		this.manualRepoOwnerSetting = new Setting(containerEl)
 			.setName('Repository owner')
-			.setDesc('The GitHub username or organization that owns the repository. Click refresh above after entering.')
+			.setDesc('The GitHub username or organization that owns the repository.')
 			.addText(text => text
 				.setPlaceholder('owner-username')
 				.setValue(this.plugin.settings.repoOwner)
 				.onChange(async (value) => {
 					this.plugin.settings.repoOwner = value;
 					await this.plugin.saveSettings();
+					this.debouncedRefreshBranches();
 				}));
 
 		this.manualRepoNameSetting = new Setting(containerEl)
 			.setName('Repository name')
-			.setDesc('The name of the repository you have contributor access to. Click refresh above after entering.')
+			.setDesc('The name of the repository you have contributor access to.')
 			.addText(text => text
 				.setPlaceholder('repo-name')
 				.setValue(this.plugin.settings.repo)
 				.onChange(async (value) => {
 					this.plugin.settings.repo = value;
 					await this.plugin.saveSettings();
+					this.debouncedRefreshBranches();
 				}));
 
 		// Initially show/hide based on mode
