@@ -598,6 +598,67 @@ describe('LocalVault', () => {
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
 			expect(mockVault.adapter.mkdir).not.toHaveBeenCalled();
 		});
+
+		it('should handle parallel creation of files in the same new directory without race conditions', async () => {
+			// Scenario: Writing two files to a/b/c/ where none of the directories exist, processed in parallel.
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+
+			// Mock createFolder to simulate a real filesystem, which throws if a folder already exists.
+			const createdFolders = new Set<string>();
+			mockVault.createFolder.mockImplementation(async (path) => {
+				if (createdFolders.has(path)) {
+					throw new Error(`Folder ${path} already exists`);
+				}
+				createdFolders.add(path);
+			});
+
+			// Mock stat to return folder type for folders that have been created
+			// This simulates the real filesystem behavior where stat returns the folder after creation
+			mockVault.adapter.stat.mockImplementation(async (path) => {
+				if (createdFolders.has(path)) {
+					return { type: 'folder' };
+				}
+				return null;
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			// This call should succeed without throwing, as the race condition should be handled internally.
+			const result = await localVault.applyChanges(
+				[
+					{ path: 'a/b/c/file1.md', content: FileContent.fromPlainText('content1') },
+					{ path: 'a/b/c/file2.md', content: FileContent.fromPlainText('content2') }
+				],
+				[]
+			);
+
+			expect(result.changes.length).toBe(2);
+			expect(createdFolders.size).toBe(3); // a, a/b, a/b/c
+		});
+
+		it('should handle adapters that throw on stat for non-existent paths', async () => {
+			// Scenario: Some DataAdapter implementations throw when stat() is called on non-existent paths
+			// instead of returning null. The code should handle this gracefully.
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+
+			// Mock stat to throw for non-existent paths (like some adapter implementations do)
+			mockVault.adapter.stat.mockImplementation(async (path) => {
+				throw new Error(`ENOENT: no such file or directory: ${path}`);
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+
+			const result = await localVault.applyChanges(
+				[{ path: 'new-folder/file.md', content: FileContent.fromPlainText('content') }],
+				[]
+			);
+
+			expect(result.changes).toEqual([
+				{ path: 'new-folder/file.md', type: 'ADDED' }
+			]);
+			// Should create the folder despite stat throwing
+			expect(mockVault.createFolder).toHaveBeenCalledWith('new-folder');
+		});
 	});
 
 	describe('Unicode normalization in fileSha1 (issue #51)', () => {

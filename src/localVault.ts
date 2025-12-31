@@ -274,7 +274,15 @@ export class LocalVault implements IVault<"local"> {
 			const isHiddenPath = part.startsWith('.');
 
 			// Check if folder exists using adapter (works for both hidden and normal folders)
-			const stat = await this.vault.adapter.stat(currentPath);
+			// Some adapter implementations throw on non-existent paths, so wrap in try-catch
+			let stat;
+			try {
+				stat = await this.vault.adapter.stat(currentPath);
+			} catch {
+				// Adapter throws for non-existent paths, treat as not existing
+				stat = null;
+			}
+
 			if (stat) {
 				if (stat.type === 'file') {
 					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
@@ -295,7 +303,13 @@ export class LocalVault implements IVault<"local"> {
 				}
 			} catch (error) {
 				// Race condition safeguard: if folder was created concurrently, ignore error
-				const recheckStat = await this.vault.adapter.stat(currentPath);
+				let recheckStat;
+				try {
+					recheckStat = await this.vault.adapter.stat(currentPath);
+				} catch {
+					// Can't verify folder exists, re-throw original error
+					throw error;
+				}
 				if (!recheckStat || recheckStat.type !== 'folder') {
 					throw error;
 				}
