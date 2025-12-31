@@ -1689,4 +1689,64 @@ describe('FitSync', () => {
 			fitNoticeSpy.mockRestore();
 		});
 	});
+
+	describe('Fit settings - repoOwner', () => {
+		it('should use repoOwner when set (contributor repo)', () => {
+			const settingsWithRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: 'repo-owner-org'
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should be created with repoOwner, not owner
+			expect(fit.remoteVault.getOwner()).toBe('repo-owner-org');
+		});
+
+		it('should fall back to owner when repoOwner is empty', () => {
+			const settingsWithoutRepoOwner = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				settingsWithoutRepoOwner,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// The remoteVault should use owner as fallback
+			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
+		});
+
+		it('should update remoteVault when loadSettings is called with new repoOwner', () => {
+			const initialSettings = {
+				...testSettings,
+				owner: 'authenticated-user',
+				repoOwner: 'initial-owner'
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('initial-owner');
+
+			// Update settings with new repoOwner
+			fit.loadSettings({
+				...initialSettings,
+				repoOwner: 'new-owner'
+			});
+
+			expect(fit.remoteVault.getOwner()).toBe('new-owner');
+		});
+	});
 });

@@ -46,9 +46,11 @@ export class Fit {
 		// Recreate remoteVault with new settings (preserves existing state)
 		// This is called when user changes settings in UI
 		// TODO: Use DI to pass the right impl from FitSync caller.
+		// Use repoOwner for API calls (may differ from authenticated user for contributor repos)
+		const effectiveOwner = setting.repoOwner || setting.owner;
 		this.remoteVault = new RemoteGitHubVault(
 			setting.pat,
-			setting.owner,
+			effectiveOwner,
 			setting.repo,
 			setting.branch,
 			setting.deviceName

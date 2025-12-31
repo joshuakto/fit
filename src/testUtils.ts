@@ -77,7 +77,16 @@ export class FakeObsidianVault {
 			if (this.filesOnDisk.has(path)) {
 				return { type: 'file', size: this.filesOnDisk.get(path)!.byteLength, ctime: 0, mtime: 0 };
 			}
-			throw new Error('ENOENT: no such file');
+			// Check if it's a folder (any file starts with "path/")
+			for (const filePath of this.filesOnDisk.keys()) {
+				if (filePath.startsWith(path + '/')) {
+					return { type: 'folder', size: 0, ctime: 0, mtime: 0 };
+				}
+			}
+			return null; // File/folder doesn't exist
+		},
+		mkdir: async (_path: string) => {
+			// No-op for fake vault - folders are implicit
 		},
 		readBinary: async (path: string) => {
 			const content = this.filesOnDisk.get(path);
