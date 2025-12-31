@@ -713,8 +713,10 @@ describe('LocalVault', () => {
 
 			// Update the binary file
 			const newBinaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]); // JPEG header
+			// Convert to base64 without stack overflow (avoid spread operator for large arrays)
+			const binaryString = Array.from(newBinaryData, byte => String.fromCharCode(byte)).join('');
 			const result = await localVault.applyChanges(
-				[{ path: '.image-cache.png', content: FileContent.fromBase64(btoa(String.fromCharCode(...newBinaryData))) }],
+				[{ path: '.image-cache.png', content: FileContent.fromBase64(btoa(binaryString)) }],
 				[]
 			);
 

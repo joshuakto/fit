@@ -45,6 +45,18 @@ const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
 - **Browser support:** Universal
 - **Note:** Only handles Latin1 strings, use with TextEncoder/TextDecoder for UTF-8
 
+**⚠️ CRITICAL: Avoid spread operator with large Uint8Arrays**
+
+```typescript
+// ❌ STACK OVERFLOW for arrays > ~128KB
+const str = String.fromCharCode(...uint8Array);
+
+// ✅ SAFE: Use Array.from or iterate
+const str = Array.from(uint8Array, byte => String.fromCharCode(byte)).join('');
+```
+
+**Why:** JavaScript engines limit function arguments (~128,000). Spreading large arrays exceeds this limit, causing "Maximum call stack size exceeded" errors. This applies to ANY function call with spread on large arrays, not just `String.fromCharCode()`.
+
 ### ✅ Obsidian API Functions
 
 **Status:** Safe - Cross-platform guaranteed by Obsidian
