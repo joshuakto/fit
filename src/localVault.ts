@@ -255,7 +255,11 @@ export class LocalVault implements IVault<"local"> {
 
 	/**
 	 * Ensure folder exists for a given file path (creates parent directories recursively)
-	 * Uses vault.adapter for hidden folders (starting with .) since Vault API can't handle them
+	 *
+	 * Uses a functional approach to decide between Vault API and adapter:
+	 * - If getAbstractFileByPath returns a folder, it exists and Vault API can see it
+	 * - If getAbstractFileByPath returns null, check adapter.stat to see if it exists on disk
+	 * - For creation: use Vault API if the path is trackable, adapter otherwise
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
@@ -271,10 +275,20 @@ export class LocalVault implements IVault<"local"> {
 
 		for (const part of parts) {
 			currentPath = currentPath ? `${currentPath}/${part}` : part;
-			const isHiddenPath = part.startsWith('.');
 
-			// Check if folder exists using adapter (works for both hidden and normal folders)
-			// Some adapter implementations throw on non-existent paths, so wrap in try-catch
+			// First, check if Vault API can see this folder
+			const abstractFile = this.vault.getAbstractFileByPath(currentPath);
+			if (abstractFile) {
+				// Vault API can see it - check if it's a folder or file
+				if (abstractFile instanceof TFile) {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// It's a folder (TFolder or similar), continue to next level
+				continue;
+			}
+
+			// Vault API returns null - either folder doesn't exist, or it's a hidden path
+			// Check adapter.stat to see if it exists on disk
 			let stat;
 			try {
 				stat = await this.vault.adapter.stat(currentPath);
@@ -287,19 +301,19 @@ export class LocalVault implements IVault<"local"> {
 				if (stat.type === 'file') {
 					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
 				}
-				// Folder exists, continue to next level
+				// Folder exists on disk (hidden folder), continue to next level
 				continue;
 			}
 
 			// Folder doesn't exist, create it
-			// Use adapter for hidden folders, vault API for normal folders
+			// Use Vault API if the path is trackable (Vault can manage it), adapter otherwise
 			try {
-				if (isHiddenPath || currentPath.split('/').some(p => p.startsWith('.'))) {
-					// Hidden path - use adapter directly
-					await this.vault.adapter.mkdir(currentPath);
-				} else {
-					// Normal path - use vault API (keeps vault index in sync)
+				if (this.shouldTrackState(currentPath + '/placeholder')) {
+					// Trackable path - use vault API (keeps vault index in sync)
 					await this.vault.createFolder(currentPath);
+				} else {
+					// Untrackable path (hidden) - use adapter directly
+					await this.vault.adapter.mkdir(currentPath);
 				}
 			} catch (error) {
 				// Race condition safeguard: if folder was created concurrently, ignore error
