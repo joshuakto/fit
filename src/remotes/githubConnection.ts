@@ -117,6 +117,10 @@ export class GitHubConnection {
 			const owners = new Set<string>();
 			owners.add(authUser.owner);
 
+			// TODO: Only fetches orgs, but user reports seeing fewer owners than expected (only 1 instead of 3).
+			// Previously showed repos where user had collaborator access. Need to investigate:
+			// - Should we query /user/repos?affiliation=collaborator and extract unique owners?
+			// - Or was this working correctly before and something else changed?
 			// Get organizations with pagination
 			const perPage = 100;
 			let page = 1;
@@ -149,41 +153,31 @@ export class GitHubConnection {
 	 */
 	async getReposForOwner(owner: string): Promise<string[]> {
 		try {
-			const authUser = await this.getAuthenticatedUser();
+			// Get all repos the authenticated user has access to:
+			// - Repos they own
+			// - Repos they collaborate on (have write access to)
+			// - Repos from organizations they're a member of
+			// Then filter to only repos matching the requested owner
 			const allRepos: string[] = [];
 			let page = 1;
 			const perPage = 100;
+			let hasMorePages = true;
 
-			// If owner is the authenticated user, use /user/repos with affiliation filter
-			if (owner === authUser.owner) {
-				let hasMorePages = true;
-				while (hasMorePages) {
-					const {data: response} = await this.octokit.request(
-						`GET /user/repos`, {
-							affiliation: "owner",
-							headers: this.headers,
-							per_page: perPage,
-							page: page
-						});
-					allRepos.push(...response.map(r => r.name));
-					hasMorePages = response.length === perPage;
-					page++;
-				}
-			} else {
-				// For organizations, use /orgs/{org}/repos
-				let hasMorePages = true;
-				while (hasMorePages) {
-					const {data: response} = await this.octokit.request(
-						`GET /orgs/{org}/repos`, {
-							org: owner,
-							headers: this.headers,
-							per_page: perPage,
-							page: page
-						});
-					allRepos.push(...response.map(r => r.name));
-					hasMorePages = response.length === perPage;
-					page++;
-				}
+			while (hasMorePages) {
+				const {data: response} = await this.octokit.request(
+					`GET /user/repos`, {
+						affiliation: "owner,collaborator,organization_member",
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					});
+				// Filter to only repos where repo.owner.login matches the requested owner
+				const matchingRepos = response
+					.filter(r => r.owner.login === owner)
+					.map(r => r.name);
+				allRepos.push(...matchingRepos);
+				hasMorePages = response.length === perPage;
+				page++;
 			}
 
 			return allRepos.sort();

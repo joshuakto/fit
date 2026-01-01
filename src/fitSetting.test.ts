@@ -3,11 +3,12 @@
  *
  * Purpose: Test settings UI interactions and data flow between UI and orchestration classes.
  * Scope: DOM manipulation, API calls triggered by user interactions, state updates.
- * Out of scope: Testing setTimeout mechanics, Obsidian's Setting class internals.
  *
  * Test Strategy:
- * - Use real FitSettingTab instance with faked dependencies
- * - Verify correct API calls and state updates in response to user actions
+ * - Use real FitSettingTab instance with faked dependencies (GitHubConnection, plugin)
+ * - Build actual DOM using githubUserInfoBlock() and repoInfoBlock()
+ * - Verify behavior by interacting with real DOM elements and checking results
+ * - Focus on user-observable behavior, not internal implementation details
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -15,57 +16,27 @@ import type { MockInstance } from 'vitest';
 import FitSettingTab from './fitSetting';
 import { FitLogger } from './logger';
 
-// Fake DOM element that tracks CSS classes and content
-class FakeDOMElement {
-	classes = new Set<string>();
-	text = '';
-	children: any[] = [];
-	disabled = false;
-	selectedIndex = -1;
-	innerText = '';
+const EMPTY_SETTINGS = { pat: '', avatarUrl: '', owner: '', repo: '', branch: '' };
 
-	get options() {
-		return this.children;
+// Helper functions to find elements by their user-visible labels
+function findInputByLabel(container: HTMLElement, labelText: string): HTMLInputElement | null {
+	const settings = Array.from(container.querySelectorAll('.setting-item'));
+	for (const setting of settings) {
+		const nameEl = setting.querySelector('.setting-item-name');
+		if (nameEl?.textContent === labelText) {
+			const input = setting.querySelector('input[type="text"]') as HTMLInputElement;
+			return input || null;
+		}
 	}
-
-	addClass(cls: string) { this.classes.add(cls); return this; }
-	removeClass(cls: string) { this.classes.delete(cls); return this; }
-	setText(text: string) { this.text = text; return this; }
-	empty() { this.children = []; return this; }
-	createEl(_tag: string, opts?: any) {
-		const child = { ...opts };
-		this.children.push(child);
-		return child;
-	}
-	add(option: any) {
-		this.children.push({ attr: { value: option.value }, text: option.text });
-		return this;
-	}
+	return null;
 }
 
-// Helper to set up DOM fakes for settings UI tests
-function createDOMFakes() {
-	const elements = {
-		ownerDatalist: new FakeDOMElement(),
-		repoDatalist: new FakeDOMElement(),
-		repoDropdown: new FakeDOMElement(),
-		branchDropdown: new FakeDOMElement(),
-		linkEl: new FakeDOMElement()
-	};
-
-	const querySelector = ((selector: string) => {
-		if (selector === '#fit-owner-datalist') return elements.ownerDatalist;
-		if (selector === '#fit-repo-datalist') return elements.repoDatalist;
-		if (selector === '.repo-dropdown') return elements.repoDropdown;
-		if (selector === '.branch-dropdown') return elements.branchDropdown;
-		if (selector === '.link-desc') return elements.linkEl;
-		return null;
-	}) as any;
-
-	return { querySelector, elements };
+function findButtonByText(container: HTMLElement, buttonText: string): HTMLButtonElement | null {
+	const buttons = Array.from(container.querySelectorAll('button'));
+	return buttons.find(btn => btn.textContent === buttonText) as HTMLButtonElement || null;
 }
 
-describe('FitSettingTab - handleUserFetch', () => {
+describe('FitSettingTab - GitHub settings', () => {
 	let consoleLogSpy: MockInstance<typeof console.log>;
 	let consoleErrorSpy: MockInstance<typeof console.error>;
 	let mockLogger: FitLogger;
@@ -116,64 +87,282 @@ describe('FitSettingTab - handleUserFetch', () => {
 		delete (global as any).__testConsoleCapture;
 	});
 
-	it('should show error when PAT is missing (githubConnection null)', async () => {
-		// Setup: Plugin with no PAT configured
+	it('should have Authenticate button disabled when PAT is missing', async () => {
 		const fakePlugin: any = {
-			githubConnection: null,  // No connection = no PAT
-			settings: { authUser: '', avatarUrl: '', repoOwner: '', repo: '', branch: '' },
+			githubConnection: null,
+			settings: { ...EMPTY_SETTINGS, pat: '' },
+			saveSettings: async () => {},
 			fit: {
 				clearRemoteVault: () => {},
 			},
-			saveSettings: () => Promise.resolve(),
 			logger: mockLogger
 		};
 
 		const settingTab = new FitSettingTab({} as any, fakePlugin);
-		const fakeAvatar = new FakeDOMElement();
-		const fakeHandle = new FakeDOMElement();
-		settingTab.authUserAvatar = fakeAvatar as any;
-		settingTab.authUserHandle = fakeHandle as any;
 
-		// Mock refreshFields to avoid DOM access errors
-		settingTab.refreshFields = async () => {};
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
 
-		// When: User tries to authenticate
-		await settingTab.handleUserFetch();
+		// Verify: Authenticate button is disabled when no PAT
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
+		expect(authenticateButton).not.toBeNull();
+		expect(authenticateButton!.disabled).toBe(true);
 
-		// Then: Should show error state (not crash with TypeError)
-		expect(fakeAvatar.classes.has('error')).toBe(true);
-		expect(fakeAvatar.classes.has('cat')).toBe(false);  // Not in loading state
-		expect(fakeHandle.text).toContain('token');  // Error mentions token (generic error currently)
+		// When: click attempted on disabled button
+		authenticateButton!.click();
 
-		// And: Should not be in authenticating state
+		// Then: Should not enter authenticating state
 		expect(settingTab.authenticating).toBe(false);
 	});
 
-	it('should fetch branches for owner/repo combination', async () => {
-		// Setup: Plugin with valid connection
+	it('should authenticate and populate all suggestion lists', async () => {
 		const fakeConnection: any = {
+			getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: 'http://example.com/avatar.png' }),
+			getAccessibleOwners: async () => ['alice', 'bob'],
+			getReposForOwner: async () => ['repo1', 'repo2']
+		};
+
+		const fakePlugin: any = {
+			githubConnection: null,
+			lastGithubConnectionPat: null,
+			settings: { ...EMPTY_SETTINGS, pat: '' },
+			saveSettings: async () => {
+				// Simulate main.ts saveSettings creating GitHubConnection
+				if (fakePlugin.settings.pat && fakePlugin.settings.pat !== fakePlugin.lastGithubConnectionPat) {
+					fakePlugin.githubConnection = fakeConnection;
+					fakePlugin.lastGithubConnectionPat = fakePlugin.settings.pat;
+				}
+			},
+			fit: {
+				clearRemoteVault: () => {},
+			},
+			logger: mockLogger
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
+
+		// Get inputs by their labels (user-visible text)
+		const patInput = findInputByLabel(settingTab.containerEl, 'Github personal access token');
+		const ownerInput = findInputByLabel(settingTab.containerEl, 'Repository owner');
+		const repoInput = findInputByLabel(settingTab.containerEl, 'Repository name');
+
+		// Verify: Start in unauthenticated state
+		expect(ownerInput!.placeholder).toBe('Authenticate above to auto-fill');
+		expect(repoInput!.placeholder).toBe('Authenticate above for suggestions');
+
+		// When: User enters PAT
+		patInput!.value = 'ghp_test';
+		patInput!.dispatchEvent(new Event('input', { bubbles: true }));
+		await new Promise(resolve => setTimeout(resolve, 0));  // Wait for async saveSettings
+
+		// Then: GitHubConnection created, placeholders updated
+		expect(fakePlugin.githubConnection).not.toBeNull();
+		expect(ownerInput!.placeholder).toBe('owner-username');
+		expect(repoInput!.placeholder).toBe('repo-name');
+
+		// When: User clicks authenticate button
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
+		expect(authenticateButton).not.toBeNull();
+		expect(authenticateButton!.disabled).toBe(false);  // Should be enabled now
+		authenticateButton!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		// Then: Owner pre-filled with authenticated user
+		expect(ownerInput!.value).toBe('alice');
+		expect(fakePlugin.settings.owner).toBe('alice');
+
+		// And: Owner/repo suggestions populated (using datalist IDs is acceptable here since we're verifying data, not finding elements)
+		const ownerDatalist = settingTab.containerEl.querySelector('#fit-owner-datalist') as HTMLDataListElement;
+		const ownerSuggestions = Array.from(ownerDatalist.querySelectorAll('option')).map(opt => opt.value);
+		expect(ownerSuggestions).toEqual(['alice', 'bob']);
+
+		const repoDatalist = settingTab.containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
+		const repoSuggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
+		expect(repoSuggestions).toEqual(['repo1', 'repo2']);
+	});
+
+	it('should refresh suggestions for different owners', async () => {
+		const fakeConnection: any = {
+			getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: '' }),
+			getAccessibleOwners: async () => ['alice', 'bob'],
+			getReposForOwner: async (owner: string) => {
+				if (owner === 'alice') return ['repo1', 'repo2', 'repo3'];
+				if (owner === 'bob') return ['bob-repo1', 'bob-repo2'];
+				return [];
+			}
+		};
+		const fakePlugin: any = {
+			githubConnection: fakeConnection,
+			settings: { ...EMPTY_SETTINGS, pat: 'ghp_test', owner: 'alice' },
+			saveSettings: async () => {},
+			fit: {
+				clearRemoteVault: () => {},
+			},
+			logger: mockLogger
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
+
+		// When: User clicks refresh
+		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
+		refreshButton.click();
+
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		// Then: Repo datalist shows alice's repos
+		const repoDatalist = settingTab.containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
+		let suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
+		expect(suggestions).toEqual(['repo1', 'repo2', 'repo3']);
+
+		// When: User changes owner to bob and refreshes
+		fakePlugin.settings.owner = 'bob';
+		refreshButton.click();
+
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		// Then: Repo datalist updates to show bob's repos
+		suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
+		expect(suggestions).toEqual(['bob-repo1', 'bob-repo2']);
+	});
+
+	it('should populate branch dropdown when owner and repo are set', async () => {
+		const fakeConnection: any = {
+			getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: '' }),
+			getAccessibleOwners: async () => ['alice'],
+			getReposForOwner: async () => ['vault-repo'],
 			getBranches: async (owner: string, repo: string) => {
-				if (owner === 'user1' && repo === 'repo1') {
-					return ['main', 'develop', 'feature-branch'];
+				if (owner === 'alice' && repo === 'vault-repo') {
+					return ['main', 'develop', 'feature-x'];
 				}
 				return [];
 			}
 		};
 		const fakePlugin: any = {
 			githubConnection: fakeConnection,
-			settings: { owner: 'user1', repoOwner: 'user1', repo: 'repo1', branch: '' },
-			fit: {},
+			settings: { ...EMPTY_SETTINGS, pat: 'ghp_test', owner: 'alice', repo: 'vault-repo' },
+			saveSettings: async () => {},
+			fit: {
+				clearRemoteVault: () => {},
+			},
 			logger: mockLogger
 		};
 
 		const settingTab = new FitSettingTab({} as any, fakePlugin);
-		const { querySelector, elements } = createDOMFakes();
-		settingTab.containerEl.querySelector = querySelector;
 
-		// When: refreshFields is called with 'branch(1)'
-		await settingTab.refreshFields('branch(1)');
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
 
-		// Then: Should populate branch dropdown with branches
-		expect(elements.branchDropdown.children.map(c => c.attr.value)).toEqual(['main', 'develop', 'feature-branch']);
+		// When: User clicks refresh
+		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
+		refreshButton.click();
+
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		// Then: Branch dropdown is populated
+		const branchDropdown = settingTab.containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
+		const branches = Array.from(branchDropdown.options).map(opt => opt.value);
+		expect(branches).toEqual(['main', 'develop', 'feature-x']);
+	});
+
+	it('should generate correct GitHub link for owner/repo/branch', async () => {
+		const fakePlugin: any = {
+			githubConnection: null,
+			settings: { owner: 'bob', repo: 'project-x', branch: 'feature-123' },
+			logger: mockLogger
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+
+		// Verify: Link uses settings values
+		expect(settingTab.getLatestLink()).toBe('https://github.com/bob/project-x/tree/feature-123');
+	});
+
+	it('should clear branches when fetching fails (repo not found)', async () => {
+		const fakeConnection: any = {
+			getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: '' }),
+			getAccessibleOwners: async () => ['alice'],
+			getReposForOwner: async () => ['vault-repo'],
+			getBranches: async (_owner: string, repo: string) => {
+				if (repo === 'nonexistent') {
+					throw new Error("Repository not found");
+				}
+				return ['main'];
+			}
+		};
+		const fakePlugin: any = {
+			githubConnection: fakeConnection,
+			settings: { ...EMPTY_SETTINGS, pat: 'ghp_test', owner: 'alice', repo: 'nonexistent' },
+			saveSettings: async () => {},
+			fit: {
+				clearRemoteVault: () => {},
+			},
+			logger: mockLogger
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
+
+		// When: User clicks refresh for nonexistent repo
+		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
+		refreshButton.click();
+
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		// Then: Branch dropdown is cleared (graceful degradation)
+		const branchDropdown = settingTab.containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
+		expect(branchDropdown.options.length).toBe(0);
+		expect(settingTab.existingBranches).toEqual([]);
+	});
+
+	it('should enable authenticate button when githubConnection becomes available', async () => {
+		const fakeConnection: any = {
+			getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: 'http://example.com/avatar.png' }),
+			getAccessibleOwners: async () => ['alice'],
+			getReposForOwner: async () => []
+		};
+		const fakePlugin: any = {
+			githubConnection: null, // Starts with no connection
+			settings: { ...EMPTY_SETTINGS },
+			saveSettings: async () => {},
+			fit: { clearRemoteVault: () => {} },
+			logger: mockLogger
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+
+		// Build UI
+		settingTab.githubUserInfoBlock();
+		await settingTab.repoInfoBlock();
+
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
+
+		// Verify: Button starts disabled (no connection)
+		expect(authenticateButton!.disabled).toBe(true);
+
+		// When: githubConnection becomes available
+		fakePlugin.githubConnection = fakeConnection;
+		(settingTab as any).updateButtonStates();
+
+		// Then: Button is enabled
+		expect(authenticateButton!.disabled).toBe(false);
+
+		// And: Clicking works
+		authenticateButton!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(settingTab.containerEl.querySelector('.fit-github-handle')?.textContent).toBe('alice');
 	});
 });
