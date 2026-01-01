@@ -29,6 +29,73 @@ Note about status of the project: https://github.com/joshuakto/fit/issues/39
 3. Select a repo and branch and you are ready to sync.
 <img width="1100" alt="Screenshot 2024-03-13 at 9 49 33 AM" src="https://github.com/joshuakto/fit/assets/34743132/3ab3665a-5a78-468c-a936-fcf5fd2a8774">
 
+## How to setup on phone
+1. Install on Phone `dataview` plugin
+2. Activate dataviewjs in `dataview` settings
+3. Download all files in this repository and move to `/f_fit` in your vault
+4. Create any note and add the next code snippet
+```
+```dataviewjs
+const {base64ToArrayBuffer } = require("obsidian")
+
+const vault = dv.app.vault
+
+async function ensureFolderExists(path) {
+  // extract folder path, return empty string is no folder path is matched (exclude the last /)
+  const folderPath = path.match(/^(.*)\//)?.[1] || '';
+  if (folderPath == "") {
+    return false
+  }
+  const parts = folderPath.split('/');
+  let currentPath = '';
+  for (const part of parts) {
+    currentPath += part + '/';
+    try {
+      const isExists = await vault.adapter.exists(currentPath, true)
+
+      if (isExists)
+        continue
+
+      await vault.adapter.mkdir(currentPath);
+    } catch (e) {
+      return false
+    }
+  }
+  return true
+}
+async function createCopyInDir(path, copyDir, newName) {
+  const file = await vault.adapter.exists(path)
+  if (file) {
+    const copyPath = copyDir + newName
+
+    const copy = await vault.adapter.readBinary(path)
+    await ensureFolderExists(copyPath)
+    await vault.adapter.writeBinary(copyPath, copy)
+  } else {
+    throw new Error(`Attempting to create copy of ${path} from local drive as TFile but not successful,
+    file is of type ${typeof file}.`)
+  }
+}
+
+async function main() {
+  
+  const paths = [
+    ["f_fit/main.js", "f_fit/main.js"],
+    ["f_fit/styles.css", "f_fit/styles.css"],
+    ["f_fit/manifest.json", "f_fit/manifest.json"]
+  ]
+  for (let path of paths) {
+    createCopyInDir(path[0], ".obsidian/plugins/", path[1])
+  }
+  const aga = paths.every(async (el) => await vault.adapter.exists(el[1]))
+
+  dv.el("div",aga)
+}
+main()
+
+```
+
+
 ## Notes about the first sync
 - Repo cannot be empty (Select 'Add a README file' if you are creating a new repo)
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
