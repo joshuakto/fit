@@ -100,8 +100,10 @@ FIT uses different SHA algorithms for local and remote file tracking:
   - Handles both sync and push-only operations
 
 **Remote Backend Integration**:
-- Current implementation: RemoteGitHubVault using `@octokit/core` with automatic retry handling
-- Architecture supports adding RemoteGitLabVault, RemoteGiteaVault, etc. via IVault interface
+- Current implementation: GitHub backend with two components:
+  - `GitHubConnection`: PAT-based operations (authentication, repo/branch discovery) for settings UI
+  - `RemoteGitHubVault`: Repository-specific sync operations using `@octokit/core` with automatic retry handling
+- Architecture supports adding GitLab/Gitea backends via IVault interface (would require corresponding connection classes)
 
 ### Support Systems
 - **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log`)

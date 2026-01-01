@@ -58,3 +58,17 @@ export const Platform = {
 	isDesktop: true,
 	isMobile: false,
 };
+
+export class PluginSettingTab {
+	app: any;
+	plugin: any;
+	containerEl: HTMLElement = document.createElement('div');
+
+	constructor(app: any, plugin: any) {
+		this.app = app;
+		this.plugin = plugin;
+	}
+
+	display() {}
+	hide() {}
+}

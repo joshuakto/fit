@@ -14,6 +14,7 @@ import { fitLogger } from '@/logger';
 import { CommitSha } from '@/util/hashing';
 import { FileStates } from '@/util/changeTracking';
 import { handleCriticalError } from '@/util/errorHandling';
+import { GitHubConnection } from '@/remotes/githubConnection';
 
 /**
  * Plugin configuration interface
@@ -109,11 +110,14 @@ export default class FitPlugin extends Plugin {
 	localStore: LocalStores;
 	fit: Fit;
 	fitSync: FitSync;
+	githubConnection: GitHubConnection | null;
 	autoSyncIntervalId: number | null;
 	fitPullRibbonIconEl: HTMLElement;
 	fitPushRibbonIconEl: HTMLElement;
 	fitSyncRibbonIconEl: HTMLElement;
+	logger = fitLogger; // Explicit reference to singleton for future refactoring
 	private activeSyncRequests = 0; // Track number of active sync attempts
+	private lastGithubConnectionPat: string | null = null; // Track PAT changes
 	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
 	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
 
@@ -458,6 +462,9 @@ export default class FitPlugin extends Plugin {
 
 			await this.loadLocalStore();
 
+			this.githubConnection = this.settings.pat
+				? new GitHubConnection(this.settings.pat)
+				: null;
 			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
 			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
 			this.settingTab = new FitSettingTab(this.app, this);
@@ -541,5 +548,16 @@ export default class FitPlugin extends Plugin {
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings);
+
+		// Update GitHubConnection only when PAT changes
+		if (this.settings.pat !== this.lastGithubConnectionPat) {
+			if (this.settings.pat) {
+				this.githubConnection = new GitHubConnection(this.settings.pat);
+				this.lastGithubConnectionPat = this.settings.pat;
+			} else {
+				this.githubConnection = null;
+				this.lastGithubConnectionPat = null;
+			}
+		}
 	}
 }

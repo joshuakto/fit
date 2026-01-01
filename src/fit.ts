@@ -58,6 +58,7 @@ export class Fit {
 
 		// If owner is invalid but we have a valid remoteVault, preserve it
 		// This prevents overwriting a valid config with an incomplete one
+		// Example: User types "alice" → onChange fires 5 times with partial values ("a", "al", ...)
 		// Note: clearRemoteVault() should be called on auth failure to allow re-creation
 		if (!rawOwner && this.remoteVault) {
 			return;
@@ -248,29 +249,5 @@ export class Fit {
 		}
 
 		return clashes;
-	}
-
-	/**
-	 * Get authenticated user info from GitHub.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getUser(): Promise<{owner: string, avatarUrl: string}> {
-		return await this.remoteVault.getUser();
-	}
-
-	/**
-	 * List repositories owned by authenticated user.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getRepos(): Promise<string[]> {
-		return await this.remoteVault.getRepos();
-	}
-
-	/**
-	 * List branches in repository.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getBranches(): Promise<string[]> {
-		return await this.remoteVault.getBranches();
 	}
 }
