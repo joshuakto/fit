@@ -50,12 +50,12 @@ export class Fit {
 		// Trim and validate owner to handle empty/whitespace-only strings
 		// Note: Trim repoOwner BEFORE the || check to handle whitespace-only strings correctly
 		const rawOwner = (setting.repoOwner?.trim() || setting.owner || '').trim();
-		
+
 		// Skip if no PAT - no API access possible
 		if (!setting.pat) {
 			return;
 		}
-		
+
 		// Always recreate remoteVault when PAT exists
 		// This ensures new PAT is used for authentication (e.g., after token refresh)
 		// Owner can be empty for initial getUser() call which only needs PAT
