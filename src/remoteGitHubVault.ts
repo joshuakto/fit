@@ -503,6 +503,80 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	}
 
 	/**
+	 * Get list of unique owners (user + organizations) that the authenticated user has access to.
+	 * This includes the authenticated user themselves and any organizations they're a member of.
+	 */
+	async getAccessibleOwners(): Promise<string[]> {
+		const ownersSet = new Set<string>();
+		let page = 1;
+		const perPage = 100;
+
+		let hasMorePages = true;
+		while (hasMorePages) {
+			try {
+				const { data: response } = await this.octokit.request(
+					`GET /user/repos`, {
+						affiliation: "owner,collaborator,organization_member",
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					}
+				);
+				response.forEach(r => ownersSet.add(r.owner.login));
+
+				if (response.length < perPage) {
+					hasMorePages = false;
+				}
+			} catch (error) {
+				return await this.wrapOctokitError(error, 'ignore');
+			}
+
+			page++;
+		}
+
+		return Array.from(ownersSet).sort();
+	}
+
+	/**
+	 * Get list of repositories for a specific owner that the authenticated user has access to.
+	 * @param owner - The owner (user or organization) to fetch repos for
+	 */
+	async getReposForOwner(owner: string): Promise<string[]> {
+		const repos: string[] = [];
+		let page = 1;
+		const perPage = 100;
+
+		let hasMorePages = true;
+		while (hasMorePages) {
+			try {
+				const { data: response } = await this.octokit.request(
+					`GET /user/repos`, {
+						affiliation: "owner,collaborator,organization_member",
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					}
+				);
+
+				// Filter repos by owner and extract repo names
+				response
+					.filter(r => r.owner.login === owner)
+					.forEach(r => repos.push(r.name));
+
+				if (response.length < perPage) {
+					hasMorePages = false;
+				}
+			} catch (error) {
+				return await this.wrapOctokitError(error, 'ignore');
+			}
+
+			page++;
+		}
+
+		return repos.sort();
+	}
+
+	/**
 	 * Get list of branches for the repository.
 	 * Throws VaultError (remote_not_found) on 404 (repository not found).
 	 */

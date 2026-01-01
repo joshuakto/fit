@@ -12,15 +12,15 @@ export default class FitSettingTab extends PluginSettingTab {
 	authUserHandle: HTMLSpanElement;
 	patSetting: Setting;
 	ownerSetting: Setting;
+	repoOwnerSetting: Setting;
 	repoSetting: Setting;
 	branchSetting: Setting;
-	manualRepoOwnerSetting: Setting;
-	manualRepoNameSetting: Setting;
 	existingRepos: Array<string>;
 	existingBranches: Array<string>;
 	repoLink: string;
-	useManualRepoEntry: boolean;
-	private manualEntryDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private suggestedOwners: Array<string> = [];
+	private suggestedRepos: Array<string> = [];
 
 	constructor(app: App, plugin: FitPlugin) {
 		super(app, plugin);
@@ -29,21 +29,18 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.authenticating = false;
 		this.existingRepos = [];
 		this.existingBranches = [];
-		// Enable manual entry mode if repoOwner differs from authenticated owner (contributor repo)
-		this.useManualRepoEntry = this.plugin.settings.repoOwner !== "" &&
-			this.plugin.settings.repoOwner !== this.plugin.settings.owner;
 	}
 
 	/**
-	 * Debounced refresh for manual entry fields.
+	 * Debounced refresh for repo owner/name changes.
 	 * Waits 500ms after user stops typing before fetching branches.
 	 */
 	private debouncedRefreshBranches = () => {
-		if (this.manualEntryDebounceTimer) {
-			clearTimeout(this.manualEntryDebounceTimer);
+		if (this.refreshDebounceTimer) {
+			clearTimeout(this.refreshDebounceTimer);
 		}
-		this.manualEntryDebounceTimer = setTimeout(async () => {
-			this.manualEntryDebounceTimer = null;
+		this.refreshDebounceTimer = setTimeout(async () => {
+			this.refreshDebounceTimer = null;
 			// Only refresh if both owner and repo are filled in
 			if (this.plugin.settings.repoOwner && this.plugin.settings.repo) {
 				await this.refreshFields('branch(1)');
@@ -52,10 +49,9 @@ export default class FitSettingTab extends PluginSettingTab {
 	};
 
 	getLatestLink = (): string => {
-		const {repoOwner, repo, branch} = this.plugin.settings;
-		// Use repoOwner for the link (this is the actual repo owner, which may differ from authenticated user)
-		if (repoOwner.length > 0 && repo.length > 0 && branch.length > 0) {
-			return `https://github.com/${repoOwner}/${repo}/tree/${branch}`;
+		const {repoOwner: owner, repo, branch} = this.plugin.settings;
+		if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
+			return `https://github.com/${owner}/${repo}/tree/${branch}`;
 		}
 		return "";
 	};
@@ -67,30 +63,32 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.authUserAvatar.removeClass('empty');
 		this.authUserAvatar.addClass('cat');
 		try {
-			const {owner, avatarUrl} = await this.plugin.fit.getUser();
+			const {owner: authUser, avatarUrl} = await this.plugin.fit.getUser();
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.createEl('img', { attr: { src: avatarUrl } });
-			this.authUserHandle.setText(owner);
-			if (owner !== this.plugin.settings.owner) {
-				this.plugin.settings.owner = owner;
+			this.authUserHandle.setText(authUser);
+			if (authUser !== this.plugin.settings.authUser) {
+				this.plugin.settings.authUser = authUser;
 				this.plugin.settings.avatarUrl = avatarUrl;
-				// Only reset repoOwner if not in manual entry mode
-				if (!this.useManualRepoEntry) {
-					this.plugin.settings.repoOwner = owner;
+				// Pre-fill repoOwner with authUser on first authentication
+				if (!this.plugin.settings.repoOwner) {
+					this.plugin.settings.repoOwner = authUser;
 				}
-				this.plugin.settings.repo = "";
-				this.plugin.settings.branch = "";
-				this.existingBranches = [];
-				this.existingRepos = [];
 				await this.plugin.saveSettings();
-				await this.refreshFields('repo(0)');
+
+				// Refresh repos/branches if owner and repo are already filled
+				if (this.plugin.settings.repoOwner && this.plugin.settings.repo) {
+					await this.refreshFields('branch(1)');
+				} else {
+					await this.refreshFields('repo(0)');
+				}
 			}
 			this.authenticating = false;
 		} catch (_error) {
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.addClass('error');
 			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
-			this.plugin.settings.owner = "";
+			this.plugin.settings.authUser = "";
 			this.plugin.settings.avatarUrl = "";
 			this.plugin.settings.repoOwner = "";
 			this.plugin.settings.repo = "";
@@ -124,7 +122,7 @@ export default class FitSettingTab extends PluginSettingTab {
 					window.open("https://github.com/signup", "_blank");
 				}));
 		this.ownerSetting.nameEl.addClass('fit-avatar-container');
-		if (this.plugin.settings.owner === "") {
+		if (this.plugin.settings.authUser === "") {
 			this.authUserAvatar = this.ownerSetting.nameEl.createDiv(
 				{cls: 'fit-avatar-container empty'});
 			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'});
@@ -134,7 +132,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				{cls: 'fit-avatar-container'});
 			this.authUserAvatar.createEl('img', { attr: { src: this.plugin.settings.avatarUrl } });
 			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'});
-			this.authUserHandle.setText(this.plugin.settings.owner);
+			this.authUserHandle.setText(this.plugin.settings.authUser);
 		}
 		// hide the control element to make space for authUser
 		this.ownerSetting.controlEl.addClass('fit-avatar-display-text');
@@ -165,7 +163,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setDesc("Refresh to retrieve the latest list of repos and branches.")
 			.addExtraButton(button => button
 				.setTooltip("Refresh repos and branches list")
-				.setDisabled(this.plugin.settings.owner === "")
+				.setDisabled(this.plugin.settings.authUser === "")
 				.setIcon('refresh-cw')
 				.onClick(async () => {
 					await this.refreshFields('repo(0)');
@@ -180,77 +178,62 @@ export default class FitSettingTab extends PluginSettingTab {
 					window.open(`https://github.com/new`, '_blank');
 				}));
 
-		// Toggle for manual repo entry (for contributor repos)
-		new Setting(containerEl)
-			.setName('Manual repository entry')
-			.setDesc('Enable to manually enter a repository name. Use this for repos where you have contributor access but are not the owner.')
-			.addToggle(toggle => toggle
-				.setValue(this.useManualRepoEntry)
-				.onChange(async (value) => {
-					this.useManualRepoEntry = value;
-					// Show/hide the appropriate settings
-					this.repoSetting.settingEl.toggle(!value);
-					this.manualRepoOwnerSetting.settingEl.toggle(value);
-					this.manualRepoNameSetting.settingEl.toggle(value);
-
-					if (!value) {
-						// Switching back to dropdown mode - refresh the list of owned repos and their branches
-						// Don't reset repoOwner here; it will be set when user selects from dropdown
-						await this.refreshFields('repo(0)');
-					}
-				}));
-
-		// Dropdown for owned repos (default mode)
-		this.repoSetting = new Setting(containerEl)
-			.setName('Github repository name')
-			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
-			.addDropdown(dropdown => {
-				dropdown.selectEl.addClass('repo-dropdown');
-				this.existingRepos.map(repo=>dropdown.addOption(repo, repo));
-				dropdown.setDisabled(this.existingRepos.length === 0);
-				dropdown.setValue(this.plugin.settings.repo);
-				dropdown.onChange(async (value) => {
-					const repoChanged = value !== this.plugin.settings.repo;
-					if (repoChanged) {
-						this.plugin.settings.repo = value;
-						// For owned repos, repoOwner is the authenticated user
-						this.plugin.settings.repoOwner = this.plugin.settings.owner;
-						await this.plugin.saveSettings();
-						await this.refreshFields('branch(1)');
-					}
-				});
-			});
-
-		// Manual entry fields for contributor repos
-		// Uses debounced refresh to fetch branches after user stops typing (500ms delay)
-		this.manualRepoOwnerSetting = new Setting(containerEl)
+		// Repository owner combo box (supports both dropdown suggestions and freeform text)
+		const isAuthenticated = this.plugin.settings.authUser !== "";
+		this.repoOwnerSetting = new Setting(containerEl)
 			.setName('Repository owner')
-			.setDesc('The GitHub username or organization that owns the repository.')
-			.addText(text => text
-				.setPlaceholder('owner-username')
-				.setValue(this.plugin.settings.repoOwner)
+			.setDesc(isAuthenticated
+				? 'The GitHub username or organization that owns the repository. Select from suggestions or type a custom value.'
+				: 'Click "Authenticate user" above to auto-fill with your username and see suggestions, or type a custom value.');
+
+		// Create datalist for owner suggestions
+		const ownerDatalistId = 'fit-owner-datalist';
+		containerEl.createEl('datalist', { attr: { id: ownerDatalistId } });
+
+		this.repoOwnerSetting.addText(text => {
+			text.inputEl.setAttribute('list', ownerDatalistId);
+			text.setPlaceholder(isAuthenticated ? 'owner-username' : 'Authenticate above to auto-fill')
+				.setValue(this.plugin.settings.repoOwner || this.plugin.settings.authUser)
 				.onChange(async (value) => {
+					const ownerChanged = value !== this.plugin.settings.repoOwner;
 					this.plugin.settings.repoOwner = value;
 					await this.plugin.saveSettings();
-					this.debouncedRefreshBranches();
-				}));
 
-		this.manualRepoNameSetting = new Setting(containerEl)
+					if (ownerChanged && value) {
+						// Refresh repo suggestions for new owner
+						const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
+						this.existingRepos = await this.plugin.fit.getReposForOwner(value);
+						repo_datalist.empty();
+						this.existingRepos.forEach(repo => {
+							repo_datalist.createEl('option', { attr: { value: repo } });
+						});
+					}
+
+					this.debouncedRefreshBranches();
+				});
+		});
+
+		// Repository name combo box (supports both dropdown suggestions and freeform text)
+		this.repoSetting = new Setting(containerEl)
 			.setName('Repository name')
-			.setDesc('The name of the repository you have contributor access to.')
-			.addText(text => text
-				.setPlaceholder('repo-name')
+			.setDesc(isAuthenticated
+				? 'Select a repo to sync your vault or type a custom value. Refresh to see your latest repos.'
+				: 'Authenticate above to see repo suggestions, or type a custom value.');
+
+		// Create datalist for repo suggestions
+		const repoDatalistId = 'fit-repo-datalist';
+		containerEl.createEl('datalist', { attr: { id: repoDatalistId } });
+
+		this.repoSetting.addText(text => {
+			text.inputEl.setAttribute('list', repoDatalistId);
+			text.setPlaceholder(isAuthenticated ? 'repo-name' : 'Authenticate above for suggestions')
 				.setValue(this.plugin.settings.repo)
 				.onChange(async (value) => {
 					this.plugin.settings.repo = value;
 					await this.plugin.saveSettings();
 					this.debouncedRefreshBranches();
-				}));
-
-		// Initially show/hide based on mode
-		this.repoSetting.settingEl.toggle(!this.useManualRepoEntry);
-		this.manualRepoOwnerSetting.settingEl.toggle(this.useManualRepoEntry);
-		this.manualRepoNameSetting.settingEl.toggle(this.useManualRepoEntry);
+				});
+		});
 
 		this.branchSetting = new Setting(containerEl)
 			.setName('Branch name')
@@ -414,32 +397,35 @@ export default class FitSettingTab extends PluginSettingTab {
 
 	refreshFields = async (refreshFrom: RefreshCheckPoint) => {
 		const {containerEl} = this;
-		const repo_dropdown = containerEl.querySelector('.repo-dropdown') as HTMLSelectElement;
+		const owner_datalist = containerEl.querySelector('#fit-owner-datalist') as HTMLDataListElement;
+		const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
 		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
 		const link_el = containerEl.querySelector('.link-desc') as HTMLElement;
+
 		if (refreshFrom === "repo(0)") {
-			repo_dropdown.disabled = true;
-			branch_dropdown.disabled = true;
-			this.existingRepos = await this.plugin.fit.getRepos();
-			const repoOptions = Array.from(repo_dropdown.options).map(option => option.value);
-			if (!setEqual<string>(this.existingRepos, repoOptions)) {
-				repo_dropdown.empty();
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo));
-				});
-				// if original repo not in the updated existing repo, -1 will be returned
-				const selectedRepoIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-				// setting selectedIndex to -1 to indicate no options selected
-				repo_dropdown.selectedIndex = selectedRepoIndex;
-				if (selectedRepoIndex===-1){
-					this.plugin.settings.repo = "";
-				}
+			// Fetch owners and populate owner datalist
+			this.suggestedOwners = await this.plugin.fit.getAccessibleOwners();
+			owner_datalist.empty();
+			this.suggestedOwners.forEach(owner => {
+				owner_datalist.createEl('option', { attr: { value: owner } });
+			});
+
+			// Fetch repos for current owner and populate repo datalist
+			if (this.plugin.settings.repoOwner) {
+				this.existingRepos = await this.plugin.fit.getReposForOwner(this.plugin.settings.repoOwner);
+			} else {
+				this.existingRepos = [];
 			}
-			repo_dropdown.disabled = false;
+			repo_datalist.empty();
+			this.existingRepos.forEach(repo => {
+				repo_datalist.createEl('option', { attr: { value: repo } });
+			});
 		}
+
 		if (refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
-			if (this.plugin.settings.repo === "") {
+			if (this.plugin.settings.repo === "" || this.plugin.settings.repoOwner === "") {
 				branch_dropdown.empty();
+				this.existingBranches = [];
 			} else {
 				const latestBranches = await this.plugin.fit.getBranches();
 				if (!setEqual<string>(this.existingBranches, latestBranches)) {
@@ -459,55 +445,49 @@ export default class FitSettingTab extends PluginSettingTab {
 			}
 			branch_dropdown.disabled = false;
 		}
+
 		if (refreshFrom === "link(2)" || refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
 			this.repoLink = this.getLatestLink();
 			link_el.innerText = this.repoLink;
 		}
+
 		if (refreshFrom === "initialize") {
-			const {repo, branch} = this.plugin.settings;
-			repo_dropdown.empty();
+			owner_datalist.empty();
+			repo_datalist.empty();
 			branch_dropdown.empty();
-			repo_dropdown.add(new Option(repo, repo));
-			branch_dropdown.add(new Option(branch, branch));
+			if (this.plugin.settings.branch) {
+				branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
+			}
 			link_el.innerText = this.getLatestLink();
 		}
+
 		if (refreshFrom === "withCache") {
-			repo_dropdown.empty();
+			// Populate datalists with cached data
+			owner_datalist.empty();
+			this.suggestedOwners.forEach(owner => {
+				owner_datalist.createEl('option', { attr: { value: owner } });
+			});
+
+			repo_datalist.empty();
+			this.existingRepos.forEach(repo => {
+				repo_datalist.createEl('option', { attr: { value: repo } });
+			});
+
 			branch_dropdown.empty();
-			if (this.existingRepos.length > 0) {
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo));
-				});
-				repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-			}
 			if (this.existingBranches.length > 0) {
-				this.existingBranches.map(branch => {
+				this.existingBranches.forEach(branch => {
 					branch_dropdown.add(new Option(branch, branch));
 				});
 				if (this.plugin.settings.branch === "") {
 					branch_dropdown.selectedIndex = -1;
-				}
-				branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
-			}
-			if (this.plugin.settings.repo !== "") {
-				if (this.existingRepos.length === 0) {
-					repo_dropdown.add(new Option(this.plugin.settings.repo, this.plugin.settings.repo));
-				} else {
-					repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`);
-					}
-				}
-			}
-			if (this.plugin.settings.branch !== "") {
-				if (this.existingBranches.length === 0) {
-					branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
 				} else {
 					branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
 					if (branch_dropdown.selectedIndex === -1) {
 						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`);
 					}
 				}
+			} else if (this.plugin.settings.branch !== "") {
+				branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
 			}
 		}
 	};

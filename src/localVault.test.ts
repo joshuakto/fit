@@ -701,7 +701,7 @@ describe('LocalVault', () => {
 			// Verify file was actually created on disk
 			const created = await fakeVault.adapter.readBinary('.editorconfig');
 			expect(new TextDecoder().decode(created)).toBe('[*.ts]\nindent_style = tab\n');
-			});
+		});
 
 		it('should handle binary hidden files without corruption', async () => {
 			const fakeVault = new FakeObsidianVault();
