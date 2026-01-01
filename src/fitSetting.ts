@@ -90,6 +90,8 @@ export default class FitSettingTab extends PluginSettingTab {
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.addClass('error');
 			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
+			// Clear remoteVault to allow re-creation on next auth attempt
+			this.plugin.fit.clearRemoteVault();
 			this.plugin.settings.owner = "";
 			this.plugin.settings.avatarUrl = "";
 			this.plugin.settings.repoOwner = "";

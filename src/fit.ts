@@ -56,9 +56,13 @@ export class Fit {
 			return;
 		}
 
-		// Always recreate remoteVault when PAT exists
-		// This ensures new PAT is used for authentication (e.g., after token refresh)
-		// Owner can be empty for initial getUser() call which only needs PAT
+		// If owner is invalid but we have a valid remoteVault, preserve it
+		// This prevents overwriting a valid config with an incomplete one
+		// Note: clearRemoteVault() should be called on auth failure to allow re-creation
+		if (!rawOwner && this.remoteVault) {
+			return;
+		}
+
 		this.remoteVault = new RemoteGitHubVault(
 			setting.pat,
 			rawOwner,
@@ -66,6 +70,14 @@ export class Fit {
 			setting.branch,
 			setting.deviceName
 		);
+	}
+
+	/**
+	 * Clear the remoteVault instance.
+	 * Call this on authentication failure to allow re-creation on next attempt.
+	 */
+	clearRemoteVault() {
+		this.remoteVault = undefined as unknown as RemoteGitHubVault;
 	}
 
 	loadLocalStore(localStore: LocalStores) {

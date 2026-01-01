@@ -1800,20 +1800,20 @@ describe('FitSync', () => {
 
 			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
 
-			// Update with whitespace-only owner - remoteVault should be recreated
-			// This is necessary to allow re-authentication with new PAT
+			// Update with whitespace-only owner - should preserve existing remoteVault
+			// (safeguard against overwriting valid config with incomplete one)
 			fit.loadSettings({
 				...initialSettings,
 				owner: '   ',
 				repoOwner: '   '
 			});
 
-			// remoteVault should have empty owner (will be set after getUser())
-			expect(fit.remoteVault.getOwner()).toBe('');
+			// remoteVault should still have the original owner (preserved)
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
 		});
 
-		it('should recreate remoteVault when PAT changes (re-authentication scenario)', () => {
-			// Scenario: User auth fails, they enter a new PAT, should be able to re-authenticate
+		it('should recreate remoteVault after clearRemoteVault is called (re-authentication scenario)', () => {
+			// Scenario: User auth fails, clearRemoteVault is called, then user enters new PAT
 			const initialSettings = {
 				...testSettings,
 				pat: 'old-token',
@@ -1827,9 +1827,12 @@ describe('FitSync', () => {
 				{} as unknown as Vault
 			);
 
-			const originalVault = fit.remoteVault;
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
 
-			// Simulate failed auth clearing owner, then user enters new PAT
+			// Simulate auth failure - clearRemoteVault is called
+			fit.clearRemoteVault();
+
+			// Now loadSettings with empty owner should create new remoteVault
 			fit.loadSettings({
 				...initialSettings,
 				pat: 'new-token',
@@ -1837,8 +1840,6 @@ describe('FitSync', () => {
 				repoOwner: ''
 			});
 
-			// remoteVault should be recreated (not the same instance)
-			expect(fit.remoteVault).not.toBe(originalVault);
 			// New vault should have empty owner (will be set after getUser() succeeds)
 			expect(fit.remoteVault.getOwner()).toBe('');
 		});
