@@ -1783,7 +1783,9 @@ describe('FitSync', () => {
 			expect(fit.remoteVault.getOwner()).toBe('authenticated-user');
 		});
 
-		it('should not update remoteVault when owner is whitespace-only', () => {
+		it('should update remoteVault with empty owner when owner is whitespace-only', () => {
+			// This allows re-authentication when user changes PAT
+			// Owner will be set correctly after getUser() succeeds
 			const initialSettings = {
 				...testSettings,
 				owner: 'valid-owner',
@@ -1798,15 +1800,75 @@ describe('FitSync', () => {
 
 			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
 
-			// Try to update with whitespace-only owner - should preserve existing remoteVault
+			// Update with whitespace-only owner - remoteVault should be recreated
+			// This is necessary to allow re-authentication with new PAT
 			fit.loadSettings({
 				...initialSettings,
 				owner: '   ',
 				repoOwner: '   '
 			});
 
-			// remoteVault should still have the original owner
-			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+			// remoteVault should have empty owner (will be set after getUser())
+			expect(fit.remoteVault.getOwner()).toBe('');
+		});
+
+		it('should recreate remoteVault when PAT changes (re-authentication scenario)', () => {
+			// Scenario: User auth fails, they enter a new PAT, should be able to re-authenticate
+			const initialSettings = {
+				...testSettings,
+				pat: 'old-token',
+				owner: 'valid-owner',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			const originalVault = fit.remoteVault;
+
+			// Simulate failed auth clearing owner, then user enters new PAT
+			fit.loadSettings({
+				...initialSettings,
+				pat: 'new-token',
+				owner: '',
+				repoOwner: ''
+			});
+
+			// remoteVault should be recreated (not the same instance)
+			expect(fit.remoteVault).not.toBe(originalVault);
+			// New vault should have empty owner (will be set after getUser() succeeds)
+			expect(fit.remoteVault.getOwner()).toBe('');
+		});
+
+		it('should not recreate remoteVault when PAT is empty', () => {
+			const initialSettings = {
+				...testSettings,
+				pat: 'valid-token',
+				owner: 'valid-owner',
+				repoOwner: ''
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			const originalVault = fit.remoteVault;
+
+			// Clear PAT - should preserve existing remoteVault
+			fit.loadSettings({
+				...initialSettings,
+				pat: '',
+				owner: 'valid-owner',
+				repoOwner: ''
+			});
+
+			// remoteVault should be the same instance (not recreated)
+			expect(fit.remoteVault).toBe(originalVault);
 		});
 	});
 });
