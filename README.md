@@ -95,6 +95,12 @@ main()
 
 ```
 
+5. Open `Read mode`
+6. You need to see `true`
+7. Reload and activate f_fit plugin in obsidian settings
+8. Delete folder `/f_fit` and file created at 4th step.
+9. Enjoy!
+
 
 ## Notes about the first sync
 - Repo cannot be empty (Select 'Add a README file' if you are creating a new repo)
