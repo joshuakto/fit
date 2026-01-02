@@ -254,7 +254,12 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
-	 * Ensure folder exists for a given file path
+	 * Ensure folder exists for a given file path (creates parent directories recursively)
+	 *
+	 * Uses a functional approach to decide between Vault API and adapter:
+	 * - If getAbstractFileByPath returns a folder, it exists and Vault API can see it
+	 * - If getAbstractFileByPath returns null, check adapter.stat to see if it exists on disk
+	 * - For creation: use Vault API if the path is trackable, adapter otherwise
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
@@ -264,28 +269,64 @@ export class LocalVault implements IVault<"local"> {
 			return;
 		}
 
-		// Check if path exists and verify it's a folder, not a file
-		const existing = this.vault.getAbstractFileByPath(folderPath);
-		if (existing) {
-			// If it's a file, we can't create a folder at this path
-			if (existing instanceof TFile) {
-				throw new Error(`Cannot create folder at ${folderPath}: a file already exists at this path`);
-			}
-			// If it's already a folder, we're done
-			if (existing instanceof TFolder) {
-				return;
-			}
-			// Unknown type - shouldn't happen but be defensive
-		}
+		// Split path into parts and create each level if needed
+		const parts = folderPath.split('/');
+		let currentPath = '';
 
-		// Path doesn't exist, create the folder
-		try {
-			await this.vault.createFolder(folderPath);
-		} catch (error) {
-			// Race condition safeguard: if folder was created concurrently, ignore error
-			const recheckExisting = this.vault.getAbstractFileByPath(folderPath);
-			if (!recheckExisting || !(recheckExisting instanceof TFolder)) {
-				throw error;
+		for (const part of parts) {
+			currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+			// First, check if Vault API can see this folder
+			const abstractFile = this.vault.getAbstractFileByPath(currentPath);
+			if (abstractFile) {
+				// Vault API can see it - check if it's a folder or file
+				if (abstractFile instanceof TFile) {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// It's a folder (TFolder or similar), continue to next level
+				continue;
+			}
+
+			// Vault API returns null - either folder doesn't exist, or it's a hidden path
+			// Check adapter.stat to see if it exists on disk
+			let stat;
+			try {
+				stat = await this.vault.adapter.stat(currentPath);
+			} catch {
+				// Adapter throws for non-existent paths, treat as not existing
+				stat = null;
+			}
+
+			if (stat) {
+				if (stat.type === 'file') {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// Folder exists on disk (hidden folder), continue to next level
+				continue;
+			}
+
+			// Folder doesn't exist, create it
+			// Use Vault API if the path is trackable (Vault can manage it), adapter otherwise
+			try {
+				if (this.shouldTrackState(currentPath + '/placeholder')) {
+					// Trackable path - use vault API (keeps vault index in sync)
+					await this.vault.createFolder(currentPath);
+				} else {
+					// Untrackable path (hidden) - use adapter directly
+					await this.vault.adapter.mkdir(currentPath);
+				}
+			} catch (error) {
+				// Race condition safeguard: if folder was created concurrently, ignore error
+				let recheckStat;
+				try {
+					recheckStat = await this.vault.adapter.stat(currentPath);
+				} catch {
+					// Can't verify folder exists, re-throw original error
+					throw error;
+				}
+				if (!recheckStat || recheckStat.type !== 'folder') {
+					throw error;
+				}
 			}
 		}
 	}
@@ -341,10 +382,12 @@ export class LocalVault implements IVault<"local"> {
 				// See docs/api-compatibility.md "Reading Untracked Files"
 				let existsOnDisk = false;
 				try {
-					await this.vault.adapter.stat(path);
-					existsOnDisk = true;
+					// stat() can throw or return null for non-existent files depending on adapter implementation.
+					// A successful stat returns a Stat object, which is truthy.
+					existsOnDisk = !!(await this.vault.adapter.stat(path));
 				} catch {
-					// File doesn't exist - will create
+					// If it throws, the file doesn't exist.
+					existsOnDisk = false;
 				}
 
 				if (existsOnDisk) {
