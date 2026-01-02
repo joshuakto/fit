@@ -117,14 +117,23 @@ export class GitHubConnection {
 			const owners = new Set<string>();
 			owners.add(authUser.owner);
 
-			// Get organizations
-			const {data: orgs} = await this.octokit.request(
-				`GET /user/orgs`, {
-					headers: this.headers,
-					per_page: 100
-				});
+			// Get organizations with pagination
+			const perPage = 100;
+			let page = 1;
+			let hasMoreOrgs = true;
 
-			orgs.forEach(org => owners.add(org.login));
+			while (hasMoreOrgs) {
+				const {data: orgs} = await this.octokit.request(
+					`GET /user/orgs`, {
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					});
+
+				orgs.forEach(org => owners.add(org.login));
+				hasMoreOrgs = orgs.length === perPage;
+				page++;
+			}
 
 			return Array.from(owners).sort();
 		} catch (error) {
@@ -192,14 +201,28 @@ export class GitHubConnection {
 	 */
 	async getBranches(owner: string, repo: string): Promise<string[]> {
 		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/branches`,
-				{
-					owner: owner,
-					repo: repo,
-					headers: this.headers
-				});
-			return response.map(r => r.name);
+			const allBranches: string[] = [];
+			const perPage = 100;
+			let page = 1;
+			let hasMoreBranches = true;
+
+			while (hasMoreBranches) {
+				const {data: response} = await this.octokit.request(
+					`GET /repos/{owner}/{repo}/branches`,
+					{
+						owner: owner,
+						repo: repo,
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					});
+
+				allBranches.push(...response.map(r => r.name));
+				hasMoreBranches = response.length === perPage;
+				page++;
+			}
+
+			return allBranches;
 		} catch (error: unknown) {
 			return await this.wrapOctokitError(error, { owner, repo });
 		}

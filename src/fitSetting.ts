@@ -446,10 +446,17 @@ export default class FitSettingTab extends PluginSettingTab {
 		const repo_dropdown = containerEl.querySelector('.repo-dropdown') as HTMLSelectElement;
 		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
 		const link_el = containerEl.querySelector('.link-desc') as HTMLElement;
+
+		// Guard: Cannot refresh without githubConnection
+		if (!this.plugin.githubConnection) {
+			this.plugin.logger.log('[FitSettings] Cannot refresh fields without PAT token');
+			return;
+		}
+
 		if (refreshFrom === "repo(0)") {
 			repo_dropdown.disabled = true;
 			branch_dropdown.disabled = true;
-			this.existingRepos = await this.plugin.githubConnection!.getReposForOwner(this.plugin.settings.owner);
+			this.existingRepos = await this.plugin.githubConnection.getReposForOwner(this.plugin.settings.owner);
 			const repoOptions = Array.from(repo_dropdown.options).map(option => option.value);
 			if (!setEqual<string>(this.existingRepos, repoOptions)) {
 				repo_dropdown.empty();
@@ -470,7 +477,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			if (this.plugin.settings.repo === "") {
 				branch_dropdown.empty();
 			} else {
-				const latestBranches = await this.plugin.githubConnection!.getBranches(this.plugin.settings.owner, this.plugin.settings.repo);
+				const latestBranches = await this.plugin.githubConnection.getBranches(this.plugin.settings.repoOwner, this.plugin.settings.repo);
 				if (!setEqual<string>(this.existingBranches, latestBranches)) {
 					branch_dropdown.empty();
 					this.existingBranches = latestBranches;
