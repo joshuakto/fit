@@ -26,7 +26,7 @@ export class FitPush implements IFitPush {
                 return node
             }
         }))).filter(Boolean) as Array<TreeNode>
-        console.log(treeNodes)
+
         if (treeNodes.length === 0) {
             return null
         }

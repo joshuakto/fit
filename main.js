@@ -2518,7 +2518,6 @@ var FitPush = class {
         return node;
       }
     }))).filter(Boolean);
-    console.log(treeNodes);
     if (treeNodes.length === 0) {
       return null;
     }
@@ -3389,12 +3388,14 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
     this.startOrUpdateAutoSyncInterval();
   }
   getExcludes() {
+    var _a;
     const excludes = [];
     for (let repo of this.storage.repo) {
       const path = repo.settings.syncPath;
-      if (path)
-        excludes.push(path);
+      path && excludes.push(path);
     }
+    const pluginDirectory = (_a = this.manifest) == null ? void 0 : _a.dir;
+    pluginDirectory && excludes.push(`${pluginDirectory}/data.json`);
     return excludes;
   }
   async getConflictStatus(conflictFiles) {

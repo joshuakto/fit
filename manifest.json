@@ -1,11 +1,11 @@
 {
-	"id": "f_fit",
-	"name": "f_Fit",
-	"version": "1.0.0",
-	"minAppVersion": "1.4.0",
-	"description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
-	"author": "joshuakto",
-	"authorUrl": "https://github.com/joshuakto",
-	"fundingUrl": "https://www.buymeacoffee.com/joshuakto",
-	"isDesktopOnly": false
+    "id": "f_fit",
+    "name": "Fit",
+    "version": "1.0.0",
+    "minAppVersion": "1.4.0",
+    "description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
+    "author": "joshuakto",
+    "authorUrl": "https://github.com/joshuakto",
+    "fundingUrl": "https://github.com/ffezt",
+    "isDesktopOnly": false
 }

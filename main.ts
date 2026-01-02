@@ -334,7 +334,6 @@ export default class FitPlugin extends Plugin {
         }
     }
 
-
     async startOrUpdateAutoSyncInterval() {
         // Clear existing interval if it exists
         if (this.autoSyncIntervalId !== null) {
@@ -444,9 +443,11 @@ export default class FitPlugin extends Plugin {
         const excludes = []
         for (let repo of this.storage.repo) {
             const path = repo.settings.syncPath
-            if (path)
-                excludes.push(path)
+            path && excludes.push(path)
         }
+
+        const pluginDirectory = this.manifest?.dir
+        pluginDirectory && excludes.push(`${pluginDirectory}/data.json`)
 
         return excludes
     }
