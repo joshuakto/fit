@@ -50,11 +50,19 @@ export class Fit {
 		// Trim and validate owner to handle empty/whitespace-only strings
 		// Note: Trim repoOwner BEFORE the || check to handle whitespace-only strings correctly
 		const rawOwner = (setting.repoOwner?.trim() || setting.owner || '').trim();
-		if (!rawOwner) {
-			// Do not instantiate RemoteGitHubVault with an invalid owner, as it will cause all API calls to fail.
-			// This preserves the existing (potentially valid) remoteVault instance.
+
+		// Skip if no PAT - no API access possible
+		if (!setting.pat) {
 			return;
 		}
+
+		// If owner is invalid but we have a valid remoteVault, preserve it
+		// This prevents overwriting a valid config with an incomplete one
+		// Note: clearRemoteVault() should be called on auth failure to allow re-creation
+		if (!rawOwner && this.remoteVault) {
+			return;
+		}
+
 		this.remoteVault = new RemoteGitHubVault(
 			setting.pat,
 			rawOwner,
@@ -62,6 +70,14 @@ export class Fit {
 			setting.branch,
 			setting.deviceName
 		);
+	}
+
+	/**
+	 * Clear the remoteVault instance.
+	 * Call this on authentication failure to allow re-creation on next attempt.
+	 */
+	clearRemoteVault() {
+		this.remoteVault = undefined as unknown as RemoteGitHubVault;
 	}
 
 	loadLocalStore(localStore: LocalStores) {
