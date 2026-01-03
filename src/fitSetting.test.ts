@@ -121,6 +121,9 @@ describe('FitSettingTab - handleUserFetch', () => {
 		const fakePlugin: any = {
 			githubConnection: null,  // No connection = no PAT
 			settings: { authUser: '', avatarUrl: '', repoOwner: '', repo: '', branch: '' },
+			fit: {
+				clearRemoteVault: () => {},
+			},
 			saveSettings: () => Promise.resolve(),
 			logger: mockLogger
 		};
