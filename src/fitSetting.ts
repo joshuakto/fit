@@ -20,6 +20,7 @@ export default class FitSettingTab extends PluginSettingTab {
 	existingBranches: Array<string>;
 	repoLink: string;
 	useManualRepoEntry: boolean;
+	private saveSettingsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private manualEntryDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(app: App, plugin: FitPlugin) {
@@ -33,6 +34,20 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.useManualRepoEntry = this.plugin.settings.repoOwner !== "" &&
 			this.plugin.settings.repoOwner !== this.plugin.settings.owner;
 	}
+
+	/**
+	 * Debounced save settings for manual entry fields.
+	 * Waits 500ms after user stops typing before saving.
+	 */
+	private debouncedSaveSettings = () => {
+		if (this.saveSettingsDebounceTimer) {
+			clearTimeout(this.saveSettingsDebounceTimer);
+		}
+		this.saveSettingsDebounceTimer = setTimeout(async () => {
+			this.saveSettingsDebounceTimer = null;
+			await this.plugin.saveSettings();
+		}, 500);
+	};
 
 	/**
 	 * Debounced refresh for manual entry fields.
@@ -67,7 +82,8 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.authUserAvatar.removeClass('empty');
 		this.authUserAvatar.addClass('cat');
 		try {
-			const {owner, avatarUrl} = await this.plugin.fit.getUser();
+			const connection = this.plugin.githubConnection!;  // Shouldn't be reachable if githubConnection is null.
+			const {owner, avatarUrl} = await connection.getAuthenticatedUser();
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.createEl('img', { attr: { src: avatarUrl } });
 			this.authUserHandle.setText(owner);
@@ -86,10 +102,21 @@ export default class FitSettingTab extends PluginSettingTab {
 				await this.refreshFields('repo(0)');
 			}
 			this.authenticating = false;
-		} catch (_error) {
+		} catch (error) {
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.addClass('error');
-			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
+
+			// Provide specific error message based on error type
+			let errorMessage = "Authentication failed, make sure your token has not expired.";
+			if (error instanceof Error) {
+				if (error.message.includes("network") || error.message.includes("reach")) {
+					errorMessage = "Network error. Check your connection and try again.";
+				} else if (error.message.includes("Authentication") || error.message.includes("401") || error.message.includes("403")) {
+					errorMessage = "Authentication failed. Check your PAT token.";
+				}
+			}
+
+			this.authUserHandle.setText(errorMessage);
 			// Clear remoteVault to allow re-creation on next auth attempt
 			this.plugin.fit.clearRemoteVault();
 			this.plugin.settings.owner = "";
@@ -231,9 +258,9 @@ export default class FitSettingTab extends PluginSettingTab {
 			.addText(text => text
 				.setPlaceholder('owner-username')
 				.setValue(this.plugin.settings.repoOwner)
-				.onChange(async (value) => {
+				.onChange((value) => {
 					this.plugin.settings.repoOwner = value;
-					await this.plugin.saveSettings();
+					this.debouncedSaveSettings();
 					this.debouncedRefreshBranches();
 				}));
 
@@ -243,9 +270,9 @@ export default class FitSettingTab extends PluginSettingTab {
 			.addText(text => text
 				.setPlaceholder('repo-name')
 				.setValue(this.plugin.settings.repo)
-				.onChange(async (value) => {
+				.onChange((value) => {
 					this.plugin.settings.repo = value;
-					await this.plugin.saveSettings();
+					this.debouncedSaveSettings();
 					this.debouncedRefreshBranches();
 				}));
 
@@ -419,10 +446,17 @@ export default class FitSettingTab extends PluginSettingTab {
 		const repo_dropdown = containerEl.querySelector('.repo-dropdown') as HTMLSelectElement;
 		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
 		const link_el = containerEl.querySelector('.link-desc') as HTMLElement;
+
+		// Guard: Cannot refresh without githubConnection
+		if (!this.plugin.githubConnection) {
+			this.plugin.logger.log('[FitSettings] Cannot refresh fields without PAT token');
+			return;
+		}
+
 		if (refreshFrom === "repo(0)") {
 			repo_dropdown.disabled = true;
 			branch_dropdown.disabled = true;
-			this.existingRepos = await this.plugin.fit.getRepos();
+			this.existingRepos = await this.plugin.githubConnection.getReposForOwner(this.plugin.settings.owner);
 			const repoOptions = Array.from(repo_dropdown.options).map(option => option.value);
 			if (!setEqual<string>(this.existingRepos, repoOptions)) {
 				repo_dropdown.empty();
@@ -443,7 +477,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			if (this.plugin.settings.repo === "") {
 				branch_dropdown.empty();
 			} else {
-				const latestBranches = await this.plugin.fit.getBranches();
+				const latestBranches = await this.plugin.githubConnection.getBranches(this.plugin.settings.repoOwner, this.plugin.settings.repo);
 				if (!setEqual<string>(this.existingBranches, latestBranches)) {
 					branch_dropdown.empty();
 					this.existingBranches = latestBranches;
@@ -483,7 +517,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
 			}
 			if (this.existingBranches.length > 0) {
-				this.existingBranches.map(branch => {
+				this.existingBranches.forEach(branch => {
 					branch_dropdown.add(new Option(branch, branch));
 				});
 				if (this.plugin.settings.branch === "") {
@@ -507,7 +541,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				} else {
 					branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
 					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`);
+						this.plugin.logger.log(`[FitSettings] Selected branch ${this.plugin.settings.branch} not found in existing branches`, { existingBranches: this.existingBranches });
 					}
 				}
 			}
