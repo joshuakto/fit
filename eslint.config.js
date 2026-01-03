@@ -42,8 +42,8 @@ export default [
 	},
 	{
 		// Test-related files: Allow 'any' type for mocking external libraries
-		// Covers: test files, mock implementations, and test utilities
-		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts'],
+		// Covers: test files, mock implementations, test utilities, and test setup
+		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts', '**/vitest.setup.ts'],
 		rules: {
 			'@typescript-eslint/no-explicit-any': 'off',
 		},
