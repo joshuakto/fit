@@ -362,27 +362,32 @@ export default class FitSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					const ownerChanged = value !== this.plugin.settings.owner;
 					this.plugin.settings.owner = value;
-					this.debouncedSaveSettings();
 
-					if (ownerChanged && value) {
-						// Refresh repo suggestions for new owner
+					if (ownerChanged) {
+						// Clear dependent fields whenever the owner changes
+						this.plugin.settings.repo = '';
+						this.plugin.settings.branch = '';
+						this.repoInputComponent?.setValue('');
+						this.branchSetting.clear();
+						this.existingRepos = [];
 						const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
-						try {
-							this.existingRepos = await this.plugin.githubConnection!.getReposForOwner(value);
-							repo_datalist.empty();
-							this.existingRepos.forEach(repo => {
-								repo_datalist.createEl('option', { attr: { value: repo } });
-							});
-						} catch (error) {
-							// Owner not found or inaccessible - clear repo suggestions
-							repo_datalist.empty();
-							this.existingRepos = [];
-							const errorMsg = error instanceof Error ? error.message : String(error);
-							this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${value}': ${errorMsg}`, { error });
+						if (repo_datalist) repo_datalist.empty();
+
+						// If authenticated, try to fetch new repos for the new owner
+						if (value && this.plugin.githubConnection) {
+							try {
+								this.existingRepos = await this.plugin.githubConnection.getReposForOwner(value);
+								this.existingRepos.forEach(repo => {
+									repo_datalist?.createEl('option', { attr: { value: repo } });
+								});
+							} catch (error) {
+								const errorMsg = error instanceof Error ? error.message : String(error);
+								this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${value}': ${errorMsg}`, { error });
+							}
 						}
 					}
 
-					this.debouncedRefreshBranches();
+					this.debouncedSaveSettings();
 				});
 		});
 
