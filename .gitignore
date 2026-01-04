@@ -24,3 +24,6 @@ data.json
 # Jest testing
 coverage/
 *.lcov
+
+# WDIO Obsidian Service (downloaded Obsidian binaries)
+.obsidian-cache/
