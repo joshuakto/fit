@@ -20,6 +20,11 @@
 			"ES5",
 			"ES6",
 			"ES7"
+		],
+		"types": [
+			"node",
+			"@wdio/globals/types",
+			"@wdio/mocha-framework"
 		]
 	},
 	"include": [

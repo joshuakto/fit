@@ -10,9 +10,9 @@ cd fit && npm install
 npm run dev
 ```
 
-**Testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
-
 **Unit Tests**: Run `npm test` to execute unit tests (Vitest), or `npm run test:watch` for development with file watching.
+
+**Manual testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
 
 ## Documentation
 
@@ -74,6 +74,7 @@ Check the milestone for current release priorities and progress.
 
 - **Questions**: [GitHub Discussions](https://github.com/joshuakto/fit/discussions)
 - **Bugs**: [GitHub Issues](https://github.com/joshuakto/fit/issues)
+- **Test failures**: See `test/README.md` for E2E test troubleshooting tips
 
 ## Contributing
 
@@ -87,6 +88,7 @@ All PRs are automatically checked by GitHub Actions for:
 - ✅ Code linting and formatting
 - ✅ TypeScript compilation
 - ✅ Unit test execution
+- ✅ E2E test execution
 - 📊 Test coverage reporting (informational)
 - 🔍 Security scanning via CodeQL
 
@@ -137,5 +139,5 @@ If you'd like to help set up more automated checking, there are a few quality as
 
 - [ ] **ESLint rules** for TypeScript strict mode
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
-- [ ] **Functional tests** to ensure mobile compatibility
+- [ ] **Expand E2E tests** to cover mobile app on Android
 - [ ] **Release automation/validation** to ensure releases are correctly configured & versioned
