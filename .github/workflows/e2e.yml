@@ -1,0 +1,73 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        node-version: [20.x]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: 'package-lock.json'
+
+    - name: Cache Obsidian and WebDriver downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          .obsidian-cache
+          ~/.cache
+        key: obsidian-cache-${{ runner.os }}-node${{ matrix.node-version }}-v1
+        restore-keys: |
+          obsidian-cache-${{ runner.os }}-node${{ matrix.node-version }}-
+          obsidian-cache-${{ runner.os }}-
+
+    - name: Install dependencies
+      run: npm ci --legacy-peer-deps
+
+    - name: Build plugin
+      run: npm run build
+
+    - name: Show cache contents
+      run: |
+        echo "Obsidian cache contents:"
+        ls -la .obsidian-cache/ || echo "No .obsidian-cache directory"
+        echo "Home cache contents:"
+        find ~/.cache -name "*obsidian*" -o -name "*electron*" -o -name "*chromedriver*" 2>/dev/null || echo "No relevant cache found"
+
+    - name: Run E2E tests
+      run: npm run test:e2e
+      env:
+        WDIO_LOG_LEVEL: warn
+
+    - name: Show test results directory
+      if: always()
+      run: |
+        echo "Test results directory contents:"
+        ls -la test-results/ || echo "Directory is empty"
+
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-test-results
+        path: test-results/
+        retention-days: 30

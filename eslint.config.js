@@ -48,4 +48,33 @@ export default [
 			'@typescript-eslint/no-explicit-any': 'off',
 		},
 	},
+	{
+		// E2E test files: Allow Mocha globals
+		files: ['**/*.e2e.ts'],
+		languageOptions: {
+			parser: tsParser,
+			parserOptions: {
+				sourceType: 'module',
+			},
+			globals: {
+				...globals.node,
+				...globals.browser,
+				// Mocha globals
+				describe: 'readonly',
+				it: 'readonly',
+				before: 'readonly',
+				after: 'readonly',
+				beforeEach: 'readonly',
+				afterEach: 'readonly',
+				expect: 'readonly',
+				// WebdriverIO globals
+				browser: 'readonly',
+				$: 'readonly',
+				$$: 'readonly',
+			},
+		},
+		rules: {
+			'@typescript-eslint/no-explicit-any': 'off',
+		},
+	},
 ];
