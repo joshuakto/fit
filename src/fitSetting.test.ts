@@ -58,9 +58,13 @@ describe('FitSettingTab - GitHub settings', () => {
 
 		// Store captures for afterEach to access
 		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
+
+		vi.useFakeTimers();
 	});
 
 	afterEach(() => {
+		vi.resetAllMocks();
+
 		// Check if test failed - if so, replay captured console output
 		const testState = (expect as any).getState();
 		const testFailed = testState.currentTestName && testState.assertionCalls > testState.numPassingAsserts;
@@ -105,12 +109,11 @@ describe('FitSettingTab - GitHub settings', () => {
 		await settingTab.repoInfoBlock();
 
 		// Verify: Authenticate button is disabled when no PAT
-		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
-		expect(authenticateButton).not.toBeNull();
-		expect(authenticateButton!.disabled).toBe(true);
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user')!;
+		expect(authenticateButton.disabled).toBe(true);
 
 		// When: click attempted on disabled button
-		authenticateButton!.click();
+		authenticateButton.click();
 
 		// Then: Should not enter authenticating state
 		expect(settingTab.authenticating).toBe(false);
@@ -147,33 +150,32 @@ describe('FitSettingTab - GitHub settings', () => {
 		await settingTab.repoInfoBlock();
 
 		// Get inputs by their labels (user-visible text)
-		const patInput = findInputByLabel(settingTab.containerEl, 'Github personal access token');
-		const ownerInput = findInputByLabel(settingTab.containerEl, 'Repository owner');
-		const repoInput = findInputByLabel(settingTab.containerEl, 'Repository name');
+		const patInput = findInputByLabel(settingTab.containerEl, 'Github personal access token')!;
+		const ownerInput = findInputByLabel(settingTab.containerEl, 'Repository owner')!;
+		const repoInput = findInputByLabel(settingTab.containerEl, 'Repository name')!;
 
 		// Verify: Start in unauthenticated state
-		expect(ownerInput!.placeholder).toBe('Authenticate above to auto-fill');
-		expect(repoInput!.placeholder).toBe('Authenticate above for suggestions');
+		expect(ownerInput.placeholder).toBe('Authenticate above to auto-fill');
+		expect(repoInput.placeholder).toBe('Authenticate above for suggestions');
 
 		// When: User enters PAT
-		patInput!.value = 'ghp_test';
-		patInput!.dispatchEvent(new Event('input', { bubbles: true }));
-		await new Promise(resolve => setTimeout(resolve, 0));  // Wait for async saveSettings
+		patInput.value = 'ghp_test';
+		patInput.dispatchEvent(new Event('input', { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: GitHubConnection created, placeholders updated
 		expect(fakePlugin.githubConnection).not.toBeNull();
-		expect(ownerInput!.placeholder).toBe('owner-username');
-		expect(repoInput!.placeholder).toBe('repo-name');
+		expect(ownerInput.placeholder).toBe('owner-username');
+		expect(repoInput.placeholder).toBe('repo-name');
 
 		// When: User clicks authenticate button
-		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
-		expect(authenticateButton).not.toBeNull();
-		expect(authenticateButton!.disabled).toBe(false);  // Should be enabled now
-		authenticateButton!.click();
-		await new Promise(resolve => setTimeout(resolve, 0));
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user')!;
+		expect(authenticateButton.disabled).toBe(false);  // Should be enabled now
+		authenticateButton.click();
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: Owner pre-filled with authenticated user
-		expect(ownerInput!.value).toBe('alice');
+		expect(ownerInput.value).toBe('alice');
 		expect(fakePlugin.settings.owner).toBe('alice');
 
 		// And: Owner/repo suggestions populated (using datalist IDs is acceptable here since we're verifying data, not finding elements)
@@ -216,18 +218,22 @@ describe('FitSettingTab - GitHub settings', () => {
 		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
 		refreshButton.click();
 
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: Repo datalist shows alice's repos
 		const repoDatalist = settingTab.containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
 		let suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
 		expect(suggestions).toEqual(['repo1', 'repo2', 'repo3']);
 
-		// When: User changes owner to bob and refreshes
-		fakePlugin.settings.owner = 'bob';
+		// When: User changes owner to bob via UI input and refreshes
+		const ownerInput = findInputByLabel(settingTab.containerEl, 'Repository owner')!;
+		ownerInput.value = 'bob';
+		ownerInput.dispatchEvent(new Event('input', { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for debounced repo fetching
+
 		refreshButton.click();
 
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: Repo datalist updates to show bob's repos
 		suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
@@ -266,7 +272,7 @@ describe('FitSettingTab - GitHub settings', () => {
 		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
 		refreshButton.click();
 
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: Branch dropdown is populated
 		const branchDropdown = settingTab.containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
@@ -319,7 +325,7 @@ describe('FitSettingTab - GitHub settings', () => {
 		const refreshButton = (settingTab as any).refreshButton.querySelector('button') as HTMLButtonElement;
 		refreshButton.click();
 
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		// Then: Branch dropdown is cleared (graceful degradation)
 		const branchDropdown = settingTab.containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
@@ -347,22 +353,66 @@ describe('FitSettingTab - GitHub settings', () => {
 		settingTab.githubUserInfoBlock();
 		await settingTab.repoInfoBlock();
 
-		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user');
+		const authenticateButton = findButtonByText(settingTab.containerEl, 'Authenticate user')!;
 
 		// Verify: Button starts disabled (no connection)
-		expect(authenticateButton!.disabled).toBe(true);
+		expect(authenticateButton.disabled).toBe(true);
 
 		// When: githubConnection becomes available
 		fakePlugin.githubConnection = fakeConnection;
 		(settingTab as any).updateButtonStates();
 
 		// Then: Button is enabled
-		expect(authenticateButton!.disabled).toBe(false);
+		expect(authenticateButton.disabled).toBe(false);
 
 		// And: Clicking works
-		authenticateButton!.click();
-		await new Promise(resolve => setTimeout(resolve, 0));
+		authenticateButton.click();
+		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
 		expect(settingTab.containerEl.querySelector('.fit-github-handle')?.textContent).toBe('alice');
+	});
+
+	describe('Debouncing and performance fixes', () => {
+		it('should debounce repo fetching to prevent UI grinding', async () => {
+			let fetchCount = 0;
+			const fakeConnection: any = {
+				getAuthenticatedUser: async () => ({ owner: 'alice', avatarUrl: '' }),
+				getAccessibleOwners: async () => ['alice'],
+				getReposForOwner: async (owner: string) => {
+					fetchCount++;
+					return owner === 'the' ? Array(100).fill(null).map((_, i) => `repo-${i}`) : [];
+				}
+			};
+			const fakePlugin: any = {
+				githubConnection: fakeConnection,
+				settings: { ...EMPTY_SETTINGS, pat: 'ghp_test', owner: '' },
+				saveSettings: async () => {},
+				fit: { clearRemoteVault: () => {} },
+				logger: mockLogger
+			};
+
+			const settingTab = new FitSettingTab({} as any, fakePlugin);
+			settingTab.githubUserInfoBlock();
+			await settingTab.repoInfoBlock();
+
+			const ownerInput = findInputByLabel(settingTab.containerEl, 'Repository owner')!;
+
+			// When: User types "the" character by character
+			ownerInput.value = 't';
+			ownerInput.dispatchEvent(new Event('input', { bubbles: true }));
+			ownerInput.value = 'th';
+			ownerInput.dispatchEvent(new Event('input', { bubbles: true }));
+			ownerInput.value = 'the';
+			ownerInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+			// Then: Should not fetch immediately (debounced)
+			expect(fetchCount).toBe(0);
+
+			// When: Advance time by debounce timeout
+			vi.advanceTimersByTime(800);
+
+			// Then: Should fetch only once for "the"
+			expect(fetchCount).toBe(1);
+		});
 	});
 });

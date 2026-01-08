@@ -28,12 +28,12 @@ export default class FitSettingTab extends PluginSettingTab {
 	authUserSetting: Setting;
 	ownerSetting: Setting;
 	repoSetting: Setting;
-	branchSetting: Setting;
 	existingRepos: Array<string>;
 	existingBranches: Array<string>;
 	repoLink: string;
 	private saveSettingsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private repoFetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private suggestedOwners: Array<string> = [];
 	private suggestedRepos: Array<string> = [];
 	private authenticateButtonComponent: { setDisabled: (disabled: boolean) => void } | null = null;
@@ -121,6 +121,31 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.saveSettingsDebounceTimer = setTimeout(async () => {
 			this.saveSettingsDebounceTimer = null;
 			await this.plugin.saveSettings();
+		}, 500);
+	};
+
+	/**
+	 * Debounced fetch repos for owner changes.
+	 * Waits 500ms after user stops typing before fetching repos to avoid performance issues.
+	 */
+	private debouncedFetchReposForOwner = (owner: string, repo_datalist: HTMLDataListElement | null) => {
+		if (this.repoFetchDebounceTimer) {
+			clearTimeout(this.repoFetchDebounceTimer);
+		}
+		this.repoFetchDebounceTimer = setTimeout(async () => {
+			this.repoFetchDebounceTimer = null;
+			if (owner && this.plugin.githubConnection && repo_datalist) {
+				try {
+					this.existingRepos = await this.plugin.githubConnection.getReposForOwner(owner);
+					repo_datalist.empty();
+					this.existingRepos.forEach(repo => {
+						repo_datalist.createEl('option', { attr: { value: repo } });
+					});
+				} catch (error) {
+					const errorMsg = error instanceof Error ? error.message : String(error);
+					this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${owner}': ${errorMsg}`, { error });
+				}
+			}
 		}, 500);
 	};
 
@@ -368,22 +393,13 @@ export default class FitSettingTab extends PluginSettingTab {
 						this.plugin.settings.repo = '';
 						this.plugin.settings.branch = '';
 						this.repoInputComponent?.setValue('');
-						this.branchSetting.clear();
 						this.existingRepos = [];
 						const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
 						if (repo_datalist) repo_datalist.empty();
 
-						// If authenticated, try to fetch new repos for the new owner
+						// If authenticated, debounced fetch repos for the new owner to avoid performance issues
 						if (value && this.plugin.githubConnection) {
-							try {
-								this.existingRepos = await this.plugin.githubConnection.getReposForOwner(value);
-								this.existingRepos.forEach(repo => {
-									repo_datalist?.createEl('option', { attr: { value: repo } });
-								});
-							} catch (error) {
-								const errorMsg = error instanceof Error ? error.message : String(error);
-								this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${value}': ${errorMsg}`, { error });
-							}
+							this.debouncedFetchReposForOwner(value, repo_datalist);
 						}
 					}
 
@@ -414,7 +430,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				});
 		});
 
-		this.branchSetting = new Setting(containerEl)
+		new Setting(containerEl)
 			.setName('Branch name')
 			.setDesc('Enter repository details above, then refresh to view existing branches.')
 			.addDropdown(dropdown => {
