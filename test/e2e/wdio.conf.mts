@@ -1,7 +1,6 @@
 import * as path from "path";
-import { obsidianBetaAvailable } from "wdio-obsidian-service";
 
-const cacheDir = path.resolve(".obsidian-cache");
+const cacheDir = path.resolve("../../.obsidian-cache");
 
 // Test on single Obsidian version to prevent interference
 const versions: [string, string][] = [
@@ -11,7 +10,7 @@ const versions: [string, string][] = [
 export const config: WebdriverIO.Config = {
 	runner: 'local',
 	framework: 'mocha',
-	specs: ['./test/e2e/**/*.e2e.ts'],
+	specs: ['./**/*.e2e.ts'],
 	maxInstances: 1, // Run 1 instance to prevent test interference
 
 	// Test on different Obsidian versions
@@ -20,8 +19,8 @@ export const config: WebdriverIO.Config = {
 		browserVersion: appVersion,
 		'wdio:obsidianOptions': {
 			installerVersion: installerVersion,
-			plugins: ["."], // Load this plugin
-			vault: "test/vaults/basic", // Use a basic test vault
+			plugins: ["../.."], // Load this plugin (repo root)
+			vault: "../vaults/basic", // Use a basic test vault
 		},
 	})),
 
