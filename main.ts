@@ -29,8 +29,7 @@ export interface FitSettings {
 	// This would allow type-safe, provider-specific settings.
 	// See RemoteVaultProvider type in src/vault.ts for provider enum.
 	pat: string;
-	owner: string;           // Authenticated GitHub user
-	repoOwner: string;       // Owner of the repo (may differ from authenticated user for contributor repos)
+	owner: string;       // Owner of the repo (may differ from authenticated user for contributor repos)
 	avatarUrl: string;
 	repo: string;
 	branch: string;
@@ -45,7 +44,6 @@ export interface FitSettings {
 const DEFAULT_SETTINGS: FitSettings = {
 	pat: "",
 	owner: "",
-	repoOwner: "",
 	avatarUrl: "",
 	repo: "",
 	branch: "",
@@ -141,9 +139,6 @@ export default class FitPlugin extends Plugin {
 			actionItems.push("provide GitHub personal access token");
 		}
 		if (this.settings.owner === "") {
-			actionItems.push("authenticate with personal access token");
-		}
-		if (this.settings.repoOwner === "" && this.settings.owner === "") {
 			actionItems.push("select or enter a repository owner");
 		}
 		if (this.settings.repo === "") {

@@ -105,7 +105,7 @@ export class GitHubConnection {
 	}
 
 	/**
-	 * Get list of unique owners (user + organizations) accessible to authenticated user.
+	 * Get list of unique owners (user + organizations + collaborator repos) accessible to authenticated user.
 	 * Returns sorted array of owner names.
 	 *
 	 * @throws VaultError on authentication failure or network error
@@ -118,6 +118,7 @@ export class GitHubConnection {
 			owners.add(authUser.owner);
 
 			// Get organizations with pagination
+			// TODO: Also return collaborator owners.
 			const perPage = 100;
 			let page = 1;
 			let hasMoreOrgs = true;
@@ -135,6 +136,24 @@ export class GitHubConnection {
 				page++;
 			}
 
+			// Get repos where user has collaborator access to find additional owners
+			page = 1;
+			let hasMoreCollabRepos = true;
+
+			while (hasMoreCollabRepos) {
+				const {data: repos} = await this.octokit.request(
+					`GET /user/repos`, {
+						affiliation: "collaborator",
+						headers: this.headers,
+						per_page: perPage,
+						page: page
+					});
+
+				repos.forEach(repo => owners.add(repo.owner.login));
+				hasMoreCollabRepos = repos.length === perPage;
+				page++;
+			}
+
 			return Array.from(owners).sort();
 		} catch (error) {
 			return await this.wrapOctokitError(error);
@@ -144,6 +163,10 @@ export class GitHubConnection {
 	/**
 	 * Get list of repositories for a specific owner that authenticated user has access to.
 	 *
+	 * For the authenticated user: returns repos they own.
+	 * For collaborator repos: returns repos where user has explicit granted access.
+	 * For organizations: returns all org repos (uses separate API endpoint for efficiency).
+	 *
 	 * @param owner - The owner (user or organization) to fetch repos for
 	 * @throws VaultError on authentication failure or network error
 	 */
@@ -151,12 +174,12 @@ export class GitHubConnection {
 		try {
 			const authUser = await this.getAuthenticatedUser();
 			const allRepos: string[] = [];
-			let page = 1;
 			const perPage = 100;
+			let page = 1;
+			let hasMorePages = true;
 
-			// If owner is the authenticated user, use /user/repos with affiliation filter
+			// If owner is the authenticated user, fetch their owned repos
 			if (owner === authUser.owner) {
-				let hasMorePages = true;
 				while (hasMorePages) {
 					const {data: response} = await this.octokit.request(
 						`GET /user/repos`, {
@@ -170,19 +193,48 @@ export class GitHubConnection {
 					page++;
 				}
 			} else {
-				// For organizations, use /orgs/{org}/repos
-				let hasMorePages = true;
-				while (hasMorePages) {
-					const {data: response} = await this.octokit.request(
-						`GET /orgs/{org}/repos`, {
-							org: owner,
-							headers: this.headers,
-							per_page: perPage,
-							page: page
-						});
-					allRepos.push(...response.map(r => r.name));
-					hasMorePages = response.length === perPage;
-					page++;
+				// For other owners, try org endpoint first (most efficient for orgs with many repos)
+				try {
+					while (hasMorePages) {
+						const {data: response} = await this.octokit.request(
+							`GET /orgs/{org}/repos`, {
+								org: owner,
+								headers: this.headers,
+								per_page: perPage,
+								page: page
+							});
+						allRepos.push(...response.map(r => r.name));
+						hasMorePages = response.length === perPage;
+						page++;
+					}
+				} catch (orgError: unknown) {
+					// If org endpoint fails (owner might be a user, not an org),
+					// fall back to collaborator repos (filters to repos with write access)
+					const errorObj = orgError as { status?: number };
+					if (errorObj.status === 404) {
+						// Owner is not an org, fetch collaborator repos and filter by owner
+						page = 1;
+						hasMorePages = true;
+						while (hasMorePages) {
+							const {data: response} = await this.octokit.request(
+								`GET /user/repos`, {
+									affiliation: "collaborator",
+									headers: this.headers,
+									per_page: perPage,
+									page: page
+								});
+							// Filter to only repos matching the requested owner
+							const matchingRepos = response
+								.filter(r => r.owner.login === owner)
+								.map(r => r.name);
+							allRepos.push(...matchingRepos);
+							hasMorePages = response.length === perPage;
+							page++;
+						}
+					} else {
+						// Other error (auth, network, etc.) - re-throw
+						throw orgError;
+					}
 				}
 			}
 
