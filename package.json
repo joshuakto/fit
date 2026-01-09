@@ -14,8 +14,11 @@
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
 		"test:coverage": "vitest run --coverage",
-		"test:all": "npm run test && npm run test:e2e",
 		"test:e2e": "wdio run ./test/e2e/wdio.conf.mts",
+		"test:mobile": "wdio run ./test/e2e/wdio.mobile-emulation.conf.mts",
+		"test:android": "wdio run ./test/e2e/wdio.mobile.conf.mts",
+		"test:all": "npm run test && npm run test:e2e && npm run test:mobile && npm run test:android",
+		"start:mobile": "./scripts/mobile-simple.sh",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],
@@ -52,5 +55,10 @@
 	"dependencies": {
 		"@octokit/core": "^6.0.1",
 		"@octokit/plugin-retry": "^7.2.1"
+	},
+	"optionalDependencies": {
+		"@wdio/appium-service": "^9.23.0",
+		"appium": "^2.19.0",
+		"appium-uiautomator2-driver": "^3.10.0"
 	}
 }

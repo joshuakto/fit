@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  e2e:
+  test-desktop:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -71,3 +71,105 @@ jobs:
         name: e2e-test-results
         path: test-results/
         retention-days: 30
+
+  test-android:
+    env:
+      AVD_ARGS: "-no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - obsidian-version: latest
+            android-api-level: 36
+            android-profile: pixel
+          - obsidian-version: earliest
+            android-api-level: 36
+            android-profile: pixel
+    runs-on: ubuntu-latest
+    name: test (android, api ${{ matrix.android-api-level }}, profile ${{ matrix.android-profile }}, obsidian ${{ matrix.obsidian-version }})
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Get Obsidian cache key
+        shell: bash
+        run: |
+          npx tsx test/e2e/wdio.mobile.conf.mts | grep 'obsidian-cache-key:' > obsidian-versions-lock.txt
+          rm -rf .obsidian-cache
+        env:
+          OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
+          OBSIDIAN_EMAIL: ${{ secrets.OBSIDIAN_EMAIL }}
+          OBSIDIAN_PASSWORD: ${{ secrets.OBSIDIAN_PASSWORD }}
+
+      - name: Cache .obsidian-cache
+        uses: actions/cache@v4
+        with:
+          path: .obsidian-cache
+          key: obsidian-cache-android-${{ hashFiles('obsidian-versions-lock.txt') }}
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD cache
+        id: avd-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.android-api-level }}-${{ matrix.android-profile }}
+
+      - name: Run Android tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          force-avd-creation: false
+          avd-name: obsidian_test
+          emulator-options: -no-snapshot ${{ env.AVD_ARGS }}
+          api-level: ${{ matrix.android-api-level }}
+          arch: "x86_64"
+          target: google_apis
+          profile: ${{ matrix.android-profile }}
+          disk-size: 4096M
+          heap-size: 512M
+          script: npm run test:android
+        env:
+          OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
+          OBSIDIAN_EMAIL: ${{ secrets.OBSIDIAN_EMAIL }}
+          OBSIDIAN_PASSWORD: ${{ secrets.OBSIDIAN_PASSWORD }}
+
+      - name: Upload Android test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-results-${{ matrix.obsidian-version }}
+          path: test-results/
+          retention-days: 30
+
+  check:
+    if: always()
+    needs: [test-desktop, test-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all tests passed
+        uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
