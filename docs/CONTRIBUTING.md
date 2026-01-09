@@ -12,6 +12,8 @@ npm run dev
 
 **Unit Tests**: Run `npm test` to execute unit tests (Vitest), or `npm run test:watch` for development with file watching.
 
+**E2E Tests**: Run `npm run test:e2e` for desktop tests, `npm run test:android` for Android tests. See `test/README.md` for detailed setup and troubleshooting.
+
 **Manual testing**: Copy `main.js`, `styles.css`, `manifest.json` to `.obsidian/plugins/fit/` in a test vault.
 
 ## Documentation
@@ -88,7 +90,8 @@ All PRs are automatically checked by GitHub Actions for:
 - ✅ Code linting and formatting
 - ✅ TypeScript compilation
 - ✅ Unit test execution
-- ✅ E2E test execution
+- ✅ E2E test execution (desktop)
+- ✅ E2E test execution (Android)
 - 📊 Test coverage reporting (informational)
 - 🔍 Security scanning via CodeQL
 
