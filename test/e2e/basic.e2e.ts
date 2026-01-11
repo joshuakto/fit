@@ -25,6 +25,7 @@
 import { browser } from '@wdio/globals';
 import { obsidianPage } from 'wdio-obsidian-service';
 import * as fs from 'fs';
+import { setupGitHubStub, cleanupGitHubStub } from './github-stub';
 
 const OUTPUTS_PATH = 'test-results/';
 
@@ -84,12 +85,118 @@ describe('FIT Plugin E2E Tests', function() {
 
 			// Verify plugin works as expected
 			expect(errorNotices).toHaveLength(0);
-			expect(configNotice).toBeDefined();
 			expect(configNotice?.text).toContain('Settings not configured');
+		});
+	});
 
-			// 7. Verification complete - screenshot saved proves functionality works
+	describe('Settings UI', function() {
+		beforeEach(async function() {
+			// Setup GitHub API stub before each settings test
+			await setupGitHubStub('ghp_test');
+		});
 
-			console.log('✅ Complete FIT sync test with screenshot verification successful');
+		afterEach(async function() {
+			// Clean up stub after each settings test
+			await cleanupGitHubStub();
+		});
+
+		it('should authenticate with PAT and populate owner and repo fields', async () => {
+			// Test PAT authentication flow with stubbed GitHub API
+			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
+
+			// 1. Open Obsidian settings
+			await browser.executeObsidianCommand('app:open-settings');
+			await browser.pause(500);
+
+			// 2. Navigate to FIT plugin settings
+			await browser.executeObsidian(() => {
+				// Find FIT tab in settings sidebar
+				const fitTab = Array.from(document.querySelectorAll('.vertical-tab-nav-item'))
+					.find(el => el.textContent?.includes('FIT'));
+				if (fitTab) {
+					(fitTab as HTMLElement).click();
+				}
+			});
+			await browser.pause(500);
+
+			// 3. Enter test PAT
+			const patInput = await browser.$('input[placeholder*="personal access token"]');
+			await patInput.setValue('ghp_test');
+			await browser.pause(200); // Allow settings to update
+
+			// 4. Click Authenticate button
+			const authButton = await browser.$('button*=Authenticate user');
+			await authButton.click();
+
+			// 5. Wait for authentication to complete
+			// GitHub API stub will return 'testowner' user
+			await browser.pause(500);
+
+			// 6. Verify owner field populated with stubbed user
+			const ownerInput = await browser.$('input[list="fit-owner-datalist"]');
+			const ownerValue = await ownerInput.getValue();
+
+			expect(ownerValue).toBe('testowner');
+
+			// 7. Take screenshot of authenticated state
+			await takeScreenshot('settings-auth-success');
+
+			// 8. Wait for repo dropdown to populate (debounced fetch)
+			await browser.pause(800);
+
+			// 9. Focus and expand repo dropdown to show all suggestions
+			const repoInput = await browser.$('input[list="fit-repo-datalist"]');
+
+			// 10. Click to focus, then trigger dropdown
+			await repoInput.click();
+			await browser.pause(200);
+
+			await browser.keys('ArrowDown');
+			await browser.pause(200);
+
+			// 11. Verify repo datalist options are populated
+			const repoOptions = await browser.executeObsidian(() => {
+				const datalist = document.querySelector('#fit-repo-datalist');
+				if (!datalist) return [];
+				return Array.from(datalist.querySelectorAll('option')).map(opt => opt.value);
+			});
+
+			// Should have 2 repos for 'testowner' (from fixtures: testrepo, private-repo)
+			expect(repoOptions.sort()).toEqual(['private-repo', 'testrepo']);
+
+			// 12. Select an item from the datalist (simulating user tap/click on mobile)
+			// Note: Native datalist dropdowns can't be screenshotted, but we can verify
+			// the selection works by programmatically selecting an option and capturing the result
+
+			// Select 'testrepo' option from datalist (simulates user selection)
+			await browser.executeObsidian(() => {
+				const datalist = document.querySelector('#fit-repo-datalist');
+				// Find the 'testrepo' option specifically
+				const testrepoOption = Array.from(datalist?.querySelectorAll('option') || [])
+					.find(opt => opt.value === 'testrepo');
+
+				if (!testrepoOption) {
+					throw new Error('testrepo option not found in datalist');
+				}
+
+				// Simulate user selecting 'testrepo' from datalist
+				const input = document.querySelector('input[list="fit-repo-datalist"]') as HTMLInputElement;
+				if (input) {
+					input.value = 'testrepo';
+					input.dispatchEvent(new Event('input', { bubbles: true }));
+					input.dispatchEvent(new Event('change', { bubbles: true }));
+				}
+			});
+
+			await browser.pause(500); // Wait for any UI updates
+
+			// Verify the input was populated with 'testrepo'
+			const repoValue = await repoInput.getValue();
+			console.log(`Selected repo value: ${repoValue}`);
+			expect(repoValue).toBe('testrepo');
+
+			// Take screenshot showing the populated input (proof that datalist selection worked)
+			await takeScreenshot('settings-repo-selected');
 		});
 	});
 

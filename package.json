@@ -14,8 +14,8 @@
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
 		"test:coverage": "vitest run --coverage",
-		"test:e2e": "wdio run ./wdio.conf.mts",
 		"test:all": "npm run test && npm run test:e2e",
+		"test:e2e": "wdio run ./test/e2e/wdio.conf.mts",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],
