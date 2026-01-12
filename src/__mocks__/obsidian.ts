@@ -293,3 +293,52 @@ export class Setting {
 		return this;
 	}
 }
+
+/**
+ * Mock for AbstractInputSuggest - provides autocomplete functionality for input fields.
+ * This is an abstract class that requires extending and implementing abstract methods.
+ */
+export abstract class AbstractInputSuggest<T> {
+	app: any;
+	inputEl: HTMLInputElement | HTMLDivElement;
+	limit: number = 100;
+
+	constructor(app: any, inputEl: HTMLInputElement | HTMLDivElement) {
+		this.app = app;
+		this.inputEl = inputEl;
+	}
+
+	abstract getSuggestions(query: string): T[] | Promise<T[]>;
+	abstract renderSuggestion(value: T, el: HTMLElement): void;
+
+	setValue(value: string): void {
+		if (this.inputEl instanceof HTMLInputElement) {
+			this.inputEl.value = value;
+		} else {
+			this.inputEl.textContent = value;
+		}
+	}
+
+	getValue(): string {
+		if (this.inputEl instanceof HTMLInputElement) {
+			return this.inputEl.value;
+		}
+		return this.inputEl.textContent || '';
+	}
+
+	selectSuggestion(_value: T, _evt: MouseEvent | KeyboardEvent): void {
+		// Default implementation - subclasses can override
+	}
+
+	open(): void {
+		// Mock implementation
+	}
+
+	close(): void {
+		// Mock implementation
+	}
+
+	onSelect(_callback: (value: T, evt: MouseEvent | KeyboardEvent) => any): this {
+		return this;
+	}
+}

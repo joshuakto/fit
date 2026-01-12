@@ -1,4 +1,4 @@
-import { base64ToArrayBuffer, arrayBufferToBase64, TFile, Vault } from "obsidian";
+import { base64ToArrayBuffer, arrayBufferToBase64, TFile, Vault, AbstractInputSuggest, App } from "obsidian";
 import { Base64Content, Content, FileContent } from "./contentEncoding";
 
 export function contentToArrayBuffer(content: Base64Content): ArrayBuffer {
@@ -89,4 +89,120 @@ export async function readFileContent(
 
 	// Decode the content (same path for both indexed and unindexed files)
 	return decodeFileContent(arrayBuffer);
+}
+
+/**
+ * Provides autocomplete suggestions for GitHub owners/repos in settings inputs.
+ * Works well on both desktop and mobile by positioning suggestions as a popover
+ * rather than using native HTML5 datalists which have poor mobile UX (they cover
+ * the keyboard and have glitchy behavior).
+ *
+ * Features:
+ * - Popover positioned below input (doesn't cover keyboard on mobile)
+ * - Touch-friendly selection
+ * - Case-insensitive filtering
+ * - Automatically triggers onChange handlers when suggestion selected
+ */
+export class GitHubOwnerSuggest extends AbstractInputSuggest<string> {
+	private ownerList: string[] = [];
+	private inputEl: HTMLInputElement;
+
+	constructor(
+		app: App,
+		inputEl: HTMLInputElement,
+		private getSuggestionsCallback: () => string[]
+	) {
+		super(app, inputEl);
+		this.inputEl = inputEl;
+	}
+
+	/**
+	 * Update the available suggestions (e.g., when user authenticates or data changes)
+	 */
+	updateSuggestions(suggestions: string[]): void {
+		this.ownerList = suggestions;
+	}
+
+	/**
+	 * Filter suggestions based on user input
+	 */
+	getSuggestions(query: string): string[] {
+		const lowerQuery = query.toLowerCase();
+		if (!lowerQuery) {
+			// Show all suggestions if input is empty
+			return this.ownerList;
+		}
+		// Filter suggestions that include the query (case-insensitive)
+		return this.ownerList.filter(s => s.toLowerCase().includes(lowerQuery));
+	}
+
+	/**
+	 * Render each suggestion in the popover
+	 */
+	renderSuggestion(value: string, el: HTMLElement): void {
+		el.setText(value);
+	}
+
+	/**
+	 * Handle when user selects a suggestion
+	 */
+	selectSuggestion(value: string, evt: MouseEvent | KeyboardEvent): void {
+		// Set the value in the input
+		this.setValue(value);
+		// Trigger input event so onChange handlers fire
+		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		// Close the suggestion popover
+		this.close();
+	}
+}
+
+/**
+ * Provides autocomplete suggestions for GitHub repository names.
+ * Separate from owner suggest to allow different suggestion sources.
+ */
+export class GitHubRepoSuggest extends AbstractInputSuggest<string> {
+	private repoList: string[] = [];
+	private inputEl: HTMLInputElement;
+
+	constructor(
+		app: App,
+		inputEl: HTMLInputElement
+	) {
+		super(app, inputEl);
+		this.inputEl = inputEl;
+	}
+
+	/**
+	 * Update the available suggestions (e.g., when owner changes or repos are fetched)
+	 */
+	updateSuggestions(suggestions: string[]): void {
+		this.repoList = suggestions;
+	}
+
+	/**
+	 * Filter suggestions based on user input
+	 */
+	getSuggestions(query: string): string[] {
+		const lowerQuery = query.toLowerCase();
+		if (!lowerQuery) {
+			return this.repoList;
+		}
+		return this.repoList.filter(s => s.toLowerCase().includes(lowerQuery));
+	}
+
+	/**
+	 * Render each suggestion in the popover
+	 */
+	renderSuggestion(value: string, el: HTMLElement): void {
+		el.setText(value);
+	}
+
+	/**
+	 * Handle when user selects a suggestion
+	 */
+	selectSuggestion(value: string, evt: MouseEvent | KeyboardEvent): void {
+		this.setValue(value);
+		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		this.close();
+	}
 }

@@ -19,7 +19,6 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-/* eslint-disable no-undef */
 
 import { browser } from '@wdio/globals';
 import { PAT_CONFIGS, type PATConfigId } from './github-fixtures';

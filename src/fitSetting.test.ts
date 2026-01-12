@@ -178,14 +178,14 @@ describe('FitSettingTab - GitHub settings', () => {
 		expect(ownerInput.value).toBe('alice');
 		expect(fakePlugin.settings.owner).toBe('alice');
 
-		// And: Owner/repo suggestions populated (using datalist IDs is acceptable here since we're verifying data, not finding elements)
-		const ownerDatalist = settingTab.containerEl.querySelector('#fit-owner-datalist') as HTMLDataListElement;
-		const ownerSuggestions = Array.from(ownerDatalist.querySelectorAll('option')).map(opt => opt.value);
-		expect(ownerSuggestions).toEqual(['alice', 'bob']);
+		// And: Owner/repo suggestions populated (via AbstractInputSuggest)
+		const ownerSuggest = (settingTab as any).ownerSuggest;
+		expect(ownerSuggest).toBeDefined();
+		expect(ownerSuggest.getSuggestions('')).toEqual(['alice', 'bob']);
 
-		const repoDatalist = settingTab.containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
-		const repoSuggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
-		expect(repoSuggestions).toEqual(['repo1', 'repo2']);
+		const repoSuggest = (settingTab as any).repoSuggest;
+		expect(repoSuggest).toBeDefined();
+		expect(repoSuggest.getSuggestions('')).toEqual(['repo1', 'repo2']);
 	});
 
 	it('should refresh suggestions for different owners', async () => {
@@ -220,9 +220,10 @@ describe('FitSettingTab - GitHub settings', () => {
 
 		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
-		// Then: Repo datalist shows alice's repos
-		const repoDatalist = settingTab.containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
-		let suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
+		// Then: Repo suggestions show alice's repos (via AbstractInputSuggest)
+		const repoSuggest = (settingTab as any).repoSuggest;
+		expect(repoSuggest).toBeDefined();
+		let suggestions = repoSuggest.getSuggestions('');
 		expect(suggestions).toEqual(['repo1', 'repo2', 'repo3']);
 
 		// When: User changes owner to bob via UI input and refreshes
@@ -235,8 +236,8 @@ describe('FitSettingTab - GitHub settings', () => {
 
 		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
-		// Then: Repo datalist updates to show bob's repos
-		suggestions = Array.from(repoDatalist.querySelectorAll('option')).map(opt => opt.value);
+		// Then: Repo suggestions update to show bob's repos
+		suggestions = repoSuggest.getSuggestions('');
 		expect(suggestions).toEqual(['bob-repo1', 'bob-repo2']);
 	});
 

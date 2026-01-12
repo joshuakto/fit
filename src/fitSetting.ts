@@ -1,23 +1,23 @@
 import FitPlugin from "@main";
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { setEqual } from "./utils";
+import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
 
 /**
  * Settings UI for Fit plugin.
  *
- * Key features:
- * - HTML5 datalist combo boxes for owner/repo/branch (supports both dropdown suggestions and freeform text entry)
- * - Automatic population of suggestions when authenticated via GitHubConnection
- * - Debounced branch fetching when owner or repo changes (500ms delay to reduce API calls)
- * - Supports contributor repos: type any owner/repo, not just repos you own
- * - No manual entry toggle needed - combo boxes unify both workflows
+ * Sections:
+ * - GitHub authentication (PAT token)
+ * - Repository configuration (owner/repo/branch)
+ * - Local settings (file exclusions, ignored files)
+ * - Debug logging toggle
  *
- * Architecture:
- * - Uses GitHubConnection for PAT-based operations (auth, repo discovery, branch listing)
- * - Settings changes trigger debounced saves to avoid overwhelming storage on every keystroke
- * - Refresh operations update dropdown suggestions without clearing user input
+ * Implementation notes:
+ * - Owner/repo inputs use AbstractInputSuggest (mobile-friendly autocomplete)
+ * - GitHubConnection provides repo discovery and branch listing
+ * - Settings saves and branch fetching are debounced (500ms) to reduce API calls
  */
 export default class FitSettingTab extends PluginSettingTab {
 	plugin: FitPlugin;
@@ -40,6 +40,8 @@ export default class FitSettingTab extends PluginSettingTab {
 	private refreshButton: HTMLElement | null = null;
 	private ownerInputComponent: { setPlaceholder: (placeholder: string) => void; setValue: (value: string) => void } | null = null;
 	private repoInputComponent: { setPlaceholder: (placeholder: string) => void; setValue: (value: string) => void } | null = null;
+	private ownerSuggest: GitHubOwnerSuggest | null = null;
+	private repoSuggest: GitHubRepoSuggest | null = null;
 
 	constructor(app: App, plugin: FitPlugin) {
 		super(app, plugin);
@@ -128,22 +130,25 @@ export default class FitSettingTab extends PluginSettingTab {
 	 * Debounced fetch repos for owner changes.
 	 * Waits 500ms after user stops typing before fetching repos to avoid performance issues.
 	 */
-	private debouncedFetchReposForOwner = (owner: string, repo_datalist: HTMLDataListElement | null) => {
+	private debouncedFetchReposForOwner = (owner: string) => {
 		if (this.repoFetchDebounceTimer) {
 			clearTimeout(this.repoFetchDebounceTimer);
 		}
 		this.repoFetchDebounceTimer = setTimeout(async () => {
 			this.repoFetchDebounceTimer = null;
-			if (owner && this.plugin.githubConnection && repo_datalist) {
+			if (owner && this.plugin.githubConnection) {
 				try {
 					this.existingRepos = await this.plugin.githubConnection.getReposForOwner(owner);
-					repo_datalist.empty();
-					this.existingRepos.forEach(repo => {
-						repo_datalist.createEl('option', { attr: { value: repo } });
-					});
+					if (this.repoSuggest) {
+						this.repoSuggest.updateSuggestions(this.existingRepos);
+					}
 				} catch (error) {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${owner}': ${errorMsg}`, { error });
+					this.existingRepos = [];
+					if (this.repoSuggest) {
+						this.repoSuggest.updateSuggestions([]);
+					}
 				}
 			}
 		}, 500);
@@ -375,13 +380,9 @@ export default class FitSettingTab extends PluginSettingTab {
 				? 'The GitHub username or organization that owns the repository. Select from suggestions or type a custom value.'
 				: 'Type a custom value, or authenticate above to see suggestions.');
 
-		// Create datalist for owner suggestions
-		const ownerDatalistId = 'fit-owner-datalist';
-		containerEl.createEl('datalist', { attr: { id: ownerDatalistId } });
-
+		// Create AbstractInputSuggest for owner suggestions (better mobile UX than datalist)
 		this.ownerSetting.addText(text => {
-			this.ownerInputComponent = text;  // Store reference for later updates
-			text.inputEl.setAttribute('list', ownerDatalistId);
+			this.ownerInputComponent = text;
 			text.setPlaceholder(isAuthenticated ? 'owner-username' : 'Authenticate above to auto-fill')
 				.setValue(this.plugin.settings.owner)
 				.onChange(async (value) => {
@@ -394,17 +395,37 @@ export default class FitSettingTab extends PluginSettingTab {
 						this.plugin.settings.branch = '';
 						this.repoInputComponent?.setValue('');
 						this.existingRepos = [];
-						const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
-						if (repo_datalist) repo_datalist.empty();
 
-						// If authenticated, debounced fetch repos for the new owner to avoid performance issues
+						// Update repo suggestions when owner changes
+						if (this.repoSuggest) {
+							this.repoSuggest.updateSuggestions([]);
+						}
+
+						// If authenticated, debounced fetch repos for the new owner
 						if (value && this.plugin.githubConnection) {
-							this.debouncedFetchReposForOwner(value, repo_datalist);
+							this.debouncedFetchReposForOwner(value);
 						}
 					}
 
 					this.debouncedSaveSettings();
 				});
+
+			// Initialize AbstractInputSuggest for owner input
+			try {
+				this.ownerSuggest = new GitHubOwnerSuggest(
+					this.app,
+					text.inputEl,
+					() => this.suggestedOwners
+				);
+				// Populate with current suggestions if available
+				if (this.suggestedOwners.length > 0) {
+					this.ownerSuggest.updateSuggestions(this.suggestedOwners);
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				this.plugin.logger.log(`[FitSettings] Failed to initialize owner suggestions: ${errorMsg}`, { error });
+				console.error('[FitSettings] Failed to initialize GitHubOwnerSuggest:', error);
+			}
 		});
 
 		// Repository name combo box (supports both dropdown suggestions and freeform text)
@@ -414,13 +435,9 @@ export default class FitSettingTab extends PluginSettingTab {
 				? 'Select a repo to sync your vault or type a custom value. Refresh to see your latest repos.'
 				: 'Authenticate above to see repo suggestions, or type a custom value.');
 
-		// Create datalist for repo suggestions
-		const repoDatalistId = 'fit-repo-datalist';
-		containerEl.createEl('datalist', { attr: { id: repoDatalistId } });
-
+		// Create AbstractInputSuggest for repo suggestions (better mobile UX than datalist)
 		this.repoSetting.addText(text => {
-			this.repoInputComponent = text;  // Store reference for later updates
-			text.inputEl.setAttribute('list', repoDatalistId);
+			this.repoInputComponent = text;
 			text.setPlaceholder(isAuthenticated ? 'repo-name' : 'Authenticate above for suggestions')
 				.setValue(this.plugin.settings.repo)
 				.onChange((value) => {
@@ -428,6 +445,22 @@ export default class FitSettingTab extends PluginSettingTab {
 					this.debouncedSaveSettings();
 					this.debouncedRefreshBranches();
 				});
+
+			// Initialize AbstractInputSuggest for repo input
+			try {
+				this.repoSuggest = new GitHubRepoSuggest(
+					this.app,
+					text.inputEl
+				);
+				// Populate with current suggestions if available
+				if (this.existingRepos.length > 0) {
+					this.repoSuggest.updateSuggestions(this.existingRepos);
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				this.plugin.logger.log(`[FitSettings] Failed to initialize repo suggestions: ${errorMsg}`, { error });
+				console.error('[FitSettings] Failed to initialize GitHubRepoSuggest:', error);
+			}
 		});
 
 		new Setting(containerEl)
@@ -595,16 +628,8 @@ export default class FitSettingTab extends PluginSettingTab {
 	// Then callers can explicitly request what they need instead of using magic strings like "repo(0)"
 	refreshFields = async (refreshFrom: RefreshCheckPoint) => {
 		const {containerEl} = this;
-		const owner_datalist = containerEl.querySelector('#fit-owner-datalist') as HTMLDataListElement;
-		const repo_datalist = containerEl.querySelector('#fit-repo-datalist') as HTMLDataListElement;
 		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
 		const link_el = containerEl.querySelector('.link-desc') as HTMLElement;
-
-		// Update owner input field value (doesn't refresh automatically since it's not a dropdown/datalist)
-		const ownerInput = containerEl.querySelector('input[list="fit-owner-datalist"]') as HTMLInputElement;
-		if (ownerInput && (refreshFrom === "repo(0)" || refreshFrom === "initialize")) {
-			ownerInput.value = this.plugin.settings.owner;
-		}
 
 		if (refreshFrom === "repo(0)") {
 			// Guard: Cannot fetch from API without githubConnection
@@ -613,21 +638,22 @@ export default class FitSettingTab extends PluginSettingTab {
 				return;
 			}
 
-			// Fetch owners and populate owner datalist
+			// Fetch owners and update owner suggestions
 			try {
 				this.suggestedOwners = await this.plugin.githubConnection.getAccessibleOwners();
-				owner_datalist.empty();
-				this.suggestedOwners.forEach(owner => {
-					owner_datalist.createEl('option', { attr: { value: owner } });
-				});
+				if (this.ownerSuggest) {
+					this.ownerSuggest.updateSuggestions(this.suggestedOwners);
+				}
 			} catch (error) {
 				const errorMsg = error instanceof Error ? error.message : String(error);
 				this.plugin.logger.log(`[FitSettings] Could not fetch accessible owners: ${errorMsg}`, { error });
 				this.suggestedOwners = [];
-				owner_datalist.empty();
+				if (this.ownerSuggest) {
+					this.ownerSuggest.updateSuggestions([]);
+				}
 			}
 
-			// Fetch repos for current owner and populate repo datalist
+			// Fetch repos for current owner and update repo suggestions
 			if (this.plugin.settings.owner) {
 				try {
 					this.existingRepos = await this.plugin.githubConnection.getReposForOwner(this.plugin.settings.owner);
@@ -639,10 +665,9 @@ export default class FitSettingTab extends PluginSettingTab {
 			} else {
 				this.existingRepos = [];
 			}
-			repo_datalist.empty();
-			this.existingRepos.forEach(repo => {
-				repo_datalist.createEl('option', { attr: { value: repo } });
-			});
+			if (this.repoSuggest) {
+				this.repoSuggest.updateSuggestions(this.existingRepos);
+			}
 		}
 
 		if (refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
@@ -675,6 +700,10 @@ export default class FitSettingTab extends PluginSettingTab {
 					// Repository not found or inaccessible - clear branch dropdown
 					branch_dropdown.empty();
 					this.existingBranches = [];
+					// TODO: This logs verbose 404 errors as user types incomplete repo names.
+					// These are expected failures (repo doesn't exist yet while typing).
+					// Should either: (1) suppress 404s entirely, (2) only log at debug level,
+					// or (3) detect if repo name looks incomplete (very short, etc) and skip logging.
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${this.plugin.settings.owner}/${this.plugin.settings.repo}: ${errorMsg}`, { error });
 				}
@@ -688,8 +717,6 @@ export default class FitSettingTab extends PluginSettingTab {
 		}
 
 		if (refreshFrom === "initialize") {
-			owner_datalist.empty();
-			repo_datalist.empty();
 			branch_dropdown.empty();
 			if (this.plugin.settings.branch) {
 				branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
@@ -698,16 +725,13 @@ export default class FitSettingTab extends PluginSettingTab {
 		}
 
 		if (refreshFrom === "withCache") {
-			// Populate datalists with cached data
-			owner_datalist.empty();
-			this.suggestedOwners.forEach(owner => {
-				owner_datalist.createEl('option', { attr: { value: owner } });
-			});
-
-			repo_datalist.empty();
-			this.existingRepos.forEach(repo => {
-				repo_datalist.createEl('option', { attr: { value: repo } });
-			});
+			// Update suggest instances with cached data
+			if (this.ownerSuggest) {
+				this.ownerSuggest.updateSuggestions(this.suggestedOwners);
+			}
+			if (this.repoSuggest) {
+				this.repoSuggest.updateSuggestions(this.existingRepos);
+			}
 
 			branch_dropdown.empty();
 			if (this.existingBranches.length > 0) {
