@@ -133,7 +133,8 @@ describe('FIT Plugin E2E Tests', function() {
 			await browser.pause(500);
 
 			// 6. Verify owner field populated with stubbed user
-			const ownerInput = await browser.$('input[list="fit-owner-datalist"]');
+			// Find input by the Repository owner label
+			const ownerInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository owner"]/following::input[1]');
 			const ownerValue = await ownerInput.getValue();
 
 			expect(ownerValue).toBe('testowner');
@@ -144,48 +145,48 @@ describe('FIT Plugin E2E Tests', function() {
 			// 8. Wait for repo dropdown to populate (debounced fetch)
 			await browser.pause(800);
 
-			// 9. Focus and expand repo dropdown to show all suggestions
-			const repoInput = await browser.$('input[list="fit-repo-datalist"]');
+			// 9. Focus on repo input (now uses AbstractInputSuggest, not datalist)
+			const repoInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository name"]/following::input[1]');
 
-			// 10. Click to focus, then trigger dropdown
+			// 10. Click to focus
 			await repoInput.click();
 			await browser.pause(200);
 
-			await browser.keys('ArrowDown');
-			await browser.pause(200);
-
-			// 11. Verify repo datalist options are populated
+			// 11. Verify repo suggestions are populated (via AbstractInputSuggest)
 			const repoOptions = await browser.executeObsidian(() => {
-				const datalist = document.querySelector('#fit-repo-datalist');
-				if (!datalist) return [];
-				return Array.from(datalist.querySelectorAll('option')).map(opt => opt.value);
+				// Access the FitSettingTab instance to get suggestions
+				const settingsTab = (window as any).app?.setting?.pluginTabs?.find((tab: any) => tab.id === 'fit');
+				if (!settingsTab?.repoSuggest) return [];
+				return settingsTab.repoSuggest.getSuggestions('');
 			});
 
 			// Should have 2 repos for 'testowner' (from fixtures: testrepo, private-repo)
 			expect(repoOptions.sort()).toEqual(['private-repo', 'testrepo']);
 
-			// 12. Select an item from the datalist (simulating user tap/click on mobile)
-			// Note: Native datalist dropdowns can't be screenshotted, but we can verify
-			// the selection works by programmatically selecting an option and capturing the result
+			// 12. Trigger the AbstractInputSuggest popover by typing
+			// This should open the suggestion list that we can screenshot
+			await repoInput.click();
+			await repoInput.setValue('test'); // Type partial match to trigger suggestions
+			await browser.pause(300); // Wait for suggestion popover to appear
 
-			// Select 'testrepo' option from datalist (simulates user selection)
+			// 13. Take screenshot showing the suggestion popover
+			// (Unlike datalists, AbstractInputSuggest popovers ARE visible and screenshottable!)
+			await takeScreenshot('repo-suggestions-visible');
+
+			// 14. Select 'testrepo' from the suggestions by clicking on it
 			await browser.executeObsidian(() => {
-				const datalist = document.querySelector('#fit-repo-datalist');
-				// Find the 'testrepo' option specifically
-				const testrepoOption = Array.from(datalist?.querySelectorAll('option') || [])
-					.find(opt => opt.value === 'testrepo');
+				// Find the suggestion element in the popover and click it
+				const suggestionElements = Array.from(document.querySelectorAll('.suggestion-item'));
+				const testrepoSuggestion = suggestionElements.find(el =>
+					el.textContent?.includes('testrepo')
+				) as HTMLElement;
 
-				if (!testrepoOption) {
-					throw new Error('testrepo option not found in datalist');
+				if (!testrepoSuggestion) {
+					throw new Error('testrepo suggestion not found in popover');
 				}
 
-				// Simulate user selecting 'testrepo' from datalist
-				const input = document.querySelector('input[list="fit-repo-datalist"]') as HTMLInputElement;
-				if (input) {
-					input.value = 'testrepo';
-					input.dispatchEvent(new Event('input', { bubbles: true }));
-					input.dispatchEvent(new Event('change', { bubbles: true }));
-				}
+				// Click the suggestion to select it
+				testrepoSuggestion.click();
 			});
 
 			await browser.pause(500); // Wait for any UI updates
