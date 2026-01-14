@@ -46,6 +46,17 @@ async function takeScreenshot(name: string) {
 describe('FIT Plugin E2E Tests', function() {
 	this.timeout(60000); // 60 second timeout
 
+	// Automatically screenshot on any test failure
+	afterEach(async function() {
+		if (this.currentTest?.state === 'failed') {
+			try {
+				await takeScreenshot(`FAILED-${this.currentTest.title.replace(/\s+/g, '-')}`);
+			} catch (e) {
+				console.log('Failed to take failure screenshot:', e);
+			}
+		}
+	});
+
 	describe('Core Functionality', function() {
 		it('should run FIT sync and capture complete result', async () => {
 			// Single comprehensive test covering plugin loading, sync execution, and screenshot capture
@@ -108,19 +119,30 @@ describe('FIT Plugin E2E Tests', function() {
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
 
+			// Take screenshot of settings page before trying to find FIT tab
+			await takeScreenshot('settings-opened');
+
 			// 2. Navigate to FIT plugin settings
-			await browser.executeObsidian(() => {
-				// Find FIT tab in settings sidebar
+			const fitTabFound = await browser.executeObsidian(() => {
+				// Find FIT tab in settings sidebar (case-insensitive search)
 				const fitTab = Array.from(document.querySelectorAll('.vertical-tab-nav-item'))
-					.find(el => el.textContent?.includes('FIT'));
+					.find(el => el.textContent?.toLowerCase().includes('fit'));
 				if (fitTab) {
 					(fitTab as HTMLElement).click();
+					return true;
 				}
+				return false;
 			});
+
+			if (!fitTabFound) {
+				throw new Error('FIT plugin settings tab not found - is the plugin loaded?');
+			}
+
 			await browser.pause(500);
 
-			// 3. Enter test PAT
+			// 3. Wait for settings UI to render and enter test PAT
 			const patInput = await browser.$('input[placeholder*="personal access token"]');
+			await patInput.waitForExist({ timeout: 5000 }); // Wait up to 5s for input to appear
 			await patInput.setValue('ghp_test');
 			await browser.pause(200); // Allow settings to update
 
@@ -136,8 +158,20 @@ describe('FIT Plugin E2E Tests', function() {
 			// Find input by the Repository owner label
 			const ownerInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository owner"]/following::input[1]');
 			const ownerValue = await ownerInput.getValue();
+			const ownerAttribute = await ownerInput.getAttribute('value');
+			const ownerProperty = await browser.executeObsidian(() => {
+				// Find the owner input by its setting label
+				const settingItems = Array.from(document.querySelectorAll('.setting-item'));
+				const ownerSetting = settingItems.find(item =>
+					item.querySelector('.setting-item-name')?.textContent === 'Repository owner'
+				);
+				const input = ownerSetting?.querySelector('input') as HTMLInputElement;
+				return input?.value || null;
+			});
 
-			expect(ownerValue).toBe('testowner');
+			// Use whichever method actually returns a value
+			const actualOwnerValue = ownerProperty || ownerAttribute || ownerValue;
+			expect(actualOwnerValue).toBe('testowner');
 
 			// 7. Take screenshot of authenticated state
 			await takeScreenshot('settings-auth-success');
@@ -191,12 +225,20 @@ describe('FIT Plugin E2E Tests', function() {
 
 			await browser.pause(500); // Wait for any UI updates
 
-			// Verify the input was populated with 'testrepo'
-			const repoValue = await repoInput.getValue();
-			console.log(`Selected repo value: ${repoValue}`);
-			expect(repoValue).toBe('testrepo');
+			// Verify the input was populated with 'testrepo' (use DOM property like owner field)
+			const repoProperty = await browser.executeObsidian(() => {
+				// Find the repo input by its setting label
+				const settingItems = Array.from(document.querySelectorAll('.setting-item'));
+				const repoSetting = settingItems.find(item =>
+					item.querySelector('.setting-item-name')?.textContent === 'Repository name'
+				);
+				const input = repoSetting?.querySelector('input') as HTMLInputElement;
+				return input?.value || null;
+			});
+			console.log('Repo value (via DOM property):', repoProperty);
+			expect(repoProperty).toBe('testrepo');
 
-			// Take screenshot showing the populated input (proof that datalist selection worked)
+			// Take screenshot showing the populated input (proof that suggestion selection worked)
 			await takeScreenshot('settings-repo-selected');
 		});
 	});
