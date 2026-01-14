@@ -2,6 +2,7 @@ import FitPlugin from "@main";
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { setEqual } from "./utils";
 import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
+import { VaultError } from "./vault";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
 
@@ -414,8 +415,7 @@ export default class FitSettingTab extends PluginSettingTab {
 			try {
 				this.ownerSuggest = new GitHubOwnerSuggest(
 					this.app,
-					text.inputEl,
-					() => this.suggestedOwners
+					text.inputEl
 				);
 				// Populate with current suggestions if available
 				if (this.suggestedOwners.length > 0) {
@@ -700,12 +700,11 @@ export default class FitSettingTab extends PluginSettingTab {
 					// Repository not found or inaccessible - clear branch dropdown
 					branch_dropdown.empty();
 					this.existingBranches = [];
-					// TODO: This logs verbose 404 errors as user types incomplete repo names.
-					// These are expected failures (repo doesn't exist yet while typing).
-					// Should either: (1) suppress 404s entirely, (2) only log at debug level,
-					// or (3) detect if repo name looks incomplete (very short, etc) and skip logging.
-					const errorMsg = error instanceof Error ? error.message : String(error);
-					this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${this.plugin.settings.owner}/${this.plugin.settings.repo}: ${errorMsg}`, { error });
+					// Only log unexpected errors; 404s are expected as user types incomplete repo names
+					if (!(error instanceof VaultError && error.type === 'remote_not_found')) {
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${this.plugin.settings.owner}/${this.plugin.settings.repo}: ${errorMsg}`, { error });
+					}
 				}
 			}
 			branch_dropdown.disabled = false;

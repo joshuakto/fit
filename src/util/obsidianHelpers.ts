@@ -109,8 +109,7 @@ export class GitHubOwnerSuggest extends AbstractInputSuggest<string> {
 
 	constructor(
 		app: App,
-		inputEl: HTMLInputElement,
-		private getSuggestionsCallback: () => string[]
+		inputEl: HTMLInputElement
 	) {
 		super(app, inputEl);
 		this.inputEl = inputEl;
