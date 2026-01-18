@@ -50,7 +50,7 @@
 		"typescript": "^5.9.2",
 		"vitest": "^4.0.8",
 		"wdio-obsidian-reporter": "^2.1.6",
-		"wdio-obsidian-service": "^2.1.6"
+		"wdio-obsidian-service": "^2.2.0"
 	},
 	"dependencies": {
 		"@octokit/core": "^6.0.1",
