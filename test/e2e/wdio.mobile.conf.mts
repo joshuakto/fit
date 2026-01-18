@@ -36,7 +36,7 @@ export const config = {
 	services: [
 		"obsidian",
 		["appium", {
-			args: { allowInsecure: "chromedriver_autodownload,adb_shell" },
+			args: { allowInsecure: "chromedriver_autodownload:*,adb_shell:*" },
 		}],
 	],
 
