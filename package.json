@@ -25,12 +25,12 @@
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
-		"@eslint/js": "^9.36.0",
-		"@stylistic/eslint-plugin": "^5.4.0",
+		"@eslint/js": "^9.39.2",
+		"@stylistic/eslint-plugin": "^5.7.0",
 		"@types/mocha": "^10.0.10",
-		"@types/node": "^18.19.127",
-		"@typescript-eslint/eslint-plugin": "^8.44.1",
-		"@typescript-eslint/parser": "^8.44.1",
+		"@types/node": "^22.16.0",
+		"@typescript-eslint/eslint-plugin": "^8.53.0",
+		"@typescript-eslint/parser": "^8.53.0",
 		"@vitest/coverage-istanbul": "^4.0.8",
 		"@vitest/ui": "^4.0.8",
 		"@wdio/cli": "^9.23.0",
@@ -39,10 +39,10 @@
 		"@wdio/mocha-framework": "^9.23.0",
 		"@wdio/spec-reporter": "^9.20.0",
 		"builtin-modules": "^5.0.0",
-		"esbuild": "^0.25.10",
-		"eslint": "^9.36.0",
+		"esbuild": "^0.27.2",
+		"eslint": "^9.39.2",
 		"expect-webdriverio": "^5.6.1",
-		"globals": "^16.4.0",
+		"globals": "^17.0.0",
 		"happy-dom": "^20.0.11",
 		"mocha": "^11.7.5",
 		"obsidian": "^1.8.7",
@@ -53,8 +53,8 @@
 		"wdio-obsidian-service": "^2.1.6"
 	},
 	"dependencies": {
-		"@octokit/core": "^6.0.1",
-		"@octokit/plugin-retry": "^7.2.1"
+		"@octokit/core": "^7.0.6",
+		"@octokit/plugin-retry": "^8.0.3"
 	},
 	"optionalDependencies": {
 		"@wdio/appium-service": "^9.23.0",
