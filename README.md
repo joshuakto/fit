@@ -64,6 +64,22 @@ See [Common Issues](#common-issues) below for detailed conflict resolution steps
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
 
+### Manually trigger sync on Obsidian mobile
+
+related issue: [#190](https://github.com/joshuakto/fit/issues/190)
+
+On Obsidian mobile, linking sync to a hotkey which requires the presence of a
+keyboard is not an ideal approach to manually trigger sync. A more intuitive
+set of procedures are:
+
+- Open any repository with FIT configured
+- Swipe down from anywhere on the screen to open command menu
+- Search for "Fit: Fit Sync" and click to sync
+
+Alternative: "Fit Sync" can be pinned to the ribbon menu from "Setting >
+Appearance > Interface > Ribbon menu configuration"
+
+
 ## 🔒 Security
 
 The FIT maintainers make every effort to protect your security and protect against data loss. However, mistakes can happen. Users are highly recommended to do a security review of the code of this project before trusting it with their data. You could use an AI tool for that such as Claude Code.
