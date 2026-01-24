@@ -3,16 +3,18 @@ import { LocalStores } from "main";
 import { FileOpRecord, LocalChange, RemoteChange, RemoteUpdate } from "./fitTypes";
 
 type PrePullCheckResultType = (
-    "localCopyUpToDate" | 
-    "localChangesClashWithRemoteChanges" | 
-    "remoteChangesCanBeMerged" | 
+    "localCopyUpToDate" |
+    "localChangesClashWithRemoteChanges" |
+    "remoteChangesCanBeMerged" |
     "noRemoteChangesDetected"
 )
 
 type PrePullCheckResult = (
-    { status: "localCopyUpToDate", remoteUpdate: null } | 
+    { status: "localCopyUpToDate", remoteUpdate: null } |
     { status: Exclude<PrePullCheckResultType, "localCopyUpToDate">, remoteUpdate: RemoteUpdate }
 );
+
+type SaveCallback = (path: string, localStore: Partial<LocalStores>) => Promise<void>
 
 export interface IFitPull {
     fit: Fit
@@ -20,7 +22,7 @@ export interface IFitPull {
 
 export class FitPull implements IFitPull {
     fit: Fit
-    
+
 
     constructor(fit: Fit) {
         this.fit = fit
@@ -42,9 +44,9 @@ export class FitPull implements IFitPull {
             (remoteChanges.length > 0) ? (
                 (clashedFiles.length > 0) ? "localChangesClashWithRemoteChanges" : "remoteChangesCanBeMerged"):
                 "noRemoteChangesDetected")
-        
+
         return {
-            status: prePullCheckStatus, 
+            status: prePullCheckStatus,
             remoteUpdate: {
                 remoteChanges, remoteTreeSha, latestRemoteCommitSha: remoteCommitSha, clashedFiles
             }
@@ -62,28 +64,42 @@ export class FitPull implements IFitPull {
 
     async prepareChangesToExecute(remoteChanges: RemoteChange[]) {
         const deleteFromLocal = remoteChanges.filter(c=>c.status=="REMOVED").map(c=>c.path)
-			const changesToProcess = remoteChanges.filter(c=>c.status!="REMOVED").reduce(
-				(acc, change) => {
-                    acc[change.path] = change.currentSha as string;
-					return acc;
-                }, {} as Record<string, string>);
+        const changesToProcess = remoteChanges.filter(c=>c.status!="REMOVED").reduce(
+            (acc, change) => {
+                acc[change.path] = change.currentSha as string;
+                return acc;
+            }, {} as Record<string, string>);
 
-		const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess)
+        const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess)
+
         return {addToLocal, deleteFromLocal}
     }
 
     async pullRemoteToLocal(
         remoteUpdate: RemoteUpdate,
-        saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>): Promise<FileOpRecord[]> {
+        saveLocalStoreCallback: SaveCallback
+    ) : Promise<FileOpRecord[]>
+    {
             const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate
-            const {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges)
-			
-			const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
-			await saveLocalStoreCallback({
-                lastFetchedRemoteSha: remoteTreeSha, 
-                lastFetchedCommitSha: latestRemoteCommitSha,
-                localSha: await this.fit.computeLocalSha()
-            })
+            let {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges)
+
+            const basepath = this.fit.syncPath
+            addToLocal = this.fit.getAddToLocal(addToLocal)
+            deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal)
+
+            const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(
+                addToLocal,
+                deleteFromLocal
+            );
+
+            await saveLocalStoreCallback(
+                basepath,
+                {
+                    lastFetchedRemoteSha: remoteTreeSha,
+                    lastFetchedCommitSha: latestRemoteCommitSha,
+                    localSha: await this.fit.computeLocalSha()
+                }
+            )
             return fileOpsRecord
     }
 }
