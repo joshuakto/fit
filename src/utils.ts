@@ -1,7 +1,7 @@
 import { Notice } from "obsidian";
 import { ClashStatus, FileOpRecord, LocalFileStatus, RemoteChangeType } from "./fitTypes";
 import { basicTemplateConflict, conflictResolutionFolder } from "./const";
-import { diffWords } from "diff";
+import { diffLines } from "diff";
 
 type Status = RemoteChangeType | LocalFileStatus
 
@@ -178,7 +178,7 @@ export function difference(setA: Set<any>, setB: Set<any>) {
 export function getDiffText(oldContent: string, newContent: string): string {
     let result = '';
 
-    const diff = diffWords(oldContent, newContent);
+    const diff = diffLines(oldContent, newContent);
 
     const hasChanges = diff.some(part => part.added || part.removed);
     if (!hasChanges) {
@@ -189,15 +189,12 @@ export function getDiffText(oldContent: string, newContent: string): string {
     let hasLineChanges = false;
 
     for (let part of diff) {
-        let text: string
+        let text = part.value
         if (part.removed) {
-            text = `<span style="color:rgb(223, 73, 73)">${part.value}</span>`
+            text = `<span style="color:rgb(223, 73, 73)">---</span>${part.value}`
         }
         else if (part.added) {
-            text = `<span style="color:rgb(0, 176, 80)">${part.value}</span>`
-        }
-        else {
-            text = part.value
+            text = `<span style="color:rgb(0, 176, 80)">+++</span>${part.value}`
         }
 
         const lines = text.split('\n');
