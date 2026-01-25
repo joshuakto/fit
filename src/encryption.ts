@@ -14,7 +14,7 @@ import FitPlugin from "@main";
 import { arrayBufferToBase64, base64ToArrayBuffer } from "obsidian";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder('utf-8', { fatal: true });
 
 let plugin: FitPlugin;
 

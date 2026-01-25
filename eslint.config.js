@@ -51,6 +51,12 @@ export default [
 				{ name: 'require', message: 'require() is Node.js-only. Use ES module imports.' },
 				{ name: 'process', message: 'process is Node.js-only. Not available on Obsidian mobile.' },
 			],
+			'no-restricted-syntax': ['error',
+				{
+					selector: "NewExpression[callee.name='TextDecoder'][arguments.length < 2]",
+					message: "Use new TextDecoder(encoding, { fatal: true }) to prevent silent data corruption on invalid UTF-8.",
+				},
+			],
 		},
 	},
 	{
