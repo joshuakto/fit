@@ -55,7 +55,8 @@
 	},
 	"dependencies": {
 		"@octokit/core": "^7.0.6",
-		"@octokit/plugin-retry": "^8.0.3"
+		"@octokit/plugin-retry": "^8.0.3",
+		"ignore": "^7.0.5"
 	},
 	"optionalDependencies": {
 		"@wdio/appium-service": "^9.23.0",

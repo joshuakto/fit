@@ -213,7 +213,7 @@ currentLocalSha = {}  // File doesn't exist
 
 ## Path Filtering and Safety
 
-FIT implements two layers of filtering to protect critical files and handle untrackable files safely:
+FIT implements three layers of path filtering:
 
 ### 1. Protected Paths (`shouldSyncPath`) - Never Sync
 
@@ -286,6 +286,34 @@ lastFetchedRemoteSha = { ".gitignore": "abc123" }
 // - User manually resolves if needed
 ```
 
+### 3. Gitignore Patterns (`GitignoreFilter`) - User-Defined Exclusions
+
+- **Filtered by:** `GitignoreFilter` in `LocalVault.readFromSource()`
+- **Applied to:** 💾 Local vault only (before SHA computation)
+- **Reason:** Respect user-defined exclusion rules, consistent with git behavior
+
+**How it works:**
+- Reads `.gitignore` files from the vault root and any ancestor directories of tracked files
+- Uses the `ignore` package for standard gitignore pattern semantics (negation, directory patterns, etc.)
+- Only probes paths derived from the tracked file set — no full filesystem scan
+
+**Behavior:**
+- Files matched by any applicable `.gitignore` are excluded from `localSha` and never pushed
+- Patterns scope correctly: a `build/.gitignore` only affects files under `build/`
+- If no `.gitignore` files exist, this layer is a no-op
+
+**Example:**
+```
+# Root .gitignore
+*.log
+node_modules/
+
+# Result: debug.log and node_modules/pkg/index.js excluded from sync
+#         README.md, src/main.ts included as normal
+```
+
+**Implementation:** [`src/util/gitignore.ts` — `GitignoreFilter`](../src/util/gitignore.ts)
+
 ### Combined Filtering: `.obsidian/` Files
 
 Files in `.obsidian/` are filtered by BOTH:
@@ -302,21 +330,23 @@ Files in `.obsidian/` are filtered by BOTH:
 **Path filtering:**
 - [`Fit.shouldSyncPath()`](../src/fit.ts) - Protected path check
 - [`LocalVault.shouldTrackState()`](../src/localVault.ts) - Hidden file check
+- [`GitignoreFilter`](../src/util/gitignore.ts) - User-defined exclusions (local only)
 - [`FitSync.sync()`](../src/fitSync.ts) - Filters local changes before sync
 - [`FitSync.applyRemoteChanges()`](../src/fitSync.ts) - Handles remote protected/hidden files with safety checks
 
-**Decision flow:**
+**Decision flow (local files):**
 ```mermaid
 flowchart TD
-    Start[File from Remote] --> Protected{shouldSyncPath?}
-    Protected -->|No| SaveClash[📁 Save to _fit/path]
-    Protected -->|Yes| Trackable{shouldTrackState?}
+    Start[Local file] --> Trackable{shouldTrackState?}
+    Trackable -->|No| Skip[Excluded from localSha]
+    Trackable -->|Yes| Gitignore{GitignoreFilter?}
+    Gitignore -->|Ignored| Skip
+    Gitignore -->|Not ignored| Protected{shouldSyncPath?}
+    Protected -->|No| Skip
+    Protected -->|Yes| Tracked[Included in localSha / pushed to remote]
 
-    Trackable -->|No| SaveClash
-    Trackable -->|Yes| Normal[Apply normally]
-
-    SaveClash --> End[Done]
-    Normal --> End
+    Skip --> End[Done]
+    Tracked --> End
 ```
 
 ### Version Migration Safety
@@ -434,7 +464,7 @@ flowchart TD
 **Key Benefits:**
 - **Principled boundaries**: Each phase has clear inputs/outputs
 - **Efficient batching**: Single filesystem stat for all verification needs
-- **Future-proof**: Supports planned features (`.gitignore`, continuous sync, explicit tracking)
+- **Future-proof**: Supports planned features (continuous sync, explicit tracking, full hidden file sync)
 - **Testable**: Phases can be tested independently
 
 **Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)

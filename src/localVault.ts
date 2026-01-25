@@ -14,6 +14,7 @@ import { BlobSha, computeSha1 } from "./util/hashing";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
+import { GitignoreFilter } from "./util/gitignore";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -136,33 +137,50 @@ export class LocalVault implements IVault<"local"> {
 	async readFromSource(): Promise<VaultReadResult> {
 		const allFiles = this.vault.getFiles();
 
-		// Filter to only tracked paths
+		// Filter to only tracked paths (excludes hidden files that Vault API can't read)
 		const allPaths = allFiles.map(f => f.path);
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
-		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
+		const untrackedPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
 		// Create map for quick file size lookups
 		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
 
-		if (ignoredPaths.length > 0) {
-			fitLogger.log('[LocalVault] Ignored paths in local scan', {
-				count: ignoredPaths.length,
-				paths: ignoredPaths
+		if (untrackedPaths.length > 0) {
+			fitLogger.log('[LocalVault] Untracked paths in local scan (hidden files)', {
+				paths: untrackedPaths
 			});
 		}
 
-		// Compute SHAs for all tracked files
+		// Load .gitignore filters; pass allPaths so already-scanned .gitignore
+		// entries skip a redundant stat (future-proof for when vault.getFiles()
+		// exposes hidden files).
+		const allPathsSet = new Set(allPaths);
+		const gitignoreFilter = await GitignoreFilter.load(this.vault.adapter, trackedPaths, allPathsSet);
+
+		// Filter out paths matched by .gitignore patterns
+		let pathsToScan: string[];
+		if (!gitignoreFilter.isEmpty) {
+			const { kept, ignored } = gitignoreFilter.filter(trackedPaths);
+			pathsToScan = kept;
+			if (ignored.length > 0) {
+				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { paths: ignored });
+			}
+		} else {
+			pathsToScan = trackedPaths;
+		}
+
+		// Compute SHAs for all non-ignored files
 		// Monitor for slow operations that could cause mobile crashes
 		// Use allSettled to collect both successes and failures per file
 		const shaResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
+				pathsToScan.map(async (path): Promise<[string, BlobSha]> => {
 					const sha = await LocalVault.fileSha1(
 						path, await readFileContent(this.vault, path));
 					return [path, sha];
 				})
 			),
-			`Local vault SHA computation (${trackedPaths.length} files)`,
+			`Local vault SHA computation (${pathsToScan.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
 
@@ -171,7 +189,7 @@ export class LocalVault implements IVault<"local"> {
 		const failedPaths: Array<{path: string, error: unknown}> = [];
 
 		shaResults.forEach((result, index) => {
-			const path = trackedPaths[index];
+			const path = pathsToScan[index];
 			if (result.status === 'fulfilled') {
 				shaEntries.push(result.value);
 			} else {

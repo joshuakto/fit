@@ -47,7 +47,8 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 **❌ NOT synced (protected paths):**
 - `.obsidian/` folder (Obsidian settings and plugins)
 - `_fit/` folder (conflict resolution area)
-- Hidden files like `.gitignore`, `.env` (not currently supported - see [#92](https://github.com/joshuakto/fit/issues/92) for planned opt-in support)
+- Hidden files like `.env`, `.gitignore` (not synced — see [#92](https://github.com/joshuakto/fit/issues/92) for planned opt-in support)
+  - Note: `.gitignore` **rules** are respected — files matched by your patterns are excluded from sync
 
 ### Conflict handling
 
@@ -107,7 +108,7 @@ You should also take care with security tokens you use to ensure they don't leak
 **Solutions:**
 - Move large files (>20MB) outside your vault before syncing
 - Manually sync large files to GitHub using other tools (to create them and any time they're modified)
-- Add the files to .gitignore to exclude them from sync (once .gitignore is supported, #92)
+- Add the files to `.gitignore` to exclude them from sync
 
 </details>
 

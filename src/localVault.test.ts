@@ -937,4 +937,52 @@ describe('LocalVault', () => {
 			expect(new TextDecoder().decode(created)).toBe('fake-image');
 		});
 	});
+
+	describe('.gitignore filtering in readFromSource', () => {
+		it('should exclude files matched by root .gitignore', async () => {
+			const fakeVault = new FakeObsidianVault();
+
+			// Set up .gitignore (hidden file, use adapter)
+			await fakeVault.adapter.write('.gitignore', '*.log\nnode_modules/');
+
+			// Set up visible files (use create to add to vault index)
+			await fakeVault.create('README.md', 'readme');
+			await fakeVault.create('debug.log', 'log content');
+			await fakeVault.create('src/main.ts', 'code');
+			await fakeVault.create('node_modules/pkg/index.js', 'module');
+
+			const localVault = new LocalVault(fakeVault as any);
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state).sort()).toEqual(['README.md', 'src/main.ts']);
+		});
+
+		it('should exclude files matched by nested .gitignore', async () => {
+			const fakeVault = new FakeObsidianVault();
+
+			// Nested .gitignore only affects its directory
+			await fakeVault.adapter.write('build/.gitignore', '*.map\n*.tmp');
+
+			await fakeVault.create('build/app.js', 'code');
+			await fakeVault.create('build/app.js.map', 'sourcemap');
+			await fakeVault.create('src/app.js.map', 'not ignored - no gitignore in src/');
+
+			const localVault = new LocalVault(fakeVault as any);
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state).sort()).toEqual(['build/app.js', 'src/app.js.map']);
+		});
+
+		it('should include all files when no .gitignore exists', async () => {
+			const fakeVault = new FakeObsidianVault();
+
+			await fakeVault.create('file.log', 'log');
+			await fakeVault.create('file.md', 'doc');
+
+			const localVault = new LocalVault(fakeVault as any);
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state).sort()).toEqual(['file.log', 'file.md']);
+		});
+	});
 });
