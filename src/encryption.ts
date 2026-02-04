@@ -148,11 +148,3 @@ export async function decryptPath(encryptedPath: string): Promise<string> {
 
 	return decryptedSegments.join("/");
 }
-
-export async function safeCall(func: (value: string) => Promise<string>, arg: string): Promise<string | null> {
-	try {
-		return await func(arg);
-	} catch {
-		return null;
-	}
-}
