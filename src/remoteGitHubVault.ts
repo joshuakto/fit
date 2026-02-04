@@ -261,11 +261,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 */
 	private async createBlob(content: string, encoding: string): Promise<BlobSha> {
 		try {
-			if (encoding === "utf-8") {
-				encoding = "base64";
-				content = Content.encodeToBase64(content);
+			if (Encryption.isEnabled()) {
+				if (encoding === "utf-8") {
+					encoding = "base64";
+					content = Content.encodeToBase64(content);
+				}
+				content = await Encryption.encryptContent(content);
 			}
-			content = await Encryption.encryptContent(content);
 			const {data: blob} = await withSlowOperationMonitoring(
 				this.octokit.request(
 					`POST /repos/{owner}/{repo}/git/blobs`, {
