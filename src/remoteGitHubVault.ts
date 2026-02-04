@@ -244,7 +244,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 				});
 			let content = blob.content;
 			if (Encryption.isEnabled()) {
-				content = await Encryption.safeCall(Encryption.decryptContent, content) ?? content;
+				content = await Encryption.decryptContent(content);
 			}
 			return FileContent.fromBase64(content);
 		} catch (error) {
@@ -720,7 +720,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			if (node.type === "blob" && node.path && node.sha) {
 				let path = node.path;
 				if (Encryption.isEnabled()) {
-					path = await Encryption.safeCall(Encryption.decryptPath, path) ?? path;
+					path = await Encryption.decryptPath(path);
 				}
 
 				try {
