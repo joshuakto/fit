@@ -132,7 +132,8 @@ export async function decryptPath(encryptedPath: string): Promise<string> {
 		segments.map(async (seg) => {
 			if (!seg) return "";
 			const base64 = seg.replace(/-/g, "+").replace(/_/g, "/");
-			const data = base64ToArrayBuffer(base64);
+			const paddedBase64 = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+			const data = base64ToArrayBuffer(paddedBase64);
 			const fixedIv = new Uint8Array(12).fill(0);
 
 			const decrypted = await crypto.subtle.decrypt(
