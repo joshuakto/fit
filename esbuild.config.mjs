@@ -11,11 +11,7 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === "production");
 
-const context = await esbuild.context({
-	banner: {
-		js: banner,
-	},
-	entryPoints: ["main.ts"],
+const sharedConfig = {
 	bundle: true,
 	external: [
 		"obsidian",
@@ -32,17 +28,38 @@ const context = await esbuild.context({
 		"@lezer/highlight",
 		"@lezer/lr",
 		...builtins],
-	format: "cjs",
-	target: "es2018",
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
+};
+
+const pluginContext = await esbuild.context({
+	banner: {
+		js: banner,
+	},
+	entryPoints: ["main.ts"],
+	...sharedConfig,
+	format: "cjs",
+	target: "es2018",
 	outfile: "main.js",
 });
 
+const cliContext = await esbuild.context({
+	entryPoints: ["src/cli/index.ts"],
+	...sharedConfig,
+	// CLI does not bundle obsidian or electron; all node builtins are external
+	// Override: obsidian is already external in sharedConfig (safe to keep)
+	format: "cjs",
+	target: "node18",
+	platform: "node",
+	outfile: "fit-cli.cjs",
+});
+
 if (prod) {
-	await context.rebuild();
+	await pluginContext.rebuild();
+	await cliContext.rebuild();
 	process.exit(0);
 } else {
-	await context.watch();
+	await pluginContext.watch();
+	await cliContext.watch();
 }

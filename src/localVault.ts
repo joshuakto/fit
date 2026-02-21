@@ -5,15 +5,16 @@
  */
 
 import { TFile, TFolder, Vault } from "obsidian";
-import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
+import { ApplyChangesResult, ILocalVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
-import { BlobSha, computeSha1 } from "./util/hashing";
-import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { BlobSha } from "./util/hashing";
+import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
+import { computeFileSha1 } from "./util/fileHashUtils";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -32,41 +33,6 @@ function collectSettledFailures<T>(
 	return failures;
 }
 
-/**
- * Frozen list of binary file extensions for SHA calculation consistency.
- *
- * IMPORTANT: This list is FROZEN to prevent spurious sync operations.
- *
- * Why this matters:
- * - Before PR #XXX: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
- *   CORRUPTED plaintext (with replacement characters �) because toPlainText()
- *   silently corrupted binary data
- * - After PR #XXX: toPlainText() throws on binary, fileSha1() catches and uses base64
- * - Problem: Existing .zip files will get DIFFERENT SHAs (corrupted vs correct)
- * - Result: Plugin detects "change" and tries to sync the same file again
- *
- * Solution:
- * - Keep list FROZEN to avoid batch SHA changes for existing users
- * - New fatal:true logic handles unlisted extensions gracefully via try/catch
- * - Users with .zip files will see ONE spurious sync after upgrading (acceptable)
- *
- * Future: Implement SHA migration strategy to expand this list safely
- * (e.g., version stores, detect and re-hash on upgrade, warn users)
- *
- * DO NOT modify this list unless you implement a SHA migration strategy.
- */
-const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
-
-/**
- * Check if a file extension is considered binary for SHA calculation purposes.
- * Uses FROZEN_BINARY_EXT_FOR_SHA to ensure SHA consistency.
- *
- * @param extension - File extension WITHOUT leading dot (e.g., "png", not ".png")
- */
-function isBinaryExtensionForSha(extension: string): boolean {
-	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
-	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
-}
 
 /**
  * Local vault implementation for Obsidian.
@@ -79,7 +45,7 @@ function isBinaryExtensionForSha(extension: string): boolean {
  *
  * Isolates Obsidian Vault API quirks from sync logic.
  */
-export class LocalVault implements IVault<"local"> {
+export class LocalVault implements ILocalVault {
 	private vault: Vault;
 
 	constructor(vault: Vault) {
@@ -223,34 +189,12 @@ export class LocalVault implements IVault<"local"> {
 	 *
 	 * Path is normalized to NFC before hashing to prevent
 	 * duplication issues with Unicode normalization (issue #51)
+	 *
+	 * Delegates to computeFileSha1 utility for CLI/Node.js compatibility.
 	 */
 	// NOTE: Public visibility for tests.
 	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
-		// Normalize path to NFC form for consistent hashing across platforms
-		const normalizedPath = FilePath.create(path);
-		const extension = FilePath.getExtension(normalizedPath);
-
-		let contentToHash: string;
-		if (extension && isBinaryExtensionForSha(extension)) {
-			// Use base64 representation for consistent hashing
-			contentToHash = fileContent.toBase64();
-		} else {
-			// Preserve plaintext SHA logic for non-binary case.
-			// NOTE: For non-FROZEN extensions like .zip, if content is binary,
-			// toPlainText() will now throw (due to fatal:true in decodeFromBase64).
-			// We intentionally fall back to base64 to avoid corruption.
-			// This may cause SHA changes for existing .zip files, but prevents
-			// silent replacement character corruption in SHA computation.
-			// TODO(future): Implement SHA migration strategy to expand FROZEN_BINARY_EXT_FOR_SHA
-			// to include all common binary extensions (.zip, .exe, .bin, etc.)
-			try {
-				contentToHash = fileContent.toPlainText();
-			} catch {
-				// Binary content detected (invalid UTF-8) - fall back to base64
-				contentToHash = fileContent.toBase64();
-			}
-		}
-		return computeSha1(normalizedPath + contentToHash) as Promise<BlobSha>;
+		return computeFileSha1(path, fileContent);
 	}
 
 	/**
