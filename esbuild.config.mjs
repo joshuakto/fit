@@ -48,7 +48,8 @@ const cliContext = await esbuild.context({
 	entryPoints: ["src/cli/index.ts"],
 	...sharedConfig,
 	// CLI does not bundle obsidian or electron; all node builtins are external
-	// Override: obsidian is already external in sharedConfig (safe to keep)
+	// The 'external' from sharedConfig is for the plugin, override it for the CLI.
+	external: [...builtins],
 	format: "cjs",
 	target: "node18",
 	platform: "node",
