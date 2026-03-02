@@ -1,14 +1,14 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates, determineLocalChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
 import { LocalStores } from "@main";
-import FitNotice from "./fitNotice";
+import type { ISyncNotice } from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
 import { BlobSha, CommitSha } from "./util/hashing";
-import { LocalVault } from "./localVault";
+import { computeFileSha1 } from "./util/fileHashUtils";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -112,11 +112,17 @@ export class FitSync implements IFitSync {
 	fit: Fit;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
 	private isSyncing = false;
+	private onUserWarning: (message: string) => void;
 
 
-	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
+	constructor(
+		fit: Fit,
+		saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>,
+		onUserWarning?: (message: string) => void
+	) {
 		this.fit = fit;
 		this.saveLocalStoreCallback = saveLocalStoreCallback;
+		this.onUserWarning = onUserWarning ?? ((msg) => fitLogger.log('[FitSync] User warning', { message: msg }));
 	}
 
 	/**
@@ -143,7 +149,7 @@ export class FitSync implements IFitSync {
 		deleteFromLocalNonClashed: string[],
 		clashFiles: Array<{path: string, content: FileContent}>,
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
-		syncNotice: FitNotice
+		syncNotice: ISyncNotice
 	): Promise<ApplyChangesResult<"local">> {
 		if (clashFiles.length > 0) {
 			syncNotice.setMessage('Change conflicts detected');
@@ -248,8 +254,7 @@ export class FitSync implements IFitSync {
 
 		// Show user warning if encoding issues detected
 		if (result.userWarning) {
-			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
-			warningNotice.show();
+			this.onUserWarning(result.userWarning);
 		}
 
 		return result;
@@ -346,7 +351,7 @@ export class FitSync implements IFitSync {
 			try {
 				// readFileContent now handles both indexed and unindexed files (hidden files)
 				const content = await this.fit.localVault.readFileContent(path);
-				const sha = await LocalVault.fileSha1(path, content);
+				const sha = await computeFileSha1(path, content);
 				currentShas.set(path, sha);
 			} catch (error) {
 				// If we can't read the file for SHA computation, skip it
@@ -430,7 +435,7 @@ export class FitSync implements IFitSync {
 		safeRemote: FileChange[],
 		clashes: FileClash[],
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
-		syncNotice: FitNotice
+		syncNotice: ISyncNotice
 	): Promise<SyncExecutionResult> {
 		// Prepare safe remote changes for pulling
 		const deleteFromLocalNonClashed = safeRemote.filter(c => c.type === "REMOVED").map(c => c.path);
@@ -553,7 +558,7 @@ export class FitSync implements IFitSync {
 		};
 	}
 
-	async sync(syncNotice: FitNotice): Promise<SyncResult> {
+	async sync(syncNotice: ISyncNotice): Promise<SyncResult> {
 		// Check if already syncing
 		if (this.isSyncing) {
 			fitLogger.log('[FitSync] Sync already in progress - aborting new sync request');
@@ -744,8 +749,7 @@ export class FitSync implements IFitSync {
 
 		// Show user warning if encoding issues detected during upload
 		if (result.userWarning) {
-			const warningNotice = new FitNotice(this.fit, [], result.userWarning, 0);
-			warningNotice.show();
+			this.onUserWarning(result.userWarning);
 		}
 
 		// If no operations were performed, return null
