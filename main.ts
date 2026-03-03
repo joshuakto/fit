@@ -15,6 +15,7 @@ import { CommitSha } from '@/util/hashing';
 import { FileStates } from '@/util/changeTracking';
 import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
+import * as Encryption from "@/encryption";
 
 /**
  * Plugin configuration interface
@@ -28,6 +29,7 @@ export interface FitSettings {
 	//       | { provider: "gitea", token: string, owner: string, ... }
 	// This would allow type-safe, provider-specific settings.
 	// See RemoteVaultProvider type in src/vault.ts for provider enum.
+	encryptionPassword: string;
 	pat: string;
 	owner: string;       // Owner of the repo (may differ from authenticated user for contributor repos)
 	avatarUrl: string;
@@ -42,6 +44,7 @@ export interface FitSettings {
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
+	encryptionPassword: "",
 	pat: "",
 	owner: "",
 	avatarUrl: "",
@@ -456,6 +459,8 @@ export default class FitPlugin extends Plugin {
 			fitLogger.log('[Plugin] Starting plugin initialization');
 
 			await this.loadLocalStore();
+
+			Encryption.init(this);
 
 			this.githubConnection = this.settings.pat
 				? new GitHubConnection(this.settings.pat)

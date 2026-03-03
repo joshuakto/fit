@@ -7,7 +7,7 @@ import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
-import { BlobSha, CommitSha } from "./util/hashing";
+import { BlobSha, CommitSha, EMPTY_TREE_SHA } from "./util/hashing";
 import { LocalVault } from "./localVault";
 
 // Helper to log SHA cache updates with provenance tracking
@@ -828,5 +828,22 @@ export class FitSync implements IFitSync {
 		}
 
 		return baseMessage;
+	}
+
+	async clear(): Promise<boolean> {
+		const { commitSha, treeSha } = await this.fit.remoteVault.getLatestCommitAndTreeSha();
+
+		if (treeSha === EMPTY_TREE_SHA) return false;
+
+		const newCommit = await this.fit.remoteVault.createCommit(EMPTY_TREE_SHA, commitSha);
+		await this.fit.remoteVault.updateRef(newCommit);
+
+		await this.saveLocalStoreCallback({
+			localSha: {},
+			lastFetchedCommitSha: newCommit,
+			lastFetchedRemoteSha: {},
+		});
+
+		return true;
 	}
 }
