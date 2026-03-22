@@ -49,8 +49,8 @@
 		"tslib": "^2.8.1",
 		"typescript": "^5.9.2",
 		"vitest": "^4.0.8",
-		"wdio-obsidian-reporter": "^2.1.6",
-		"wdio-obsidian-service": "^2.1.6"
+		"wdio-obsidian-reporter": "^2.4.0",
+		"wdio-obsidian-service": "^2.4.0"
 	},
 	"dependencies": {
 		"@octokit/core": "^7.0.6",
@@ -58,7 +58,7 @@
 	},
 	"optionalDependencies": {
 		"@wdio/appium-service": "^9.23.0",
-		"appium": "^2.19.0",
-		"appium-uiautomator2-driver": "^3.10.0"
+		"appium": "^3.2.2",
+		"appium-uiautomator2-driver": "^7.0.0"
 	}
 }
