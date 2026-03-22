@@ -60,5 +60,8 @@
 		"@wdio/appium-service": "^9.23.0",
 		"appium": "^3.2.2",
 		"appium-uiautomator2-driver": "^7.0.0"
+	},
+	"overrides": {
+		"read-pkg": "10.1.0"
 	}
 }
