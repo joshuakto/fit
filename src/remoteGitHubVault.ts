@@ -5,6 +5,7 @@
  * Encapsulates all GitHub API operations for file state management.
  */
 
+import { LocalStores } from "@main";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
@@ -636,6 +637,21 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			treeSha: newTreeSha,
 			newState,
 			userWarning
+		};
+	}
+
+	async clear(): Promise<LocalStores | null> {
+		const { commitSha, treeSha } = await this.getLatestCommitAndTreeSha();
+
+		if (treeSha === EMPTY_TREE_SHA) return null;
+
+		const newCommit = await this.createCommit(EMPTY_TREE_SHA, commitSha);
+		await this.updateRef(newCommit);
+
+		return {
+			localSha: {},
+			lastFetchedCommitSha: newCommit,
+			lastFetchedRemoteSha: {},
 		};
 	}
 
