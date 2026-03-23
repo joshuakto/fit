@@ -516,9 +516,9 @@ export default class FitSettingTab extends PluginSettingTab {
 		}
 
 		const setting = new Setting(containerEl)
-			.setName("Encryption password")
+			.setName("Encryption password (Advanced only)")
 			.setDesc(
-				"A password for encrypting your remote data. Leave empty to disable encryption.\n\n" +
+				"⚠️ A password for encrypting your remote data. Leave empty to disable encryption.\n\n" +
 				"Safe migration guide (read before changing):\n" +
 				"1. Ensure all your devices have the same files in their vaults;\n" +
 				"2. Configure and apply this setting the same way on all devices;\n" +
