@@ -4,7 +4,7 @@ import { arrayBufferToBase64, base64ToArrayBuffer } from "obsidian";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export let plugin: FitPlugin;
+let plugin: FitPlugin;
 
 export function init(p: FitPlugin) {
 	plugin = p;
