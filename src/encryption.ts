@@ -1,3 +1,15 @@
+/**
+ * Encryption utilities.
+ *
+ * Usage:
+ * - Call init() before using any other helpers
+ *
+ * Notes:
+ * - Empty password means encryption is disabled
+ * - Derived keys are cached for performance
+ * - Cache must be cleared when master key changes
+ */
+
 import FitPlugin from "@main";
 import { arrayBufferToBase64, base64ToArrayBuffer } from "obsidian";
 
