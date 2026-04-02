@@ -829,4 +829,15 @@ export class FitSync implements IFitSync {
 
 		return baseMessage;
 	}
+
+	async clear(): Promise<boolean> {
+		const newLocalStore = await this.fit.remoteVault.clear();
+
+		if (newLocalStore != null) {
+			await this.saveLocalStoreCallback(newLocalStore);
+			return true;
+		}
+
+		return false;
+	}
 }

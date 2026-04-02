@@ -1,8 +1,11 @@
 import FitPlugin from "@main";
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
 import { setEqual } from "./utils";
 import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
 import { VaultError } from "./vault";
+import { fitLogger } from "./logger";
+import FitNotice from "./fitNotice";
+import * as Encryption from "./encryption";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
 
@@ -495,6 +498,132 @@ export default class FitSettingTab extends PluginSettingTab {
 				})
 			);
 		linkDisplay.descEl.addClass("link-desc");
+
+		let textComponent: TextComponent;
+		let visible = false;
+		const defaultType = "password";
+
+		function message(notice: FitNotice, string: string, error: unknown = null) {
+			const loggerPrefix = "[FitSettings] ";
+			if (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				fitLogger.log(loggerPrefix + string, error);
+				notice.setMessage(`${string}: ${msg}`, true);
+			} else {
+				fitLogger.log(loggerPrefix + string);
+				notice.setMessage(string);
+			}
+		}
+
+		const setting = new Setting(containerEl)
+			.setName("Encryption password (Advanced only)")
+			.setDesc(
+				"⚠️ A password for encrypting your remote data. Leave empty to disable encryption.\n\n" +
+				"Safe migration guide (read before changing):\n" +
+				"1. Ensure all your devices have the same files in their vaults;\n" +
+				"2. Configure and apply this setting the same way on all devices;\n" +
+				"3. On one device, delete all remote files by clicking 'Clear repository' button and sync your vault with the repository;\n" +
+				"4. On every other device, update the cache by clicking 'Sync local cache' button;\n" +
+				"5. Done. Only after this can you modify the files in your vaults and sync normally."
+			)
+			.addText(text => {
+				text.setPlaceholder("Password");
+				text.setValue(this.plugin.settings.encryptionPassword);
+				text.inputEl.type = defaultType;
+				textComponent = text;
+			});
+
+		setting.descEl.style.whiteSpace = "pre-wrap";
+
+		setting.addExtraButton(button => button
+			.setIcon("eye")
+			.setTooltip("Switch visibility")
+			.onClick(() => {
+				visible = !visible;
+				textComponent.inputEl.type = visible ? "text" : "password";
+				button.setIcon(visible ? "eye-off" : "eye");
+			}));
+
+		setting.addExtraButton(button => button
+			.setIcon("arrow-right")
+			.setTooltip("Apply password")
+			.onClick(async () => {
+				const value = textComponent.getValue();
+				this.plugin.settings.encryptionPassword = value;
+				await this.plugin.saveSettings();
+				Encryption.clearCache();
+				fitLogger.log("[FitSettings] Password has been applied");
+				new FitNotice(
+					this.plugin.fit,
+					["done"],
+					"Password has been applied",
+					5000,
+					false
+				);
+			}));
+
+		new Setting(containerEl)
+			.setName('Sync local cache')
+			.setDesc('Update the local cache with the actual remote state.')
+			.addExtraButton(button => button
+				.setIcon('trash-2')
+				.setTooltip("Sync local cache")
+				.onClick(async () => {
+					button.setDisabled(true);
+
+					const notice = new FitNotice(
+						this.plugin.fit,
+						["done"],
+						"Updating cache...",
+						5000,
+						false
+					);
+
+					try {
+						const { state } = await this.plugin.fit.remoteVault.readFromSource(true);
+
+						await this.plugin.saveLocalStoreCallback({
+							lastFetchedRemoteSha: state,
+						});
+
+						message(notice, "Cache has been updated");
+						notice.remove("done", 5000);
+					} catch (e) {
+						message(notice, "Failed to update cache", e);
+						notice.remove("error", 5000);
+					} finally {
+						button.setDisabled(false);
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Clear repository')
+			.setDesc('Delete all files from the repository. Previous commits will not be affected.')
+			.addExtraButton(button => button
+				.setIcon('trash-2')
+				.setTooltip("Clear repository")
+				.onClick(async () => {
+					button.setDisabled(true);
+
+					const notice = new FitNotice(
+						this.plugin.fit,
+						["loading"],
+						"Clearing repository...",
+						undefined,
+						false
+					);
+
+					try {
+						const applied = await this.plugin.fitSync.clear();
+						message(notice, applied ? "Repository has been cleared" : "Nothing to clear");
+						notice.remove("done", 5000);
+					} catch (e) {
+						message(notice, "Failed to clear repository", e);
+						notice.remove("error", 5000);
+					} finally {
+						button.setDisabled(false);
+					}
+				}));
 	};
 
 	localConfigBlock = () => {
