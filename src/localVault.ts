@@ -5,67 +5,37 @@
  */
 
 import { TFile, TFolder, Vault } from "obsidian";
-import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
+import {
+	ApplyChangesResult,
+	ILocalVault,
+	VaultError,
+	VaultReadResult,
+} from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
-import { BlobSha, computeSha1 } from "./util/hashing";
-import { FilePath, detectNormalizationIssues } from "./util/filePath";
+import { BlobSha } from "./util/hashing";
+import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
+import { computeFileSha1 } from "./util/fileHashUtils";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
  */
 function collectSettledFailures<T>(
 	results: PromiseSettledResult<T>[],
-	paths: string[]
-): Array<{path: string; error: unknown}> {
-	const failures: Array<{path: string; error: unknown}> = [];
+	paths: string[],
+): Array<{ path: string; error: unknown }> {
+	const failures: Array<{ path: string; error: unknown }> = [];
 	for (let i = 0; i < results.length; i++) {
 		const result = results[i];
-		if (result.status === 'rejected') {
+		if (result.status === "rejected") {
 			failures.push({ path: paths[i], error: result.reason });
 		}
 	}
 	return failures;
-}
-
-/**
- * Frozen list of binary file extensions for SHA calculation consistency.
- *
- * IMPORTANT: This list is FROZEN to prevent spurious sync operations.
- *
- * Why this matters:
- * - Before PR #XXX: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
- *   CORRUPTED plaintext (with replacement characters �) because toPlainText()
- *   silently corrupted binary data
- * - After PR #XXX: toPlainText() throws on binary, fileSha1() catches and uses base64
- * - Problem: Existing .zip files will get DIFFERENT SHAs (corrupted vs correct)
- * - Result: Plugin detects "change" and tries to sync the same file again
- *
- * Solution:
- * - Keep list FROZEN to avoid batch SHA changes for existing users
- * - New fatal:true logic handles unlisted extensions gracefully via try/catch
- * - Users with .zip files will see ONE spurious sync after upgrading (acceptable)
- *
- * Future: Implement SHA migration strategy to expand this list safely
- * (e.g., version stores, detect and re-hash on upgrade, warn users)
- *
- * DO NOT modify this list unless you implement a SHA migration strategy.
- */
-const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
-
-/**
- * Check if a file extension is considered binary for SHA calculation purposes.
- * Uses FROZEN_BINARY_EXT_FOR_SHA to ensure SHA consistency.
- *
- * @param extension - File extension WITHOUT leading dot (e.g., "png", not ".png")
- */
-function isBinaryExtensionForSha(extension: string): boolean {
-	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
-	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
 }
 
 /**
@@ -79,7 +49,7 @@ function isBinaryExtensionForSha(extension: string): boolean {
  *
  * Isolates Obsidian Vault API quirks from sync logic.
  */
-export class LocalVault implements IVault<"local"> {
+export class LocalVault implements ILocalVault {
 	private vault: Vault;
 
 	constructor(vault: Vault) {
@@ -104,8 +74,8 @@ export class LocalVault implements IVault<"local"> {
 		// but cannot read them back (getAbstractFileByPath returns null)
 		//
 		// Obsidian vault paths always use forward slashes (even on Windows)
-		const parts = filePath.split('/');
-		if (parts.some(part => part.startsWith('.'))) {
+		const parts = filePath.split("/");
+		if (parts.some((part) => part.startsWith("."))) {
 			return false;
 		}
 
@@ -119,13 +89,15 @@ export class LocalVault implements IVault<"local"> {
 	 * @param paths - Paths to check
 	 * @returns Map of path to type ('file' | 'folder'), or null if path doesn't exist
 	 */
-	async statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>> {
+	async statPaths(
+		paths: string[],
+	): Promise<Map<string, "file" | "folder" | null>> {
 		const stats = await Promise.all(
 			paths.map(async (path) => {
 				const stat = await this.vault.adapter.stat(path);
 				const type = stat ? stat.type : null;
 				return [path, type] as const;
-			})
+			}),
 		);
 		return new Map(stats);
 	}
@@ -137,17 +109,19 @@ export class LocalVault implements IVault<"local"> {
 		const allFiles = this.vault.getFiles();
 
 		// Filter to only tracked paths
-		const allPaths = allFiles.map(f => f.path);
-		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
-		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
+		const allPaths = allFiles.map((f) => f.path);
+		const trackedPaths = allPaths.filter((path) => this.shouldTrackState(path));
+		const ignoredPaths = allPaths.filter(
+			(path) => !this.shouldTrackState(path),
+		);
 
 		// Create map for quick file size lookups
-		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
+		const fileSizeMap = new Map(allFiles.map((f) => [f.path, f.stat.size]));
 
 		if (ignoredPaths.length > 0) {
-			fitLogger.log('[LocalVault] Ignored paths in local scan', {
+			fitLogger.log("[LocalVault] Ignored paths in local scan", {
 				count: ignoredPaths.length,
-				paths: ignoredPaths
+				paths: ignoredPaths,
 			});
 		}
 
@@ -158,21 +132,23 @@ export class LocalVault implements IVault<"local"> {
 			Promise.allSettled(
 				trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
 					const sha = await LocalVault.fileSha1(
-						path, await readFileContent(this.vault, path));
+						path,
+						await readFileContent(this.vault, path),
+					);
 					return [path, sha];
-				})
+				}),
 			),
 			`Local vault SHA computation (${trackedPaths.length} files)`,
-			{ warnAfterMs: 10000 }
+			{ warnAfterMs: 10000 },
 		);
 
 		// Separate successes from failures
 		const shaEntries: Array<[string, BlobSha]> = [];
-		const failedPaths: Array<{path: string, error: unknown}> = [];
+		const failedPaths: Array<{ path: string; error: unknown }> = [];
 
 		shaResults.forEach((result, index) => {
 			const path = trackedPaths[index];
-			if (result.status === 'fulfilled') {
+			if (result.status === "fulfilled") {
 				shaEntries.push(result.value);
 			} else {
 				let error = result.reason;
@@ -183,8 +159,11 @@ export class LocalVault implements IVault<"local"> {
 				const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
 				if (fileSize && fileSize >= LARGE_FILE_THRESHOLD) {
 					const sizeMB = (fileSize / (1024 * 1024)).toFixed(1);
-					const origMsg = error instanceof Error ? error.message : String(error);
-					error = new Error(`${origMsg} (file size: ${sizeMB}MB - may exceed sync limits)`);
+					const origMsg =
+						error instanceof Error ? error.message : String(error);
+					error = new Error(
+						`${origMsg} (file size: ${sizeMB}MB - may exceed sync limits)`,
+					);
 				}
 
 				failedPaths.push({ path, error });
@@ -195,23 +174,26 @@ export class LocalVault implements IVault<"local"> {
 		// If any files failed, throw a VaultError with details
 		if (failedPaths.length > 0) {
 			throw new VaultError(
-				'filesystem',
-				`Failed to read ${failedPaths.length} file(s) from local vault: ${failedPaths.map(f => f.path).join(', ')}`,
+				"filesystem",
+				`Failed to read ${failedPaths.length} file(s) from local vault: ${failedPaths.map((f) => f.path).join(", ")}`,
 				{
 					originalError: failedPaths[0].error,
-					failedPaths: failedPaths.map(f => f.path),
-					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
-				}
+					failedPaths: failedPaths.map((f) => f.path),
+					errors: failedPaths.map((f) => ({ path: f.path, error: f.error })),
+				},
 			);
 		}
 
 		const newState = Object.fromEntries(shaEntries);
 
 		// Log computed SHAs for provenance tracking, with normalization diagnostics
-		const normalizationInfo = detectNormalizationIssues(trackedPaths, 'local filesystem');
+		const normalizationInfo = detectNormalizationIssues(
+			trackedPaths,
+			"local filesystem",
+		);
 		fitLogger.log(
 			`... 💾 [LocalVault] Scanned ${Object.keys(newState).length} files`,
-			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
+			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined,
 		);
 
 		return { state: { ...newState } };
@@ -219,38 +201,15 @@ export class LocalVault implements IVault<"local"> {
 
 	/**
 	 * Compute SHA-1 hash of file path + content
-	 * (Matches GitHub's blob SHA format)
 	 *
 	 * Path is normalized to NFC before hashing to prevent
 	 * duplication issues with Unicode normalization (issue #51)
+	 *
+	 * Delegates to computeFileSha1 utility for CLI/Node.js compatibility.
 	 */
 	// NOTE: Public visibility for tests.
 	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
-		// Normalize path to NFC form for consistent hashing across platforms
-		const normalizedPath = FilePath.create(path);
-		const extension = FilePath.getExtension(normalizedPath);
-
-		let contentToHash: string;
-		if (extension && isBinaryExtensionForSha(extension)) {
-			// Use base64 representation for consistent hashing
-			contentToHash = fileContent.toBase64();
-		} else {
-			// Preserve plaintext SHA logic for non-binary case.
-			// NOTE: For non-FROZEN extensions like .zip, if content is binary,
-			// toPlainText() will now throw (due to fatal:true in decodeFromBase64).
-			// We intentionally fall back to base64 to avoid corruption.
-			// This may cause SHA changes for existing .zip files, but prevents
-			// silent replacement character corruption in SHA computation.
-			// TODO(future): Implement SHA migration strategy to expand FROZEN_BINARY_EXT_FOR_SHA
-			// to include all common binary extensions (.zip, .exe, .bin, etc.)
-			try {
-				contentToHash = fileContent.toPlainText();
-			} catch {
-				// Binary content detected (invalid UTF-8) - fall back to base64
-				contentToHash = fileContent.toBase64();
-			}
-		}
-		return computeSha1(normalizedPath + contentToHash) as Promise<BlobSha>;
+		return computeFileSha1(path, fileContent);
 	}
 
 	/**
@@ -263,15 +222,15 @@ export class LocalVault implements IVault<"local"> {
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
-		const folderPath = path.match(/^(.*)\//)?.[1] || '';
-		if (folderPath === '') {
+		const folderPath = path.match(/^(.*)\//)?.[1] || "";
+		if (folderPath === "") {
 			// At root, no parent to create
 			return;
 		}
 
 		// Split path into parts and create each level if needed
-		const parts = folderPath.split('/');
-		let currentPath = '';
+		const parts = folderPath.split("/");
+		let currentPath = "";
 
 		for (const part of parts) {
 			currentPath = currentPath ? `${currentPath}/${part}` : part;
@@ -281,7 +240,9 @@ export class LocalVault implements IVault<"local"> {
 			if (abstractFile) {
 				// Vault API can see it - check if it's a folder or file
 				if (abstractFile instanceof TFile) {
-					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+					throw new Error(
+						`Cannot create folder at ${currentPath}: a file already exists at this path`,
+					);
 				}
 				// It's a folder (TFolder or similar), continue to next level
 				continue;
@@ -298,8 +259,10 @@ export class LocalVault implements IVault<"local"> {
 			}
 
 			if (stat) {
-				if (stat.type === 'file') {
-					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				if (stat.type === "file") {
+					throw new Error(
+						`Cannot create folder at ${currentPath}: a file already exists at this path`,
+					);
 				}
 				// Folder exists on disk (hidden folder), continue to next level
 				continue;
@@ -308,7 +271,7 @@ export class LocalVault implements IVault<"local"> {
 			// Folder doesn't exist, create it
 			// Use Vault API if the path is trackable (Vault can manage it), adapter otherwise
 			try {
-				if (this.shouldTrackState(currentPath + '/placeholder')) {
+				if (this.shouldTrackState(currentPath + "/placeholder")) {
 					// Trackable path - use vault API (keeps vault index in sync)
 					await this.vault.createFolder(currentPath);
 				} else {
@@ -324,7 +287,7 @@ export class LocalVault implements IVault<"local"> {
 					// Can't verify folder exists, re-throw original error
 					throw error;
 				}
-				if (!recheckStat || recheckStat.type !== 'folder') {
+				if (!recheckStat || recheckStat.type !== "folder") {
 					throw error;
 				}
 			}
@@ -354,14 +317,14 @@ export class LocalVault implements IVault<"local"> {
 		path: string,
 		content: Base64Content,
 		originalContent: FileContent,
-		shaPath?: string
+		shaPath?: string,
 	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
 		try {
 			const file = this.vault.getAbstractFileByPath(path);
 			const rawContent = originalContent.toRaw();
-			const isPlaintext = rawContent.encoding === 'plaintext';
+			const isPlaintext = rawContent.encoding === "plaintext";
 
-			let changeType: 'ADDED' | 'MODIFIED';
+			let changeType: "ADDED" | "MODIFIED";
 
 			if (file && file instanceof TFile) {
 				// File is in vault index - use standard modify
@@ -370,13 +333,17 @@ export class LocalVault implements IVault<"local"> {
 				} else {
 					await this.vault.modifyBinary(file, contentToArrayBuffer(content));
 				}
-				changeType = 'MODIFIED';
+				changeType = "MODIFIED";
 			} else if (file instanceof TFolder) {
 				// Path exists as a folder
-				throw new Error(`Cannot write file to ${path}: a folder with that name already exists`);
+				throw new Error(
+					`Cannot write file to ${path}: a folder with that name already exists`,
+				);
 			} else if (file) {
 				// Unknown type - future-proof for new Obsidian abstract file types
-				throw new Error(`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`);
+				throw new Error(
+					`Cannot write file to ${path}: path exists but is not a file (type: ${file.constructor.name})`,
+				);
 			} else {
 				// File not in vault index - check if it exists on disk (hidden files)
 				// See docs/api-compatibility.md "Reading Untracked Files"
@@ -395,9 +362,12 @@ export class LocalVault implements IVault<"local"> {
 					if (isPlaintext) {
 						await this.vault.adapter.write(path, rawContent.content);
 					} else {
-						await this.vault.adapter.writeBinary(path, contentToArrayBuffer(content));
+						await this.vault.adapter.writeBinary(
+							path,
+							contentToArrayBuffer(content),
+						);
 					}
-					changeType = 'MODIFIED';
+					changeType = "MODIFIED";
 				} else {
 					// File doesn't exist - create new
 					await this.ensureFolderExists(path);
@@ -406,21 +376,24 @@ export class LocalVault implements IVault<"local"> {
 					} else {
 						await this.vault.createBinary(path, contentToArrayBuffer(content));
 					}
-					changeType = 'ADDED';
+					changeType = "ADDED";
 				}
 			}
 
 			// Compute SHA once at the end for all paths
 			return {
 				change: { path, type: changeType },
-				shaPromise: this.computeShaIfNeeded(shaPath, path, originalContent)
+				shaPromise: this.computeShaIfNeeded(shaPath, path, originalContent),
 			};
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
 				throw error;
 			}
-			const message = error instanceof Error ? error.message : `Failed to write file: ${String(error)}`;
+			const message =
+				error instanceof Error
+					? error.message
+					: `Failed to write file: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 	}
@@ -432,7 +405,7 @@ export class LocalVault implements IVault<"local"> {
 	private computeShaIfNeeded(
 		shaPath: string | undefined,
 		writePath: string,
-		content: FileContent
+		content: FileContent,
 	): Promise<BlobSha> | null {
 		// Compute SHA if:
 		// 1. Direct write (shaPath === undefined), OR
@@ -455,23 +428,28 @@ export class LocalVault implements IVault<"local"> {
 			if (file && file instanceof TFile) {
 				// File is in vault index - use standard deletion
 				await this.vault.delete(file);
-				return {path, type: "REMOVED"};
+				return { path, type: "REMOVED" };
 			} else if (file instanceof TFolder) {
 				throw new Error(`Cannot delete ${path}: it is a folder, not a file`);
 			} else if (file) {
-				throw new Error(`Cannot delete ${path}: unknown file type (${file.constructor.name})`);
+				throw new Error(
+					`Cannot delete ${path}: unknown file type (${file.constructor.name})`,
+				);
 			}
 
 			// File not in vault index - use adapter to delete (hidden files)
 			// See docs/api-compatibility.md "Reading Untracked Files"
 			await this.vault.adapter.remove(path);
-			return {path, type: "REMOVED"};
+			return { path, type: "REMOVED" };
 		} catch (error) {
 			// Re-throw VaultError as-is (don't double-wrap)
 			if (error instanceof VaultError) {
 				throw error;
 			}
-			const message = error instanceof Error ? error.message : `Failed to delete file: ${String(error)}`;
+			const message =
+				error instanceof Error
+					? error.message
+					: `Failed to delete file: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 	}
@@ -486,29 +464,36 @@ export class LocalVault implements IVault<"local"> {
 	 *   Returned newBaselineStates uses original path as key, not write path.
 	 */
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{ path: string; content: FileContent }>,
 		filesToDelete: Array<string>,
-		options?: { clashPaths?: Set<string> }
+		options?: { clashPaths?: Set<string> },
 	): Promise<ApplyChangesResult<"local">> {
 		const clashPaths = options?.clashPaths ?? new Set();
 		// Diagnostic logging: detect suspicious filename correspondences (Issue #51)
 		// Check if any files being created have non-ASCII chars and match existing local files
 		// Note: vault.getFiles() may be unavailable in test mocks
-		const allExistingPaths = this.vault.getFiles?.()?.map(f => f.path) ?? [];
-		const suspiciousWrites: Array<{remote: string, local: string, pattern: string}> = [];
+		const allExistingPaths = this.vault.getFiles?.()?.map((f) => f.path) ?? [];
+		const suspiciousWrites: Array<{
+			remote: string;
+			local: string;
+			pattern: string;
+		}> = [];
 
-		for (const {path: remotePath} of filesToWrite) {
+		for (const { path: remotePath } of filesToWrite) {
 			// Only check files with non-ASCII characters that don't already exist
 			if (!/[^\x00-\x7F]/.test(remotePath)) continue;
 			if (this.vault.getAbstractFileByPath(remotePath)) continue;
 
 			// Find correspondences with existing files
-			const matches = findSuspiciousCorrespondences(remotePath, allExistingPaths);
+			const matches = findSuspiciousCorrespondences(
+				remotePath,
+				allExistingPaths,
+			);
 			for (const match of matches) {
 				suspiciousWrites.push({
 					remote: match.candidate,
 					local: match.existing,
-					pattern: match.pattern
+					pattern: match.pattern,
 				});
 			}
 		}
@@ -516,99 +501,129 @@ export class LocalVault implements IVault<"local"> {
 		if (suspiciousWrites.length > 0) {
 			fitLogger.log(
 				`⚠️  [LocalVault] Suspicious filenames detected during sync!\n` +
-				`Attempting to create ${suspiciousWrites.length} local file(s), each matching an existing local file:\n` +
-				suspiciousWrites.map(({remote, local, pattern}, i) =>
-					`  ${i + 1}. Remote: "${remote}" ↔ Local: "${local}"\n` +
-					`     Match: "${pattern}" = "${pattern}" ✅`
-				).join('\n') +
-				`\nThis may indicate encoding corruption from a previous sync.\n` +
-				`If the remote filenames look wrong, check GitHub and delete corrupted versions.\n` +
-				`See Issue #51: https://github.com/joshuakto/fit/issues/51`,
-				{ suspiciousWrites, issue: 'https://github.com/joshuakto/fit/issues/51' }
+					`Attempting to create ${suspiciousWrites.length} local file(s), each matching an existing local file:\n` +
+					suspiciousWrites
+						.map(
+							({ remote, local, pattern }, i) =>
+								`  ${i + 1}. Remote: "${remote}" ↔ Local: "${local}"\n` +
+								`     Match: "${pattern}" = "${pattern}" ✅`,
+						)
+						.join("\n") +
+					`\nThis may indicate encoding corruption from a previous sync.\n` +
+					`If the remote filenames look wrong, check GitHub and delete corrupted versions.\n` +
+					`See Issue #51: https://github.com/joshuakto/fit/issues/51`,
+				{
+					suspiciousWrites,
+					issue: "https://github.com/joshuakto/fit/issues/51",
+				},
 			);
 		}
 
-		const userWarning = suspiciousWrites.length > 0
-			? `⚠️ Encoding Issue Detected\n` +
-				`Suspicious filename patterns found during sync. ` +
-				`Check console logs for details or see Issue #51.`
-			: undefined;
+		const userWarning =
+			suspiciousWrites.length > 0
+				? `⚠️ Encoding Issue Detected\n` +
+					`Suspicious filename patterns found during sync. ` +
+					`Check console logs for details or see Issue #51.`
+				: undefined;
 
 		// Process file additions or updates
 		// Monitor for slow file write operations
 		const writeSettledResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				filesToWrite.map(async ({path, content}) => {
+				filesToWrite.map(async ({ path, content }) => {
 					// If path is in clashPaths, write to _fit/ subdirectory
 					const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
 					const shaPath = clashPaths.has(path) ? path : undefined;
-					return this.writeFile(writePath, content.toBase64(), content, shaPath);
-				})
+					return this.writeFile(
+						writePath,
+						content.toBase64(),
+						content,
+						shaPath,
+					);
+				}),
 			),
 			`Local vault file writes (${filesToWrite.length} files)`,
-			{ warnAfterMs: 10000 }
+			{ warnAfterMs: 10000 },
 		);
 
 		// Process file deletions
 		const deletionSettledResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				filesToDelete.map(async (path) => this.deleteFile(path))
+				filesToDelete.map(async (path) => this.deleteFile(path)),
 			),
 			`Local vault file deletions (${filesToDelete.length} files)`,
-			{ warnAfterMs: 10000 }
+			{ warnAfterMs: 10000 },
 		);
 
 		// Collect successful operations and failures
-		const writeResults: Array<{change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
-		const writeFailures = collectSettledFailures(writeSettledResults, filesToWrite.map(f => f.path));
+		const writeResults: Array<{
+			change: FileChange;
+			shaPromise?: Promise<BlobSha>;
+		}> = [];
+		const writeFailures = collectSettledFailures(
+			writeSettledResults,
+			filesToWrite.map((f) => f.path),
+		);
 
 		for (let i = 0; i < writeSettledResults.length; i++) {
 			const result = writeSettledResults[i];
-			const {path} = filesToWrite[i];
+			const { path } = filesToWrite[i];
 
-			if (result.status === 'fulfilled') {
-				const {change, shaPromise} = result.value;
+			if (result.status === "fulfilled") {
+				const { change, shaPromise } = result.value;
 				writeResults.push({ change, shaPromise: shaPromise ?? undefined });
 			} else {
-				const failure = writeFailures.find(f => f.path === path);
-				fitLogger.log(`❌ [LocalVault] Failed to write file: ${path}`, failure?.error);
+				const failure = writeFailures.find((f) => f.path === path);
+				fitLogger.log(
+					`❌ [LocalVault] Failed to write file: ${path}`,
+					failure?.error,
+				);
 			}
 		}
 
 		const deletionOps: FileChange[] = [];
-		const deleteFailures = collectSettledFailures(deletionSettledResults, filesToDelete);
+		const deleteFailures = collectSettledFailures(
+			deletionSettledResults,
+			filesToDelete,
+		);
 
 		for (let i = 0; i < deletionSettledResults.length; i++) {
 			const result = deletionSettledResults[i];
 			const path = filesToDelete[i];
 
-			if (result.status === 'fulfilled') {
+			if (result.status === "fulfilled") {
 				deletionOps.push(result.value);
 			} else {
-				const failure = deleteFailures.find(f => f.path === path);
-				fitLogger.log(`❌ [LocalVault] Failed to delete file: ${path}`, failure?.error);
+				const failure = deleteFailures.find((f) => f.path === path);
+				fitLogger.log(
+					`❌ [LocalVault] Failed to delete file: ${path}`,
+					failure?.error,
+				);
 			}
 		}
 
 		// If any operations failed, throw VaultError with details
 		if (writeFailures.length > 0 || deleteFailures.length > 0) {
 			const allFailures = [...writeFailures, ...deleteFailures];
-			const failedPaths = allFailures.map(f => f.path);
+			const failedPaths = allFailures.map((f) => f.path);
 			const primaryPath = failedPaths[0];
 			const primaryError = allFailures[0].error;
-			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
+			const primaryMessage =
+				primaryError instanceof Error
+					? primaryError.message
+					: String(primaryError);
 
 			throw VaultError.filesystem(
 				`Failed to write to ${primaryPath}: ${primaryMessage}`,
 				{
 					failedPaths,
-					errors: allFailures
-				}
+					errors: allFailures,
+				},
 			);
 		}
 
 		// Extract file operations for return value
-		const writeOps = writeResults.map(r => r.change);
+		const writeOps = writeResults.map((r) => r.change);
 		const changes = [...writeOps, ...deletionOps];
 
 		// Collect SHA promises from write operations (started asynchronously in writeFile)
@@ -631,13 +646,13 @@ export class LocalVault implements IVault<"local"> {
 			Object.entries(shaPromiseMap).map(async ([path, shaPromise]) => {
 				const sha = await shaPromise;
 				return [path, sha] as const;
-			})
-		).then(entries => Object.fromEntries(entries));
+			}),
+		).then((entries) => Object.fromEntries(entries));
 
 		return {
 			changes,
 			newBaselineStates,
-			userWarning
+			userWarning,
 		};
 	}
 }

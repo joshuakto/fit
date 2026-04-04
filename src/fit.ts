@@ -5,10 +5,9 @@
  * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
  */
 
-import { LocalStores, FitSettings } from "@main";
+import type { LocalStores, FitSettings } from "@main";
 import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
-import { Vault } from "obsidian";
-import { LocalVault } from "./localVault";
+import { ILocalVault } from "./vault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
@@ -32,12 +31,12 @@ export class Fit {
 	localSha: FileStates;                   // Cache of local file SHAs
 	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
 	lastFetchedRemoteSha: FileStates;       // Cache of remote file SHAs
-	localVault: LocalVault;                 // Local vault (tracks local file state)
+	localVault: ILocalVault;               // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 
 
-	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
-		this.localVault = new LocalVault(vault);
+	constructor(setting: FitSettings, localStores: LocalStores, localVault: ILocalVault) {
+		this.localVault = localVault;
 		this.loadSettings(setting);  // NOTE: creates this.remoteVault
 		this.loadLocalStore(localStores);
 	}

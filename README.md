@@ -163,6 +163,71 @@ There are also other plugins for synchronizing changes such as [Git integration]
 
 For developers interested in contributing to FIT or understanding its architecture, comprehensive documentation is available in the [docs/](https://github.com/joshuakto/fit/tree/main/docs) directory in GitHub.
 
+## fit-cli: Automation & CI
+
+FIT ships a companion command-line tool, `fit-cli`, that exposes the same sync engine as the Obsidian plugin. It is intended for use in automation workflows and CI/CD pipelines where Obsidian is not running, such as scripting note organization or task management with an autonomous agent.
+
+### Build
+
+```bash
+npm run cli:build   # produces fit-cli.cjs
+```
+
+### Usage
+
+```bash
+# Show help
+node fit-cli.cjs help
+
+# Check pending changes (dry-run, machine-readable)
+node fit-cli.cjs status --vault /path/to/vault --json
+
+# Sync vault with remote
+node fit-cli.cjs sync --vault /path/to/vault
+```
+
+When installed globally (`npm install -g .`), the binary is available as `fit-cli`:
+
+```bash
+fit-cli sync
+fit-cli status --json
+```
+
+### Configuration
+
+Options can be supplied as flags, environment variables, or a JSON config file (all three can be combined; flags take highest priority).
+
+| Flag | Environment variable | Description |
+|---|---|---|
+| `--vault <path>` | `FIT_VAULT` | Path to the Obsidian vault directory |
+| `--pat <token>` | `FIT_PAT` | GitHub personal access token |
+| `--owner <owner>` | `FIT_OWNER` | GitHub repository owner |
+| `--repo <repo>` | `FIT_REPO` | GitHub repository name |
+| `--branch <branch>` | `FIT_BRANCH` | Branch to sync (default: `main`) |
+| `--device <name>` | `FIT_DEVICE` | Device name used in commit messages |
+| `--config <path>` | `FIT_CONFIG` | Path to a JSON config file |
+| `--state <path>` | _(none)_ | Path to state file (default: `<vault>/.fit-state.json`) |
+| `--json` | _(none)_ | Output results as JSON |
+| `--verbose` | _(none)_ | Enable verbose logging to stderr |
+
+**Config file** (`~/.fit-cli.json` by default):
+
+```json
+{
+  "vaultPath": "/path/to/vault",
+  "pat": "ghp_...",
+  "owner": "username",
+  "repo": "vault-repo",
+  "branch": "main",
+  "deviceName": "my-agent"
+}
+```
+
+### Sync behaviour
+
+`fit-cli` uses the same sync engine as the Obsidian plugin — conflict detection, `_fit/` staging, and protected path rules all behave identically. State (SHA caches) is persisted to `<vault>/.fit-state.json` by default so that incremental syncs are efficient.
+
+
 ## Acknowledgements
  - This plugin used [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin) as a template.
  - This plugin uses [Octokit](https://github.com/octokit/core.js/) to interface with GitHub rest api across devices.

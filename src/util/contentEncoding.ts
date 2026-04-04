@@ -5,7 +5,6 @@
  * Prevents accidentally mixing base64-encoded and plain text strings.
  */
 
-import { arrayBufferToBase64 } from "obsidian";
 
 /**
  * Plain text content (UTF-8 string)
@@ -59,26 +58,27 @@ export const Content = {
 	 * Convert PlainTextContent to Base64Content
 	 * Handles multi-byte UTF-8 characters (emojis, Chinese, etc.)
 	 *
-	 * Uses Obsidian's arrayBufferToBase64 for cross-platform compatibility:
-	 * - Works on desktop (Electron) and mobile (iOS/Android)
+	 * Uses standard Web API (TextEncoder + btoa) for cross-platform compatibility:
+	 * - Works on desktop (Electron), mobile (iOS/Android), and Node.js 16+
 	 * - Avoids Node.js Buffer API which isn't available on mobile
-	 * - Handles large strings without spread operator (no call stack issues)
+	 * - Handles large strings in chunks to avoid call stack limits (Issue #127)
 	 *
 	 * @see https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder
 	 */
 	encodeToBase64: (plainText: string | PlainTextContent): Base64Content => {
 		// Convert UTF-8 string to bytes using TextEncoder (cross-platform Web API)
 		const utf8Bytes = new TextEncoder().encode(plainText);
-		// Extract only the view's bytes, not the entire underlying buffer.
-		// While TextEncoder.encode() typically returns a view covering the full buffer,
-		// this is not guaranteed - the engine might use buffer pooling or return a slice.
-		// Using .buffer directly could include garbage data beyond byteOffset+byteLength.
-		const buffer = utf8Bytes.buffer.slice(
-			utf8Bytes.byteOffset,
-			utf8Bytes.byteOffset + utf8Bytes.byteLength
-		);
-		// Use Obsidian's base64 encoder (works on all platforms)
-		return Content.asBase64(arrayBufferToBase64(buffer));
+		// Process in 32KB chunks to avoid "Maximum call stack size exceeded" (Issue #127)
+		// String.fromCharCode.apply() has a stack limit with large arrays
+		const CHUNK_SIZE = 0x8000;
+		const chunks: string[] = [];
+		for (let i = 0; i < utf8Bytes.length; i += CHUNK_SIZE) {
+			chunks.push(String.fromCharCode.apply(
+				null,
+				utf8Bytes.subarray(i, Math.min(i + CHUNK_SIZE, utf8Bytes.length)) as unknown as number[]
+			));
+		}
+		return Content.asBase64(btoa(chunks.join('')));
 	},
 
 	/**

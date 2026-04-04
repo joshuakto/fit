@@ -15,6 +15,7 @@ import { CommitSha } from '@/util/hashing';
 import { FileStates } from '@/util/changeTracking';
 import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
+import { LocalVault } from '@/localVault';
 
 /**
  * Plugin configuration interface
@@ -460,8 +461,10 @@ export default class FitPlugin extends Plugin {
 			this.githubConnection = this.settings.pat
 				? new GitHubConnection(this.settings.pat)
 				: null;
-			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
-			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
+			this.fit = new Fit(this.settings, this.localStore, new LocalVault(this.app.vault));
+			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback, (msg) => {
+				new FitNotice(this.fit, [], msg, 0).show();
+			});
 			this.settingTab = new FitSettingTab(this.app, this);
 			this.loadRibbonIcons();
 
