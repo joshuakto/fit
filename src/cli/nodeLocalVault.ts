@@ -56,7 +56,14 @@ export class NodeLocalVault implements ILocalVault {
 
 	/** Absolute path from a vault-relative path */
 	private abs(relPath: string): string {
-		return path.join(this.vaultPath, relPath);
+		const resolvedPath = path.resolve(this.vaultPath, relPath);
+		// Check that resolved path is within vaultPath.
+		// Use path.relative to determine if resolvedPath is inside vaultPath.
+		const relative = path.relative(this.vaultPath, resolvedPath);
+		if (relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw VaultError.filesystem(`Path traversal attempt: ${relPath} is outside vault`);
+		}
+		return resolvedPath;
 	}
 
 	/** Convert OS-specific separator back to forward slash for vault paths */
@@ -96,11 +103,22 @@ export class NodeLocalVault implements ILocalVault {
 		);
 
 		const state: FileStates = {};
-		for (const result of shaResults) {
+		const errors: string[] = [];
+
+		for (let i = 0; i < shaResults.length; i++) {
+			const result = shaResults[i];
+			const p = trackedPaths[i];
 			if (result.status === 'fulfilled') {
-				const [p, sha] = result.value;
+				const [, sha] = result.value;
 				state[p] = sha;
+			} else {
+				const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+				errors.push(`${p}: ${message}`);
 			}
+		}
+
+		if (errors.length > 0) {
+			throw VaultError.filesystem(`Failed to read some files in vault: ${errors.join(', ')}`);
 		}
 
 		const normalizationInfo = detectNormalizationIssues(trackedPaths, 'node filesystem');
@@ -199,6 +217,11 @@ export class NodeLocalVault implements ILocalVault {
 		}
 
 		for (const entry of entries) {
+			// Skip hidden files and directories to optimize scans.
+			// This keeps CLI behavior closer to Obsidian's vault.getFiles() and
+			// avoids traversing large, excluded directories like .git/.
+			if (entry.name.startsWith('.')) continue;
+
 			const relPath = dir ? `${dir}/${entry.name}` : entry.name;
 			if (entry.isDirectory()) {
 				const subFiles = await this.walkDir(relPath);

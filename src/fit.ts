@@ -5,7 +5,7 @@
  * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
  */
 
-import { LocalStores, FitSettings } from "@main";
+import type { LocalStores, FitSettings } from "@main";
 import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
 import { ILocalVault } from "./vault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";

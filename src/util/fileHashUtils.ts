@@ -3,9 +3,9 @@
  * No dependencies on Obsidian or Node.js-specific modules.
  */
 
-import { FileContent } from './contentEncoding';
-import { BlobSha, computeSha1 } from './hashing';
-import { FilePath } from './filePath';
+import { FileContent } from "./contentEncoding";
+import { BlobSha, computeSha1 } from "./hashing";
+import { FilePath } from "./filePath";
 
 /**
  * Frozen list of binary file extensions for SHA calculation consistency.
@@ -13,10 +13,10 @@ import { FilePath } from './filePath';
  * IMPORTANT: This list is FROZEN to prevent spurious sync operations.
  *
  * Why this matters:
- * - Before PR #XXX: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
+ * - Before: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
  *   CORRUPTED plaintext (with replacement characters \uFFFD) because toPlainText()
  *   silently corrupted binary data
- * - After PR #XXX: toPlainText() throws on binary, computeFileSha1() catches and uses base64
+ * - After: toPlainText() throws on binary, computeFileSha1() catches and uses base64
  * - Problem: Existing .zip files will get DIFFERENT SHAs (corrupted vs correct)
  * - Result: Plugin detects "change" and tries to sync the same file again
  *
@@ -39,7 +39,7 @@ const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
  * @param extension - File extension with or without leading dot (e.g., "png" or ".png")
  */
 function isBinaryExtensionForSha(extension: string): boolean {
-	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
+	const normalized = extension.startsWith(".") ? extension.slice(1) : extension;
 	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
 }
 
@@ -51,7 +51,10 @@ function isBinaryExtensionForSha(extension: string): boolean {
  *
  * NOTE: This is FIT's custom local SHA (not Git's blob SHA). The two cannot be compared.
  */
-export async function computeFileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
+export async function computeFileSha1(
+	path: string,
+	fileContent: FileContent,
+): Promise<BlobSha> {
 	// Normalize path to NFC form for consistent hashing across platforms
 	const normalizedPath = FilePath.create(path);
 	const extension = FilePath.getExtension(normalizedPath);

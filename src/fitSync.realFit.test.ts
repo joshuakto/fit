@@ -12,7 +12,7 @@ import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { LocalVault } from './localVault';
-import { FitSettings, LocalStores } from '@main';
+import type { FitSettings, LocalStores } from '@main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
 import { FileContent } from './util/contentEncoding';
