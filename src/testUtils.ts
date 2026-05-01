@@ -4,7 +4,7 @@
 
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
-import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
+import { ApplyChangesResult, ILocalVault, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, PlainTextContent } from './util/contentEncoding';
 import { FilePath } from './util/filePath';
@@ -375,7 +375,7 @@ type FailureScenario = 'read' | 'stat' | 'write';
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
  */
-export class FakeLocalVault implements IVault<"local"> {
+export class FakeLocalVault implements ILocalVault {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing

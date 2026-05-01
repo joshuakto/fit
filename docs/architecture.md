@@ -9,11 +9,13 @@ FIT enables bidirectional sync between Obsidian vaults and remote git repositori
 ```mermaid
 graph TB
     User[👤 User] --> Obsidian[Obsidian UI]
+    Agent[🤖 Agent / CI] --> CLI[fit-cli]
     Obsidian --> FitPlugin[FIT Plugin]
 
     FitPlugin --> Sync[Sync Engine]
     FitPlugin --> Settings[Settings Manager]
     FitPlugin --> AutoSync[Auto Sync Timer]
+    CLI --> Sync
 
     Sync --> Remote[☁️ Remote Vault]
     Sync --> Vault[💾 Local Vault]
@@ -29,20 +31,37 @@ graph TB
 - Coordinates between sync engine and Obsidian UI
 - Handles error recovery and user notifications
 
-### Vault Abstractions (IVault)
+### fit-cli (src/cli/index.ts)
+**Purpose**: Command-line entry point for automation and CI pipelines (interfaces with 🤖 agent/CI)
+- Exposes the same sync engine as the plugin via `sync` and `status` subcommands
+- Config layered from `~/.fit-cli.json` → environment variables → CLI flags
+- Uses `NodeLocalVault` for filesystem access and `CliNotice` for stderr progress output
+- State (SHA caches) persisted to `<vault>/.fit-state.json`
+- Built as a separate CJS bundle (`fit-cli.cjs`) via `npm run cli:build`
+
+### Vault Abstractions (IVault, ILocalVault)
 **Purpose**: Abstract file operations (read/write) for different storage backends
 
-A "vault" represents a complete collection of synced files, whether stored locally (Obsidian vault) or remotely (GitHub repository).
+A "vault" represents a complete collection of synced files, whether stored locally (Obsidian vault or filesystem directory) or remotely (GitHub repository).
 
 - **IVault Interface**: Common interface for vault operations
   - **Read operations**: `readFromSource()`, `readFileContent(path)`
   - **Write operations**: `applyChanges(filesToWrite, filesToDelete)` - batch operations
   - **Metadata**: `shouldTrackState(path)` - filter paths during sync
 
+- **ILocalVault Interface**: Extends `IVault<"local">` with local-specific operations
+  - `statPaths(paths)` — batch filesystem stat used by sync engine during conflict resolution
+  - Implemented by both `LocalVault` (Obsidian) and `NodeLocalVault` (CLI/Node.js)
+
 - **💾 LocalVault**: Obsidian vault implementation
-  - Computes SHA-1 hashes from vault files
+  - Computes SHA-1 hashes from vault files (delegates to `computeFileSha1` utility)
   - Owns local state
   - Batch file operations via `applyChanges()`
+
+- **💾 NodeLocalVault**: Node.js filesystem implementation (CLI)
+  - Same `ILocalVault` contract as `LocalVault` but implemented with `fs/promises`
+  - No Obsidian dependency — usable in any Node.js environment
+  - Same hidden-file exclusion policy and binary-detection heuristics as `LocalVault`
 
 - **☁️ RemoteGitHubVault**: GitHub repository implementation
   - Fetches remote tree state via GitHub API
@@ -81,7 +100,7 @@ FIT uses different SHA algorithms for local and remote file tracking:
 - ✅ Each SHA cache uses its own algorithm consistently
 
 **Code references:**
-- Local SHA: [src/localVault.ts:228 `fileSha1()`](../src/localVault.ts#L228)
+- Local SHA: [src/util/fileHashUtils.ts `computeFileSha1()`](../src/util/fileHashUtils.ts)
 - Algorithm note: [src/util/hashing.ts:22](../src/util/hashing.ts#L22)
 - Baseline recording: [src/fitSync.ts:538-547](../src/fitSync.ts#L538)
 
@@ -106,9 +125,9 @@ FIT uses different SHA algorithms for local and remote file tracking:
 - Architecture supports adding GitLab/Gitea backends via IVault interface (would require corresponding connection classes)
 
 ### Support Systems
-- **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log`)
-- **Settings UI**: GitHub authentication and configuration management
-- **Notifications**: User feedback during sync operations
+- **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log` for the plugin; to stdout for the CLI)
+- **Settings UI**: GitHub authentication and configuration management (plugin only)
+- **Notifications**: User feedback during sync operations (`FitNotice` for Obsidian UI, `CliNotice` for stderr in the CLI)
 
 ## Data Flow
 
@@ -177,6 +196,17 @@ sequenceDiagram
 └── Debug logs (when enabled in settings)
 ```
 
+### 🖥️ CLI State
+```
+<vault>/.fit-state.json (default location, configurable via --state):
+└── localStore (sync state cache — same schema as plugin data.json localStore)
+    ├── localSha (file path -> SHA map)
+    ├── lastFetchedCommitSha
+    └── lastFetchedRemoteSha (remote file path -> SHA map)
+```
+
+**Note**: The CLI state file uses the same `LocalStores` schema as the plugin, ensuring SHA caches from either tool are compatible.
+
 ### 💾 Vault Structure
 ```
 Obsidian Vault:
@@ -215,9 +245,10 @@ Obsidian Vault:
 ## Extension Points
 
 ### Adding Sync Backends
-Implement the `IVault` interface to support additional remote backends:
+Implement the `IVault` interface to support additional remote backends, or `ILocalVault` to support additional local backends:
 
 ```typescript
+// Remote backend (IVault<"remote">)
 interface IVault {
     // Read operations
     readFromSource(): Promise<VaultReadResult>;
@@ -232,6 +263,11 @@ interface IVault {
     // Metadata
     shouldTrackState(path: string): boolean;
 }
+
+// Local backend (ILocalVault extends IVault<"local">)
+interface ILocalVault extends IVault<"local"> {
+    statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>>;
+}
 ```
 
 **Example**: Create `RemoteGitLabVault` by:
@@ -242,7 +278,8 @@ interface IVault {
 5. Implement commit operations in `applyChanges()`
 
 **Current implementations**:
-- `LocalVault`: Obsidian vault
+- `LocalVault`: Obsidian vault (requires Obsidian runtime)
+- `NodeLocalVault`: Node.js filesystem vault (CLI / any Node.js environment)
 - `RemoteGitHubVault`: GitHub repositories
 
 ### Custom Conflict Resolution
@@ -271,6 +308,6 @@ Extend notification system for:
 - Easy rollback through git history
 
 ### Cross-Platform Consistency
-- Identical behavior on desktop and mobile Obsidian
+- Identical sync behaviour between the Obsidian plugin and `fit-cli`
 - Platform-agnostic file handling and sync logic
 - Consistent UI patterns across environments

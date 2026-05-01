@@ -12,6 +12,9 @@ node_modules
 # They should be uploaded to GitHub releases instead.
 main.js
 
+# Don't include the compiled CLI bundle in the repo.
+fit-cli.cjs
+
 # Exclude sourcemaps
 *.map
 

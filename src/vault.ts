@@ -118,8 +118,18 @@ export class VaultError extends Error {
 }
 
 /**
- * Interface for vault implementations (local or remote).
- *
+ * Local vault interface with filesystem-specific operations.
+ * Extends IVault<"local"> with local-only methods needed by FitSync.
+ */
+export interface ILocalVault extends IVault<"local"> {
+	/**
+	 * Batch stat operation for multiple paths.
+	 * Returns the type of each path, or null if path doesn't exist.
+	 */
+	statPaths(paths: string[]): Promise<Map<string, 'file' | 'folder' | null>>;
+}
+
+/**
  * Abstracts storage backend details, allowing FitSync to operate on any pair
  * of vaults (local/remote) without knowing implementation specifics.
  *

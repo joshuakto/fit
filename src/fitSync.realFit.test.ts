@@ -10,15 +10,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { FitSync } from './fitSync';
 import { Fit } from './fit';
-import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { LocalVault } from './localVault';
-import { FitSettings, LocalStores } from '@main';
+import type { FitSettings, LocalStores } from '@main';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
 import { FileContent } from './util/contentEncoding';
 import { BlobSha, CommitSha } from './util/hashing';
-import FitNotice from './fitNotice';
 
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
@@ -43,9 +41,8 @@ describe('FitSync', () => {
 		const fit = new Fit(
 			testSettings as FitSettings,
 			initialLocalStoreState,
-			{} as unknown as Vault);
-		// Replace with fake implementations for testing
-		fit.localVault = localVault as any;
+			localVault);
+		// Replace remote vault with fake implementation for testing
 		fit.remoteVault = remoteVault as any;
 
 		return fit;
@@ -1653,12 +1650,13 @@ describe('FitSync', () => {
 	});
 
 	describe('🔤 Encoding corruption detection (Issue #51)', () => {
-		it('should create FitNotice when localVault.applyChanges returns userWarning', async () => {
+		it('should invoke onUserWarning when localVault.applyChanges returns userWarning', async () => {
 			// Test that FitSync properly handles userWarning from vault operations
 			// Actual detection logic is tested in localVault.test.ts
 
-			// Mock FitNotice to avoid DOM dependencies
-			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			// Track when onUserWarning is called
+			const warningMessages: string[] = [];
+			const onUserWarning = vi.fn((msg: string) => { warningMessages.push(msg); });
 
 			// Mock localVault.applyChanges to return a userWarning
 			const mockApplyChanges = vi.spyOn(localVault, 'applyChanges').mockResolvedValue({
@@ -1675,18 +1673,24 @@ describe('FitSync', () => {
 				lastFetchedCommitSha: remoteVault.getCommitSha()
 			};
 
-			const fitSync = createFitSync();
+			const fit = createFit(localStoreState);
+			const saveLocalStoreCallback = async (updates: Partial<LocalStores>) => {
+				Object.assign(localStoreState, updates);
+				fit.loadLocalStore(localStoreState);
+				return Promise.resolve();
+			};
+			const fitSync = new FitSync(fit, saveLocalStoreCallback, onUserWarning);
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
 			// Sync should succeed (warnings are informational, not errors)
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// Verify FitNotice.show() was called (warning notice was created and shown)
-			expect(fitNoticeSpy).toHaveBeenCalled();
+			// Verify onUserWarning was called with the warning message
+			expect(onUserWarning).toHaveBeenCalled();
+			expect(warningMessages[0]).toContain('Encoding Issue Detected');
 
 			mockApplyChanges.mockRestore();
-			fitNoticeSpy.mockRestore();
 		});
 	});
 
@@ -1700,7 +1704,7 @@ describe('FitSync', () => {
 			const fit = new Fit(
 				initialSettings,
 				localStoreState,
-				{} as unknown as Vault
+				localVault
 			);
 
 			expect(fit.remoteVault.getOwner()).toBe('initial-owner');
@@ -1725,7 +1729,7 @@ describe('FitSync', () => {
 			const fit = new Fit(
 				initialSettings,
 				localStoreState,
-				{} as unknown as Vault
+				localVault
 			);
 
 			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
@@ -1754,7 +1758,7 @@ describe('FitSync', () => {
 			const fit = new Fit(
 				initialSettings,
 				localStoreState,
-				{} as unknown as Vault
+				localVault
 			);
 
 			const originalVault = fit.remoteVault;
@@ -1785,7 +1789,7 @@ describe('FitSync', () => {
 			const fit = new Fit(
 				v13settings as FitSettings,
 				localStoreState,
-				{} as unknown as Vault
+				localVault
 			);
 
 			// Then: The remoteVault should be created with the correct owner etc.

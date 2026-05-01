@@ -3,10 +3,14 @@
 	"version": "1.4.0",
 	"description": "Minimalist File gIT (FIT) to sync your files across mobile and desktop devices using GitHub.",
 	"main": "main.js",
+	"bin": {
+		"fit-cli": "./fit-cli.cjs"
+	},
 	"type": "module",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"cli:build": "node esbuild.config.mjs production",
 		"typecheck": "tsc -noEmit -skipLibCheck",
 		"lint": "eslint",
 		"lint:fix": "eslint --fix",

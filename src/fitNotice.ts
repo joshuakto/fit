@@ -1,7 +1,17 @@
 import { Notice } from "obsidian";
 import { Fit } from "./fit";
 
-export default class FitNotice {
+/**
+ * Minimal interface for sync progress notifications.
+ * Implemented by FitNotice (Obsidian UI) and CliNotice (console output).
+ */
+export interface ISyncNotice {
+	setMessage(message: string, isError?: boolean): void;
+	remove(finalClass?: string, duration?: number): void;
+	show(initialMessage?: string, addClasses?: Array<string>, duration?: number): void;
+}
+
+export default class FitNotice implements ISyncNotice {
 	fit: Fit;
 	muted: boolean;
 	notice: null | Notice;
