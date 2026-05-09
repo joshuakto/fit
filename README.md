@@ -28,7 +28,7 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 
 ## Setup
-1. Create a personal access token with read/write access to the repo for your vault (refer to [Github: creating a personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token))
+1. Create a personal access token with read/write access to the repo for your vault (refer to [Github: creating a personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)). For fine-grained tokens, the only required permission is **Contents: Read and Write** under Repository permissions. For classic tokens, the `repo` scope covers this (though it grants broader access than strictly needed).
 2. Once the personal access token is filled in, you can authenticate the user. The GitHub username, list of repositories, and branches will auto-populate.
 3. Select a repo and branch and you are ready to sync.
 <img width="1100" alt="Screenshot of FIT settings for tokens and repos" src="https://github.com/joshuakto/fit/assets/34743132/3ab3665a-5a78-468c-a936-fcf5fd2a8774">

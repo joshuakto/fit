@@ -24,10 +24,10 @@ npm run dev
 
 ## Roadmap & Priorities
 
-### Current Release
-**Milestone**: [1.4.0](https://github.com/joshuakto/fit/milestone/1)
+### Upcoming Release
+**Milestone**: [1.5](https://github.com/joshuakto/fit/milestone/2)
 
-Check the milestone for current release priorities and progress.
+Check the milestone for upcoming release priorities and progress.
 
 ### Long-Term Strategic Priorities
 
