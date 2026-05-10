@@ -9,6 +9,7 @@ import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
 import { FileContent } from "./util/contentEncoding";
 import { fitLogger } from "./logger";
+import { init as initEncryption } from "./encryption";
 
 const COMMIT123_SHA = "commit123" as CommitSha;
 const COMMIT456_SHA = "commit456" as CommitSha;
@@ -26,6 +27,7 @@ describe("RemoteGitHubVault", () => {
 	beforeEach(() => {
 		// Suppress logging to reduce test noise
 		vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+		initEncryption({ settings: { encryptionPassword: '' } } as any);
 
 		fakeOctokit = new FakeOctokit("testowner", "testrepo", "main");
 		__setMockOctokitInstance(fakeOctokit);
