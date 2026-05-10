@@ -938,19 +938,12 @@ Corrupted: Same bytes decoded as GBK → "K眉莽眉k"
 - Subsequent syncs see both versions, creating conflicts
 
 **Detection & Logging:**
-FIT includes diagnostic system (v1.4.0-beta.3+) that detects suspicious filename patterns:
-- **Upload detection**: Compares intended paths vs GitHub's echo-back response ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts))
-  - Logs: `🔴 [RemoteVault] Encoding corruption detected during upload!`
-  - Shows which files had path mismatches with pattern details
-- **Download detection**: Checks remote files being created against existing local files ([src/localVault.ts](../src/localVault.ts))
-  - Logs: `⚠️ [LocalVault] Suspicious filenames detected during sync!`
-  - Lists matching patterns between remote and local filenames
-- **Pattern matching**: ASCII-sandwich algorithm to find suspicious correspondences ([src/util/pathPattern.ts](../src/util/pathPattern.ts))
+FIT includes a diagnostic system that detects suspicious filename patterns using an ASCII-sandwich algorithm ([src/util/pathPattern.ts](../src/util/pathPattern.ts)): if a wildcard (non-ASCII run) has alphanumeric characters on both sides, two paths sharing that pattern but differing in non-ASCII content are flagged as suspicious.
 
-When detected, FIT:
-1. Logs detailed warnings to debug log (enable in settings)
-2. Shows user notification with link to issue #51
-3. Provides pattern matching details to help identify corrupted filenames
+- **Upload detection** ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts)): compares intended paths vs GitHub's echo-back response — ground-truth evidence of corruption. Logs: `🔴 [RemoteVault] Encoding corruption detected during upload!`
+- **Download detection** ([src/localVault.ts](../src/localVault.ts)): checks incoming remote paths against existing local files for suspicious pattern matches. Logs: `⚠️ [LocalVault] Suspicious filenames detected during sync!`
+
+When detected, FIT logs to debug log and shows a user notification with a link to issue #51.
 
 **To help isolate the issue:**
 - Enable debug logging in FIT settings
