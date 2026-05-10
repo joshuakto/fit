@@ -316,7 +316,15 @@ export class GitHubConnection {
 		error: unknown,
 		context?: { owner?: string; repo?: string }
 	): Promise<never> {
-		const errorObj = error as { status?: number | null; response?: unknown; message?: string; };
+		const errorObj = error as { status?: number | null; response?: unknown; message?: string; request?: unknown };
+
+		// Non-Octokit errors (plugin bugs, ReferenceErrors, etc.) — re-throw without misclassifying as network.
+		// Octokit errors always have a numeric status (HTTP errors) or a 'request' property (network failures).
+		const hasNumericStatus = typeof errorObj.status === 'number';
+		const hasOctokitRequest = error != null && typeof error === 'object' && 'request' in error;
+		if (!hasNumericStatus && !hasOctokitRequest) {
+			throw error;
+		}
 
 		// No status or no response indicates network/connectivity issue
 		if (errorObj.status === null || errorObj.status === undefined || !errorObj.response) {

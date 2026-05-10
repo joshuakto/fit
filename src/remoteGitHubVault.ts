@@ -119,7 +119,15 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		error: unknown,
 		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore'
 	): Promise<never> {
-		const errorObj = error as { status?: number | null; response?: unknown; message?: string };
+		const errorObj = error as { status?: number | null; response?: unknown; message?: string; request?: unknown };
+
+		// Non-Octokit errors (plugin bugs, ReferenceErrors, etc.) — re-throw without misclassifying as network.
+		// Octokit errors always have a numeric status (HTTP errors) or a 'request' property (network failures).
+		const hasNumericStatus = typeof errorObj.status === 'number';
+		const hasOctokitRequest = error != null && typeof error === 'object' && 'request' in error;
+		if (!hasNumericStatus && !hasOctokitRequest) {
+			throw error;
+		}
 
 		// No status or no response indicates network/connectivity issue
 		if (errorObj.status === null || errorObj.status === undefined || !errorObj.response) {
@@ -734,14 +742,14 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {
 				let path = node.path;
-				if (Encryption.isEnabled()) {
-					path = await Encryption.decryptPath(path);
-				}
-
 				try {
+					if (Encryption.isEnabled()) {
+						path = await Encryption.decryptPath(path);
+					}
 					// TODO: Should this notice if there's a collision overwriting same path?
 					state[path] = node.sha;
 				} catch (error) {
+					if (error instanceof ReferenceError) throw error;
 					failedPaths.push({ path: path, error });
 					fitLogger.log(`❌ [RemoteVault] Failed to process file: ${path}`, error);
 				}
