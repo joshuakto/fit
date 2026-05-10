@@ -70,10 +70,7 @@ describe('FIT Plugin E2E Tests', function() {
 			// 3. Give a moment for notices to appear
 			await browser.pause(1000);
 
-			// 4. Capture screenshot with timestamp
-			await takeScreenshot('fit-sync-result');
-
-			// 5. Verify expected behavior (config notice, no errors)
+			// 4. Verify expected behavior before notices auto-dismiss
 			const notices = await browser.executeObsidian(() => {
 				const noticeContainer = document.querySelector('.notice-container');
 				if (!noticeContainer) return [];
@@ -84,6 +81,9 @@ describe('FIT Plugin E2E Tests', function() {
 					type: notice.className || ''
 				}));
 			});
+
+			// 5. Capture screenshot with timestamp
+			await takeScreenshot('fit-sync-result');
 
 			console.log('Notices after sync:', notices);
 

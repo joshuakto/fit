@@ -110,7 +110,7 @@ jobs:
       - name: Get Obsidian cache key
         shell: bash
         run: |
-          npx tsx test/e2e/wdio.mobile.conf.mts | grep 'obsidian-cache-key:' > obsidian-versions-lock.txt
+          node test/e2e/wdio.mobile.conf.mjs | grep 'obsidian-cache-key:' > obsidian-versions-lock.txt
           rm -rf .obsidian-cache
         env:
           OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
@@ -150,7 +150,7 @@ jobs:
           profile: ${{ matrix.android-profile }}
           disk-size: 4096M
           heap-size: 512M
-          script: npm run test:android
+          script: bash scripts/run-android-tests-ci.sh
         env:
           OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
           OBSIDIAN_EMAIL: ${{ secrets.OBSIDIAN_EMAIL }}
@@ -161,7 +161,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-test-results-${{ matrix.obsidian-version }}
-          path: test-results/
+          path: |
+            test-results/
+            appium-server.log
           retention-days: 30
 
   check:
