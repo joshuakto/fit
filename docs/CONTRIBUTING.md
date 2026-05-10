@@ -59,7 +59,7 @@ Check the milestone for upcoming release priorities and progress.
 ### Browse Issues by Category
 
 **By priority:**
-- [Current milestone](https://github.com/joshuakto/fit/milestone/1) - Active release work
+- [Current milestone](https://github.com/joshuakto/fit/milestone/2) - Active release work
 - [Help wanted](https://github.com/joshuakto/fit/labels/help%20wanted) - Community contribution opportunities
 - [Good first issue](https://github.com/joshuakto/fit/labels/good%20first%20issue) - Newcomer-friendly tasks
 
@@ -94,8 +94,6 @@ All PRs are automatically checked by GitHub Actions for:
 - ✅ E2E test execution (Android)
 - 📊 Test coverage reporting (informational)
 - 🔍 Security scanning via CodeQL
-
-**Future security improvements**: We plan to enable Dependabot for automated dependency vulnerability scanning and updates.
 
 Please try to avoid breaking functionality (on desktop or mobile), and test major changes to ensure they work correctly.
 
@@ -142,5 +140,4 @@ If you'd like to help set up more automated checking, there are a few quality as
 
 - [ ] **ESLint rules** for TypeScript strict mode
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
-- [ ] **Expand E2E tests** to cover mobile app on Android
 - [ ] **Release automation/validation** to ensure releases are correctly configured & versioned

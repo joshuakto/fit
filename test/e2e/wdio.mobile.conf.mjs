@@ -13,11 +13,24 @@ console.log("obsidian-cache-key:", JSON.stringify({
 	[obsidianVersion]: obsidianVersion
 }));
 
+// In CI, appium is started externally before wdio to avoid tsx hooks propagating
+// to the appium subprocess (wdio adds tsx to NODE_OPTIONS for .ts spec loading).
+// When EXTERNAL_APPIUM=1, skip the appium service; connect to the already-running server.
+const appiumService = process.env.EXTERNAL_APPIUM
+	? []
+	: [["appium", {
+		args: { allowInsecure: "*:chromedriver_autodownload,*:adb_shell" },
+	}]];
+
 export const config = {
 	runner: 'local',
 	framework: 'mocha',
 	specs: ['./**/*.e2e.ts'],
 	maxInstances: 1,
+
+	hostname: 'localhost',
+	port: 4723, // must match --port in scripts/run-android-tests-ci.sh
+	path: '/',
 
 	// Real Android configuration
 	capabilities: [{
@@ -35,9 +48,7 @@ export const config = {
 
 	services: [
 		"obsidian",
-		["appium", {
-			args: { allowInsecure: "chromedriver_autodownload,adb_shell" },
-		}],
+		...appiumService,
 	],
 
 	reporters: ['obsidian'],
