@@ -398,14 +398,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			let userWarning: string | undefined;
 
 			if (suspiciousMatches.length > 0) {
-				// For diagnostic logging, convert strings to UTF-8 byte arrays
-				// Using Buffer (Node.js/Electron API) which is available in Obsidian desktop & mobile
+				const enc = new TextEncoder();
 				const details = suspiciousMatches.map(({intended, echoed, pattern}) => ({
 					intended,
 					echoed,
 					pattern,
-					intendedBytes: Array.from(Buffer.from(intended, 'utf8')),
-					echoedBytes: Array.from(Buffer.from(echoed, 'utf8'))
+					intendedBytes: Array.from(enc.encode(intended)),
+					echoedBytes: Array.from(enc.encode(echoed))
 				}));
 
 				fitLogger.log(

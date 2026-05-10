@@ -23,9 +23,6 @@ export function init(p: FitPlugin) {
 }
 
 export function isEnabled(): boolean {
-	// If this is a test, disable encryption and prevent
-	// errors due to an uninitialized `plugin`
-	if (process.env.NODE_ENV === 'test') return false;
 	return plugin.settings.encryptionPassword !== "";
 }
 

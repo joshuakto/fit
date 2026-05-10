@@ -41,6 +41,19 @@ export default [
 		},
 	},
 	{
+		// Ban Node.js-only globals in production source — Obsidian mobile has no Node.js runtime.
+		// Test/config files are excluded since they legitimately run in Node.
+		files: ['src/**/*.ts'],
+		ignores: ['src/**/*.test.ts', 'src/**/*.e2e.ts', 'src/__mocks__/**', 'src/testUtils.ts'],
+		rules: {
+			'no-restricted-globals': ['error',
+				{ name: 'Buffer', message: 'Buffer is Node.js-only. Use TextEncoder/arrayBufferToBase64 instead.' },
+				{ name: 'require', message: 'require() is Node.js-only. Use ES module imports.' },
+				{ name: 'process', message: 'process is Node.js-only. Not available on Obsidian mobile.' },
+			],
+		},
+	},
+	{
 		// Test-related files: Allow 'any' type for mocking external libraries
 		// Covers: test files, mock implementations, test utilities, and test setup
 		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts', '**/vitest.setup.ts'],
