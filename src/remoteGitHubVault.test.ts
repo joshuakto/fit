@@ -186,6 +186,25 @@ describe("RemoteGitHubVault", () => {
 				const content2 = await vault.readFileContent("file2.md");
 				expect(content2).toEqual(FileContent.fromBase64("content2"));
 			});
+
+			it("should give a clear error when blob content is missing, including the encoding the API reported", async () => {
+				const mockTree: TreeNode[] = [
+					{ path: "huge-file.bin", mode: "100644", type: "blob", sha: BLOB1_SHA }
+				];
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				await vault.readFromSource();
+
+				// Simulate a blob response with no content field — e.g. encoding 'none'
+				// returned by GitHub for unsupported blobs. We don't know the exact cause;
+				// we just want the error to surface the encoding the API reported rather
+				// than crashing with a meaningless TypeError.
+				vi.spyOn(fakeOctokit, 'request').mockResolvedValueOnce({
+					data: { encoding: 'none', sha: BLOB1_SHA, size: 150_000_000 }
+				} as any);
+
+				await expect(vault.readFileContent("huge-file.bin"))
+					.rejects.toThrow(/huge-file\.bin.*none|none.*huge-file\.bin/);
+			});
 		});
 
 		describe("Caching", () => {

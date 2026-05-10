@@ -251,6 +251,12 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 					file_sha: blobSha,
 					headers: this.headers
 				});
+			if (typeof blob.content !== 'string') {
+				throw new Error(
+					`Cannot read '${path}': blob content is ${typeof blob.content} (encoding: '${blob.encoding ?? 'unknown'}'). ` +
+					`GitHub may not support this blob format.`
+				);
+			}
 			let content = blob.content;
 			if (Encryption.isEnabled()) {
 				content = await Encryption.decryptContent(content);
