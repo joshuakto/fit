@@ -491,25 +491,17 @@ export class LocalVault implements IVault<"local"> {
 		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
 		const clashPaths = options?.clashPaths ?? new Set();
-		// Diagnostic logging: detect suspicious filename correspondences (Issue #51)
-		// Check if any files being created have non-ASCII chars and match existing local files
+		// Diagnostic: detect remote paths that share an ASCII-alphanumeric-sandwich pattern
+		// with an existing local file but differ in non-ASCII content (Issue #51).
 		// Note: vault.getFiles() may be unavailable in test mocks
 		const allExistingPaths = this.vault.getFiles?.()?.map(f => f.path) ?? [];
 		const suspiciousWrites: Array<{remote: string, local: string, pattern: string}> = [];
 
 		for (const {path: remotePath} of filesToWrite) {
-			// Only check files with non-ASCII characters that don't already exist
 			if (!/[^\x00-\x7F]/.test(remotePath)) continue;
 			if (this.vault.getAbstractFileByPath(remotePath)) continue;
-
-			// Find correspondences with existing files
-			const matches = findSuspiciousCorrespondences(remotePath, allExistingPaths);
-			for (const match of matches) {
-				suspiciousWrites.push({
-					remote: match.candidate,
-					local: match.existing,
-					pattern: match.pattern
-				});
+			for (const match of findSuspiciousCorrespondences(remotePath, allExistingPaths)) {
+				suspiciousWrites.push({ remote: match.candidate, local: match.existing, pattern: match.pattern });
 			}
 		}
 
