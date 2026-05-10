@@ -10,6 +10,7 @@ import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
 import { FileContent } from "./util/contentEncoding";
 import { fitLogger } from "./logger";
 import { init as initEncryption } from "./encryption";
+import * as Encryption from "./encryption";
 
 const COMMIT123_SHA = "commit123" as CommitSha;
 const COMMIT456_SHA = "commit456" as CommitSha;
@@ -42,8 +43,8 @@ describe("RemoteGitHubVault", () => {
 	});
 
 	afterEach(() => {
-		// Reset mock to prevent test pollution
 		__setMockOctokitInstance(null);
+		vi.restoreAllMocks();
 	});
 
 	describe("Read Operations", () => {
@@ -104,6 +105,21 @@ describe("RemoteGitHubVault", () => {
 					"_fit/file2.md": BLOB2_SHA,
 					"file3.md": BLOB3_SHA
 				});
+			});
+
+			it("should not wrap missing-global errors as network errors", async () => {
+				// Simulates a mobile runtime where an assumed global (e.g. Buffer, TextEncoder)
+				// is missing — the resulting ReferenceError should propagate as-is rather than
+				// being swallowed and misreported as a network failure.
+				const mockTree: TreeNode[] = [
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
+				];
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				vi.spyOn(Encryption, 'isEnabled').mockImplementation(() => {
+					throw new ReferenceError('Encryption is not defined');
+				});
+
+				await expect(vault.readFromSource()).rejects.toBeInstanceOf(ReferenceError);
 			});
 
 			it("should propagate errors from getCommitTreeSha", async () => {
