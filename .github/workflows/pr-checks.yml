@@ -57,6 +57,57 @@ jobs:
       run: npm test -- --coverage
       continue-on-error: true
 
+    - name: Check for release anti-patterns
+      id: release_check
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git fetch origin ${{ github.base_ref }} --depth=1
+        BASE="origin/${{ github.base_ref }}"
+
+        CHANGED=$(git diff --name-only "${BASE}...HEAD")
+        VERSION_FILES=$(echo "$CHANGED" | grep -E '^(manifest\.json|package\.json|versions\.json)$' || true)
+        CODE_FILES=$(echo "$CHANGED" | grep -vE '^(manifest\.json|package\.json|versions\.json)$' | grep -E '\.(ts|js|css|mjs)$' || true)
+
+        FAILED=false
+
+        if [ -n "$VERSION_FILES" ]; then
+          if [ -n "$CODE_FILES" ]; then
+            echo "::error::Version files changed alongside code files. Version bumps must be in dedicated commits/PRs — see docs/CONTRIBUTING.md for the release process."
+            FAILED=true
+          fi
+
+          NEW_VERSION=$(jq -r '.version' manifest.json)
+          PKG_VERSION=$(jq -r '.version' package.json)
+
+          if [ "$NEW_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::manifest.json version (${NEW_VERSION}) does not match package.json version (${PKG_VERSION})."
+            FAILED=true
+          fi
+
+          if [ "${{ github.base_ref }}" = "main" ] && echo "$NEW_VERSION" | grep -q -- '-beta'; then
+            echo "::error::Beta version (${NEW_VERSION}) must not appear in manifest.json on main. Beta bumps happen on the beta branch only."
+            FAILED=true
+          fi
+
+          BASE_VERSION=$(git show "${BASE}:manifest.json" | jq -r '.version')
+          if [ "${{ github.base_ref }}" = "main" ] && [ "$NEW_VERSION" != "$BASE_VERSION" ] && ! echo "$NEW_VERSION" | grep -q -- '-'; then
+            echo "Checking GitHub Release exists for ${NEW_VERSION}..."
+            if ! gh release view "$NEW_VERSION" > /dev/null 2>&1; then
+              echo "::error::No GitHub Release found for version ${NEW_VERSION}. Create the GitHub Release (tag: ${NEW_VERSION}, no 'v' prefix) before merging this version bump."
+              FAILED=true
+            else
+              echo "✅ GitHub Release ${NEW_VERSION} exists"
+            fi
+          fi
+        fi
+
+        if $FAILED; then
+          exit 1
+        fi
+        echo "✅ No release anti-patterns detected"
+      continue-on-error: true
+
     - name: Generate status summary
       id: summary
       run: |
@@ -117,7 +168,7 @@ jobs:
           echo "✅ PR comment posted successfully"
         else
           echo "ℹ️ Skipped PR comment - external fork lacks write permissions"
-          echo "Check results above: Lint: ${{ steps.lint.outcome }}, TypeCheck: ${{ steps.typecheck.outcome }}, Tests: ${{ steps.test.outcome }}"
+          echo "Check results above: Lint: ${{ steps.lint.outcome }}, TypeCheck: ${{ steps.typecheck.outcome }}, Tests: ${{ steps.test.outcome }}, Release: ${{ steps.release_check.outcome }}"
         fi
 
     - name: Fail workflow if critical checks failed
@@ -128,6 +179,10 @@ jobs:
         fi
         if [[ "${{ steps.typecheck.outcome }}" != "success" ]]; then
           echo "❌ TypeScript compilation failed - blocking PR merge"
+          exit 1
+        fi
+        if [[ "${{ steps.release_check.outcome }}" != "success" ]]; then
+          echo "❌ Release anti-patterns detected - blocking PR merge"
           exit 1
         fi
         echo "✅ All critical checks passed"

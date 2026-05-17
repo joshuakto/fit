@@ -112,21 +112,65 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 
 ## Release Process
 
-**Quick Release**:
-```shell
-# Update minAppVersion in manifest.json first, then:
-npm version patch   # bug fixes
-npm version minor   # new features
-npm version major   # breaking changes
-```
+**Rules that apply to all releases:**
+- Version numbers never have a `v` prefix (`1.5.0`, not `v1.5.0`)
+- `manifest.json` and `package.json` versions must always match
+- Version bumps must be in **dedicated commits**, never mixed with feature or bug-fix changes
+- The `main` branch manifest always shows the current **stable** version; beta versions never appear there
 
-**Manual Steps**:
-1. Push that version bump commit and tag to GitHub
-2. Run `npm run build`
-3. Create GitHub release (use `1.0.1`, not `v1.0.1` with "v" prefix)
-4. Upload `manifest.json`, `main.js`, `styles.css` as artifacts on the release
+### Stable Release
 
-See [Obsidian Hub instructions](https://publish.obsidian.md/hub/04+-+Guides%2C+Workflows%2C+%26+Courses/Guides/How+to+release+a+new+version+of+your+plugin) for details.
+Beta testing is recommended before a stable release. When ready:
+
+1. **Build artifacts**: `npm run build` produces `main.js`
+
+2. **Create the GitHub Release** via the GitHub UI:
+   - Tag: `X.Y.Z` — no `v` prefix; mark as a full release (not pre-release)
+   - Upload `manifest.json`, `main.js`, `styles.css` as release assets
+   - The GitHub Release must exist **before** the version bump PR is merged (automated PR checks enforce this)
+
+3. **Open a PR to `main`** containing only these changes:
+   - `manifest.json`: bump `version` to `X.Y.Z`
+   - `package.json`: bump `version` to `X.Y.Z`
+   - `versions.json`: add `"X.Y.Z": "<minAppVersion>"`
+   - Commit message: `Bump version to X.Y.Z`
+
+4. **Merge the PR** — automated checks verify the GitHub Release exists
+
+### Beta Release
+
+Beta releases are for early testing via [BRAT](https://github.com/TfTHacker/obsidian42-brat). They live only on the `beta` branch and are invisible to regular plugin users (never reflected in `main`'s manifest).
+
+1. **Merge `main` into `beta`** (using jj):
+   ```shell
+   jj new beta main -m "Merge branch 'main' into beta"
+   ```
+
+2. **Bump the beta version** directly on the `beta` branch (not via PR to main):
+   - `manifest.json`: set `version` to `X.Y.Z-beta.N`, update `minAppVersion` if needed
+   - `package.json`: set `version` to `X.Y.Z-beta.N`
+   - `versions.json`: add `"X.Y.Z-beta.N": "<minAppVersion>"`
+   - Commit message: `Bump version to X.Y.Z-beta.N (minAppVersion: A.B.C)`
+
+3. **Push `beta`** to GitHub
+
+4. **Create a GitHub Pre-release** via the GitHub UI:
+   - Tag: `X.Y.Z-beta.N` — no `v` prefix (created here via the GH UI); mark as pre-release
+   - Build and upload the same three artifacts as a stable release
+
+BRAT users who point to `joshuakto/fit` receive the latest pre-release automatically.
+
+### Anti-Patterns
+
+| ❌ Anti-pattern | Why it's a problem |
+|---|---|
+| Bumping version in a feature/bug PR | Blocks doc reviews and makes rollback harder; automated checks will reject it |
+| `v` prefix on version tag (e.g. `v1.4.0`) | Breaks the Obsidian plugin registry and BRAT version detection |
+| Bumping `manifest.json` on `main` before the GH Release exists | Plugin installed from `main` references a non-existent release ([#59](https://github.com/joshuakto/fit/issues/59)); automated checks will reject it |
+| Beta version in `main`'s `manifest.json` | Exposes pre-release to all users; automated checks will reject it |
+| `manifest.json` and `package.json` versions out of sync | Confuses tooling and reviewers; automated checks will reject it |
+
+See [Obsidian Hub release guide](https://publish.obsidian.md/hub/04+-+Guides%2C+Workflows%2C+%26+Courses/Guides/How+to+release+a+new+version+of+your+plugin) for general Obsidian plugin release context.
 
 ---
 
@@ -140,4 +184,3 @@ If you'd like to help set up more automated checking, there are a few quality as
 
 - [ ] **ESLint rules** for more known problematic code patterns
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
-- [ ] **Release automation/validation** to ensure releases are correctly configured & versioned
