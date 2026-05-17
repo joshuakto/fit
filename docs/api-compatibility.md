@@ -155,23 +155,14 @@ const arrayBuffer = await vault.adapter.readBinary(path);
 
 **Related:** Issue #169 - Baseline tracking for untracked files requires reading hidden files for SHA comparison
 
-## Automated Validation (TODO)
+## Automated Validation
 
 Currently, compatibility issues are caught by:
 1. ✅ **CI test matrix** - Detects missing Node.js APIs at runtime
-2. ⚠️ **Manual code review** - Detects unsafe patterns
+2. ✅ **ESLint `no-restricted-globals`** - Bans non-mobile-compatible `Buffer`, `require`, `process` in plugin code
+3. ⚠️ **Manual code review** - Catches other unsafe patterns
 
-### Future Improvements
-
-**TODO:** Add eslint rule to detect Node.js imports:
-```javascript
-// .eslintrc.js
-rules: {
-  'no-restricted-imports': ['error', {
-    patterns: ['util', 'fs', 'path', 'buffer', 'stream']
-  }]
-}
-```
+### Remaining TODOs
 
 **TODO:** Add eslint rule to detect TextDecoder without fatal:
 ```javascript

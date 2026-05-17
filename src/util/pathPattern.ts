@@ -72,10 +72,10 @@ export function detectSuspiciousCorrespondence(
 		return null;
 	}
 
-	// Must have at least one ASCII-NONASCII-ASCII sandwich
-	// Pattern: non-wildcard, then wildcard, then non-wildcard
-	// Regex: [^*]+\*[^*]+ means "1+ non-wildcards, wildcard, 1+ non-wildcards"
-	if (!/[^*]+\*[^*]+/.test(pattern)) {
+	// Must have at least one wildcard with alphanumeric characters on both sides.
+	// Whitespace and punctuation alone don't count — "* *.md" would be a false positive
+	// for any two non-ASCII-prefixed filenames sharing an extension.
+	if (!/[a-zA-Z0-9][^*]*\*[^*]*[a-zA-Z0-9]/.test(pattern)) {
 		return null;
 	}
 

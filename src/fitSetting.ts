@@ -1,22 +1,51 @@
 import FitPlugin from "@main";
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
 import { setEqual } from "./utils";
-import { warn } from "console";
+import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
+import { VaultError } from "./vault";
+import { fitLogger } from "./logger";
+import FitNotice from "./fitNotice";
+import * as Encryption from "./encryption";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
 
+/**
+ * Settings UI for Fit plugin.
+ *
+ * Sections:
+ * - GitHub authentication (PAT token)
+ * - Repository configuration (owner/repo/branch)
+ * - Local settings (file exclusions, ignored files)
+ * - Debug logging toggle
+ *
+ * Implementation notes:
+ * - Owner/repo inputs use AbstractInputSuggest (mobile-friendly autocomplete)
+ * - GitHubConnection provides repo discovery and branch listing
+ * - Settings saves and branch fetching are debounced (500ms) to reduce API calls
+ */
 export default class FitSettingTab extends PluginSettingTab {
 	plugin: FitPlugin;
 	authenticating: boolean;
 	authUserAvatar: HTMLDivElement;
 	authUserHandle: HTMLSpanElement;
 	patSetting: Setting;
+	authUserSetting: Setting;
 	ownerSetting: Setting;
 	repoSetting: Setting;
-	branchSetting: Setting;
 	existingRepos: Array<string>;
 	existingBranches: Array<string>;
 	repoLink: string;
+	private saveSettingsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private repoFetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private suggestedOwners: Array<string> = [];
+	private suggestedRepos: Array<string> = [];
+	private authenticateButtonComponent: { setDisabled: (disabled: boolean) => void } | null = null;
+	private refreshButton: HTMLElement | null = null;
+	private ownerInputComponent: { setPlaceholder: (placeholder: string) => void; setValue: (value: string) => void } | null = null;
+	private repoInputComponent: { setPlaceholder: (placeholder: string) => void; setValue: (value: string) => void } | null = null;
+	private ownerSuggest: GitHubOwnerSuggest | null = null;
+	private repoSuggest: GitHubRepoSuggest | null = null;
 
 	constructor(app: App, plugin: FitPlugin) {
 		super(app, plugin);
@@ -27,8 +56,127 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.existingBranches = [];
 	}
 
+	/**
+	 * Update input placeholders to reflect current authentication state.
+	 * Call after authentication succeeds or when GitHubConnection becomes available.
+	 */
+	private updatePlaceholders() {
+		const isAuthenticated = !!this.plugin.githubConnection;
+
+		if (this.ownerInputComponent) {
+			this.ownerInputComponent.setPlaceholder(
+				isAuthenticated ? 'owner-username' : 'Authenticate above to auto-fill'
+			);
+		}
+		if (this.repoInputComponent) {
+			this.repoInputComponent.setPlaceholder(
+				isAuthenticated ? 'repo-name' : 'Authenticate above for suggestions'
+			);
+		}
+	}
+
+	/**
+	 * Clear authentication UI state only (not persistent settings).
+	 * Call this when authentication fails temporarily.
+	 * For permanent PAT removal, caller should also clear settings separately.
+	 */
+	private clearAuthState = () => {
+		// Clear only UI state, preserve settings so they work when auth is restored
+		this.plugin.settings.avatarUrl = "";
+		this.existingBranches = [];
+		this.existingRepos = [];
+		this.authUserAvatar.empty();
+		this.authUserAvatar.removeClass('cat');
+		this.authUserAvatar.removeClass('error');
+		this.authUserAvatar.addClass('empty');
+		this.authUserHandle.setText("Unauthenticated");
+
+		// Don't clear input values - user's settings remain intact
+		// They can still see what owner/repo/branch they had configured
+	};
+
+	/**
+	 * Update button enabled/disabled states based on current authentication status.
+	 * Call this whenever PAT or authentication state changes.
+	 */
+	private updateButtonStates = () => {
+		const isAuthenticated = !!this.plugin.githubConnection;
+
+		if (this.authenticateButtonComponent) {
+			this.authenticateButtonComponent.setDisabled(this.authenticating || !this.plugin.githubConnection);
+		}
+
+		if (this.refreshButton) {
+			this.refreshButton.toggleClass('is-disabled', !isAuthenticated);
+			if (!isAuthenticated) {
+				this.refreshButton.setAttribute('aria-disabled', 'true');
+			} else {
+				this.refreshButton.removeAttribute('aria-disabled');
+			}
+		}
+	};
+
+	/**
+	 * Debounced save settings for manual entry fields.
+	 * Waits 500ms after user stops typing before saving.
+	 */
+	private debouncedSaveSettings = () => {
+		if (this.saveSettingsDebounceTimer) {
+			clearTimeout(this.saveSettingsDebounceTimer);
+		}
+		this.saveSettingsDebounceTimer = setTimeout(async () => {
+			this.saveSettingsDebounceTimer = null;
+			await this.plugin.saveSettings();
+		}, 500);
+	};
+
+	/**
+	 * Debounced fetch repos for owner changes.
+	 * Waits 500ms after user stops typing before fetching repos to avoid performance issues.
+	 */
+	private debouncedFetchReposForOwner = (owner: string) => {
+		if (this.repoFetchDebounceTimer) {
+			clearTimeout(this.repoFetchDebounceTimer);
+		}
+		this.repoFetchDebounceTimer = setTimeout(async () => {
+			this.repoFetchDebounceTimer = null;
+			if (owner && this.plugin.githubConnection) {
+				try {
+					this.existingRepos = await this.plugin.githubConnection.getReposForOwner(owner);
+					if (this.repoSuggest) {
+						this.repoSuggest.updateSuggestions(this.existingRepos);
+					}
+				} catch (error) {
+					const errorMsg = error instanceof Error ? error.message : String(error);
+					this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${owner}': ${errorMsg}`, { error });
+					this.existingRepos = [];
+					if (this.repoSuggest) {
+						this.repoSuggest.updateSuggestions([]);
+					}
+				}
+			}
+		}, 500);
+	};
+
+	/**
+	 * Debounced refresh for repo owner/name changes.
+	 * Waits 500ms after user stops typing before fetching branches.
+	 */
+	private debouncedRefreshBranches = () => {
+		if (this.refreshDebounceTimer) {
+			clearTimeout(this.refreshDebounceTimer);
+		}
+		this.refreshDebounceTimer = setTimeout(async () => {
+			this.refreshDebounceTimer = null;
+			// Only refresh if both owner and repo are filled in
+			if (this.plugin.settings.owner && this.plugin.settings.repo) {
+				await this.refreshFields('branch(1)');
+			}
+		}, 500);
+	};
+
 	getLatestLink = (): string => {
-		const {owner, repo, branch} = this.plugin.settings;
+		const {owner: owner, repo, branch} = this.plugin.settings;
 		if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
 			return `https://github.com/${owner}/${repo}/tree/${branch}`;
 		}
@@ -42,34 +190,77 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.authUserAvatar.removeClass('empty');
 		this.authUserAvatar.addClass('cat');
 		try {
-			const {owner, avatarUrl} = await this.plugin.fit.getUser();
+			// Guard: githubConnection is null when no PAT configured
+			if (!this.plugin.githubConnection) {
+				this.plugin.logger.log('[FitSettings] Cannot authenticate without PAT token');
+				this.authUserAvatar.removeClass('cat');
+				this.authUserAvatar.addClass('error');
+				this.authUserHandle.setText('Enter PAT token above');
+				return;
+			}
+			const {owner: authUser, avatarUrl} = await this.plugin.githubConnection.getAuthenticatedUser();
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.createEl('img', { attr: { src: avatarUrl } });
-			this.authUserHandle.setText(owner);
-			if (owner !== this.plugin.settings.owner) {
-				this.plugin.settings.owner = owner;
-				this.plugin.settings.avatarUrl = avatarUrl;
-				this.plugin.settings.repo = "";
-				this.plugin.settings.branch = "";
-				this.existingBranches = [];
-				this.existingRepos = [];
-				await this.plugin.saveSettings();
-				await this.refreshFields('repo(0)');
+
+			// Detect if authUser changed by checking the displayed handle
+			const previousAuthUser = this.authUserHandle.textContent;
+			const authUserChanged = previousAuthUser !== "Unauthenticated" && previousAuthUser !== authUser;
+			this.authUserHandle.setText(authUser);
+
+			const previousOwner = this.plugin.settings.owner;
+			const ownerInputEmpty = !previousOwner || previousOwner.trim() === '';
+			this.plugin.settings.avatarUrl = avatarUrl;
+
+			// Pre-fill or update owner when:
+			// 1. Owner input is empty (first time or user cleared it), OR
+			// 2. AuthUser changed and owner was still empty
+			if (ownerInputEmpty || (authUserChanged && ownerInputEmpty)) {
+				this.plugin.settings.owner = authUser;
+				// Update owner input value directly
+				if (this.ownerInputComponent) {
+					this.ownerInputComponent.setValue(authUser);
+				}
 			}
-			this.authenticating = false;
-		} catch (_error) {
+
+			await this.plugin.saveSettings();
+
+			// Update placeholders to reflect authenticated state
+			this.updatePlaceholders();
+
+			// Refresh repos/branches if owner was just filled or changed
+			if (ownerInputEmpty && this.plugin.settings.owner) {
+				if (this.plugin.settings.repo) {
+					await this.refreshFields('branch(1)');
+				} else {
+					await this.refreshFields('repo(0)');
+				}
+			}
+		} catch (error) {
 			this.authUserAvatar.removeClass('cat');
 			this.authUserAvatar.addClass('error');
-			this.authUserHandle.setText("Authentication failed, make sure your token has not expired.");
-			this.plugin.settings.owner = "";
-			this.plugin.settings.avatarUrl = "";
-			this.plugin.settings.repo = "";
-			this.plugin.settings.branch = "";
-			this.existingBranches = [];
-			this.existingRepos = [];
+
+			// Provide specific error message based on error type
+			let errorMessage = "Authentication failed, make sure your token has not expired.";
+			if (error instanceof Error) {
+				if (error.message.includes("network") || error.message.includes("reach")) {
+					errorMessage = "Network error. Check your connection and try again.";
+				} else if (error.message.includes("Authentication") || error.message.includes("401") || error.message.includes("403")) {
+					errorMessage = "Authentication failed. Check your PAT token.";
+				}
+			}
+
+			this.authUserHandle.setText(errorMessage);
+			// Clear remoteVault to allow re-creation on next auth attempt
+			this.plugin.fit.clearRemoteVault();
+			this.clearAuthState();
 			await this.plugin.saveSettings();
-			this.refreshFields('initialize');
+			await this.refreshFields('initialize');
+
+			// Update placeholders after clearing auth state
+			this.updatePlaceholders();
+		} finally {
 			this.authenticating = false;
+			this.updateButtonStates();
 		}
 	};
 
@@ -77,15 +268,18 @@ export default class FitSettingTab extends PluginSettingTab {
 		const {containerEl} = this;
 		new Setting(containerEl).setHeading()
 			.setName("GitHub user info")
-			.addButton(button => button
-				.setCta()
-				.setButtonText("Authenticate user")
-				.setDisabled(this.authenticating)
-				.onClick(async ()=>{
-					if (this.authenticating) return;
-					await this.handleUserFetch();
-				}));
-		this.ownerSetting = new Setting(containerEl)
+			.addButton(button => {
+				this.authenticateButtonComponent = button;
+				button
+					.setCta()
+					.setButtonText("Authenticate user")
+					.setDisabled(this.authenticating || !this.plugin.githubConnection)
+					.onClick(async ()=>{
+						if (this.authenticating) return;
+						await this.handleUserFetch();
+					});
+			});
+		this.authUserSetting = new Setting(containerEl)
 			.setDesc("Input your personal access token below to get authenticated. Create a GitHub account here if you don't have one yet.")
 			.addExtraButton(button=>button
 				.setIcon('github')
@@ -93,21 +287,24 @@ export default class FitSettingTab extends PluginSettingTab {
 				.onClick(async ()=>{
 					window.open("https://github.com/signup", "_blank");
 				}));
-		this.ownerSetting.nameEl.addClass('fit-avatar-container');
-		if (this.plugin.settings.owner === "") {
-			this.authUserAvatar = this.ownerSetting.nameEl.createDiv(
-				{cls: 'fit-avatar-container empty'});
-			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'});
-			this.authUserHandle.setText("Unauthenticated");
-		} else {
-			this.authUserAvatar = this.ownerSetting.nameEl.createDiv(
-				{cls: 'fit-avatar-container'});
-			this.authUserAvatar.createEl('img', { attr: { src: this.plugin.settings.avatarUrl } });
-			this.authUserHandle = this.ownerSetting.nameEl.createEl('span', {cls: 'fit-github-handle'});
-			this.authUserHandle.setText(this.plugin.settings.owner);
+		this.authUserSetting.nameEl.addClass('fit-avatar-container');
+		this.authUserAvatar = this.authUserSetting.nameEl.createDiv({cls: 'fit-avatar-container empty'});
+		this.authUserHandle = this.authUserSetting.nameEl.createEl('span', {cls: 'fit-github-handle'});
+		this.authUserHandle.setText("Unauthenticated");
+
+		// Try to get authenticated user info from GitHubConnection (cached)
+		if (this.plugin.githubConnection) {
+			this.plugin.githubConnection.getAuthenticatedUser().then(({owner, avatarUrl}) => {
+				this.authUserAvatar.removeClass('empty');
+				this.authUserAvatar.empty();
+				this.authUserAvatar.createEl('img', { attr: { src: avatarUrl } });
+				this.authUserHandle.setText(owner);
+			}).catch(() => {
+				// Authentication failed, keep "Unauthenticated" state
+			});
 		}
 		// hide the control element to make space for authUser
-		this.ownerSetting.controlEl.addClass('fit-avatar-display-text');
+		this.authUserSetting.controlEl.addClass('fit-avatar-display-text');
 
 		this.patSetting = new Setting(containerEl)
 			.setName('Github personal access token')
@@ -116,8 +313,32 @@ export default class FitSettingTab extends PluginSettingTab {
 				.setPlaceholder('GitHub personal access token')
 				.setValue(this.plugin.settings.pat)
 				.onChange(async (value) => {
+					const hadPat = !!this.plugin.settings.pat;
 					this.plugin.settings.pat = value;
+
+					// Clear authentication state when PAT is removed
+					if (hadPat && !value) {
+						this.clearAuthState();
+						// When PAT is explicitly removed, also clear repo settings
+						this.plugin.settings.owner = "";
+						this.plugin.settings.repo = "";
+						this.plugin.settings.branch = "";
+						// Clear input values to reflect empty settings
+						if (this.ownerInputComponent) {
+							this.ownerInputComponent.setValue('');
+						}
+						if (this.repoInputComponent) {
+							this.repoInputComponent.setValue('');
+						}
+					}
+
 					await this.plugin.saveSettings();
+
+					// Update button states after PAT change
+					this.updateButtonStates();
+
+					// Update placeholders to reflect new auth state
+					this.updatePlaceholders();
 				}))
 			.addExtraButton(button=>button
 				.setIcon('external-link')
@@ -131,15 +352,21 @@ export default class FitSettingTab extends PluginSettingTab {
 
 	repoInfoBlock = async () => {
 		const {containerEl} = this;
+		const isAuthenticated = !!this.plugin.githubConnection;
 		new Setting(containerEl).setHeading().setName("Repository info")
-			.setDesc("Refresh to retrieve the latest list of repos and branches.")
-			.addExtraButton(button => button
-				.setTooltip("Refresh repos and branches list")
-				.setDisabled(this.plugin.settings.owner === "")
-				.setIcon('refresh-cw')
-				.onClick(async () => {
-					await this.refreshFields('repo(0)');
-				}));
+			.setDesc(isAuthenticated
+				? "Suggestions populate automatically when authenticated. Click refresh to update the lists."
+				: "Authenticate above to populate owner/repo suggestions, or type custom values manually.")
+			.addExtraButton(button => {
+				this.refreshButton = button.extraSettingsEl;
+				button
+					.setTooltip("Refresh repos and branches list")
+					.setDisabled(!isAuthenticated)
+					.setIcon('refresh-cw')
+					.onClick(async () => {
+						await this.refreshFields('repo(0)');
+					});
+			});
 
 		new Setting(containerEl)
 			.setDesc("Make sure you are logged in to github on your browser.")
@@ -150,27 +377,98 @@ export default class FitSettingTab extends PluginSettingTab {
 					window.open(`https://github.com/new`, '_blank');
 				}));
 
-		this.repoSetting = new Setting(containerEl)
-			.setName('Github repository name')
-			.setDesc("Select a repo to sync your vault, refresh to see your latest repos. If some repos are missing, make sure your token are granted access to them.")
-			.addDropdown(dropdown => {
-				dropdown.selectEl.addClass('repo-dropdown');
-				this.existingRepos.map(repo=>dropdown.addOption(repo, repo));
-				dropdown.setDisabled(this.existingRepos.length === 0);
-				dropdown.setValue(this.plugin.settings.repo);
-				dropdown.onChange(async (value) => {
-					const repoChanged = value !== this.plugin.settings.repo;
-					if (repoChanged) {
-						this.plugin.settings.repo = value;
-						await this.plugin.saveSettings();
-						await this.refreshFields('branch(1)');
-					}
-				});
-			});
+		// Repository owner combo box (supports both dropdown suggestions and freeform text)
+		this.ownerSetting = new Setting(containerEl)
+			.setName('Repository owner')
+			.setDesc(isAuthenticated
+				? 'The GitHub username or organization that owns the repository. Select from suggestions or type a custom value.'
+				: 'Type a custom value, or authenticate above to see suggestions.');
 
-		this.branchSetting = new Setting(containerEl)
+		// Create AbstractInputSuggest for owner suggestions (better mobile UX than datalist)
+		this.ownerSetting.addText(text => {
+			this.ownerInputComponent = text;
+			text.setPlaceholder(isAuthenticated ? 'owner-username' : 'Authenticate above to auto-fill')
+				.setValue(this.plugin.settings.owner)
+				.onChange(async (value) => {
+					const ownerChanged = value !== this.plugin.settings.owner;
+					this.plugin.settings.owner = value;
+
+					if (ownerChanged) {
+						// Clear dependent fields whenever the owner changes
+						this.plugin.settings.repo = '';
+						this.plugin.settings.branch = '';
+						this.repoInputComponent?.setValue('');
+						this.existingRepos = [];
+
+						// Update repo suggestions when owner changes
+						if (this.repoSuggest) {
+							this.repoSuggest.updateSuggestions([]);
+						}
+
+						// If authenticated, debounced fetch repos for the new owner
+						if (value && this.plugin.githubConnection) {
+							this.debouncedFetchReposForOwner(value);
+						}
+					}
+
+					this.debouncedSaveSettings();
+				});
+
+			// Initialize AbstractInputSuggest for owner input
+			try {
+				this.ownerSuggest = new GitHubOwnerSuggest(
+					this.app,
+					text.inputEl
+				);
+				// Populate with current suggestions if available
+				if (this.suggestedOwners.length > 0) {
+					this.ownerSuggest.updateSuggestions(this.suggestedOwners);
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				this.plugin.logger.log(`[FitSettings] Failed to initialize owner suggestions: ${errorMsg}`, { error });
+				console.error('[FitSettings] Failed to initialize GitHubOwnerSuggest:', error);
+			}
+		});
+
+		// Repository name combo box (supports both dropdown suggestions and freeform text)
+		this.repoSetting = new Setting(containerEl)
+			.setName('Repository name')
+			.setDesc(isAuthenticated
+				? 'Select a repo to sync your vault or type a custom value. Refresh to see your latest repos.'
+				: 'Authenticate above to see repo suggestions, or type a custom value.');
+
+		// Create AbstractInputSuggest for repo suggestions (better mobile UX than datalist)
+		this.repoSetting.addText(text => {
+			this.repoInputComponent = text;
+			text.setPlaceholder(isAuthenticated ? 'repo-name' : 'Authenticate above for suggestions')
+				.setValue(this.plugin.settings.repo)
+				.onChange((value) => {
+					this.plugin.settings.repo = value;
+					this.debouncedSaveSettings();
+					this.debouncedRefreshBranches();
+				});
+
+			// Initialize AbstractInputSuggest for repo input
+			try {
+				this.repoSuggest = new GitHubRepoSuggest(
+					this.app,
+					text.inputEl
+				);
+				// Populate with current suggestions if available
+				if (this.existingRepos.length > 0) {
+					this.repoSuggest.updateSuggestions(this.existingRepos);
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				this.plugin.logger.log(`[FitSettings] Failed to initialize repo suggestions: ${errorMsg}`, { error });
+				console.error('[FitSettings] Failed to initialize GitHubRepoSuggest:', error);
+			}
+		});
+
+		new Setting(containerEl)
 			.setName('Branch name')
-			.setDesc('Select a repo above to view existing branches.')
+			.setDesc('Enter repository details above, then refresh to view existing branches.')
 			.addDropdown(dropdown => {
 				dropdown.selectEl.addClass('branch-dropdown');
 				dropdown.setDisabled(this.existingBranches.length === 0);
@@ -200,6 +498,132 @@ export default class FitSettingTab extends PluginSettingTab {
 				})
 			);
 		linkDisplay.descEl.addClass("link-desc");
+
+		let textComponent: TextComponent;
+		let visible = false;
+		const defaultType = "password";
+
+		function message(notice: FitNotice, string: string, error: unknown = null) {
+			const loggerPrefix = "[FitSettings] ";
+			if (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				fitLogger.log(loggerPrefix + string, error);
+				notice.setMessage(`${string}: ${msg}`, true);
+			} else {
+				fitLogger.log(loggerPrefix + string);
+				notice.setMessage(string);
+			}
+		}
+
+		const setting = new Setting(containerEl)
+			.setName("Encryption password (Advanced only)")
+			.setDesc(
+				"⚠️ A password for encrypting your remote data. Leave empty to disable encryption.\n\n" +
+				"Safe migration guide (read before changing):\n" +
+				"1. Ensure all your devices have the same files in their vaults;\n" +
+				"2. Configure and apply this setting the same way on all devices;\n" +
+				"3. On one device, delete all remote files by clicking 'Clear repository' button and sync your vault with the repository;\n" +
+				"4. On every other device, update the cache by clicking 'Sync local cache' button;\n" +
+				"5. Done. Only after this can you modify the files in your vaults and sync normally."
+			)
+			.addText(text => {
+				text.setPlaceholder("Password");
+				text.setValue(this.plugin.settings.encryptionPassword);
+				text.inputEl.type = defaultType;
+				textComponent = text;
+			});
+
+		setting.descEl.style.whiteSpace = "pre-wrap";
+
+		setting.addExtraButton(button => button
+			.setIcon("eye")
+			.setTooltip("Switch visibility")
+			.onClick(() => {
+				visible = !visible;
+				textComponent.inputEl.type = visible ? "text" : "password";
+				button.setIcon(visible ? "eye-off" : "eye");
+			}));
+
+		setting.addExtraButton(button => button
+			.setIcon("arrow-right")
+			.setTooltip("Apply password")
+			.onClick(async () => {
+				const value = textComponent.getValue();
+				this.plugin.settings.encryptionPassword = value;
+				await this.plugin.saveSettings();
+				Encryption.clearCache();
+				fitLogger.log("[FitSettings] Password has been applied");
+				new FitNotice(
+					this.plugin.fit,
+					["done"],
+					"Password has been applied",
+					5000,
+					false
+				);
+			}));
+
+		new Setting(containerEl)
+			.setName('Sync local cache')
+			.setDesc('Update the local cache with the actual remote state.')
+			.addExtraButton(button => button
+				.setIcon('trash-2')
+				.setTooltip("Sync local cache")
+				.onClick(async () => {
+					button.setDisabled(true);
+
+					const notice = new FitNotice(
+						this.plugin.fit,
+						["done"],
+						"Updating cache...",
+						5000,
+						false
+					);
+
+					try {
+						const { state } = await this.plugin.fit.remoteVault.readFromSource(true);
+
+						await this.plugin.saveLocalStoreCallback({
+							lastFetchedRemoteSha: state,
+						});
+
+						message(notice, "Cache has been updated");
+						notice.remove("done", 5000);
+					} catch (e) {
+						message(notice, "Failed to update cache", e);
+						notice.remove("error", 5000);
+					} finally {
+						button.setDisabled(false);
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Clear repository')
+			.setDesc('Delete all files from the repository. Previous commits will not be affected.')
+			.addExtraButton(button => button
+				.setIcon('trash-2')
+				.setTooltip("Clear repository")
+				.onClick(async () => {
+					button.setDisabled(true);
+
+					const notice = new FitNotice(
+						this.plugin.fit,
+						["loading"],
+						"Clearing repository...",
+						undefined,
+						false
+					);
+
+					try {
+						const applied = await this.plugin.fitSync.clear();
+						message(notice, applied ? "Repository has been cleared" : "Nothing to clear");
+						notice.remove("done", 5000);
+					} catch (e) {
+						message(notice, "Failed to clear repository", e);
+						notice.remove("error", 5000);
+					} finally {
+						button.setDisabled(false);
+					}
+				}));
 	};
 
 	localConfigBlock = () => {
@@ -328,102 +752,130 @@ export default class FitSettingTab extends PluginSettingTab {
 				}));
 	};
 
+	// TODO: This method does too much and has confusing checkpoint-based control flow.
+	// Consider splitting into separate methods: refreshOwners(), refreshRepos(), refreshBranches(), updateLink()
+	// Then callers can explicitly request what they need instead of using magic strings like "repo(0)"
 	refreshFields = async (refreshFrom: RefreshCheckPoint) => {
 		const {containerEl} = this;
-		const repo_dropdown = containerEl.querySelector('.repo-dropdown') as HTMLSelectElement;
 		const branch_dropdown = containerEl.querySelector('.branch-dropdown') as HTMLSelectElement;
 		const link_el = containerEl.querySelector('.link-desc') as HTMLElement;
+
 		if (refreshFrom === "repo(0)") {
-			repo_dropdown.disabled = true;
-			branch_dropdown.disabled = true;
-			this.existingRepos = await this.plugin.fit.getRepos();
-			const repoOptions = Array.from(repo_dropdown.options).map(option => option.value);
-			if (!setEqual<string>(this.existingRepos, repoOptions)) {
-				repo_dropdown.empty();
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo));
-				});
-				// if original repo not in the updated existing repo, -1 will be returned
-				const selectedRepoIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-				// setting selectedIndex to -1 to indicate no options selected
-				repo_dropdown.selectedIndex = selectedRepoIndex;
-				if (selectedRepoIndex===-1){
-					this.plugin.settings.repo = "";
+			// Guard: Cannot fetch from API without githubConnection
+			if (!this.plugin.githubConnection) {
+				this.plugin.logger.log('[FitSettings] Cannot refresh repos without PAT token');
+				return;
+			}
+
+			// Fetch owners and update owner suggestions
+			try {
+				this.suggestedOwners = await this.plugin.githubConnection.getAccessibleOwners();
+				if (this.ownerSuggest) {
+					this.ownerSuggest.updateSuggestions(this.suggestedOwners);
+				}
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				this.plugin.logger.log(`[FitSettings] Could not fetch accessible owners: ${errorMsg}`, { error });
+				this.suggestedOwners = [];
+				if (this.ownerSuggest) {
+					this.ownerSuggest.updateSuggestions([]);
 				}
 			}
-			repo_dropdown.disabled = false;
-		}
-		if (refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
-			if (this.plugin.settings.repo === "") {
-				branch_dropdown.empty();
+
+			// Fetch repos for current owner and update repo suggestions
+			if (this.plugin.settings.owner) {
+				try {
+					this.existingRepos = await this.plugin.githubConnection.getReposForOwner(this.plugin.settings.owner);
+				} catch (error) {
+					const errorMsg = error instanceof Error ? error.message : String(error);
+					this.plugin.logger.log(`[FitSettings] Could not fetch repos for owner '${this.plugin.settings.owner}': ${errorMsg}`, { error });
+					this.existingRepos = [];
+				}
 			} else {
-				const latestBranches = await this.plugin.fit.getBranches();
-				if (!setEqual<string>(this.existingBranches, latestBranches)) {
+				this.existingRepos = [];
+			}
+			if (this.repoSuggest) {
+				this.repoSuggest.updateSuggestions(this.existingRepos);
+			}
+		}
+
+		if (refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
+			// Guard: Cannot fetch from API without githubConnection
+			if (!this.plugin.githubConnection) {
+				this.plugin.logger.log('[FitSettings] Cannot refresh branches without PAT token');
+				branch_dropdown.empty();
+				this.existingBranches = [];
+			} else if (this.plugin.settings.repo === "" || this.plugin.settings.owner === "") {
+				branch_dropdown.empty();
+				this.existingBranches = [];
+			} else {
+				try {
+					const latestBranches = await this.plugin.githubConnection.getBranches(this.plugin.settings.owner, this.plugin.settings.repo);
+					if (!setEqual<string>(this.existingBranches, latestBranches)) {
+						branch_dropdown.empty();
+						this.existingBranches = latestBranches;
+						this.existingBranches.map(branch => {
+							branch_dropdown.add(new Option(branch, branch));
+						});
+						// if original branch not in the updated existing branch, -1 will be returned
+						const selectedBranchIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
+						// setting selectedIndex to -1 to indicate no options selected
+						branch_dropdown.selectedIndex = selectedBranchIndex;
+						if (selectedBranchIndex===-1){
+							this.plugin.settings.branch = "";
+						}
+					}
+				} catch (error) {
+					// Repository not found or inaccessible - clear branch dropdown
 					branch_dropdown.empty();
-					this.existingBranches = latestBranches;
-					this.existingBranches.map(branch => {
-						branch_dropdown.add(new Option(branch, branch));
-					});
-					// if original branch not in the updated existing branch, -1 will be returned
-					const selectedBranchIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
-					// setting selectedIndex to -1 to indicate no options selected
-					branch_dropdown.selectedIndex = selectedBranchIndex;
-					if (selectedBranchIndex===-1){
-						this.plugin.settings.branch = "";
+					this.existingBranches = [];
+					// Only log unexpected errors; 404s are expected as user types incomplete repo names
+					if (!(error instanceof VaultError && error.type === 'remote_not_found')) {
+						const errorMsg = error instanceof Error ? error.message : String(error);
+						this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${this.plugin.settings.owner}/${this.plugin.settings.repo}: ${errorMsg}`, { error });
 					}
 				}
 			}
 			branch_dropdown.disabled = false;
 		}
+
 		if (refreshFrom === "link(2)" || refreshFrom === "branch(1)" || refreshFrom === "repo(0)") {
 			this.repoLink = this.getLatestLink();
 			link_el.innerText = this.repoLink;
 		}
+
 		if (refreshFrom === "initialize") {
-			const {repo, branch} = this.plugin.settings;
-			repo_dropdown.empty();
 			branch_dropdown.empty();
-			repo_dropdown.add(new Option(repo, repo));
-			branch_dropdown.add(new Option(branch, branch));
+			if (this.plugin.settings.branch) {
+				branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
+			}
 			link_el.innerText = this.getLatestLink();
 		}
+
 		if (refreshFrom === "withCache") {
-			repo_dropdown.empty();
-			branch_dropdown.empty();
-			if (this.existingRepos.length > 0) {
-				this.existingRepos.map(repo => {
-					repo_dropdown.add(new Option(repo, repo));
-				});
-				repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
+			// Update suggest instances with cached data
+			if (this.ownerSuggest) {
+				this.ownerSuggest.updateSuggestions(this.suggestedOwners);
 			}
+			if (this.repoSuggest) {
+				this.repoSuggest.updateSuggestions(this.existingRepos);
+			}
+
+			branch_dropdown.empty();
 			if (this.existingBranches.length > 0) {
-				this.existingBranches.map(branch => {
+				this.existingBranches.forEach(branch => {
 					branch_dropdown.add(new Option(branch, branch));
 				});
 				if (this.plugin.settings.branch === "") {
 					branch_dropdown.selectedIndex = -1;
-				}
-				branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
-			}
-			if (this.plugin.settings.repo !== "") {
-				if (this.existingRepos.length === 0) {
-					repo_dropdown.add(new Option(this.plugin.settings.repo, this.plugin.settings.repo));
-				} else {
-					repo_dropdown.selectedIndex = this.existingRepos.indexOf(this.plugin.settings.repo);
-					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`);
-					}
-				}
-			}
-			if (this.plugin.settings.branch !== "") {
-				if (this.existingBranches.length === 0) {
-					branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
 				} else {
 					branch_dropdown.selectedIndex = this.existingBranches.indexOf(this.plugin.settings.branch);
 					if (branch_dropdown.selectedIndex === -1) {
-						warn(`warning: selected branch ${this.plugin.settings.branch} not found, existing branches: ${this.existingBranches}`);
+						this.plugin.logger.log(`[FitSettings] Selected branch ${this.plugin.settings.branch} not found in existing branches`, { existingBranches: this.existingBranches });
 					}
 				}
+			} else if (this.plugin.settings.branch !== "") {
+				branch_dropdown.add(new Option(this.plugin.settings.branch, this.plugin.settings.branch));
 			}
 		}
 	};

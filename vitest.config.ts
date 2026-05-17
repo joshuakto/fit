@@ -12,8 +12,11 @@ export default defineConfig({
 		},
 	},
 	test: {
-		environment: 'node',
+		environment: 'happy-dom',
+		setupFiles: ['./vitest.setup.ts'],
 		include: ['src/**/*.test.ts'],
+		testTimeout: 10000, // 10 second timeout per test (default is 5s)
+		hookTimeout: 10000, // 10 second timeout for beforeAll/afterAll hooks
 		coverage: {
 			provider: 'istanbul',
 			reporter: ['text', 'lcov', 'html'],

@@ -46,6 +46,21 @@ export class Fit {
 		// Recreate remoteVault with new settings (preserves existing state)
 		// This is called when user changes settings in UI
 		// TODO: Use DI to pass the right impl from FitSync caller.
+
+		// Skip if no PAT - no API access possible
+		if (!setting.pat) {
+			return;
+		}
+
+		// If owner is invalid but we have a valid remoteVault, preserve it
+		// This prevents overwriting a valid config with an incomplete one
+		// Example: User types "alice" → onChange fires 5 times with partial values ("a", "al", ...)
+		// Note: clearRemoteVault() should be called on auth failure to allow re-creation
+		// TODO: Shouldn't this be validated when SAVING settings vs LOADING?
+		if (!setting.owner && this.remoteVault) {
+			return;
+		}
+
 		this.remoteVault = new RemoteGitHubVault(
 			setting.pat,
 			setting.owner,
@@ -53,6 +68,14 @@ export class Fit {
 			setting.branch,
 			setting.deviceName
 		);
+	}
+
+	/**
+	 * Clear the remoteVault instance.
+	 * Call this on authentication failure to allow re-creation on next attempt.
+	 */
+	clearRemoteVault() {
+		this.remoteVault = undefined as unknown as RemoteGitHubVault;
 	}
 
 	loadLocalStore(localStore: LocalStores) {
@@ -223,29 +246,5 @@ export class Fit {
 		}
 
 		return clashes;
-	}
-
-	/**
-	 * Get authenticated user info from GitHub.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getUser(): Promise<{owner: string, avatarUrl: string}> {
-		return await this.remoteVault.getUser();
-	}
-
-	/**
-	 * List repositories owned by authenticated user.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getRepos(): Promise<string[]> {
-		return await this.remoteVault.getRepos();
-	}
-
-	/**
-	 * List branches in repository.
-	 * Delegates to RemoteGitHubVault (throws VaultError on failure).
-	 */
-	async getBranches(): Promise<string[]> {
-		return await this.remoteVault.getBranches();
 	}
 }

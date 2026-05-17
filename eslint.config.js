@@ -41,9 +41,57 @@ export default [
 		},
 	},
 	{
+		// Ban Node.js-only globals in production source — Obsidian mobile has no Node.js runtime.
+		// Test/config files are excluded since they legitimately run in Node.
+		files: ['src/**/*.ts'],
+		ignores: ['src/**/*.test.ts', 'src/**/*.e2e.ts', 'src/__mocks__/**', 'src/testUtils.ts'],
+		rules: {
+			'no-restricted-globals': ['error',
+				{ name: 'Buffer', message: 'Buffer is Node.js-only. Use TextEncoder/arrayBufferToBase64 instead.' },
+				{ name: 'require', message: 'require() is Node.js-only. Use ES module imports.' },
+				{ name: 'process', message: 'process is Node.js-only. Not available on Obsidian mobile.' },
+			],
+			'no-restricted-syntax': ['error',
+				{
+					selector: "NewExpression[callee.name='TextDecoder'][arguments.length < 2]",
+					message: "Use new TextDecoder(encoding, { fatal: true }) to prevent silent data corruption on invalid UTF-8.",
+				},
+			],
+		},
+	},
+	{
 		// Test-related files: Allow 'any' type for mocking external libraries
-		// Covers: test files, mock implementations, and test utilities
-		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts'],
+		// Covers: test files, mock implementations, test utilities, and test setup
+		files: ['**/*.test.ts', '**/__mocks__/**/*.ts', '**/testUtils.ts', '**/vitest.setup.ts'],
+		rules: {
+			'@typescript-eslint/no-explicit-any': 'off',
+		},
+	},
+	{
+		// E2E test files: Allow Mocha globals
+		files: ['**/*.e2e.ts'],
+		languageOptions: {
+			parser: tsParser,
+			parserOptions: {
+				sourceType: 'module',
+			},
+			globals: {
+				...globals.node,
+				...globals.browser,
+				// Mocha globals
+				describe: 'readonly',
+				it: 'readonly',
+				before: 'readonly',
+				after: 'readonly',
+				beforeEach: 'readonly',
+				afterEach: 'readonly',
+				expect: 'readonly',
+				// WebdriverIO globals
+				browser: 'readonly',
+				$: 'readonly',
+				$$: 'readonly',
+			},
+		},
 		rules: {
 			'@typescript-eslint/no-explicit-any': 'off',
 		},

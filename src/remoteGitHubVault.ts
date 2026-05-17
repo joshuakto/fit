@@ -5,16 +5,18 @@
  * Encapsulates all GitHub API operations for file state management.
  */
 
+import { LocalStores } from "@main";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
-import { FileContent } from "./util/contentEncoding";
+import { Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { fitLogger } from "./logger";
 import { detectSuspiciousCorrespondence } from "./util/pathPattern";
+import * as Encryption from "./encryption";
 
 /**
  * Represents a node in GitHub's git tree structure
@@ -117,7 +119,15 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		error: unknown,
 		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore'
 	): Promise<never> {
-		const errorObj = error as { status?: number | null; response?: unknown; message?: string };
+		const errorObj = error as { status?: number | null; response?: unknown; message?: string; request?: unknown };
+
+		// Non-Octokit errors (plugin bugs, ReferenceErrors, etc.) — re-throw without misclassifying as network.
+		// Octokit errors always have a numeric status (HTTP errors) or a 'request' property (network failures).
+		const hasNumericStatus = typeof errorObj.status === 'number';
+		const hasOctokitRequest = error != null && typeof error === 'object' && 'request' in error;
+		if (!hasNumericStatus && !hasOctokitRequest) {
+			throw error;
+		}
 
 		// No status or no response indicates network/connectivity issue
 		if (errorObj.status === null || errorObj.status === undefined || !errorObj.response) {
@@ -166,7 +176,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Fetch commit SHA and tree SHA in one API call
 	 * More efficient than separate getRef() + getCommit() calls
 	 */
-	private async getLatestCommitAndTreeSha(): Promise<{ commitSha: CommitSha; treeSha: TreeSha }> {
+	public async getLatestCommitAndTreeSha(): Promise<{ commitSha: CommitSha; treeSha: TreeSha }> {
 		try {
 			const {data: commit} = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/commits/{ref}`, {
@@ -241,7 +251,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 					file_sha: blobSha,
 					headers: this.headers
 				});
-			return FileContent.fromBase64(blob.content);
+			if (typeof blob.content !== 'string') {
+				throw new Error(
+					`Cannot read '${path}': blob content is ${typeof blob.content} (encoding: '${blob.encoding ?? 'unknown'}'). ` +
+					`GitHub may not support this blob format.`
+				);
+			}
+			let content = blob.content;
+			if (Encryption.isEnabled()) {
+				content = await Encryption.decryptContent(content);
+			}
+			return FileContent.fromBase64(content);
 		} catch (error) {
 			// Blob not found (404) is a data error, not a vault-level error
 			// Network/auth errors still converted to VaultError
@@ -256,6 +276,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 */
 	private async createBlob(content: string, encoding: string): Promise<BlobSha> {
 		try {
+			if (Encryption.isEnabled()) {
+				if (encoding === "utf-8") {
+					encoding = "base64";
+					content = Content.encodeToBase64(content);
+				}
+				content = await Encryption.encryptContent(content);
+			}
 			const {data: blob} = await withSlowOperationMonitoring(
 				this.octokit.request(
 					`POST /repos/{owner}/{repo}/git/blobs`, {
@@ -333,12 +360,22 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			// Tree nodes are created correctly in JavaScript memory (UTF-16 strings)
 			// Corruption happens during HTTP request encoding (JSON serialization → bytes)
 			const pathsWeIntendedToSend = treeNodes.map(n => n.path).filter(Boolean);
+			let updatedTree: TreeNode[] = treeNodes;
+
+			if (Encryption.isEnabled()) {
+				updatedTree = await Promise.all(
+					treeNodes.map(async (node) => ({
+						...node,
+						path: await Encryption.encryptPath(node.path)
+					}))
+				);
+			}
 
 			const {data: newTree} = await this.octokit.request(
 				`POST /repos/{owner}/{repo}/git/trees`, {
 					owner: this.owner,
 					repo: this.repo,
-					tree: treeNodes,
+					tree: updatedTree,
 					base_tree: base_tree_sha,
 					headers: this.headers
 				}
@@ -375,14 +412,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			let userWarning: string | undefined;
 
 			if (suspiciousMatches.length > 0) {
-				// For diagnostic logging, convert strings to UTF-8 byte arrays
-				// Using Buffer (Node.js/Electron API) which is available in Obsidian desktop & mobile
+				const enc = new TextEncoder();
 				const details = suspiciousMatches.map(({intended, echoed, pattern}) => ({
 					intended,
 					echoed,
 					pattern,
-					intendedBytes: Array.from(Buffer.from(intended, 'utf8')),
-					echoedBytes: Array.from(Buffer.from(echoed, 'utf8'))
+					intendedBytes: Array.from(enc.encode(intended)),
+					echoedBytes: Array.from(enc.encode(echoed))
 				}));
 
 				fitLogger.log(
@@ -414,7 +450,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	/**
 	 * Create a commit pointing to a tree
 	 */
-	private async createCommit(treeSha: TreeSha, parentSha: CommitSha): Promise<CommitSha> {
+	public async createCommit(treeSha: TreeSha, parentSha: CommitSha): Promise<CommitSha> {
 		const message = `Commit from ${this.deviceName} on ${new Date().toLocaleString()}`;
 		try {
 			const { data: createdCommit } = await this.octokit.request(
@@ -435,7 +471,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	/**
 	 * Update branch reference to point to new commit
 	 */
-	private async updateRef(sha: string, ref: string = `heads/${this.branch}`): Promise<string> {
+	public async updateRef(sha: string, ref: string = `heads/${this.branch}`): Promise<string> {
 		try {
 			const { data: updatedRef } = await this.octokit.request(
 				`PATCH /repos/{owner}/{repo}/git/refs/{ref}`, {
@@ -452,74 +488,6 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	}
 
 	// ===== GitHub Utility Operations (not part of IVault) =====
-
-	/**
-	 * Get authenticated user information
-	 */
-	async getUser(): Promise<{owner: string, avatarUrl: string}> {
-		try {
-			const {data: response} = await this.octokit.request(
-				`GET /user`, {
-					headers: this.headers
-				});
-			return {owner: response.login, avatarUrl: response.avatar_url};
-		} catch (error) {
-			return await this.wrapOctokitError(error, 'ignore');
-		}
-	}
-
-	/**
-	 * Get list of repositories owned by authenticated user
-	 */
-	async getRepos(): Promise<string[]> {
-		const allRepos: string[] = [];
-		let page = 1;
-		const perPage = 100; // Set to the maximum value of 100
-
-		let hasMorePages = true;
-		while (hasMorePages) {
-			try {
-				const { data: response } = await this.octokit.request(
-					`GET /user/repos`, {
-						affiliation: "owner",
-						headers: this.headers,
-						per_page: perPage,
-						page: page
-					}
-				);
-				allRepos.push(...response.map(r => r.name));
-				// Check if there are more pages
-				if (response.length < perPage) {
-					hasMorePages = false;
-				}
-			} catch (error) {
-				return await this.wrapOctokitError(error, 'ignore');
-			}
-
-			page++;
-		}
-
-		return allRepos;
-	}
-
-	/**
-	 * Get list of branches for the repository.
-	 * Throws VaultError (remote_not_found) on 404 (repository not found).
-	 */
-	async getBranches(): Promise<string[]> {
-		try {
-			const {data: response} = await this.octokit.request(
-				`GET /repos/{owner}/{repo}/branches`,
-				{
-					owner: this.owner,
-					repo: this.repo,
-					headers: this.headers
-				});
-			return response.map(r => r.name);
-		} catch (error: unknown) {
-			return await this.wrapOctokitError(error, 'repo');
-		}
-	}
 
 	/**
 	 * Check if repository exists and is accessible
@@ -685,6 +653,21 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		};
 	}
 
+	async clear(): Promise<LocalStores | null> {
+		const { commitSha, treeSha } = await this.getLatestCommitAndTreeSha();
+
+		if (treeSha === EMPTY_TREE_SHA) return null;
+
+		const newCommit = await this.createCommit(EMPTY_TREE_SHA, commitSha);
+		await this.updateRef(newCommit);
+
+		return {
+			localSha: {},
+			lastFetchedCommitSha: newCommit,
+			lastFetchedRemoteSha: {},
+		};
+	}
+
 	// ===== Metadata =====
 
 	/**
@@ -709,17 +692,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Uses internal caching to avoid redundant API calls when remote hasn't changed.
 	 * If the latest commit SHA matches the cached SHA, returns cached state immediately.
 	 */
-	async readFromSource(): Promise<VaultReadResult<"remote">> {
+	async readFromSource(ignoreCache: boolean = false): Promise<VaultReadResult<"remote">> {
 		const { commitSha, treeSha } = await this.getLatestCommitAndTreeSha();
 
 		// Return cached state if remote hasn't changed
-		if (commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
+		if (!ignoreCache && commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
 			fitLogger.log(`... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
 			return { state: { ...this.latestKnownState }, commitSha, treeSha };
 		}
 
 		// Fetch fresh state from GitHub
-		if (this.latestKnownCommitSha === null) {
+		if (ignoreCache || this.latestKnownCommitSha === null) {
 			fitLogger.log(`... ⬇️ [RemoteVault] Fetching initial state from GitHub (${commitSha.slice(0, 7)})...`);
 		} else {
 			fitLogger.log(`... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
@@ -764,12 +747,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		for (const node of remoteTree) {
 			// Only include blobs (files), skip trees (directories)
 			if (node.type === "blob" && node.path && node.sha) {
+				let path = node.path;
 				try {
+					if (Encryption.isEnabled()) {
+						path = await Encryption.decryptPath(path);
+					}
 					// TODO: Should this notice if there's a collision overwriting same path?
-					state[node.path] = node.sha;
+					state[path] = node.sha;
 				} catch (error) {
-					failedPaths.push({ path: node.path, error });
-					fitLogger.log(`❌ [RemoteVault] Failed to process file: ${node.path}`, error);
+					if (error instanceof ReferenceError) throw error;
+					failedPaths.push({ path: path, error });
+					fitLogger.log(`❌ [RemoteVault] Failed to process file: ${path}`, error);
 				}
 			}
 		}

@@ -69,7 +69,7 @@ export class FakeObsidianVault {
 	getAbstractFileByPath(path: string) {
 		// Simulate: vault index never returns hidden files
 		if (path.startsWith('.') || !this.vaultIndex.has(path)) return null;
-		return { path } as TFile;
+		return StubTFile.ofPath(path);
 	}
 
 	adapter = {
@@ -77,7 +77,21 @@ export class FakeObsidianVault {
 			if (this.filesOnDisk.has(path)) {
 				return { type: 'file', size: this.filesOnDisk.get(path)!.byteLength, ctime: 0, mtime: 0 };
 			}
-			throw new Error('ENOENT: no such file');
+			// Check if it's a folder (any file starts with "path/")
+			for (const filePath of this.filesOnDisk.keys()) {
+				if (filePath.startsWith(path + '/')) {
+					return { type: 'folder', size: 0, ctime: 0, mtime: 0 };
+				}
+			}
+			return null; // File/folder doesn't exist
+		},
+		mkdir: async (_path: string) => {
+			// No-op for fake vault - folders are implicit
+		},
+		read: async (path: string) => {
+			const content = this.filesOnDisk.get(path);
+			if (!content) throw new Error('ENOENT: no such file');
+			return new TextDecoder('utf-8', { fatal: true }).decode(content);
 		},
 		readBinary: async (path: string) => {
 			const content = this.filesOnDisk.get(path);
@@ -127,7 +141,13 @@ export class FakeObsidianVault {
 		this.vaultIndex.delete(file.path);
 	};
 
-	getFiles = () => Array.from(this.vaultIndex).map(path => ({ path } as TFile));
+	getFiles = () => Array.from(this.vaultIndex).map(path => {
+		const content = this.filesOnDisk.get(path);
+		return {
+			path,
+			stat: { size: content?.byteLength ?? 0, mtime: 0, ctime: 0 }
+		} as TFile;
+	});
 	createFolder = async () => {};
 }
 

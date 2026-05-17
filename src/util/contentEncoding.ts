@@ -137,6 +137,9 @@ export class FileContent {
 	 * @param content - Base64-encoded string (will be branded as Base64Content)
 	 */
 	static fromBase64(content: string | Base64Content): FileContent {
+		if (typeof content !== 'string') {
+			throw new TypeError(`FileContent.fromBase64: expected a string but got ${typeof content}`);
+		}
 		const normalized = removeLineEndingsFromBase64String(content);
 		return new FileContent({ encoding: 'base64', content: Content.asBase64(normalized) });
 	}

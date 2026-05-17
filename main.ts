@@ -14,6 +14,8 @@ import { fitLogger } from '@/logger';
 import { CommitSha } from '@/util/hashing';
 import { FileStates } from '@/util/changeTracking';
 import { handleCriticalError } from '@/util/errorHandling';
+import { GitHubConnection } from '@/remotes/githubConnection';
+import * as Encryption from "@/encryption";
 
 /**
  * Plugin configuration interface
@@ -27,8 +29,9 @@ export interface FitSettings {
 	//       | { provider: "gitea", token: string, owner: string, ... }
 	// This would allow type-safe, provider-specific settings.
 	// See RemoteVaultProvider type in src/vault.ts for provider enum.
+	encryptionPassword: string;
 	pat: string;
-	owner: string;
+	owner: string;       // Owner of the repo (may differ from authenticated user for contributor repos)
 	avatarUrl: string;
 	repo: string;
 	branch: string;
@@ -41,6 +44,7 @@ export interface FitSettings {
 }
 
 const DEFAULT_SETTINGS: FitSettings = {
+	encryptionPassword: "",
 	pat: "",
 	owner: "",
 	avatarUrl: "",
@@ -107,11 +111,14 @@ export default class FitPlugin extends Plugin {
 	localStore: LocalStores;
 	fit: Fit;
 	fitSync: FitSync;
+	githubConnection: GitHubConnection | null;
 	autoSyncIntervalId: number | null;
 	fitPullRibbonIconEl: HTMLElement;
 	fitPushRibbonIconEl: HTMLElement;
 	fitSyncRibbonIconEl: HTMLElement;
+	logger = fitLogger; // Explicit reference to singleton for future refactoring
 	private activeSyncRequests = 0; // Track number of active sync attempts
+	private lastGithubConnectionPat: string | null = null; // Track PAT changes
 	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
 	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
 
@@ -135,10 +142,10 @@ export default class FitPlugin extends Plugin {
 			actionItems.push("provide GitHub personal access token");
 		}
 		if (this.settings.owner === "") {
-			actionItems.push("authenticate with personal access token");
+			actionItems.push("select or enter a repository owner");
 		}
 		if (this.settings.repo === "") {
-			actionItems.push("select a repository to sync to");
+			actionItems.push("select or enter a repository to sync to");
 		}
 		if (this.settings.branch === "") {
 			actionItems.push("select a branch to sync to");
@@ -453,6 +460,11 @@ export default class FitPlugin extends Plugin {
 
 			await this.loadLocalStore();
 
+			Encryption.init(this);
+
+			this.githubConnection = this.settings.pat
+				? new GitHubConnection(this.settings.pat)
+				: null;
 			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
 			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
 			this.settingTab = new FitSettingTab(this.app, this);
@@ -536,5 +548,16 @@ export default class FitPlugin extends Plugin {
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings);
+
+		// Update GitHubConnection only when PAT changes
+		if (this.settings.pat !== this.lastGithubConnectionPat) {
+			if (this.settings.pat) {
+				this.githubConnection = new GitHubConnection(this.settings.pat);
+				this.lastGithubConnectionPat = this.settings.pat;
+			} else {
+				this.githubConnection = null;
+				this.lastGithubConnectionPat = null;
+			}
+		}
 	}
 }

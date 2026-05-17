@@ -28,7 +28,7 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 
 ## Setup
-1. Create a personal access token with read/write access to the repo for your vault (refer to [Github: creating a personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token))
+1. Create a personal access token with read/write access to the repo for your vault (refer to [Github: creating a personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)). For fine-grained tokens, the only required permission is **Contents: Read and Write** under Repository permissions. For classic tokens, the `repo` scope covers this (though it grants broader access than strictly needed).
 2. Once the personal access token is filled in, you can authenticate the user. The GitHub username, list of repositories, and branches will auto-populate.
 3. Select a repo and branch and you are ready to sync.
 <img width="1100" alt="Screenshot of FIT settings for tokens and repos" src="https://github.com/joshuakto/fit/assets/34743132/3ab3665a-5a78-468c-a936-fcf5fd2a8774">
@@ -47,7 +47,8 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 **❌ NOT synced (protected paths):**
 - `.obsidian/` folder (Obsidian settings and plugins)
 - `_fit/` folder (conflict resolution area)
-- Hidden files like `.gitignore`, `.env` (not currently supported - see [#92](https://github.com/joshuakto/fit/issues/92) for planned opt-in support)
+- Hidden files like `.env`, `.gitignore` (not synced — see [#92](https://github.com/joshuakto/fit/issues/92) for planned opt-in support)
+  - Note: `.gitignore` **rules** are respected — files matched by your patterns are excluded from sync
 
 ### Conflict handling
 
@@ -63,6 +64,22 @@ See [Common Issues](#common-issues) below for detailed conflict resolution steps
 
 - It is advised to use a new repo for syncing an existing vault, to minimize the chance of file name conflict on the first sync
 - If your existing vault or repo is large, the initial sync would take longer and require a good internet connection
+
+### Manually trigger sync on Obsidian mobile
+
+related issue: [#190](https://github.com/joshuakto/fit/issues/190)
+
+On Obsidian mobile, linking sync to a hotkey which requires the presence of a
+keyboard is not an ideal approach to manually trigger sync. A more intuitive
+set of procedures are:
+
+- Open any repository with FIT configured
+- Swipe down from anywhere on the screen to open command menu
+- Search for "Fit: Fit Sync" and click to sync
+
+Alternative: "Fit Sync" can be pinned to the ribbon menu from "Setting >
+Appearance > Interface > Ribbon menu configuration"
+
 
 ## 🔒 Security
 
@@ -91,7 +108,7 @@ You should also take care with security tokens you use to ensure they don't leak
 **Solutions:**
 - Move large files (>20MB) outside your vault before syncing
 - Manually sync large files to GitHub using other tools (to create them and any time they're modified)
-- Add the files to .gitignore to exclude them from sync (once .gitignore is supported, #92)
+- Add the files to `.gitignore` to exclude them from sync
 
 </details>
 

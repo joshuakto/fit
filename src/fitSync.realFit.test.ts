@@ -1689,4 +1689,109 @@ describe('FitSync', () => {
 			fitNoticeSpy.mockRestore();
 		});
 	});
+
+	describe('Fit settings - GitHub config', () => {
+		it('should update remoteVault when loadSettings is called with new owner', () => {
+			const initialSettings = {
+				...testSettings,
+				owner: 'initial-owner'
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('initial-owner');
+
+			// Update settings with new owner
+			fit.loadSettings({
+				...initialSettings,
+				owner: 'new-owner'
+			});
+
+			expect(fit.remoteVault.getOwner()).toBe('new-owner');
+		});
+
+		it('should recreate remoteVault after clearRemoteVault is called (re-authentication scenario)', () => {
+			// Scenario: User auth fails, clearRemoteVault is called, then user enters new PAT
+			const initialSettings = {
+				...testSettings,
+				pat: 'old-token',
+				owner: 'valid-owner',
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+
+			// Simulate auth failure - clearRemoteVault is called
+			fit.clearRemoteVault();
+
+			// Now loadSettings with empty owner should create new remoteVault
+			fit.loadSettings({
+				...initialSettings,
+				pat: 'new-token',
+				owner: ''
+			});
+
+			// New vault should have empty owner (will be set after getUser() succeeds)
+			expect(fit.remoteVault.getOwner()).toBe('');
+		});
+
+		it('should not recreate remoteVault when PAT is empty', () => {
+			const initialSettings = {
+				...testSettings,
+				pat: 'valid-token',
+				owner: 'valid-owner',
+			} as FitSettings;
+
+			const fit = new Fit(
+				initialSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			const originalVault = fit.remoteVault;
+
+			// Clear PAT - should preserve existing remoteVault
+			fit.loadSettings({
+				...initialSettings,
+				pat: '',
+				owner: 'valid-owner',
+			});
+
+			// remoteVault should be the same instance (not recreated)
+			expect(fit.remoteVault).toBe(originalVault);
+		});
+
+		it('should read v1.3 settings correctly', () => {
+			// CAUTION: don't change these expected settings unless you know what
+			// you're doing or you'll break existing users' saved settings.
+			const v13settings = {
+				pat: 'fake-test-token',
+				owner: 'test-owner',
+				repo: 'test-repo',
+				branch: 'test-branch',
+				deviceName: 'test-device'
+			};
+
+			// Given: Stored settings as of v1.3
+			const fit = new Fit(
+				v13settings as FitSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			// Then: The remoteVault should be created with the correct owner etc.
+			expect(fit.remoteVault.getOwner()).toBe(v13settings.owner);
+			expect(fit.remoteVault.getRepo()).toBe(v13settings.repo);
+			expect(fit.remoteVault.getBranch()).toBe(v13settings.branch);
+		});
+	});
 });

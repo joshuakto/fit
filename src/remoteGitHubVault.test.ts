@@ -9,6 +9,8 @@ import { FakeOctokit } from "./testUtils";
 import { __setMockOctokitInstance } from "./__mocks__/@octokit/core";
 import { FileContent } from "./util/contentEncoding";
 import { fitLogger } from "./logger";
+import { init as initEncryption } from "./encryption";
+import * as Encryption from "./encryption";
 
 const COMMIT123_SHA = "commit123" as CommitSha;
 const COMMIT456_SHA = "commit456" as CommitSha;
@@ -26,6 +28,7 @@ describe("RemoteGitHubVault", () => {
 	beforeEach(() => {
 		// Suppress logging to reduce test noise
 		vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+		initEncryption({ settings: { encryptionPassword: '' } } as any);
 
 		fakeOctokit = new FakeOctokit("testowner", "testrepo", "main");
 		__setMockOctokitInstance(fakeOctokit);
@@ -40,8 +43,8 @@ describe("RemoteGitHubVault", () => {
 	});
 
 	afterEach(() => {
-		// Reset mock to prevent test pollution
 		__setMockOctokitInstance(null);
+		vi.restoreAllMocks();
 	});
 
 	describe("Read Operations", () => {
@@ -102,6 +105,21 @@ describe("RemoteGitHubVault", () => {
 					"_fit/file2.md": BLOB2_SHA,
 					"file3.md": BLOB3_SHA
 				});
+			});
+
+			it("should not wrap missing-global errors as network errors", async () => {
+				// Simulates a mobile runtime where an assumed global (e.g. Buffer, TextEncoder)
+				// is missing — the resulting ReferenceError should propagate as-is rather than
+				// being swallowed and misreported as a network failure.
+				const mockTree: TreeNode[] = [
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
+				];
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				vi.spyOn(Encryption, 'isEnabled').mockImplementation(() => {
+					throw new ReferenceError('Encryption is not defined');
+				});
+
+				await expect(vault.readFromSource()).rejects.toBeInstanceOf(ReferenceError);
 			});
 
 			it("should propagate errors from getCommitTreeSha", async () => {
@@ -167,6 +185,25 @@ describe("RemoteGitHubVault", () => {
 				await vault.readFromSource();
 				const content2 = await vault.readFileContent("file2.md");
 				expect(content2).toEqual(FileContent.fromBase64("content2"));
+			});
+
+			it("should give a clear error when blob content is missing, including the encoding the API reported", async () => {
+				const mockTree: TreeNode[] = [
+					{ path: "huge-file.bin", mode: "100644", type: "blob", sha: BLOB1_SHA }
+				];
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+				await vault.readFromSource();
+
+				// Simulate a blob response with no content field — e.g. encoding 'none'
+				// returned by GitHub for unsupported blobs. We don't know the exact cause;
+				// we just want the error to surface the encoding the API reported rather
+				// than crashing with a meaningless TypeError.
+				vi.spyOn(fakeOctokit, 'request').mockResolvedValueOnce({
+					data: { encoding: 'none', sha: BLOB1_SHA, size: 150_000_000 }
+				} as any);
+
+				await expect(vault.readFileContent("huge-file.bin"))
+					.rejects.toThrow(/huge-file\.bin.*none|none.*huge-file\.bin/);
 			});
 		});
 

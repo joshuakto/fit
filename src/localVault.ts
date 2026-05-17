@@ -14,6 +14,7 @@ import { BlobSha, computeSha1 } from "./util/hashing";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
+import { GitignoreFilter } from "./util/gitignore";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -136,33 +137,50 @@ export class LocalVault implements IVault<"local"> {
 	async readFromSource(): Promise<VaultReadResult> {
 		const allFiles = this.vault.getFiles();
 
-		// Filter to only tracked paths
+		// Filter to only tracked paths (excludes hidden files that Vault API can't read)
 		const allPaths = allFiles.map(f => f.path);
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
-		const ignoredPaths = allPaths.filter(path => !this.shouldTrackState(path));
+		const untrackedPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
 		// Create map for quick file size lookups
 		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
 
-		if (ignoredPaths.length > 0) {
-			fitLogger.log('[LocalVault] Ignored paths in local scan', {
-				count: ignoredPaths.length,
-				paths: ignoredPaths
+		if (untrackedPaths.length > 0) {
+			fitLogger.log('[LocalVault] Untracked paths in local scan (hidden files)', {
+				paths: untrackedPaths
 			});
 		}
 
-		// Compute SHAs for all tracked files
+		// Load .gitignore filters; pass allPaths so already-scanned .gitignore
+		// entries skip a redundant stat (future-proof for when vault.getFiles()
+		// exposes hidden files).
+		const allPathsSet = new Set(allPaths);
+		const gitignoreFilter = await GitignoreFilter.load(this.vault.adapter, trackedPaths, allPathsSet);
+
+		// Filter out paths matched by .gitignore patterns
+		let pathsToScan: string[];
+		if (!gitignoreFilter.isEmpty) {
+			const { kept, ignored } = gitignoreFilter.filter(trackedPaths);
+			pathsToScan = kept;
+			if (ignored.length > 0) {
+				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { paths: ignored });
+			}
+		} else {
+			pathsToScan = trackedPaths;
+		}
+
+		// Compute SHAs for all non-ignored files
 		// Monitor for slow operations that could cause mobile crashes
 		// Use allSettled to collect both successes and failures per file
 		const shaResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				trackedPaths.map(async (path): Promise<[string, BlobSha]> => {
+				pathsToScan.map(async (path): Promise<[string, BlobSha]> => {
 					const sha = await LocalVault.fileSha1(
 						path, await readFileContent(this.vault, path));
 					return [path, sha];
 				})
 			),
-			`Local vault SHA computation (${trackedPaths.length} files)`,
+			`Local vault SHA computation (${pathsToScan.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
 
@@ -171,7 +189,7 @@ export class LocalVault implements IVault<"local"> {
 		const failedPaths: Array<{path: string, error: unknown}> = [];
 
 		shaResults.forEach((result, index) => {
-			const path = trackedPaths[index];
+			const path = pathsToScan[index];
 			if (result.status === 'fulfilled') {
 				shaEntries.push(result.value);
 			} else {
@@ -254,7 +272,12 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
-	 * Ensure folder exists for a given file path
+	 * Ensure folder exists for a given file path (creates parent directories recursively)
+	 *
+	 * Uses a functional approach to decide between Vault API and adapter:
+	 * - If getAbstractFileByPath returns a folder, it exists and Vault API can see it
+	 * - If getAbstractFileByPath returns null, check adapter.stat to see if it exists on disk
+	 * - For creation: use Vault API if the path is trackable, adapter otherwise
 	 */
 	private async ensureFolderExists(path: string): Promise<void> {
 		// Extract folder path, return empty string if no folder path is matched (exclude the last /)
@@ -264,28 +287,64 @@ export class LocalVault implements IVault<"local"> {
 			return;
 		}
 
-		// Check if path exists and verify it's a folder, not a file
-		const existing = this.vault.getAbstractFileByPath(folderPath);
-		if (existing) {
-			// If it's a file, we can't create a folder at this path
-			if (existing instanceof TFile) {
-				throw new Error(`Cannot create folder at ${folderPath}: a file already exists at this path`);
-			}
-			// If it's already a folder, we're done
-			if (existing instanceof TFolder) {
-				return;
-			}
-			// Unknown type - shouldn't happen but be defensive
-		}
+		// Split path into parts and create each level if needed
+		const parts = folderPath.split('/');
+		let currentPath = '';
 
-		// Path doesn't exist, create the folder
-		try {
-			await this.vault.createFolder(folderPath);
-		} catch (error) {
-			// Race condition safeguard: if folder was created concurrently, ignore error
-			const recheckExisting = this.vault.getAbstractFileByPath(folderPath);
-			if (!recheckExisting || !(recheckExisting instanceof TFolder)) {
-				throw error;
+		for (const part of parts) {
+			currentPath = currentPath ? `${currentPath}/${part}` : part;
+
+			// First, check if Vault API can see this folder
+			const abstractFile = this.vault.getAbstractFileByPath(currentPath);
+			if (abstractFile) {
+				// Vault API can see it - check if it's a folder or file
+				if (abstractFile instanceof TFile) {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// It's a folder (TFolder or similar), continue to next level
+				continue;
+			}
+
+			// Vault API returns null - either folder doesn't exist, or it's a hidden path
+			// Check adapter.stat to see if it exists on disk
+			let stat;
+			try {
+				stat = await this.vault.adapter.stat(currentPath);
+			} catch {
+				// Adapter throws for non-existent paths, treat as not existing
+				stat = null;
+			}
+
+			if (stat) {
+				if (stat.type === 'file') {
+					throw new Error(`Cannot create folder at ${currentPath}: a file already exists at this path`);
+				}
+				// Folder exists on disk (hidden folder), continue to next level
+				continue;
+			}
+
+			// Folder doesn't exist, create it
+			// Use Vault API if the path is trackable (Vault can manage it), adapter otherwise
+			try {
+				if (this.shouldTrackState(currentPath + '/placeholder')) {
+					// Trackable path - use vault API (keeps vault index in sync)
+					await this.vault.createFolder(currentPath);
+				} else {
+					// Untrackable path (hidden) - use adapter directly
+					await this.vault.adapter.mkdir(currentPath);
+				}
+			} catch (error) {
+				// Race condition safeguard: if folder was created concurrently, ignore error
+				let recheckStat;
+				try {
+					recheckStat = await this.vault.adapter.stat(currentPath);
+				} catch {
+					// Can't verify folder exists, re-throw original error
+					throw error;
+				}
+				if (!recheckStat || recheckStat.type !== 'folder') {
+					throw error;
+				}
 			}
 		}
 	}
@@ -341,10 +400,12 @@ export class LocalVault implements IVault<"local"> {
 				// See docs/api-compatibility.md "Reading Untracked Files"
 				let existsOnDisk = false;
 				try {
-					await this.vault.adapter.stat(path);
-					existsOnDisk = true;
+					// stat() can throw or return null for non-existent files depending on adapter implementation.
+					// A successful stat returns a Stat object, which is truthy.
+					existsOnDisk = !!(await this.vault.adapter.stat(path));
 				} catch {
-					// File doesn't exist - will create
+					// If it throws, the file doesn't exist.
+					existsOnDisk = false;
 				}
 
 				if (existsOnDisk) {
@@ -448,25 +509,17 @@ export class LocalVault implements IVault<"local"> {
 		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
 		const clashPaths = options?.clashPaths ?? new Set();
-		// Diagnostic logging: detect suspicious filename correspondences (Issue #51)
-		// Check if any files being created have non-ASCII chars and match existing local files
+		// Diagnostic: detect remote paths that share an ASCII-alphanumeric-sandwich pattern
+		// with an existing local file but differ in non-ASCII content (Issue #51).
 		// Note: vault.getFiles() may be unavailable in test mocks
 		const allExistingPaths = this.vault.getFiles?.()?.map(f => f.path) ?? [];
 		const suspiciousWrites: Array<{remote: string, local: string, pattern: string}> = [];
 
 		for (const {path: remotePath} of filesToWrite) {
-			// Only check files with non-ASCII characters that don't already exist
 			if (!/[^\x00-\x7F]/.test(remotePath)) continue;
 			if (this.vault.getAbstractFileByPath(remotePath)) continue;
-
-			// Find correspondences with existing files
-			const matches = findSuspiciousCorrespondences(remotePath, allExistingPaths);
-			for (const match of matches) {
-				suspiciousWrites.push({
-					remote: match.candidate,
-					local: match.existing,
-					pattern: match.pattern
-				});
+			for (const match of findSuspiciousCorrespondences(remotePath, allExistingPaths)) {
+				suspiciousWrites.push({ remote: match.candidate, local: match.existing, pattern: match.pattern });
 			}
 		}
 
