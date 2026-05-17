@@ -65,7 +65,7 @@ jobs:
         git fetch origin ${{ github.base_ref }} --depth=1
         BASE="origin/${{ github.base_ref }}"
 
-        CHANGED=$(git diff --name-only "${BASE}...HEAD")
+        CHANGED=$(git diff --name-only "${BASE}" HEAD)
         VERSION_FILES=$(echo "$CHANGED" | grep -E '^(manifest\.json|package\.json|versions\.json)$' || true)
         CODE_FILES=$(echo "$CHANGED" | grep -vE '^(manifest\.json|package\.json|versions\.json)$' | grep -E '\.(ts|js|css|mjs)$' || true)
 
