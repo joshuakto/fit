@@ -138,6 +138,6 @@ Please use your judgement and try to follow conventions from surrounding code to
 
 If you'd like to help set up more automated checking, there are a few quality aspects we don't have automated checks for but would like to:
 
-- [ ] **ESLint rules** for TypeScript strict mode
+- [ ] **ESLint rules** for more known problematic code patterns
 - [ ] **Consistent documentation** to ensure comments and architecture docs stay up-to-date with code changes
 - [ ] **Release automation/validation** to ensure releases are correctly configured & versioned
