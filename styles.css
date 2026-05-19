@@ -345,15 +345,24 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 3px;
+    padding: 1px 3px;
 }
 
 .file-conflict-delete::after, .file-conflict-change::after, .file-conflict-create::after, .file-conflict-untracked::after, .file-conflict-protected::after {
-    padding: 4px;
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    padding: 2px;
     border-radius: 20%;
-    content: "     ";
+    content: "";
     background-position: center center;
     background-repeat: no-repeat;
+    background-size: 14px 14px;
+    vertical-align: middle;
+}
+
+.file-conflict-protected::after {
+    content: "🚫";
 }
 .file-conflict-delete::after {
     background-image: var(--file-delete);
@@ -376,6 +385,65 @@
 }
 .file-conflict-note {
     padding-left: 5px;
+}
+
+/* Notice display setting group */
+.fit-notice-group {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+
+.fit-notice-group-heading {
+    font-weight: 600;
+    padding: 10px 16px 8px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.fit-notice-radio-item {
+    border-top: 1px solid var(--background-modifier-border);
+    padding: 10px 16px 12px;
+}
+
+.fit-notice-group-heading + .fit-notice-radio-item {
+    border-top: none;
+}
+
+.fit-notice-radio-name {
+    font-size: 0.9em;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.fit-notice-radio-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 8px;
+}
+
+.fit-notice-radio-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    flex: 1;
+}
+
+.fit-notice-radio-option input[type="radio"] {
+    accent-color: var(--interactive-accent);
+    cursor: pointer;
+}
+
+/* Constrain to ~notice width so space-between conflict layout matches reality */
+.fit-notice-preview-content {
+    font-size: 0.85em;
+    max-width: 300px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background: var(--background-secondary-alt);
 }
 
 .clear {
