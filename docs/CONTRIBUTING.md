@@ -127,49 +127,36 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 - Version numbers never have a `v` prefix (`1.5.0`, not `v1.5.0`)
 - `manifest.json` and `package.json` versions must always match
 - Version bumps must be in **dedicated commits**, never mixed with feature or bug-fix changes
-- The `main` branch manifest always shows the current **stable** version; beta versions never appear there
+- The `main` branch manifest always shows the current **stable** version; pre-release versions never appear there
 
-### Stable Release
+### Using the release script (maintainers)
 
-Beta testing is recommended before a stable release. When ready:
+`scripts/release.sh` automates the full release flow for all channels:
 
-1. **Build artifacts**: `npm run build` produces `main.js`
+```shell
+./scripts/release.sh alpha    # e.g. 1.5.0 → 1.6.0-alpha.1
+./scripts/release.sh beta     # e.g. 1.6.0-alpha.3 → 1.6.0-beta.1
+./scripts/release.sh stable   # e.g. 1.6.0-beta.2 → 1.6.0
 
-2. **Create the GitHub Release** via the GitHub UI:
-   - Tag: `X.Y.Z` — no `v` prefix; mark as a full release (not pre-release)
-   - Upload `manifest.json`, `main.js`, `styles.css` as release assets
-   - The GitHub Release must exist **before** the version bump PR is merged (automated PR checks enforce this)
+./scripts/release.sh alpha 1.6.0-alpha.5   # explicit version override
+```
 
-3. **Open a PR to `main`** containing only these changes:
-   - `manifest.json`: bump `version` to `X.Y.Z`
-   - `package.json`: bump `version` to `X.Y.Z`
-   - `versions.json`: add `"X.Y.Z": "<minAppVersion>"`
-   - Commit message: `Bump version to X.Y.Z`
+The script runs pre-flight checks, bumps version files, commits and tags, pushes, and creates a draft GitHub release. The CI workflow `release-assets.yml` then builds and attaches `main.js`, `styles.css`, and `manifest.json` automatically.
 
-4. **Merge the PR** — automated checks verify the GitHub Release exists
+After the script completes:
+1. **Stable only:** apply the pending README changes listed in [Pending README changes for next stable release](#pending-readme-changes-for-next-stable-release) below, then commit
+2. Review and curate the auto-generated release notes on GitHub (comms step)
+3. Publish the draft release
+4. For stable: ask the head maintainer to post in [Announcements](https://github.com/joshuakto/fit/discussions/categories/announcements)
+5. For alpha/beta: post in [Beta Testing](https://github.com/joshuakto/fit/discussions/categories/beta-testing)
 
-### Beta Release
+### Version scheme
 
-Beta releases are for early testing via [BRAT](https://github.com/TfTHacker/obsidian42-brat). They live only on the `beta` branch and are invisible to regular plugin users (never reflected in `main`'s manifest).
+Pre-releases use `MAJOR.MINOR.PATCH-CHANNEL.N` (e.g. `1.6.0-alpha.1`, `1.6.0-beta.2`). The channel label (`alpha`/`beta`) appears in the version string but BRAT does not distinguish between them — both are delivered to anyone who enabled pre-release updates. Use `alpha` for incomplete milestone work and `beta` for feature-complete pre-releases approaching stable.
 
-1. **Merge `main` into `beta`** (using jj):
-   ```shell
-   jj new beta main -m "Merge branch 'main' into beta"
-   ```
+### How pre-releases reach BRAT users
 
-2. **Bump the beta version** directly on the `beta` branch (not via PR to main):
-   - `manifest.json`: set `version` to `X.Y.Z-beta.N`, update `minAppVersion` if needed
-   - `package.json`: set `version` to `X.Y.Z-beta.N`
-   - `versions.json`: add `"X.Y.Z-beta.N": "<minAppVersion>"`
-   - Commit message: `Bump version to X.Y.Z-beta.N (minAppVersion: A.B.C)`
-
-3. **Push `beta`** to GitHub
-
-4. **Create a GitHub Pre-release** via the GitHub UI:
-   - Tag: `X.Y.Z-beta.N` — no `v` prefix (created here via the GH UI); mark as pre-release
-   - Build and upload the same three artifacts as a stable release
-
-BRAT users who point to `joshuakto/fit` receive the latest pre-release automatically.
+BRAT detects pre-releases by the `prerelease` flag on GitHub Releases (not by the version string). Pre-release version bumps are **not pushed to `main`** — the version bump commit lives only in the release tag's ancestry, so `main`'s manifest always reflects the last stable version.
 
 ### Anti-Patterns
 
@@ -182,6 +169,18 @@ BRAT users who point to `joshuakto/fit` receive the latest pre-release automatic
 | `manifest.json` and `package.json` versions out of sync | Confuses tooling and reviewers; automated checks will reject it |
 
 See [Obsidian Hub release guide](https://publish.obsidian.md/hub/04+-+Guides%2C+Workflows%2C+%26+Courses/Guides/How+to+release+a+new+version+of+your+plugin) for general Obsidian plugin release context.
+
+---
+
+## Pending README changes for next stable release
+
+Apply these manually when cutting stable, then clear the list. Add to this list as you ship features that change what README says.
+
+- **Remove "still in beta" note** (line ~20): delete the `**Note:** This plugin is still in beta...` line.
+- **Remove "Coming soon" section**: the "Explain Sync Status" command shipped in 1.6 — delete the entire `## Coming soon` block (the heading, description, and preview image).
+- **Update `.obsidian/` bullet** (under "NOT synced"): remove the `(selective opt-in coming in 1.6)` qualifier — it shipped.
+- **Convert "Coming in the 1.6 release" callout** to present tense: the hidden-files and selective `.obsidian/` sync features are both live. Rewrite as "New in 1.6:" rather than "Coming in the 1.6 release:".
+- **Retake the settings screenshot** (line ~39): the current screenshot predates 1.5 UI changes. Capture a fresh screenshot of the FIT settings panel and replace the image at that line.
 
 ---
 

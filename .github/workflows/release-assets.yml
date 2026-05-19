@@ -1,0 +1,30 @@
+name: Attach Release Assets
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - run: npm ci --legacy-peer-deps
+
+      - run: npm run build
+
+      - name: Upload assets to release
+        run: gh release upload "${{ github.event.release.tag_name }}" main.js manifest.json styles.css --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
