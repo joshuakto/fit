@@ -564,9 +564,9 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Sync local cache')
-			.setDesc('Update the local cache with the actual remote state.')
+			.setDesc('Re-read remote state into local cache. (Advanced use only — encryption migration or cache recovery)')
 			.addExtraButton(button => button
-				.setIcon('trash-2')
+				.setIcon('refresh-cw')
 				.setTooltip("Sync local cache")
 				.onClick(async () => {
 					button.setDisabled(true);
@@ -598,7 +598,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Clear repository')
-			.setDesc('Delete all files from the repository. Previous commits will not be affected.')
+			.setDesc('Delete all files from the repository. Previous commits unaffected. (Advanced use only — encryption migration)')
 			.addExtraButton(button => button
 				.setIcon('trash-2')
 				.setTooltip("Clear repository")
