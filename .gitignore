@@ -30,3 +30,6 @@ coverage/
 
 # Test results and screenshots
 /test-results/
+
+# Local agent instructions (personal workflow details, overrides AGENTS.md)
+AGENTS.local.md
