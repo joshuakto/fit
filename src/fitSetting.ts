@@ -680,59 +680,83 @@ export default class FitSettingTab extends PluginSettingTab {
 
 	noticeConfigBlock = () => {
 		const {containerEl} = this;
-		const selectedCol = "var(--interactive-accent)";
-		const selectedTxtCol = "var(--text-on-accent)";
-		const unselectedColor = "var(--interactive-normal)";
-		const unselectedTxtCol = "var(--text-normal)";
-		const stateTextMap = (notifyConflicts: boolean, notifyChanges: boolean) => {
-			if (notifyConflicts && notifyChanges) {
-				return "Displaying file changes and conflicts ";
-			} else if (!notifyConflicts && notifyChanges) {
-				return "Displaying file changes ";
-			} else if (notifyConflicts && !notifyChanges) {
-				return "Displaying change conflicts ";
-			} else {
-				return "No notice displayed ";
-			}
-		};
-		const noticeDisplay = new Setting(containerEl)
-			.setName("Notice display")
-			.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`);
+		const groupEl = containerEl.createDiv({cls: "fit-notice-group"});
+		groupEl.createDiv({text: "Notice display", cls: "fit-notice-group-heading"});
 
-		noticeDisplay.addButton(button => {
-			button.setButtonText("Change conflicts");
-			button.onClick(async () => {
-				const notifyConflicts = !this.plugin.settings.notifyConflicts;
-				this.plugin.settings.notifyConflicts = notifyConflicts;
-				await this.plugin.saveSettings();
-				button.buttonEl.setCssStyles({
-					"background": notifyConflicts ? selectedCol : unselectedColor,
-					"color": notifyConflicts ? selectedTxtCol : unselectedTxtCol,
-				});
-				noticeDisplay.setDesc(`${stateTextMap(notifyConflicts, this.plugin.settings.notifyChanges)} after sync.`);
+		const makeItem = (
+			name: string,
+			getValue: () => boolean,
+			setValue: (v: boolean) => Promise<void>,
+			renderPreview: (el: HTMLElement) => void
+		) => {
+			const item = groupEl.createDiv({cls: "fit-notice-radio-item"});
+			item.createDiv({text: name, cls: "fit-notice-radio-name"});
+
+			const radioRow = item.createDiv({cls: "fit-notice-radio-row"});
+			const groupName = `fit-radio-${name.replace(/\W+/g, "-").toLowerCase()}`;
+
+			const showLabel = radioRow.createEl("label", {cls: "fit-notice-radio-option"});
+			const showInput = showLabel.createEl("input");
+			showInput.type = "radio";
+			showInput.name = groupName;
+			showInput.checked = getValue();
+			showLabel.createSpan({text: "Show notice"});
+
+			const hideLabel = radioRow.createEl("label", {cls: "fit-notice-radio-option"});
+			const hideInput = hideLabel.createEl("input");
+			hideInput.type = "radio";
+			hideInput.name = groupName;
+			hideInput.checked = !getValue();
+			hideLabel.createSpan({text: "Don't show"});
+
+			const previewEl = item.createDiv({cls: "fit-notice-preview-content"});
+			if (getValue()) {
+				renderPreview(previewEl);
+			} else {
+				previewEl.hide();
+			}
+
+			showInput.addEventListener("change", async () => {
+				await setValue(true);
+				previewEl.empty();
+				renderPreview(previewEl);
+				previewEl.show();
 			});
-			button.buttonEl.setCssStyles({
-				"background": this.plugin.settings.notifyConflicts ? selectedCol : unselectedColor,
-				"color": this.plugin.settings.notifyConflicts ? selectedTxtCol : unselectedTxtCol,
+			hideInput.addEventListener("change", async () => {
+				await setValue(false);
+				previewEl.hide();
 			});
-		});
-		noticeDisplay.addButton(button => {
-			button.setButtonText("File changes");
-			button.onClick(async () => {
-				const notifyChanges = !this.plugin.settings.notifyChanges;
-				this.plugin.settings.notifyChanges = notifyChanges;
-				await this.plugin.saveSettings();
-				button.buttonEl.setCssStyles({
-					"background": notifyChanges ? selectedCol : unselectedColor,
-					"color": notifyChanges ? selectedTxtCol : unselectedTxtCol,
-				});
-				noticeDisplay.setDesc(`${stateTextMap(this.plugin.settings.notifyConflicts, notifyChanges)} after sync.`);
-			});
-			button.buttonEl.setCssStyles({
-				"background": this.plugin.settings.notifyChanges ? selectedCol : unselectedColor,
-				"color": this.plugin.settings.notifyChanges ? selectedTxtCol : unselectedTxtCol,
-			});
-		});
+		};
+
+		makeItem(
+			"File changes",
+			() => this.plugin.settings.notifyChanges,
+			async (v) => { this.plugin.settings.notifyChanges = v; await this.plugin.saveSettings(); },
+			(el) => {
+				el.createDiv({text: "Remote changes", cls: "file-changes-heading"});
+				el.createDiv({text: "Added", cls: "file-changes-subheading"});
+				el.createEl("li", {text: "notes/example.md", cls: "file-update-row file-ADDED"});
+				el.createDiv({text: "Modified", cls: "file-changes-subheading"});
+				el.createEl("li", {text: "journal/today.md", cls: "file-update-row file-MODIFIED"});
+			}
+		);
+
+		makeItem(
+			"Change conflicts",
+			() => this.plugin.settings.notifyConflicts,
+			async (v) => { this.plugin.settings.notifyConflicts = v; await this.plugin.saveSettings(); },
+			(el) => {
+				el.createDiv({text: "Change conflicts:", cls: "file-changes-subheading"});
+				const headerRow = el.createDiv({cls: "file-conflict-row"});
+				headerRow.createDiv().setText("Local");
+				headerRow.createDiv();
+				headerRow.createDiv().setText("Remote");
+				const row = el.createDiv({cls: "file-conflict-row"});
+				row.createDiv({cls: "file-conflict-change"});
+				row.createDiv().setText("ideas/meeting-notes.md");
+				row.createDiv({cls: "file-conflict-delete"});
+			}
+		);
 
 		// Debug logging setting
 		new Setting(containerEl)
