@@ -427,6 +427,94 @@ describe("RemoteGitHubVault", () => {
 					},
 				});
 			});
+
+			describe("422 size-limit partial skip", () => {
+				function make422Error(): Error {
+					// Must include response: {} so wrapOctokitError treats it as an HTTP error
+					// and re-throws as-is, preserving status === 422.
+					const err: any = new Error("input file size too large to process");
+					err.status = 422;
+					err.response = {};
+					return err;
+				}
+
+				it("should skip a single file that returns 422, returning skippedPaths and skippedWarning", async () => {
+					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", make422Error());
+
+					const result = await vault.applyChanges(
+						[{ path: "huge.mp4", content: FileContent.fromPlainText("x".repeat(100)) }],
+						[]
+					);
+
+					expect(result.changes).toEqual([]);
+					expect(result.skippedPaths).toEqual(["huge.mp4"]);
+					expect(result.skippedWarning).toContain("huge.mp4");
+					expect(result.skippedWarning).toContain(".gitignore");
+					expect(result.skippedWarning).toContain("git push");
+					// Commit and tree should be unchanged (no-op)
+					expect(result.commitSha).toBe(PARENTCOMMIT123_SHA);
+					expect(result.treeSha).toBe(TREE456_SHA);
+				});
+
+				it("should skip only the 422 file and commit the rest when uploading multiple files", async () => {
+					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+					// First blob creation (huge.mp4) will fail; second (small.md) will succeed
+					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", make422Error());
+
+					const result = await vault.applyChanges(
+						[
+							{ path: "huge.mp4", content: FileContent.fromPlainText("x".repeat(100)) },
+							{ path: "small.md", content: FileContent.fromPlainText("tiny note") },
+						],
+						[]
+					);
+
+					expect(result.skippedPaths).toEqual(["huge.mp4"]);
+					expect(result.changes).toEqual([{ path: "small.md", type: "ADDED" }]);
+					expect(result.newState).toEqual({ "small.md": expect.any(String) });
+					// A new commit was created for the file that succeeded
+					expect(result.commitSha).not.toBe(PARENTCOMMIT123_SHA);
+				});
+
+				it("should skip all upload files and still apply deletions when all uploads return 422", async () => {
+					const existingTree: TreeNode[] = [
+						{ path: "todelete.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
+					];
+					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, existingTree);
+					fakeOctokit.simulatePersistentError("POST /repos/{owner}/{repo}/git/blobs", make422Error());
+
+					const result = await vault.applyChanges(
+						[
+							{ path: "huge1.mp4", content: FileContent.fromPlainText("x") },
+							{ path: "huge2.mp4", content: FileContent.fromPlainText("y") },
+						],
+						["todelete.md"]
+					);
+
+					fakeOctokit.clearError("POST /repos/{owner}/{repo}/git/blobs");
+					expect([...result.skippedPaths!].sort()).toEqual(["huge1.mp4", "huge2.mp4"]);
+					// Deletion still committed
+					expect(result.changes).toEqual([{ path: "todelete.md", type: "REMOVED" }]);
+					expect(result.newState).not.toHaveProperty("todelete.md");
+					expect(result.commitSha).not.toBe(PARENTCOMMIT123_SHA);
+				});
+
+				it("should throw VaultError for non-422 upload failures (unchanged behaviour)", async () => {
+					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+					const serverError: any = new Error("Internal server error");
+					serverError.status = 500;
+					serverError.response = {};
+					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", serverError);
+
+					await expect(
+						vault.applyChanges(
+							[{ path: "file.md", content: FileContent.fromPlainText("content") }],
+							[]
+						)
+					).rejects.toThrow(expect.objectContaining({ name: "VaultError" }));
+				});
+			});
 		});
 	});
 

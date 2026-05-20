@@ -266,7 +266,8 @@ describe('FitSync', () => {
 			lastFetchedRemoteSha: {
 				'fileA.md': expect.anything(),
 				'fileB.md': expect.anything()
-			}
+			},
+			unpushedFiles: {}
 		});
 
 		// Verify: Remote has new commit and both files
@@ -1792,6 +1793,123 @@ describe('FitSync', () => {
 			expect(fit.remoteVault.getOwner()).toBe(v13settings.owner);
 			expect(fit.remoteVault.getRepo()).toBe(v13settings.repo);
 			expect(fit.remoteVault.getBranch()).toBe(v13settings.branch);
+		});
+	});
+
+	describe('unpushedFiles — partial sync tracking for 422 size-limit skips', () => {
+		it('first sync with skipped file: populates unpushedFiles, syncs other files, returns success', async () => {
+			// Arrange: one normal file + one that will be skipped
+			const fitSync = createFitSync();
+			localVault.setFile('normal.md', 'normal content');
+			localVault.setFile('huge.mp4', 'big file content');
+			remoteVault.setSkippedPaths(['huge.mp4']);
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+
+			// Act
+			const mockNotice = createMockNotice();
+			const result = await fitSync.sync(mockNotice as any);
+
+			// Assert: sync succeeded
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Assert: first-encounter sticky notice was shown
+			expect(fitNoticeSpy).toHaveBeenCalled();
+
+			// Assert: normal file was pushed, huge.mp4 was not
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'normal.md': 'normal content' });
+
+			// Assert: unpushedFiles tracks the skipped path
+			expect(localStoreState.unpushedFiles).toEqual({
+				'huge.mp4': expect.any(String)
+			});
+
+			// Assert: localSha cache includes both files (huge.mp4 treated as "synced" by cache
+			// so sync engine won't retry it — unpushedFiles is the tracking mechanism)
+			expect(localStoreState.localSha).toMatchObject({
+				'huge.mp4': expect.any(String),
+				'normal.md': expect.any(String),
+			});
+		});
+
+		it('subsequent manual sync with unchanged skipped file: brief reminder in notice, no upload attempted', async () => {
+			// Arrange: pre-populate unpushedFiles as if previous sync had already skipped the file
+			localVault.setFile('huge.mp4', 'big file content');
+			const hugeFileContent = FileContent.fromPlainText('big file content');
+			const hugeFileSha = await LocalVault.fileSha1('huge.mp4', hugeFileContent);
+			localStoreState = {
+				...localStoreState,
+				localSha: { 'huge.mp4': hugeFileSha as BlobSha },
+				lastFetchedRemoteSha: {},
+				unpushedFiles: { 'huge.mp4': hugeFileSha as BlobSha }
+			};
+			const fitSync = createFitSync();
+			// Do NOT set skippedPaths — no upload attempt should happen
+			const remoteApplySpy = vi.spyOn(remoteVault, 'applyChanges');
+
+			// Act
+			const mockNotice = createMockNotice();
+			const result = await fitSync.sync(mockNotice as any);
+
+			// Assert: sync succeeded
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Assert: no upload was attempted (huge.mp4 has no local change vs cache)
+			expect(remoteApplySpy).not.toHaveBeenCalled();
+
+			// Assert: unpushedFiles still tracks the file
+			expect(localStoreState.unpushedFiles).toHaveProperty('huge.mp4');
+
+			// Assert: brief reminder in success message (not a separate popup)
+			expect(mockNotice.setMessage).toHaveBeenCalledWith(
+				expect.stringContaining('still need manual sync')
+			);
+		});
+
+		it('file modified locally after skip: removed from unpushedFiles on next sync', async () => {
+			// Arrange: file was previously skipped with old SHA
+			localVault.setFile('huge.mp4', 'modified content'); // Different content = new SHA
+			const oldSha = 'old-sha-from-before-modification' as BlobSha;
+			localStoreState = {
+				...localStoreState,
+				localSha: { 'huge.mp4': oldSha }, // Out of date — will cause localChanges detection
+				lastFetchedRemoteSha: {},
+				unpushedFiles: { 'huge.mp4': oldSha }
+			};
+			const fitSync = createFitSync();
+			// Don't skip this time — let the file attempt to push (simulates user modified file)
+			// The new content will be written normally
+
+			// Act
+			const mockNotice = createMockNotice();
+			const result = await fitSync.sync(mockNotice as any);
+
+			// Assert: sync succeeded and file was pushed, no longer stuck
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toMatchObject({ 'huge.mp4': expect.any(String) });
+			expect(localStoreState.unpushedFiles).not.toHaveProperty('huge.mp4');
+		});
+
+		it('remote change for skipped file: removed from unpushedFiles (user pushed via git)', async () => {
+			// Arrange: file was previously skipped; now it appears as a remote change
+			// (simulates user running `git push` outside Obsidian)
+			await remoteVault.setFile('huge.mp4', 'manually pushed content');
+			localVault.setFile('huge.mp4', 'manually pushed content'); // Same content locally
+			const hugeFileSha = 'some-sha' as BlobSha;
+			localStoreState = {
+				...localStoreState,
+				localSha: { 'huge.mp4': hugeFileSha },
+				lastFetchedRemoteSha: {}, // Remote SHA unknown → will be detected as remote add
+				unpushedFiles: { 'huge.mp4': hugeFileSha }
+			};
+			const fitSync = createFitSync();
+
+			// Act
+			const mockNotice = createMockNotice();
+			const result = await fitSync.sync(mockNotice as any);
+
+			// Assert: sync succeeded and unpushedFiles entry cleared
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localStoreState.unpushedFiles).not.toHaveProperty('huge.mp4');
 		});
 	});
 });

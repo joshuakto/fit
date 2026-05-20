@@ -78,6 +78,10 @@ type SyncExecutionResult = {
 	remoteOps: FileChange[];
 	/** Unresolved conflicts (context-dependent: new conflicts or all conflicts) */
 	conflicts: FileClash[];
+	/** Paths freshly added to unpushedFiles this sync (not previously known) */
+	newlySkippedPaths: string[];
+	/** Pre-built first-encounter notice for newly skipped files */
+	skippedWarning?: string;
 };
 
 export type ConflictResolutionResult = {
@@ -466,6 +470,20 @@ export class FitSync implements IFitSync {
 			fitLogger.log(`.. ⬆️ [Push] Pushed ${pushResult.pushedChanges.length} changes to remote`);
 		}
 
+		// Record any files skipped due to API size limit (422) into unpushedFiles.
+		// localSha is updated normally for these files (sync engine won't retry),
+		// so unpushedFiles is the sole tracking mechanism for them.
+		// Capture which paths are freshly added (not already known) for the tiered warning.
+		const previousUnpushedKeys = new Set(Object.keys(this.fit.unpushedFiles));
+		if (pushResult?.skippedPaths?.length) {
+			for (const path of pushResult.skippedPaths) {
+				this.fit.unpushedFiles[path] = currentLocalState[path];
+			}
+			fitLogger.log(`[FitSync] ${pushResult.skippedPaths.length} file(s) added to unpushedFiles (API size limit)`, {
+				paths: pushResult.skippedPaths
+			});
+		}
+
 		let latestRemoteTreeSha: FileStates;
 		let latestCommitSha: CommitSha;
 		let pushedChanges: Array<FileChange>;
@@ -537,23 +555,44 @@ export class FitSync implements IFitSync {
 			{ localOpsApplied: localFileOpsRecord.changes.length, remoteOpsPushed: pushedChanges.length }
 		);
 
+		// Clean stale unpushedFiles entries before persisting.
+		// A file leaves the list when: locally modified (SHA changed → re-enters normal sync),
+		// reconciled on remote (remote change detected → normal pull handles it), deleted
+		// locally, or excluded by shouldSyncPath (e.g. added to .gitignore).
+		const remoteChangesForCleanup = remoteUpdate.remoteChanges ?? [];
+		for (const [path, sha] of Object.entries(this.fit.unpushedFiles)) {
+			const isModified = newLocalState[path] !== sha;
+			const isRemoteReconciled = remoteChangesForCleanup.some(c => c.path === path);
+			const isGone = newLocalState[path] === undefined;
+			const isIgnored = !this.fit.shouldSyncPath(path);
+			if (isModified || isRemoteReconciled || isGone || isIgnored) {
+				delete this.fit.unpushedFiles[path];
+			}
+		}
+
+		const newlySkippedPaths = pushResult?.skippedPaths?.filter(p => !previousUnpushedKeys.has(p)) ?? [];
+
 		await this.saveLocalStoreCallback({
 			lastFetchedRemoteSha: latestRemoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
 			lastFetchedCommitSha: latestCommitSha,
 			// TODO: Remove filterSyncedState after fixing bug where remote _fit/ files are passed to applyChanges
 			// Currently remote _fit/ paths bypass shouldSyncPath filtering and get SHAs computed.
 			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
-			localSha: this.fit.filterSyncedState(newLocalState)
+			localSha: this.fit.filterSyncedState(newLocalState),
+			unpushedFiles: this.fit.unpushedFiles,
 		});
 
 		return {
 			localOps: localFileOpsRecord.changes,
 			remoteOps: pushedChanges,
-			conflicts: clashes
+			conflicts: clashes,
+			newlySkippedPaths,
+			skippedWarning: pushResult?.skippedWarning,
 		};
 	}
 
-	async sync(syncNotice: FitNotice): Promise<SyncResult> {
+	async sync(syncNotice: FitNotice, options?: { isAutoSync?: boolean }): Promise<SyncResult> {
+		const isAutoSync = options?.isAutoSync ?? false;
 		// Check if already syncing
 		if (this.isSyncing) {
 			fitLogger.log('[FitSync] Sync already in progress - aborting new sync request');
@@ -628,7 +667,7 @@ export class FitSync implements IFitSync {
 			);
 
 			// Phase 3: Execute - push, pull, persist (atomic operation)
-			const { localOps, remoteOps, conflicts } = await this.executeSync(
+			const { localOps, remoteOps, conflicts, newlySkippedPaths, skippedWarning } = await this.executeSync(
 				currentLocalState,
 				{
 					remoteChanges,
@@ -662,13 +701,31 @@ export class FitSync implements IFitSync {
 				}
 			}
 
-			// Set appropriate success message
-			if (conflicts.length === 0) {
-				syncNotice.setMessage(`Sync successful`);
-			} else if (conflicts.some(f => f.remoteOp !== "REMOVED")) {
-				syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
-			} else {
-				syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
+			// Show tiered warning for files still awaiting manual sync
+			const remainingUnpushed = Object.keys(this.fit.unpushedFiles);
+			if (remainingUnpushed.length > 0) {
+				if (newlySkippedPaths.length > 0 && skippedWarning) {
+					// First encounter: full sticky notice with git CLI instructions
+					new FitNotice(this.fit, [], skippedWarning, 0).show();
+				} else if (!isAutoSync) {
+					// Subsequent manual sync: brief reminder in the success message
+					syncNotice.setMessage(
+						`Sync successful — ${remainingUnpushed.length} file(s) still need manual sync`
+					);
+				}
+				// Auto-sync with no new skips: log only, no notice
+				fitLogger.log('[FitSync] Files still awaiting manual sync', { paths: remainingUnpushed });
+			}
+
+			// Set success message (only when not already replaced by the unpushed-files reminder)
+			if (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0) {
+				if (conflicts.length === 0) {
+					syncNotice.setMessage(`Sync successful`);
+				} else if (conflicts.some(f => f.remoteOp !== "REMOVED")) {
+					syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
+				} else {
+					syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
+				}
 			}
 
 			return {
@@ -706,7 +763,7 @@ export class FitSync implements IFitSync {
 			parentCommitSha: CommitSha
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: FileStates, lastFetchedCommitSha: CommitSha}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
@@ -748,14 +805,28 @@ export class FitSync implements IFitSync {
 			warningNotice.show();
 		}
 
-		// If no operations were performed, return null
+		// If no operations were performed, return null (or with skipped paths if applicable)
 		// This can happen when local SHA differs from cache but content matches remote
-		// (spurious change due to SHA normalization or caching issues)
+		// (spurious change due to SHA normalization or caching issues), or when all files
+		// were skipped due to size limits.
 		if (result.changes.length === 0) {
-			fitLogger.log('[FitSync] No remote changes needed - content already matches', {
+			fitLogger.log('[FitSync] No remote changes needed - content already matches or all files skipped', {
 				localChangesDetected: localUpdate.localChanges.length,
-				reason: 'Local content matches remote despite SHA cache mismatch (likely SHA normalization or cache inconsistency)'
+				skippedCount: result.skippedPaths?.length ?? 0,
+				reason: result.skippedPaths?.length
+					? 'All files skipped due to API size limit (422)'
+					: 'Local content matches remote despite SHA cache mismatch (likely SHA normalization or cache inconsistency)'
 			});
+			if (result.skippedPaths?.length) {
+				// Return minimal push result so caller can update unpushedFiles
+				return {
+					pushedChanges: [],
+					lastFetchedRemoteSha: result.newState,
+					lastFetchedCommitSha: result.commitSha,
+					skippedPaths: result.skippedPaths,
+					skippedWarning: result.skippedWarning,
+				};
+			}
 			return null;
 		}
 
@@ -768,6 +839,8 @@ export class FitSync implements IFitSync {
 			pushedChanges,
 			lastFetchedRemoteSha: result.newState,
 			lastFetchedCommitSha: result.commitSha,
+			skippedPaths: result.skippedPaths,
+			skippedWarning: result.skippedWarning,
 		};
 	}
 

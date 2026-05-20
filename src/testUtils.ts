@@ -214,6 +214,23 @@ export class FakeOctokit {
 	}
 
 	/**
+	 * Simulate a persistent error for a specific route.
+	 * Every call to this route will throw the specified error until clearError is called.
+	 */
+	simulatePersistentError(route: string, error: Error): void {
+		this.errorSimulations.set(route, error);
+		// Override request to keep the error in place (not consumed)
+		this._persistentErrors.add(route);
+	}
+
+	clearError(route: string): void {
+		this.errorSimulations.delete(route);
+		this._persistentErrors.delete(route);
+	}
+
+	private _persistentErrors: Set<string> = new Set();
+
+	/**
 	 * Add a blob to the fake repository.
 	 */
 	addBlob(sha: BlobSha, content: string): void {
@@ -247,7 +264,9 @@ export class FakeOctokit {
 		// Check for simulated errors first
 		const simulatedError = this.errorSimulations.get(route);
 		if (simulatedError) {
-			this.errorSimulations.delete(route); // Clear after throwing once
+			if (!this._persistentErrors.has(route)) {
+				this.errorSimulations.delete(route); // Clear after throwing once (non-persistent)
+			}
 			throw simulatedError;
 		}
 
@@ -741,6 +760,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	private blobShas: Map<BlobSha, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: CommitSha = 'initial-commit' as CommitSha;
 	private failureError: Error | null = null;
+	private _skippedPaths: Set<string> = new Set(); // Paths that return 422 on next applyChanges
 	private owner: string;
 	private repo: string;
 	private branch: string;
@@ -763,6 +783,14 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	 */
 	clearFailure(): void {
 		this.failureError = null;
+	}
+
+	/**
+	 * Configure paths that should be skipped on the next applyChanges call (simulates 422).
+	 * The skipped paths are included in the result's skippedPaths array instead of being written.
+	 */
+	setSkippedPaths(paths: string[]): void {
+		this._skippedPaths = new Set(paths);
 	}
 
 	/**
@@ -896,12 +924,18 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		}
 
 		const changes: FileChange[] = [];
+		const skippedPaths: string[] = [];
 
 		for (const file of filesToWrite) {
+			if (this._skippedPaths.has(file.path)) {
+				skippedPaths.push(file.path);
+				continue; // Simulate 422 skip
+			}
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
 			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
+		this._skippedPaths.clear(); // Consume after one applyChanges call
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
@@ -928,11 +962,16 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		// This mimics RemoteGitHubVault.buildStateFromTree behavior
 		const newState = await this.buildCurrentState(false);
 
+		const skippedWarning = skippedPaths.length > 0
+			? `${skippedPaths.length} file(s) skipped — GitHub API rejected (possibly too large):\n  • ${skippedPaths.join('\n  • ')}\n\nTo resolve, choose one:\n  1. Exclude permanently: add path(s) to .gitignore\n  2. Sync via git (desktop):\n       git push\n     Note: FIT may still be unable to download the file — option 1 is safer.`
+			: undefined;
+
 		return {
 			changes: changes,
 			commitSha: this.commitSha,
 			treeSha,
-			newState
+			newState,
+			...(skippedPaths.length > 0 && { skippedPaths, skippedWarning }),
 		};
 	}
 
