@@ -170,6 +170,22 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		throw error;
 	}
 
+	/**
+	 * Returns true if the HTTP status code indicates a file-specific rejection that
+	 * should be skipped rather than treated as a sync-aborting error.
+	 *
+	 * 401/403: auth rejection — unlikely here since auth is pre-verified by readFromSource(),
+	 *          so more likely a size-based policy enforcement
+	 * 413: request entity too large
+	 * 422: unprocessable entity (GitHub's documented blob-too-large code)
+	 *
+	 * Excluded: 429 (rate limit — transient, not file-specific) and other 4xx codes
+	 * that indicate systemic API misuse or transient failures.
+	 */
+	private isBlobRejectionStatus(status: number): boolean {
+		return [401, 403, 413, 422].includes(status);
+	}
+
 	// ===== Read Operations =====
 
 	/**
@@ -296,6 +312,12 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			);
 			return blob.sha as BlobSha;
 		} catch (error) {
+			const status = (error as { status?: number }).status;
+			// Re-throw so applyChanges can treat this as a skippable file rejection.
+			// wrapOctokitError would lose the status code by converting to VaultError.
+			if (typeof status === 'number' && this.isBlobRejectionStatus(status)) {
+				throw error;
+			}
 			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
@@ -577,9 +599,8 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			} else if (result.status === 'rejected') {
 				const error = result.reason;
 				const errorObj = error as { status?: number };
-				// 422 = GitHub validation error; most commonly file too large, but not guaranteed.
-				// Skip and let the caller track it in unpushedFiles rather than aborting everything.
-				if (errorObj.status === 422 && sizeBytes !== null) {
+				const isFileRejection = typeof errorObj.status === 'number' && this.isBlobRejectionStatus(errorObj.status);
+				if (isFileRejection && sizeBytes !== null) {
 					const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
 					skippedFiles.push({ path, sizeMB });
 				} else {
@@ -703,7 +724,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Note: Sync policy filtering (e.g., excluding _fit/, .obsidian/) is handled
 	 * by the caller (Fit), not by the vault.
 	 */
-	shouldTrackState(path: string): boolean {
+	shouldTrackState(_path: string): boolean {
 		return true;
 	}
 

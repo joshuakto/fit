@@ -709,8 +709,9 @@ export class FitSync implements IFitSync {
 					new FitNotice(this.fit, [], skippedWarning, 0).show();
 				} else if (!isAutoSync) {
 					// Subsequent manual sync: brief reminder in the success message
+					const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
 					syncNotice.setMessage(
-						`Sync successful — ${remainingUnpushed.length} file(s) still need manual sync`
+						`Sync successful — ${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`
 					);
 				}
 				// Auto-sync with no new skips: log only, no notice
@@ -893,7 +894,7 @@ export class FitSync implements IFitSync {
 				}
 
 				// Add recovery guidance for per-file errors
-				baseMessage += '\n\n💡 To sync other files: Move problematic file(s) out of your vault temporarily, or use git to sync them manually. .gitignore support coming soon.';
+				baseMessage += '\n\n💡 To exclude a file from sync, add it to .gitignore.';
 			}
 		} else {
 			// Handle SyncOrchestrationError (type === 'unknown' | 'already-syncing')

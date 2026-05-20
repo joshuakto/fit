@@ -1831,6 +1831,30 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('first sync with only the skipped file (no other local changes): still succeeds and tracks it', async () => {
+			// Arrange: only the large file — no other local changes
+			const fitSync = createFitSync();
+			localVault.setFile('huge.mp4', 'big file content');
+			remoteVault.setSkippedPaths(['huge.mp4']);
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+
+			// Act
+			const mockNotice = createMockNotice();
+			const result = await fitSync.sync(mockNotice as any);
+
+			// Assert: sync succeeds (not a failure)
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// Assert: sticky notice shown for first encounter
+			expect(fitNoticeSpy).toHaveBeenCalled();
+
+			// Assert: nothing pushed to remote
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({});
+
+			// Assert: file is tracked as unpushed
+			expect(localStoreState.unpushedFiles).toEqual({ 'huge.mp4': expect.any(String) });
+		});
+
 		it('subsequent manual sync with unchanged skipped file: brief reminder in notice, no upload attempted', async () => {
 			// Arrange: pre-populate unpushedFiles as if previous sync had already skipped the file
 			localVault.setFile('huge.mp4', 'big file content');
