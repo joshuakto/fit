@@ -170,6 +170,22 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		throw error;
 	}
 
+	/**
+	 * Returns true if the HTTP status code indicates a file-specific rejection that
+	 * should be skipped rather than treated as a sync-aborting error.
+	 *
+	 * 401/403: auth rejection — unlikely here since auth is pre-verified by readFromSource(),
+	 *          so more likely a size-based policy enforcement
+	 * 413: request entity too large
+	 * 422: unprocessable entity (GitHub's documented blob-too-large code)
+	 *
+	 * Excluded: 429 (rate limit — transient, not file-specific) and other 4xx codes
+	 * that indicate systemic API misuse or transient failures.
+	 */
+	private isBlobRejectionStatus(status: number): boolean {
+		return [401, 403, 413, 422].includes(status);
+	}
+
 	// ===== Read Operations =====
 
 	/**
@@ -296,6 +312,12 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			);
 			return blob.sha as BlobSha;
 		} catch (error) {
+			const status = (error as { status?: number }).status;
+			// Re-throw so applyChanges can treat this as a skippable file rejection.
+			// wrapOctokitError would lose the status code by converting to VaultError.
+			if (typeof status === 'number' && this.isBlobRejectionStatus(status)) {
+				throw error;
+			}
 			return await this.wrapOctokitError(error, 'repo');
 		}
 	}
@@ -565,31 +587,29 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Wait for all tree nodes, collecting both successes and failures
 		const results = await Promise.allSettled(operations.map(op => op.promise));
 
-		// Extract successful nodes and collect per-file errors
+		// Extract successful nodes, collect per-file errors, and separate 422 skips
 		const treeNodes: TreeNode[] = [];
 		const perFileErrors: Array<{ path: string; error: unknown }> = [];
+		const skippedFiles: Array<{ path: string; sizeMB: string }> = [];
 
 		results.forEach((result, index) => {
 			const { path, sizeBytes } = operations[index];
 			if (result.status === 'fulfilled' && result.value !== null) {
 				treeNodes.push(result.value);
 			} else if (result.status === 'rejected') {
-				let error = result.reason;
-				// Enhance 422 errors (input too large) with file size
-				if (sizeBytes !== null) {
-					const errorObj = error as { status?: number };
-					if (errorObj.status === 422) {
-						const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
-						const enhancedError = error instanceof Error ? error : new Error(String(error));
-						enhancedError.message = `${enhancedError.message} (file size: ${sizeMB} MB)`;
-						error = enhancedError;
-					}
+				const error = result.reason;
+				const errorObj = error as { status?: number };
+				const isFileRejection = typeof errorObj.status === 'number' && this.isBlobRejectionStatus(errorObj.status);
+				if (isFileRejection && sizeBytes !== null) {
+					const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
+					skippedFiles.push({ path, sizeMB });
+				} else {
+					perFileErrors.push({ path, error });
 				}
-				perFileErrors.push({ path, error });
 			}
 		});
 
-		// If any files failed, throw VaultError with per-file details
+		// Non-422 errors abort the sync entirely (unchanged behaviour)
 		if (perFileErrors.length > 0) {
 			const failedPaths = perFileErrors.map(e => e.path);
 			throw VaultError.network(
@@ -598,13 +618,37 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			);
 		}
 
-		// If no changes needed, return empty result (currentState already from cache)
+		// Build first-encounter warning for skipped files (shown by caller only when
+		// the file is newly added to unpushedFiles, not on every subsequent sync)
+		let skippedPathsList: string[] | undefined;
+		let skippedWarning: string | undefined;
+		if (skippedFiles.length > 0) {
+			skippedPathsList = skippedFiles.map(f => f.path);
+			const fileLines = skippedFiles.map(f => `  • ${f.path} (~${f.sizeMB} MB)`).join('\n');
+			skippedWarning = [
+				`${skippedFiles.length} file(s) skipped — GitHub API rejected (possibly too large):`,
+				fileLines,
+				'',
+				'To resolve, choose one:',
+				'  1. Exclude permanently: add path(s) to .gitignore',
+				`  2. Sync via git (desktop):`,
+				`       cd <your-repo> && git checkout ${this.branch}`,
+				`       git add <file> && git commit -m "sync large file" && git push`,
+				// TODO(#116): once local SHA uses canonical git blob format, FIT can detect content
+				// parity on the next sync and auto-clear unpushedFiles without downloading.
+				// At that point, restore "run a sync to confirm" and remove the caveat below.
+				'     Note: FIT may still be unable to download the file — option 1 is safer.',
+			].join('\n');
+		}
+
+		// If no changes needed (all files skipped or no-ops), return without committing
 		if (treeNodes.length === 0) {
 			return {
 				changes: [],
 				commitSha: parentCommitSha,
 				treeSha: parentTreeSha,
-				newState: currentState
+				newState: currentState,
+				...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
 			};
 		}
 
@@ -649,7 +693,8 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			commitSha: newCommitSha,
 			treeSha: newTreeSha,
 			newState,
-			userWarning
+			userWarning,
+			...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
 		};
 	}
 
@@ -679,7 +724,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Note: Sync policy filtering (e.g., excluding _fit/, .obsidian/) is handled
 	 * by the caller (Fit), not by the vault.
 	 */
-	shouldTrackState(path: string): boolean {
+	shouldTrackState(_path: string): boolean {
 		return true;
 	}
 

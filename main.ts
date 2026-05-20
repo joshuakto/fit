@@ -67,6 +67,12 @@ export interface LocalStores {
 	localSha: FileStates                   // File path -> SHA cache
 	lastFetchedCommitSha: CommitSha | null // Last synced commit
 	lastFetchedRemoteSha: FileStates       // Remote file path -> SHA cache
+	// Files that were skipped due to GitHub API size limits (422) and haven't reached
+	// remote yet. Maps path → FIT SHA at time of skip, so we can detect when the file
+	// has been modified locally (and should re-enter the normal sync queue) or reconciled
+	// on remote (and should be removed from this list).
+	// Note: transient failures like rate limits (#179) should be tracked separately when needed since they SHOULD retry on subsequent syncs.
+	unpushedFiles?: FileStates
 }
 
 /**
@@ -82,7 +88,8 @@ type SyncOutcome =
 const DEFAULT_LOCAL_STORE: LocalStores = {
 	localSha: {},
 	lastFetchedCommitSha: null,
-	lastFetchedRemoteSha: {}
+	lastFetchedRemoteSha: {},
+	unpushedFiles: {}
 };
 
 
@@ -191,7 +198,7 @@ export default class FitPlugin extends Plugin {
 		const syncStartTime = Date.now();
 		fitLogger.log(`🚀 [SYNC START] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
-		const syncResult = await this.fitSync.sync(this.currentSyncNotice!);
+		const syncResult = await this.fitSync.sync(this.currentSyncNotice!, { isAutoSync: triggerType === 'auto' });
 
 		if (syncResult.success) {
 			const duration = Date.now() - syncStartTime;

@@ -53,6 +53,12 @@ type ApplyChangesResultMap = {
 		treeSha: TreeSha;
 		/** FileStates computed from the new tree (for cache updates) */
 		newState: FileStates;
+		/** Paths skipped because GitHub returned 422 (file too large for API).
+		 * Caller must add these to unpushedFiles — they are NOT in newState. */
+		skippedPaths?: string[];
+		/** Pre-built first-encounter notice for skipped files (includes git CLI instructions
+		 * with repo/branch substituted). Show only when path is newly added to unpushedFiles. */
+		skippedWarning?: string;
 	};
 };
 
