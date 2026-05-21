@@ -116,8 +116,9 @@ export type ConflictResolutionResult = {
 export class FitSync implements IFitSync {
 	fit: Fit;
 	saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>;
-	private isSyncing = false;
+	private syncPromise: Promise<SyncResult> | null = null;
 
+	get isActive(): boolean { return this.syncPromise !== null; }
 
 	constructor(fit: Fit, saveLocalStoreCallback: (localStore: Partial<LocalStores>) => Promise<void>) {
 		this.fit = fit;
@@ -620,14 +621,16 @@ export class FitSync implements IFitSync {
 	}
 
 	async sync(syncNotice: FitNotice, options?: { isAutoSync?: boolean }): Promise<SyncResult> {
-		const isAutoSync = options?.isAutoSync ?? false;
-		// Check if already syncing
-		if (this.isSyncing) {
+		if (this.syncPromise) {
 			fitLogger.log('[FitSync] Sync already in progress - aborting new sync request');
 			return { success: false, error: SyncErrors.alreadySyncing() };
 		}
+		this.syncPromise = this._doSync(syncNotice, options).finally(() => { this.syncPromise = null; });
+		return this.syncPromise;
+	}
 
-		this.isSyncing = true;
+	private async _doSync(syncNotice: FitNotice, options?: { isAutoSync?: boolean }): Promise<SyncResult> {
+		const isAutoSync = options?.isAutoSync ?? false;
 
 		try {
 			syncNotice.setMessage("Checking for changes...");
@@ -781,8 +784,6 @@ export class FitSync implements IFitSync {
 					? String(error.message)
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
-		} finally {
-			this.isSyncing = false;
 		}
 	}
 

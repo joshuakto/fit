@@ -226,9 +226,9 @@ export default class FitPlugin extends Plugin {
 
 			return { status: 'success', result: syncResult };
 		} else {
-			// Handle already-syncing case - this is expected for concurrent requests
+			// Handle already-syncing case - rare race between isActive check and sync() call
 			if (syncResult.error.type === 'already-syncing') {
-				fitLogger.log('[Plugin] Sync already in progress', { triggerType });
+				fitLogger.log('[Plugin] Sync already in progress (race)', { triggerType });
 				return { status: 'already-syncing' };
 			}
 
@@ -345,6 +345,11 @@ export default class FitPlugin extends Plugin {
 	private async executeSyncWithUICoordination(triggerType: 'manual' | 'auto'): Promise<void> {
 		fitLogger.log(`[Plugin] ${triggerType === 'manual' ? 'Manual' : 'Auto'} sync requested`);
 
+		if (this.fitSync.isActive) {
+			fitLogger.log('[Plugin] Sync already in progress - ignoring request', { triggerType });
+			return;
+		}
+
 		this.onSyncStart(triggerType);
 
 		let outcome: SyncOutcome;
@@ -391,8 +396,9 @@ export default class FitPlugin extends Plugin {
 				break;
 
 			case 'already-syncing':
-				// Don't modify the notice - it's being used by the active sync
-				// The concurrent request just logs and returns (no cleanup needed)
+				// Rare race: passed isActive check but sync() was claimed before we reached it.
+				// onSyncStart already ran, so undo its counter increment.
+				this.onSyncEnd(triggerType);
 				break;
 
 			case 'not-configured':
