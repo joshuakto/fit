@@ -52,38 +52,32 @@ A "vault" represents a complete collection of synced files, whether stored local
 
 ### SHA Algorithms and Change Detection
 
-**CRITICAL: Local and Remote SHAs are INCOMPATIBLE**
+Both local and remote caches use the canonical Git blob SHA format: `SHA1("blob " + byteLength + "\0" + rawBytes)`.
 
-FIT uses different SHA algorithms for local and remote file tracking:
-
-- **Local SHA** (`LocalVault.fileSha1`): `SHA1(normalizedPath + content)`
+- **Local SHA** (`LocalVault.fileSha1`): canonical git blob SHA
   - Used for detecting local changes between syncs
-  - Stored in `localSha` cache (part of LocalStores in data.json)
-  - Custom algorithm designed for consistent cross-platform hashing
-  - Does NOT match Git's blob SHA format
+  - Stored in `localShas` cache (part of LocalStores in data.json)
+  - Matches GitHub's blob SHA — enables SHA parity optimization (skip download when local SHA equals remote SHA)
 
-- **Remote SHA** (from GitHub API): Git blob SHA format `SHA1("blob " + size + "\0" + content)`
+- **Remote SHA** (from GitHub API): same git blob SHA format
   - Used for detecting remote changes between syncs
-  - Stored in `lastFetchedRemoteSha` cache (part of LocalStores in data.json)
-  - Standard Git blob object format
-  - Computed by GitHub when files are committed
+  - Stored in `lastFetchedRemoteShas` cache (part of LocalStores in data.json)
+  - Returned directly by the GitHub tree API
 
-**Why different algorithms?**
-- Local SHA predates understanding of Git blob format
-- Changing local SHA algorithm would invalidate all existing caches
-- Local SHA includes path in hash (helps with Unicode normalization tracking, issue #51)
-- Both algorithms serve the same purpose: detect when file content changed
+**Important:**
+- ✅ Local and remote SHAs can be directly compared when encryption is off
+- ❌ **NEVER copy remote SHA into `localShas` as a baseline** — baseline must be computed from the file bytes actually written to disk, not from the remote tree entry (which may differ under encryption)
+- ✅ When recording baseline for remote content, compute via `LocalVault.fileSha1()` from the bytes written
 
-**Important consequences:**
-- ❌ **NEVER compare local SHA directly with remote SHA** - they will never match even for identical files
-- ❌ **NEVER copy remote SHA into localSha** - will break change detection
-- ✅ When recording baseline for remote content, always compute using `LocalVault.fileSha1()`
-- ✅ Each SHA cache uses its own algorithm consistently
+**Legacy migration (`localSha` singular):**
+- Pre-v1.6 used `SHA1(normalizedPath + content)` stored in `localSha` (singular)
+- On first sync after upgrade, `getLocalChanges()` batch-migrates all legacy files: re-reads each to verify the legacy SHA still matches, then promotes the canonical SHA to `localShas`
+- `localSha` is omitted from storage once fully migrated
 
 **Code references:**
-- Local SHA: [src/localVault.ts:228 `fileSha1()`](../src/localVault.ts#L228)
-- Algorithm note: [src/util/hashing.ts:22](../src/util/hashing.ts#L22)
-- Baseline recording: [src/fitSync.ts:538-547](../src/fitSync.ts#L538)
+- Local SHA: [`src/localVault.ts` `fileSha1()`](../src/localVault.ts)
+- Canonical SHA computation: [`src/util/hashing.ts` `computeGitBlobSha()`](../src/util/hashing.ts)
+- Baseline recording: [`src/fitSync.ts`](../src/fitSync.ts)
 
 ### Sync Engine (fitSync.ts, fit.ts)
 **Purpose**: Core synchronization logic
@@ -169,9 +163,10 @@ sequenceDiagram
 │   ├── autoSync preferences
 │   └── notification settings
 └── localStore (sync state cache)
-    ├── localSha (file path -> SHA map)
+    ├── localShas (file path -> canonical git blob SHA)
+    ├── localSha? (legacy field, present only during migration from pre-v1.6)
     ├── lastFetchedCommitSha
-    └── lastFetchedRemoteSha (remote file path -> SHA map)
+    └── lastFetchedRemoteShas (remote file path -> git blob SHA)
 
 .obsidian/plugins/fit/debug.log:
 └── Debug logs (when enabled in settings)

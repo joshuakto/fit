@@ -634,9 +634,6 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 				`  2. Sync via git (desktop):`,
 				`       cd <your-repo> && git checkout ${this.branch}`,
 				`       git add <file> && git commit -m "sync large file" && git push`,
-				// TODO(#116): once local SHA uses canonical git blob format, FIT can detect content
-				// parity on the next sync and auto-clear unpushedFiles without downloading.
-				// At that point, restore "run a sync to confirm" and remove the caveat below.
 				'     Note: FIT may still be unable to download the file — option 1 is safer.',
 			].join('\n');
 		}
@@ -707,9 +704,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		await this.updateRef(newCommit);
 
 		return {
-			localSha: {},
+			localShas: {},
 			lastFetchedCommitSha: newCommit,
-			lastFetchedRemoteSha: {},
+			lastFetchedRemoteShas: {},
 		};
 	}
 

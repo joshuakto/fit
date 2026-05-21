@@ -10,7 +10,7 @@ import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { contentToArrayBuffer, readFileContent } from "./util/obsidianHelpers";
-import { BlobSha, computeSha1 } from "./util/hashing";
+import { BlobSha, computeGitBlobSha, computeSha1 } from "./util/hashing";
 import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
@@ -34,39 +34,14 @@ function collectSettledFailures<T>(
 }
 
 /**
- * Frozen list of binary file extensions for SHA calculation consistency.
- *
- * IMPORTANT: This list is FROZEN to prevent spurious sync operations.
- *
- * Why this matters:
- * - Before PR #XXX: Non-listed binaries (.zip, .exe, etc.) had SHAs computed on
- *   CORRUPTED plaintext (with replacement characters �) because toPlainText()
- *   silently corrupted binary data
- * - After PR #XXX: toPlainText() throws on binary, fileSha1() catches and uses base64
- * - Problem: Existing .zip files will get DIFFERENT SHAs (corrupted vs correct)
- * - Result: Plugin detects "change" and tries to sync the same file again
- *
- * Solution:
- * - Keep list FROZEN to avoid batch SHA changes for existing users
- * - New fatal:true logic handles unlisted extensions gracefully via try/catch
- * - Users with .zip files will see ONE spurious sync after upgrading (acceptable)
- *
- * Future: Implement SHA migration strategy to expand this list safely
- * (e.g., version stores, detect and re-hash on upgrade, warn users)
- *
- * DO NOT modify this list unless you implement a SHA migration strategy.
+ * Extensions that used base64 (not plaintext) in the legacy v1 SHA algorithm.
+ * Preserved for fileLegacySha1 so the v1→v2 migration can reproduce old SHAs exactly.
  */
-const FROZEN_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
+const LEGACY_BINARY_EXT_FOR_SHA = new Set(["png", "jpg", "jpeg", "pdf"]);
 
-/**
- * Check if a file extension is considered binary for SHA calculation purposes.
- * Uses FROZEN_BINARY_EXT_FOR_SHA to ensure SHA consistency.
- *
- * @param extension - File extension WITHOUT leading dot (e.g., "png", not ".png")
- */
-function isBinaryExtensionForSha(extension: string): boolean {
+function isBinaryExtensionForLegacySha(extension: string): boolean {
 	const normalized = extension.startsWith('.') ? extension.slice(1) : extension;
-	return FROZEN_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
+	return LEGACY_BINARY_EXT_FOR_SHA.has(normalized.toLowerCase());
 }
 
 /**
@@ -236,35 +211,37 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
-	 * Compute SHA-1 hash of file path + content
-	 * (Matches GitHub's blob SHA format)
+	 * Compute the canonical Git blob SHA-1 for a file.
 	 *
-	 * Path is normalized to NFC before hashing to prevent
-	 * duplication issues with Unicode normalization (issue #51)
+	 * Uses the same algorithm as GitHub (SHA1("blob " + byteLen + NUL + rawBytes)),
+	 * so local and remote SHAs are directly comparable when encryption is off.
+	 * The path is not included in the hash; it is accepted only for call-site
+	 * compatibility (tests and scan loop both pass it).
 	 */
 	// NOTE: Public visibility for tests.
-	static fileSha1(path: string, fileContent: FileContent): Promise<BlobSha> {
-		// Normalize path to NFC form for consistent hashing across platforms
+	static fileSha1(_path: string, fileContent: FileContent): Promise<BlobSha> {
+		const b64 = fileContent.toBase64(); // already normalized (no whitespace) by FileContent
+		const binStr = atob(b64);
+		const rawBytes = Uint8Array.from(binStr, c => c.charCodeAt(0));
+		return computeGitBlobSha(rawBytes);
+	}
+
+	/**
+	 * Compute the legacy v1 SHA (SHA1(normalizedPath + content)) for a file.
+	 * Used only during v1→v2 schema migration to check whether a file's content
+	 * has changed since it was last hashed with the old algorithm.
+	 */
+	// NOTE: Public visibility for migration use in fit.ts.
+	static fileLegacySha1(path: string, fileContent: FileContent): Promise<BlobSha> {
 		const normalizedPath = FilePath.create(path);
 		const extension = FilePath.getExtension(normalizedPath);
-
 		let contentToHash: string;
-		if (extension && isBinaryExtensionForSha(extension)) {
-			// Use base64 representation for consistent hashing
+		if (extension && isBinaryExtensionForLegacySha(extension)) {
 			contentToHash = fileContent.toBase64();
 		} else {
-			// Preserve plaintext SHA logic for non-binary case.
-			// NOTE: For non-FROZEN extensions like .zip, if content is binary,
-			// toPlainText() will now throw (due to fatal:true in decodeFromBase64).
-			// We intentionally fall back to base64 to avoid corruption.
-			// This may cause SHA changes for existing .zip files, but prevents
-			// silent replacement character corruption in SHA computation.
-			// TODO(future): Implement SHA migration strategy to expand FROZEN_BINARY_EXT_FOR_SHA
-			// to include all common binary extensions (.zip, .exe, .bin, etc.)
 			try {
 				contentToHash = fileContent.toPlainText();
 			} catch {
-				// Binary content detected (invalid UTF-8) - fall back to base64
 				contentToHash = fileContent.toBase64();
 			}
 		}

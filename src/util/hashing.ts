@@ -16,20 +16,32 @@ export type TreeSha = string & { readonly __brand: 'Tree' };
 export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as TreeSha;
 
 /**
- * Compute SHA-1 hash of content.
- * Generic SHA-1 helper used for FIT's local blob hashing.
+ * Compute canonical Git blob SHA-1 for file content.
  *
- * IMPORTANT: FIT uses a CUSTOM local SHA algorithm (path + content) that does NOT match
- * Git's blob SHA format. Local SHAs and remote SHAs use different algorithms and cannot
- * be compared. See docs/architecture.md "SHA Algorithms and Change Detection".
+ * Matches GitHub's blob SHA format: SHA1("blob " + byteLength + NUL + rawBytes).
+ * With canonical SHAs, local and remote SHAs are directly comparable.
  *
- * This function just computes SHA1 of the input string. The local SHA algorithm is
- * implemented in LocalVault.fileSha1() which calls this with (normalizedPath + content).
+ * @param rawBytes - Raw file bytes (not base64, not text-decoded)
+ * @returns Hex-encoded SHA-1 hash
+ */
+export async function computeGitBlobSha(rawBytes: Uint8Array): Promise<BlobSha> {
+	const header = new TextEncoder().encode(`blob ${rawBytes.length}\0`);
+	const data = new Uint8Array(header.length + rawBytes.length);
+	data.set(header);
+	data.set(rawBytes, header.length);
+	const hashBuf = await crypto.subtle.digest('SHA-1', data);
+	return Array.from(new Uint8Array(hashBuf))
+		.map(b => b.toString(16).padStart(2, '0'))
+		.join('') as BlobSha;
+}
+
+/**
+ * Compute SHA-1 hash of a string.
+ * Used internally for legacy local SHA (path + content) and commit/tree SHAs in tests.
  *
  * @param content - String content to hash
  * @returns Hex-encoded SHA-1 hash
  */
-
 export async function computeSha1(content: string): Promise<string> {
 	const enc = new TextEncoder();
 	const hashBuf = await crypto.subtle.digest('SHA-1', enc.encode(content));

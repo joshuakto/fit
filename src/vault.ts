@@ -154,7 +154,7 @@ export class VaultError extends Error {
  * // Update vault cache after sync (scan and update internal state atomically)
  * const newLocalState = await localVault.readFromSource();
  * // Save to persistent cache
- * await saveToCache({localSha: newLocalState});
+ * await saveToCache({localShas: newLocalState});
  * ```
  */
 export interface IVault<T extends VaultCategory> {

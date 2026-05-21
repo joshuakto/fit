@@ -17,7 +17,7 @@ This document explains the detailed sync logic in FIT - the nuts and bolts of ho
 
 FIT uses SHA-based change detection to maintain **baseline state** versions (`LocalStores` - persisted to disk):
 
-  - `localSha`, `lastFetchedRemoteSha`, `lastFetchedCommitSha`
+  - `localShas`, `lastFetchedRemoteShas`, `lastFetchedCommitSha`
   - Reference point from last **successful** sync
   - Updated only on sync success
 
@@ -29,11 +29,11 @@ FIT uses SHA-based change detection to maintain **baseline state** versions (`Lo
 
 ```typescript
 {
-  localSha: {
+  localShas: {
     "file1.md": "abc123...",
     "file2.md": "def456..."
   },
-  lastFetchedRemoteSha: {
+  lastFetchedRemoteShas: {
     "file1.md": "abc123...",
     "file3.md": "ghi789..."
   },
@@ -52,7 +52,7 @@ sequenceDiagram
 
     Note over Storage,Remote: Plugin Load
     Storage->>Fit: Load SHA caches
-    Note over Fit: localSha, lastFetchedRemoteSha,<br/>lastFetchedCommitSha
+    Note over Fit: localShas, lastFetchedRemoteShas,<br/>lastFetchedCommitSha
 
     Note over Storage,Remote: Sync Operation
     par Read States (from Local/Remote in parallel)
@@ -97,7 +97,7 @@ See [SHA Computation Strategy](#sha-computation-strategy) below for detailed rat
 
 This enables future syncs to compare current local SHA vs baseline to determine if the file changed locally.
 
-**CRITICAL:** Must use local SHA algorithm (`SHA1(normalizedPath + content)`), NOT remote SHA from GitHub API. See [docs/architecture.md](./architecture.md) "SHA Algorithms and Change Detection".
+**CRITICAL:** Must use `LocalVault.fileSha1()` (canonical git blob SHA), NOT the raw SHA from the GitHub tree API. See [docs/architecture.md](./architecture.md) "SHA Algorithms and Change Detection".
 
 **Note:** Reading hidden files for baseline comparison requires using `vault.adapter` API instead of `vault.getAbstractFileByPath()`. See [docs/api-compatibility.md](./api-compatibility.md) "Reading Untracked Files".
 
@@ -118,12 +118,12 @@ This enables future syncs to compare current local SHA vs baseline to determine 
 
 ### 💾 Local Change Detection
 
-FIT compares current local file SHAs against the cached `localSha` to detect changes since the last sync.
+FIT compares current local file SHAs against the cached `localShas` to detect changes since the last sync.
 
 ```mermaid
 flowchart TD
     Start[Scan Vault Files] --> ComputeSHA[Compute SHA for each file]
-    ComputeSHA --> Compare{Compare with<br/>cached localSha}
+    ComputeSHA --> Compare{Compare with<br/>cached localShas}
 
     Compare -->|File in cache,<br/>SHA differs| Modified[✏️ MODIFIED]
     Compare -->|File not in cache| Added[🟢 ADDED]
@@ -155,7 +155,7 @@ cachedLocalSha = {
 
 ### ☁️ Remote Change Detection
 
-Same logic applies for remote changes, comparing `currentRemoteTreeSha` against `lastFetchedRemoteSha`.
+Same logic applies for remote changes, comparing `currentRemoteTreeSha` against `lastFetchedRemoteShas`.
 
 **How the remote vault provides file states:**
 
@@ -180,7 +180,7 @@ currentRemoteTreeSha = {
   "file3.md": "new789"  // New file
 }
 
-lastFetchedRemoteSha = {
+lastFetchedRemoteShas = {
   "file1.md": "old999",  // SHA changed
   "file2.md": "def456"   // No longer exists remotely
 }
@@ -202,8 +202,8 @@ If a cache becomes stale or corrupted:
 
 **Example Bug Scenario:**
 ```typescript
-// User deletes file locally, but localSha cache is lost/corrupted
-localSha = {}  // STALE: Should have "deleted.md"
+// User deletes file locally, but localShas cache is lost/corrupted
+localShas = {}  // STALE: Should have "deleted.md"
 
 currentLocalSha = {}  // File doesn't exist
 
@@ -228,7 +228,7 @@ FIT implements three layers of path filtering:
 **Behavior:**
 - **⬆️ Local→Remote:** Never push protected paths to remote
 - **⬇️ Remote→Local:** Save to 📁 `_fit/` for user transparency (e.g., `_fit/.obsidian/app.json`)
-- **📦 SHA Caches:** Excluded from both `localSha` and `lastFetchedRemoteSha`
+- **📦 SHA Caches:** Excluded from both `localShas` and `lastFetchedRemoteShas`
 
 **Why save remote protected paths to `_fit/`?**
 - User can see what exists on remote without risk
@@ -261,8 +261,8 @@ if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
 **Hidden files:** Any path component starting with `.` (e.g., `.gitignore`, `.hidden-config.json`)
 
 **Behavior:**
-- **💾 Local tracking:** Excluded from `localSha` (can't reliably scan)
-- **☁️ Remote tracking:** Included in `lastFetchedRemoteSha` (can read from GitHub API)
+- **💾 Local tracking:** Excluded from `localShas` (can't reliably scan)
+- **☁️ Remote tracking:** Included in `lastFetchedRemoteShas` (can read from GitHub API)
 - **⬇️ Remote→Local:** Save to 📁 `_fit/` for safety (can't verify local state)
 - **⬆️ Local→Remote:** Silently ignored (never synced)
 
@@ -277,8 +277,8 @@ if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
 // We can't read local .gitignore to compare
 // Solution: Save remote version to _fit/.gitignore (no overwrite risk)
 
-localSha = {}  // .gitignore not tracked
-lastFetchedRemoteSha = { ".gitignore": "abc123" }
+localShas = {}  // .gitignore not tracked
+lastFetchedRemoteShas = { ".gitignore": "abc123" }
 
 // On sync:
 // - Remote .gitignore saved to _fit/.gitignore
@@ -298,7 +298,7 @@ lastFetchedRemoteSha = { ".gitignore": "abc123" }
 - Only probes paths derived from the tracked file set — no full filesystem scan
 
 **Behavior:**
-- Files matched by any applicable `.gitignore` are excluded from `localSha` and never pushed
+- Files matched by any applicable `.gitignore` are excluded from `localShas` and never pushed
 - Patterns scope correctly: a `build/.gitignore` only affects files under `build/`
 - If no `.gitignore` files exist, this layer is a no-op
 
@@ -323,7 +323,7 @@ Files in `.obsidian/` are filtered by BOTH:
 **Result:**
 - Never synced in either direction
 - Remote `.obsidian/` files saved to `_fit/.obsidian/` for transparency
-- Excluded from both `localSha` and `lastFetchedRemoteSha`
+- Excluded from both `localShas` and `lastFetchedRemoteShas`
 
 ### Implementation Locations
 
@@ -338,12 +338,12 @@ Files in `.obsidian/` are filtered by BOTH:
 ```mermaid
 flowchart TD
     Start[Local file] --> Trackable{shouldTrackState?}
-    Trackable -->|No| Skip[Excluded from localSha]
+    Trackable -->|No| Skip[Excluded from localShas]
     Trackable -->|Yes| Gitignore{GitignoreFilter?}
     Gitignore -->|Ignored| Skip
     Gitignore -->|Not ignored| Protected{shouldSyncPath?}
     Protected -->|No| Skip
-    Protected -->|Yes| Tracked[Included in localSha / pushed to remote]
+    Protected -->|Yes| Tracked[Included in localShas / pushed to remote]
 
     Skip --> End[Done]
     Tracked --> End
@@ -359,12 +359,12 @@ flowchart TD
 
 ```typescript
 // v2 tracked .gitignore via DataAdapter, cache state:
-localSha = { ".gitignore": "abc123" }  // v2 tracked it
-lastFetchedRemoteSha = { ".gitignore": "abc123" }
+localShas = { ".gitignore": "abc123" }  // v2 tracked it
+lastFetchedRemoteShas = { ".gitignore": "abc123" }
 
 // After v3 upgrade or setting disabled:
 newScan = {}  // Reverted to Vault API (can't read hidden files)
-compareFileStates(newScan, localSha) // // → reports ".gitignore" as REMOVED
+compareFileStates(newScan, localShas) // → reports ".gitignore" as REMOVED
 // ⚠️ Risk: Plugin pushes deletion to remote → DATA LOSS
 ```
 
@@ -481,8 +481,8 @@ flowchart TD
 
 **Actions:**
 1. Push local changes to remote
-2. Update `localSha` to current local state
-3. Update `lastFetchedRemoteSha` with new remote tree
+2. Update `localShas` to current local state
+3. Update `lastFetchedRemoteShas` with new remote tree
 4. Update `lastFetchedCommitSha` with new commit
 
 #### 3. Only Remote Changed
@@ -491,8 +491,8 @@ flowchart TD
 
 **Actions:**
 1. Pull remote changes to local
-2. Update `localSha` with new local state
-3. Update `lastFetchedRemoteSha` to current remote
+2. Update `localShas` with new local state
+3. Update `lastFetchedRemoteShas` to current remote
 4. Update `lastFetchedCommitSha` with latest commit
 
 #### 4. Only Commit SHA Changed
@@ -610,14 +610,14 @@ flowchart TD
 
 **State:**
 ```typescript
-localSha = {}  // No baseline yet
-lastFetchedRemoteSha = {}  // No baseline yet
+localShas = {}  // No baseline yet
+lastFetchedRemoteShas = {}  // No baseline yet
 lastFetchedCommitSha = "initial"
 ```
 
 **Behavior:**
-1. **All local files** appear as "ADDED" (not in `localSha` cache)
-2. **All remote files** appear as "ADDED" (not in `lastFetchedRemoteSha` cache)
+1. **All local files** appear as "ADDED" (not in `localShas` cache)
+2. **All remote files** appear as "ADDED" (not in `lastFetchedRemoteShas` cache)
 3. **Files existing both locally and remotely** are detected as conflicts
 4. **Conflict resolution applies:**
    - If content is identical → Auto-resolved (no action needed)
@@ -660,7 +660,7 @@ FIT uses a specialized SHA computation approach during sync operations to maximi
 **1. Full Vault Scan (Pre-Sync)**
 - **When:** Before each sync to detect local changes
 - **Method:** Read all vault files from disk and compute SHAs
-- **Purpose:** Compare current state to cached baseline (`localSha`)
+- **Purpose:** Compare current state to cached baseline (`localShas`)
 - **Implementation:** [`LocalVault.readFromSource()`](../src/localVault.ts)
 
 **2. Specialized Updates (During Sync)**
@@ -846,12 +846,12 @@ This is not an error - it's a self-healing mechanism that corrects cache inconsi
 
 ### Lost SHA Cache
 
-**Scenario:** `localSha` cache is empty/corrupted but files exist in vault
+**Scenario:** `localShas` cache is empty/corrupted but files exist in vault
 
 **Problem:**
 ```typescript
 // CORRUPTED STATE
-localSha = {}  // Should contain cached SHAs
+localShas = {}  // Should contain cached SHAs
 
 currentLocalSha = {
   "existing-file.md": "abc123"
@@ -871,13 +871,13 @@ currentLocalSha = {
 **Problem:**
 ```typescript
 // User deleted file, but cache not updated
-localSha = {
+localShas = {
   "deleted-file.md": "old-sha"  // STALE
 }
 
 currentLocalSha = {}  // File doesn't exist
 
-lastFetchedRemoteSha = {
+lastFetchedRemoteShas = {
   "deleted-file.md": "old-sha"
 }
 

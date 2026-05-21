@@ -137,10 +137,9 @@ describe('LocalVault', () => {
 				'note1.md': expect.anything(),
 				'note2.txt': expect.anything()
 			});
-			// Frozen SHA behavior: Non-binary files use path + plaintext
-			// Binary files (png, jpg, jpeg, pdf) use path + base64
+			// Canonical git blob SHA: SHA1("blob " + byteLen + NUL + rawBytes) — path is not included
 			expect(state['note1.md']).toMatchInlineSnapshot(
-				`"b8b1b70958bbc0b6f0305f4bc57a8393ba333130"`);
+				`"5e1e15cb4d9afa9689ba28b99e3d17ed7384edca"`);
 		});
 
 		it('should exclude ignored paths from state', async () => {
@@ -186,13 +185,13 @@ describe('LocalVault', () => {
 				'image.png': expect.anything(),
 				'archive.zip': expect.anything()
 			});
-			// SHAs should be stable (uses base64 encoding for all three)
+			// SHAs should be stable (canonical git blob SHA, same for all three since they have identical content in the test)
 			expect(state['doc.pdf']).toMatchInlineSnapshot(
-				`"acf8daf266d952b03fb02280dc5c92d8e4e51ad7"`);
+				`"1b1cb4d44c57c2d7a5122870fa6ac3e62ff7e94e"`);
 			expect(state['image.png']).toMatchInlineSnapshot(
-				`"fe954d839c04f84471b6dd90c945e55a6035de80"`);
+				`"1b1cb4d44c57c2d7a5122870fa6ac3e62ff7e94e"`);
 			expect(state['archive.zip']).toMatchInlineSnapshot(
-				`"a93c48b470cca6e238405a1aad306434aa9618a2"`);
+				`"1b1cb4d44c57c2d7a5122870fa6ac3e62ff7e94e"`);
 		});
 
 		it('should handle empty vault', async () => {
@@ -661,40 +660,42 @@ describe('LocalVault', () => {
 		});
 	});
 
-	describe('Unicode normalization in fileSha1 (issue #51)', () => {
-		it('NFD and NFC forms now produce SAME SHA (bug fixed)', async () => {
+	describe('fileSha1 canonical git blob SHA (issue #51, #146)', () => {
+		it('NFD and NFC paths produce the same SHA (path not in hash)', async () => {
 			const content = FileContent.fromPlainText("test content");
-
-			// Turkish filename with İ (capital I with dot) and ı (lowercase i without dot)
-			const turkishName = "Merhaba dünya ıııııııİİİİ.md";
-
-			// macOS/iOS typically use NFD (decomposed)
+			const turkishName = "Merhaba dünya ıııınınİİİİ.md";
 			const nfdPath = turkishName.normalize('NFD');
-			// Windows/Linux/Android typically use NFC (composed)
 			const nfcPath = turkishName.normalize('NFC');
+			expect(nfdPath).not.toBe(nfcPath); // confirm inputs differ
 
-			// Verify input paths are different byte sequences but visually identical
-			expect(nfdPath).not.toBe(nfcPath);
-			expect(nfdPath.length).not.toBe(nfcPath.length); // NFD has more codepoints
-
-			// FIXED: Both normalize to NFC before hashing, producing identical SHAs
-			const nfdSha = await LocalVault.fileSha1(nfdPath, content);
-			const nfcSha = await LocalVault.fileSha1(nfcPath, content);
-
-			// These SHAs are now the same, preventing file duplication
-			expect(nfdSha).toBe(nfcSha);
+			// Path is not part of the canonical hash, so both are identical
+			expect(await LocalVault.fileSha1(nfdPath, content))
+				.toBe(await LocalVault.fileSha1(nfcPath, content));
 		});
 
-		it('fileSha1 concatenates path + content before hashing', async () => {
+		it('fileSha1 matches canonical git blob SHA format', async () => {
+			const content = FileContent.fromPlainText("test");
+			const sha = await LocalVault.fileSha1("any/path.md", content);
+
+			// git blob SHA: SHA1("blob " + byteLen + NUL + rawBytes)
+			const rawBytes = new TextEncoder().encode("test");
+			const header = new TextEncoder().encode(`blob ${rawBytes.length}\0`);
+			const data = new Uint8Array(header.length + rawBytes.length);
+			data.set(header);
+			data.set(rawBytes, header.length);
+			const hashBuf = await crypto.subtle.digest('SHA-1', data);
+			const expected = Array.from(new Uint8Array(hashBuf))
+				.map(b => b.toString(16).padStart(2, '0')).join('');
+
+			expect(sha).toBe(expected);
+		});
+
+		it('fileLegacySha1 reproduces the old path+content SHA', async () => {
 			const path = "dünya.md";
 			const content = FileContent.fromPlainText("test");
-
-			// LocalVault.fileSha1 does: computeSha1(path + content)
-			const sha = await LocalVault.fileSha1(path, content);
-
-			// Verify it's computing SHA of the concatenation
+			const legacySha = await LocalVault.fileLegacySha1(path, content);
 			const manualSha = await computeSha1(path + "test");
-			expect(sha).toBe(manualSha);
+			expect(legacySha).toBe(manualSha);
 		});
 	});
 

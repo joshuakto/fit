@@ -20,6 +20,17 @@ import { FileContent } from './util/contentEncoding';
 import { BlobSha, CommitSha } from './util/hashing';
 import FitNotice from './fitNotice';
 
+/** Build a LocalStores object with sensible defaults, overriding as needed. */
+function makeLocalStore(overrides: Partial<LocalStores> = {}): LocalStores {
+	return {
+		localShas: {},
+		lastFetchedRemoteShas: {},
+		lastFetchedCommitSha: null,
+		unpushedFiles: {},
+		...overrides
+	};
+}
+
 describe('FitSync', () => {
 	let localVault: FakeLocalVault;
 	let remoteVault: FakeRemoteVault;
@@ -138,11 +149,11 @@ describe('FitSync', () => {
 
 		// Initialize local store state (empty/synced state)
 		// Note: localStoreState is hoisted to test scope so assertions can verify its updates
-		localStoreState = {
-			localSha: {},
-			lastFetchedRemoteSha: {},
+		localStoreState = makeLocalStore({
+			localShas: {},
+			lastFetchedRemoteShas: {},
 			lastFetchedCommitSha: 'commit-initial' as CommitSha
-		};
+		});
 
 		// Capture console output for debugging failed tests
 		const consoleLogCapture: any[] = [];
@@ -219,11 +230,11 @@ describe('FitSync', () => {
 		]);
 
 		// Verify: LocalStores NOT updated
-		expect(localStoreState).toEqual({
-			localSha: {}, // Still empty
+		expect(localStoreState).toEqual(expect.objectContaining({
+			localShas: {}, // Still empty
 			lastFetchedCommitSha: 'commit-initial', // Unchanged
-			lastFetchedRemoteSha: {}, // Still empty
-		});
+			lastFetchedRemoteShas: {}, // Still empty
+		}));
 
 		// Verify: Remote not updated
 		expect(remoteVault.getAllFilesAsRaw()).toEqual({}); // Still empty
@@ -257,18 +268,18 @@ describe('FitSync', () => {
 		});
 
 		// Verify: LocalStores updated with BOTH files
-		expect(localStoreState).toEqual({
-			localSha: {
+		expect(localStoreState).toEqual(expect.objectContaining({
+			localShas: {
 				'fileA.md': expect.anything(),
 				'fileB.md': expect.anything()
 			},
 			lastFetchedCommitSha: expect.not.stringMatching('initial-commit'),
-			lastFetchedRemoteSha: {
+			lastFetchedRemoteShas: {
 				'fileA.md': expect.anything(),
 				'fileB.md': expect.anything()
 			},
 			unpushedFiles: {}
-		});
+		}));
 
 		// Verify: Remote has new commit and both files
 		expect(remoteVault.getAllFilesAsRaw()).toEqual({
@@ -323,10 +334,10 @@ describe('FitSync', () => {
 			// Verify: LocalStores - .obsidian/ files NOT tracked (filtered by shouldSyncPath)
 			// Protected paths (.obsidian/, _fit/) are excluded from both local and remote caches
 			expect(localStoreState).toMatchObject({
-				localSha: {
+				localShas: {
 					'normal.md': expect.any(String)  // Only normal file
 				},
-				lastFetchedRemoteSha: {
+				lastFetchedRemoteShas: {
 					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
 				}
 			});
@@ -401,10 +412,10 @@ describe('FitSync', () => {
 			// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
 
 			// Verify: LocalStores track different files:
-			// - localSha: Only synced files (excludes _fit/ and other protected paths)
-			// - lastFetchedRemoteSha: ALL remote files (unfiltered to detect changes correctly)
-			expect(Object.keys(localStoreState.localSha).sort()).toEqual(['normal.md', 'remote-normal.md']);
-			expect(Object.keys(localStoreState.lastFetchedRemoteSha).sort()).toEqual([
+			// - localShas: Only synced files (excludes _fit/ and other protected paths)
+			// - lastFetchedRemoteShas: ALL remote files (unfiltered to detect changes correctly)
+			expect(Object.keys(localStoreState.localShas).sort()).toEqual(['normal.md', 'remote-normal.md']);
+			expect(Object.keys(localStoreState.lastFetchedRemoteShas).sort()).toEqual([
 				'_fit/remote-conflict.md',  // Protected path - tracked in remote cache but not local cache
 				'normal.md',
 				'remote-normal.md'
@@ -453,8 +464,8 @@ describe('FitSync', () => {
 			expect(Object.keys(remoteVault.getAllFilesAsRaw())).toEqual(['visible.md']);
 
 			// Verify: LocalStores only track visible file
-			expect(Object.keys(localStoreState.localSha)).toEqual(['visible.md']);
-			expect(Object.keys(localStoreState.lastFetchedRemoteSha)).toEqual(['visible.md']);
+			expect(Object.keys(localStoreState.localShas)).toEqual(['visible.md']);
+			expect(Object.keys(localStoreState.lastFetchedRemoteShas)).toEqual(['visible.md']);
 
 			// === STEP 3: Modify hidden file locally ===
 			localVault.setFile('.hidden-file.md', 'Updated hidden content');
@@ -491,11 +502,11 @@ describe('FitSync', () => {
 			localVault.setFile('normal.md', 'Normal content');
 			await remoteVault.setFile('normal.md', 'Normal content');
 			const remoteResult = await remoteVault.readFromSource();
-			localStoreState = {
-				localSha: (await localVault.readFromSource()).state,
-				lastFetchedRemoteSha: remoteResult.state,
+			localStoreState = makeLocalStore({
+				localShas: (await localVault.readFromSource()).state,
+				lastFetchedRemoteShas: remoteResult.state,
 				lastFetchedCommitSha: remoteResult.commitSha
-			};
+			});
 			const fitSync = createFitSync();
 
 			// === STEP 1: Create hidden file locally (not tracked by LocalVault) ===
@@ -530,12 +541,12 @@ describe('FitSync', () => {
 			expect(remoteVault.getFile('.hidden-config.json')).toBe('Remote version');
 
 			// Verify: LocalStores updated with both files (issue #169 fix)
-			// Hidden file IS now in localSha (SHA keyed by original path, not _fit/ path)
-			expect(localStoreState.localSha).toMatchObject({
+			// Hidden file IS now in localShas (SHA keyed by original path, not _fit/ path)
+			expect(localStoreState.localShas).toMatchObject({
 				'normal.md': expect.any(String),
 				'.hidden-config.json': expect.any(String)
 			});
-			expect(localStoreState.lastFetchedRemoteSha).toMatchObject({
+			expect(localStoreState.lastFetchedRemoteShas).toMatchObject({
 				'normal.md': expect.any(String),
 				'.hidden-config.json': expect.any(String)
 			});
@@ -545,11 +556,11 @@ describe('FitSync', () => {
 			// Test: Clash → User accepts _fit/ version → Next sync updates directly
 			//
 			// === SETUP: Start from empty state, then create clash ===
-			localStoreState = {
-				localSha: {},
-				lastFetchedRemoteSha: {},
+			localStoreState = makeLocalStore({
+				localShas: {},
+				lastFetchedRemoteShas: {},
 				lastFetchedCommitSha: (await remoteVault.readFromSource()).commitSha
-			};
+			});
 
 			// Local has hidden file, remote adds same file with different content
 			localVault.setFile('.hidden', 'Local content');
@@ -564,7 +575,7 @@ describe('FitSync', () => {
 				'.hidden': 'Local content', // Local version preserved
 				'_fit/.hidden': 'Remote content v1' // Remote version saved to _fit/
 			});
-			expect(localStoreState.localSha['.hidden']).toBeDefined(); // Baseline recorded
+			expect(localStoreState.localShas['.hidden']).toBeDefined(); // Baseline recorded
 
 			// === STEP 2: User accepts remote version and deletes _fit/ file ===
 			localVault.setFile('.hidden', 'Remote content v1');
@@ -589,11 +600,11 @@ describe('FitSync', () => {
 			await remoteVault.setFile('normal.md', 'Normal content');
 
 			let remoteResult = await remoteVault.readFromSource();
-			localStoreState = {
-				localSha: await localVault.readFromSource().then(r => r.state),
-				lastFetchedRemoteSha: remoteResult.state,
+			localStoreState = makeLocalStore({
+				localShas: await localVault.readFromSource().then(r => r.state),
+				lastFetchedRemoteShas: remoteResult.state,
 				lastFetchedCommitSha: remoteResult.commitSha
-			};
+			});
 			const fitSync = createFitSync();
 
 			// === STEP 1: Device A creates hidden file and syncs ===
@@ -611,7 +622,7 @@ describe('FitSync', () => {
 				'normal.md': 'Normal content'
 			});
 			// Baseline SHA now stored for future syncs
-			expect(localStoreState.localSha).toHaveProperty('.hidden-config.json');
+			expect(localStoreState.localShas).toHaveProperty('.hidden-config.json');
 
 			// === STEP 3: Device A modifies hidden file and pushes ===
 			const updatedContent = 'Updated config v2';
@@ -633,12 +644,12 @@ describe('FitSync', () => {
 			// No second clash file created
 			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('_fit/.hidden-config.json');
 
-			// Verify: LocalStores updated with hidden file SHA (now includes hidden files in localSha)
+			// Verify: LocalStores updated with hidden file SHA (now includes hidden files in localShas)
 			expect(localStoreState).toMatchObject({
-				localSha: {
+				localShas: {
 					'.hidden-config.json': expect.anything(),
 				},
-				lastFetchedRemoteSha: {
+				lastFetchedRemoteShas: {
 					'.hidden-config.json': expect.anything(),
 					'normal.md': expect.anything(),
 				},
@@ -647,7 +658,7 @@ describe('FitSync', () => {
 
 		it('should write remote hidden files directly when no local version exists (#169)', async () => {
 			// Test: Remote adds hidden file → written directly (not to _fit/)
-			// Baseline SHA recorded in localSha for future comparison
+			// Baseline SHA recorded in localShas for future comparison
 			//
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
@@ -673,11 +684,11 @@ describe('FitSync', () => {
 
 			// Verify: Baseline SHA recorded for hidden file (#169)
 			expect(localStoreState).toMatchObject({
-				localSha: {
+				localShas: {
 					'.hidden-config.json': expect.any(String),  // NEW: Baseline recorded for direct write
 					'visible.md': expect.any(String)
 				},
-				lastFetchedRemoteSha: {
+				lastFetchedRemoteShas: {
 					'.hidden-config.json': expect.any(String),
 					'visible.md': expect.any(String)
 				}
@@ -686,20 +697,20 @@ describe('FitSync', () => {
 	});
 
 	describe('🚨 Data loss prevention (safety nets for bugs/migrations)', () => {
-		it('should never overwrite local file when remote MODIFIED but file missing from localSha', async () => {
+		it('should never overwrite local file when remote MODIFIED but file missing from localShas', async () => {
 			// === CRITICAL DATA LOSS SCENARIO ===
 			// This simulates TWO dangerous scenarios:
 			//
 			// SCENARIO 1 (future risk): Future plugin version adds full hidden file tracking via DataAdapter.
 			//   - shouldTrackState() returns true for hidden files
-			//   - But during version upgrade, localSha doesn't have the file yet (not in baseline)
+			//   - But during version upgrade, localShas doesn't have the file yet (not in baseline)
 			//   - Remote has modifications to the hidden file
 			//   - Plugin thinks file is tracked but has no SHA to compare against
 			//   - Could blindly overwrite local file with remote version → DATA LOSS
 			//
 			// SCENARIO 2 (current risk): Bug where we misunderstand Obsidian's Vault API contract.
 			//   - We think a path type is trackable and call shouldTrackState(path) → true
-			//   - But Vault API actually filters/hides it, so it never appears in localSha
+			//   - But Vault API actually filters/hides it, so it never appears in localShas
 			//   - Remote has modifications to the file
 			//   - Same result: no SHA to compare, blind overwrite → DATA LOSS
 			//
@@ -707,11 +718,11 @@ describe('FitSync', () => {
 			// using vault.adapter.exists() (bypasses Vault API filtering, sees ALL files).
 
 			// === SETUP: Simulate state mismatch ===
-			// Remote has a hidden file (exists in lastFetchedRemoteSha)
-			localStoreState.lastFetchedRemoteSha = {
+			// Remote has a hidden file (exists in lastFetchedRemoteShas)
+			localStoreState.lastFetchedRemoteShas = {
 				'.env': 'fake-sha-for-old-remote-value' as BlobSha
 			};
-			localStoreState.localSha = {}; // File NOT in localSha (not tracked during scan)
+			localStoreState.localShas = {}; // File NOT in localShas (not tracked during scan)
 
 			// Local vault has the file with user modifications (exists on filesystem)
 			localVault.setFile('.env', 'API_KEY=local-secret-data');
@@ -755,7 +766,7 @@ describe('FitSync', () => {
 			// Verify: SHA keyed by original path ".env", NOT "_fit/.env" (issue #169)
 			// This enables proper change detection on subsequent syncs
 			const expectedSha = await LocalVault.fileSha1('.env', FileContent.fromPlainText('API_KEY=new-remote-value'));
-			expect(localStoreState.localSha).toEqual({
+			expect(localStoreState.localShas).toEqual({
 				'.env': expectedSha,
 				// Must NOT have '_fit/.env'
 			});
@@ -764,17 +775,17 @@ describe('FitSync', () => {
 			// for hidden files, triggering the clash detection logic in FitSync.applyRemoteChanges().
 			//
 			// However, the DANGEROUS scenarios (future hidden file tracking OR API misunderstanding)
-			// where shouldTrackState returns TRUE but file is not in localSha would BYPASS this protection.
+			// where shouldTrackState returns TRUE but file is not in localShas would BYPASS this protection.
 			// In those cases, FitSync.applyRemoteChanges() would think the file is trackable,
-			// see it's not in localSha, and blindly overwrite local file with remote version.
+			// see it's not in localShas, and blindly overwrite local file with remote version.
 			//
 			// REQUIRED ADDITIONAL PROTECTION:
 			// Before applying remote changes in FitSync.applyRemoteChanges():
-			//   if (change.type === 'MODIFIED' && !localSha.hasOwnProperty(path)) {
-			//     // File MODIFIED remotely but not in localSha - could be version migration issue
+			//   if (change.type === 'MODIFIED' && !localShas.hasOwnProperty(path)) {
+			//     // File MODIFIED remotely but not in localShas - could be version migration issue
 			//     const exists = await vault.adapter.exists(path);
 			//     if (exists) {
-			//       fitLogger.log('[FitSync] File exists locally but not in localSha - treating as clash');
+			//       fitLogger.log('[FitSync] File exists locally but not in localShas - treating as clash');
 			//       // Save to _fit/ instead of overwriting
 			//       return false; // Skip overwrite
 			//     }
@@ -784,10 +795,10 @@ describe('FitSync', () => {
 			// is implemented, this test would also verify it prevents data loss in the dangerous scenarios.
 		});
 
-		it('should never delete local file when remote deleted but file missing from localSha', async () => {
+		it('should never delete local file when remote deleted but file missing from localShas', async () => {
 			// Scenario: Hidden file exists locally, gets deleted from remote
 			// Expected: Local file preserved (not deleted) because we can't verify it's safe to delete
-			// This prevents data loss when a file isn't tracked in localSha
+			// This prevents data loss when a file isn't tracked in localShas
 
 			// === SETUP: Initial synced state with hidden file ===
 			const hiddenFileContent = 'important local config';
@@ -799,18 +810,18 @@ describe('FitSync', () => {
 
 			const { state: initialRemoteState } = await remoteVault.readFromSource();
 			const { state: initialLocalState } = await localVault.readFromSource();
-			localStoreState = {
-				// localSha: .gitignore NOT tracked (hidden file)
-				localSha: {
+			localStoreState = makeLocalStore({
+				// localShas: .gitignore NOT tracked (hidden file)
+				localShas: {
 					'README.md': initialLocalState['README.md']
 				},
-				// lastFetchedRemoteSha: .gitignore IS tracked (asymmetric)
-				lastFetchedRemoteSha: {
+				// lastFetchedRemoteShas: .gitignore IS tracked (asymmetric)
+				lastFetchedRemoteShas: {
 					'.gitignore': initialRemoteState['.gitignore'],
 					'README.md': initialRemoteState['README.md']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
-			};
+			});
 
 			// === STEP 1: Remote deletes .gitignore ===
 			await remoteVault.applyChanges(
@@ -857,18 +868,18 @@ describe('FitSync', () => {
 			// This represents old buggy behavior where hidden files weren't indexed
 			const { state: initialRemoteState } = await remoteVault.readFromSource();
 			const { state: initialLocalState } = await localVault.readFromSource();
-			localStoreState = {
-				localSha: {
+			localStoreState = makeLocalStore({
+				localShas: {
 					// README.md IS tracked locally (so it won't appear as "ADDED")
 					'README.md': initialLocalState['README.md']
 				},
-				lastFetchedRemoteSha: {
+				lastFetchedRemoteShas: {
 					// BUG: .gitignore is missing even though it exists in the commit
 					'README.md': initialRemoteState['README.md']
 					// '.gitignore' is missing from cache
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
-			};
+			});
 
 			// === STEP 1: Remote modifies README.md (triggers sync) ===
 			// This also causes us to re-scan remote and discover .gitignore
@@ -894,15 +905,15 @@ describe('FitSync', () => {
 				'_fit/.gitignore': remoteGitignoreContent
 			});
 
-			// Verify stat performance: README.md already in localSha (no stat), .gitignore not in localSha (needs stat)
-			// Note: .gitignore gets stat checked because it's not in localSha (was missing from cache)
+			// Verify stat performance: README.md already in localShas (no stat), .gitignore not in localShas (needs stat)
+			// Note: .gitignore gets stat checked because it's not in localShas (was missing from cache)
 			const statLog = localVault.getStatLog();
-			// Should not stat README.md (already tracked in localSha)
+			// Should not stat README.md (already tracked in localShas)
 			expect(statLog).not.toContain('README.md');
 		});
 
 		it('should save remote file to _fit/ when stat fails to check local existence (addition)', async () => {
-			// Hidden files aren't in localSha but DO pass shouldSyncPath(), so we stat() them.
+			// Hidden files aren't in localShas but DO pass shouldSyncPath(), so we stat() them.
 			// If stat() fails, conservatively treat file as "may exist" → save to _fit/.
 
 			// === SETUP: Empty initial state ===
@@ -1062,15 +1073,15 @@ describe('FitSync', () => {
 			const initialRemoteState = await remoteVault.readFromSource();
 			const initialLocalState = await localVault.readFromSource();
 
-			localStoreState = {
-				localSha: {
+			localStoreState = makeLocalStore({
+				localShas: {
 					'.hidden': initialLocalState.state['.hidden']
 				},
-				lastFetchedRemoteSha: {
+				lastFetchedRemoteShas: {
 					'.hidden': initialRemoteState.state['.hidden']
 				},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
-			};
+			});
 
 			// Simulate v2: filtering rule changed (now excludes hidden files)
 			localVault.shouldTrackState = originalShouldTrackState;
@@ -1088,8 +1099,8 @@ describe('FitSync', () => {
 			// File should NOT be deleted from remote (safeguard prevents data loss)
 			expect(remoteVault.getFile('.hidden')).toBe(hiddenFileContent);
 
-			// localSha should exclude .hidden (new filtering rules)
-			expect(localStoreState.localSha).not.toHaveProperty('.hidden');
+			// localShas should exclude .hidden (new filtering rules)
+			expect(localStoreState.localShas).not.toHaveProperty('.hidden');
 		});
 	});
 
@@ -1670,11 +1681,11 @@ describe('FitSync', () => {
 
 			// Setup a simple sync scenario
 			remoteVault.setFile('test.md', 'content');
-			localStoreState = {
-				localSha: {},
-				lastFetchedRemoteSha: {},
+			localStoreState = makeLocalStore({
+				localShas: {},
+				lastFetchedRemoteShas: {},
 				lastFetchedCommitSha: remoteVault.getCommitSha()
-			};
+			});
 
 			const fitSync = createFitSync();
 			const mockNotice = createMockNotice();
@@ -1823,9 +1834,9 @@ describe('FitSync', () => {
 				'huge.mp4': expect.any(String)
 			});
 
-			// Assert: localSha cache includes both files (huge.mp4 treated as "synced" by cache
+			// Assert: localShas cache includes both files (huge.mp4 treated as "synced" by cache
 			// so sync engine won't retry it — unpushedFiles is the tracking mechanism)
-			expect(localStoreState.localSha).toMatchObject({
+			expect(localStoreState.localShas).toMatchObject({
 				'huge.mp4': expect.any(String),
 				'normal.md': expect.any(String),
 			});
@@ -1860,12 +1871,12 @@ describe('FitSync', () => {
 			localVault.setFile('huge.mp4', 'big file content');
 			const hugeFileContent = FileContent.fromPlainText('big file content');
 			const hugeFileSha = await LocalVault.fileSha1('huge.mp4', hugeFileContent);
-			localStoreState = {
+			localStoreState = makeLocalStore({
 				...localStoreState,
-				localSha: { 'huge.mp4': hugeFileSha as BlobSha },
-				lastFetchedRemoteSha: {},
+				localShas: { 'huge.mp4': hugeFileSha as BlobSha },
+				lastFetchedRemoteShas: {},
 				unpushedFiles: { 'huge.mp4': hugeFileSha as BlobSha }
-			};
+			});
 			const fitSync = createFitSync();
 			// Do NOT set skippedPaths — no upload attempt should happen
 			const remoteApplySpy = vi.spyOn(remoteVault, 'applyChanges');
@@ -1893,12 +1904,12 @@ describe('FitSync', () => {
 			// Arrange: file was previously skipped with old SHA
 			localVault.setFile('huge.mp4', 'modified content'); // Different content = new SHA
 			const oldSha = 'old-sha-from-before-modification' as BlobSha;
-			localStoreState = {
+			localStoreState = makeLocalStore({
 				...localStoreState,
-				localSha: { 'huge.mp4': oldSha }, // Out of date — will cause localChanges detection
-				lastFetchedRemoteSha: {},
+				localShas: { 'huge.mp4': oldSha }, // Out of date — will cause localChanges detection
+				lastFetchedRemoteShas: {},
 				unpushedFiles: { 'huge.mp4': oldSha }
-			};
+			});
 			const fitSync = createFitSync();
 			// Don't skip this time — let the file attempt to push (simulates user modified file)
 			// The new content will be written normally
@@ -1919,12 +1930,12 @@ describe('FitSync', () => {
 			await remoteVault.setFile('huge.mp4', 'manually pushed content');
 			localVault.setFile('huge.mp4', 'manually pushed content'); // Same content locally
 			const hugeFileSha = 'some-sha' as BlobSha;
-			localStoreState = {
+			localStoreState = makeLocalStore({
 				...localStoreState,
-				localSha: { 'huge.mp4': hugeFileSha },
-				lastFetchedRemoteSha: {}, // Remote SHA unknown → will be detected as remote add
+				localShas: { 'huge.mp4': hugeFileSha },
+				lastFetchedRemoteShas: {}, // Remote SHA unknown → will be detected as remote add
 				unpushedFiles: { 'huge.mp4': hugeFileSha }
-			};
+			});
 			const fitSync = createFitSync();
 
 			// Act
@@ -1934,6 +1945,167 @@ describe('FitSync', () => {
 			// Assert: sync succeeded and unpushedFiles entry cleared
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localStoreState.unpushedFiles).not.toHaveProperty('huge.mp4');
+		});
+	});
+
+	describe('SHA migration (localSha → localShas)', () => {
+		describe('loadLocalStore field mapping', () => {
+			it('localShas only (clean v2) — no migration, localSha empty', () => {
+				const canonicalShas = { 'note.md': 'canonical-sha' as BlobSha };
+				const fit = createFit(makeLocalStore({
+					localShas: canonicalShas,
+				}));
+
+				expect(fit.localShas).toEqual(canonicalShas);
+				expect(fit.localSha).toEqual({});
+			});
+
+			it('localSha only (legacy data) — localShas empty, localSha populated', () => {
+				const legacyShas = { 'note.md': 'legacy-sha' as BlobSha };
+				const fit = createFit(makeLocalStore({
+					localShas: {},
+					localSha: legacyShas,
+				}));
+
+				expect(fit.localShas).toEqual({});
+				expect(fit.localSha).toEqual(legacyShas);
+			});
+
+			it('both present (downgrade scenario) — both populated', () => {
+				const canonicalShas = { 'file1.md': 'canonical-sha' as BlobSha };
+				const legacyShas = { 'file2.md': 'legacy-sha' as BlobSha };
+				const fit = createFit(makeLocalStore({
+					localShas: canonicalShas,
+					localSha: legacyShas,
+				}));
+
+				expect(fit.localShas).toEqual(canonicalShas);
+				expect(fit.localSha).toEqual(legacyShas);
+			});
+		});
+
+		describe('getLocalChanges: per-file migration', () => {
+			it('unchanged file with legacy SHA — promoted silently, not in changes', async () => {
+				const content = FileContent.fromPlainText('hello world');
+				localVault.setFile('note.md', content);
+				const legacySha = await LocalVault.fileLegacySha1('note.md', content);
+
+				const fit = createFit(makeLocalStore({
+					localShas: {},
+					localSha: { 'note.md': legacySha },
+					lastFetchedRemoteShas: {},
+					lastFetchedCommitSha: null,
+				}));
+
+				const { changes } = await fit.getLocalChanges();
+
+				expect(changes).toEqual([]);
+				expect(fit.localShas['note.md']).toBeTruthy(); // canonical SHA adopted
+				expect(fit.localSha).toEqual({});              // entry fully promoted
+			});
+
+			it('changed file with legacy SHA — detected as ADDED, entry cleared', async () => {
+				// Legacy SHA was stored for 'old content'; file now has 'new content'
+				localVault.setFile('note.md', FileContent.fromPlainText('new content'));
+				const legacyShaForOldContent = await LocalVault.fileLegacySha1(
+					'note.md', FileContent.fromPlainText('old content')
+				);
+
+				const fit = createFit(makeLocalStore({
+					localShas: {},
+					localSha: { 'note.md': legacyShaForOldContent },
+					lastFetchedRemoteShas: {},
+					lastFetchedCommitSha: null,
+				}));
+
+				const { changes } = await fit.getLocalChanges();
+
+				expect(changes).toContainEqual(expect.objectContaining({ path: 'note.md', type: 'ADDED' }));
+				expect(fit.localSha).toEqual({});                 // entry cleared even on mismatch
+				expect(fit.localShas['note.md']).toBeUndefined(); // no canonical baseline set
+			});
+
+			it('downgrade scenario (both fields) — re-promoted on match', async () => {
+				// Both present: old code re-wrote localSha during downgrade
+				const content = FileContent.fromPlainText('stable content');
+				localVault.setFile('stable.md', content);
+				const legacySha = await LocalVault.fileLegacySha1('stable.md', content);
+				const oldCanonicalSha = 'old-canonical' as BlobSha;
+
+				const fit = createFit(makeLocalStore({
+					localShas: { 'stable.md': oldCanonicalSha },
+					localSha: { 'stable.md': legacySha },
+					lastFetchedRemoteShas: {},
+					lastFetchedCommitSha: null,
+				}));
+
+				const { changes } = await fit.getLocalChanges();
+
+				// File content matches legacy SHA → promoted, no change reported
+				expect(changes).toEqual([]);
+				expect(fit.localSha).toEqual({});              // legacy entry cleared
+				expect(fit.localShas['stable.md']).toBeTruthy(); // canonical baseline updated
+			});
+
+			it('last legacy entry promoted — localSha becomes empty', async () => {
+				const content = FileContent.fromPlainText('only file');
+				localVault.setFile('only.md', content);
+				const legacySha = await LocalVault.fileLegacySha1('only.md', content);
+
+				const fit = createFit(makeLocalStore({
+					localShas: {},
+					localSha: { 'only.md': legacySha },
+					lastFetchedRemoteShas: {},
+					lastFetchedCommitSha: null,
+				}));
+
+				await expect(fit.getLocalChanges()).resolves.not.toThrow();
+				expect(fit.localSha).toEqual({});
+			});
+
+			it('orphaned legacy entry for deleted file — cleaned up', async () => {
+				// File exists in localSha but not on disk → should be cleaned up
+				const fit = createFit(makeLocalStore({
+					localShas: {},
+					localSha: { 'deleted.md': 'some-legacy-sha' as BlobSha },
+					lastFetchedRemoteShas: {},
+					lastFetchedCommitSha: null,
+				}));
+
+				// No files on disk
+				const { changes } = await fit.getLocalChanges();
+
+				// Orphaned entry cleaned up, no spurious changes
+				expect(fit.localSha).toEqual({});
+				expect(changes).toEqual([]);
+			});
+		});
+
+		describe('re-upload safety', () => {
+			// After migration, a file whose legacy SHA mismatched appears as ADDED and gets re-uploaded.
+			// Re-uploading content that already matches remote is safe (GitHub deduplicates blobs).
+			it('file matching remote content re-uploaded without error', async () => {
+				const content = 'synced content';
+				localVault.setFile('note.md', content);
+				await remoteVault.setFile('note.md', content);
+
+				// lastFetchedRemoteShas still accurate from last v2 sync
+				const remoteState = await remoteVault.readFromSource();
+				const remoteFileSha = remoteState.state['note.md'];
+
+				localStoreState = makeLocalStore({
+					localShas: {},  // no baseline — file will appear as ADDED
+					lastFetchedRemoteShas: { 'note.md': remoteFileSha },
+					lastFetchedCommitSha: remoteState.commitSha,
+				});
+				const fitSync = createFitSync();
+
+				const result = await fitSync.sync(createMockNotice() as any);
+
+				// Re-upload of already-remote content succeeds — GitHub accepts duplicate blobs
+				expect(result).toEqual(expect.objectContaining({ success: true }));
+				expect(remoteVault.getAllFilesAsRaw()).toMatchObject({ 'note.md': content });
+			});
 		});
 	});
 });

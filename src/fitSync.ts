@@ -9,22 +9,23 @@ import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
 import { BlobSha, CommitSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
+import * as Encryption from "./encryption";
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
 	source: string,
-	oldLocalSha: FileStates,
-	newLocalSha: FileStates,
-	oldRemoteSha: FileStates,
-	newRemoteSha: FileStates,
+	oldLocalShas: FileStates,
+	newLocalShas: FileStates,
+	oldRemoteShas: FileStates,
+	newRemoteShas: FileStates,
 	oldCommitSha: CommitSha | null | undefined,
 	newCommitSha: CommitSha,
 	extraContext?: Record<string, unknown>
 ) {
-	const oldLocalCount = Object.keys(oldLocalSha).length;
-	const newLocalCount = Object.keys(newLocalSha).length;
-	const localShaAdded = Object.keys(newLocalSha).filter(k => !oldLocalSha[k]);
-	const localShaRemoved = Object.keys(oldLocalSha).filter(k => !newLocalSha[k]);
+	const oldLocalCount = Object.keys(oldLocalShas).length;
+	const newLocalCount = Object.keys(newLocalShas).length;
+	const localShasAdded = Object.keys(newLocalShas).filter(k => !oldLocalShas[k]);
+	const localShasRemoved = Object.keys(oldLocalShas).filter(k => !newLocalShas[k]);
 	const warnings: string[] = [];
 
 	// Warn if cache went from non-empty to empty (possible data loss)
@@ -37,14 +38,14 @@ function logCacheUpdate(
 		warnings.push(`Local SHA cache jumped from 0 to ${newLocalCount} files - possible recovery from empty cache or first sync`);
 	}
 
-	const totalChanges = localShaAdded.length + localShaRemoved.length +
-		Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length +
-		Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length;
+	const totalChanges = localShasAdded.length + localShasRemoved.length +
+		Object.keys(newRemoteShas).filter(k => !oldRemoteShas[k]).length +
+		Object.keys(oldRemoteShas).filter(k => !newRemoteShas[k]).length;
 
 	if (totalChanges > 0 || oldCommitSha !== newCommitSha || warnings.length > 0) {
 		fitLogger.log(`.. 📦 [Cache] Updating SHA cache after ${source}`, {
-			localChanges: localShaAdded.length + localShaRemoved.length,
-			remoteChanges: Object.keys(newRemoteSha).filter(k => !oldRemoteSha[k]).length + Object.keys(oldRemoteSha).filter(k => !newRemoteSha[k]).length,
+			localChanges: localShasAdded.length + localShasRemoved.length,
+			remoteChanges: Object.keys(newRemoteShas).filter(k => !oldRemoteShas[k]).length + Object.keys(oldRemoteShas).filter(k => !newRemoteShas[k]).length,
 			commitChanged: oldCommitSha !== newCommitSha,
 			...(warnings.length > 0 && { warnings }),
 			...extraContext
@@ -181,7 +182,7 @@ export class FitSync implements IFitSync {
 				continue; // Don't write to protected path
 			}
 
-			// SAFETY: Check filesystem for files not in localSha cache
+			// SAFETY: Check filesystem for files not in localShas cache
 			// This protects against:
 			// 1. Version migrations where tracking rules changed
 			// 2. Bugs where shouldTrackState returns wrong value
@@ -189,7 +190,7 @@ export class FitSync implements IFitSync {
 			//
 			// If file not in cache but exists on disk → treat as clash, save to _fit/
 			// If file not in cache and doesn't exist → safe to write directly
-			if (!this.fit.localSha.hasOwnProperty(change.path)) {
+			if (!this.fit.localShas.hasOwnProperty(change.path)) {
 				// Not in cache - check if file exists using statPaths result
 				const stat = existenceMap.get(change.path);
 				if (stat === undefined) {
@@ -225,7 +226,7 @@ export class FitSync implements IFitSync {
 
 			// SAFETY: Check if file is in cache before deleting
 			// If not in cache, we cannot verify it's safe to delete
-			if (!this.fit.localSha.hasOwnProperty(path)) {
+			if (!this.fit.localShas.hasOwnProperty(path)) {
 				// Not in cache - check if file actually exists to determine appropriate action
 				// Use the existenceMap we already computed above
 				const stat = existenceMap.get(path);
@@ -342,7 +343,7 @@ export class FitSync implements IFitSync {
 		// This allows baseline comparison to prevent unnecessary clashes
 		const pathsNeedingShaCheck = Array.from(pathsToStat).filter(path =>
 			filesystemState.get(path) === true &&
-			this.fit.localSha[path] !== undefined
+			this.fit.localShas[path] !== undefined
 		);
 
 		const currentShas = new Map<string, BlobSha>();
@@ -365,7 +366,7 @@ export class FitSync implements IFitSync {
 			remoteChanges,
 			localChangePaths,
 			filesystemState,
-			this.fit.localSha,
+			this.fit.localShas,
 			currentShas,
 			isProtectedPath
 		);
@@ -438,9 +439,34 @@ export class FitSync implements IFitSync {
 	): Promise<SyncExecutionResult> {
 		// Prepare safe remote changes for pulling
 		const deleteFromLocalNonClashed = safeRemote.filter(c => c.type === "REMOVED").map(c => c.path);
+
+		// SHA parity optimization: when a remote ADD/MODIFY has the same canonical blob SHA
+		// as our local file, the content is already identical — skip the download.
+		// Only safe when encryption is off (encrypted blobs have a different SHA than plaintext).
+		// Guard: isEnabled() requires Encryption.init(plugin) which isn't called in tests.
+		let encryptionEnabled = false;
+		try { encryptionEnabled = Encryption.isEnabled(); } catch { /* uninitialized — treat as disabled */ }
+		const shaParitySkipped = new Set<string>();
+		if (!encryptionEnabled) {
+			for (const change of safeRemote) {
+				if (change.type === "REMOVED") continue;
+				const localSha = currentLocalState[change.path];
+				const remoteSha = remoteUpdate.remoteTreeSha[change.path];
+				if (localSha && remoteSha && localSha === remoteSha) {
+					shaParitySkipped.add(change.path);
+				}
+			}
+			if (shaParitySkipped.size > 0) {
+				fitLogger.log('[FitSync] SHA parity: skipping redundant download for identical files', {
+					count: shaParitySkipped.size,
+					paths: [...shaParitySkipped]
+				});
+			}
+		}
+
 		const addToLocalNonClashed = await Promise.all(
 			safeRemote
-				.filter(c => c.type !== "REMOVED")
+				.filter(c => c.type !== "REMOVED" && !shaParitySkipped.has(c.path))
 				.map(async (change) => ({
 					path: change.path,
 					content: await this.fit.remoteVault.readFileContent(change.path)
@@ -471,7 +497,7 @@ export class FitSync implements IFitSync {
 		}
 
 		// Record any files skipped due to API size limit (422) into unpushedFiles.
-		// localSha is updated normally for these files (sync engine won't retry),
+		// localShas is updated normally for these files (sync engine won't retry),
 		// so unpushedFiles is the sole tracking mechanism for them.
 		// Capture which paths are freshly added (not already known) for the tiered warning.
 		const previousUnpushedKeys = new Set(Object.keys(this.fit.unpushedFiles));
@@ -489,7 +515,7 @@ export class FitSync implements IFitSync {
 		let pushedChanges: Array<FileChange>;
 
 		if (pushResult) {
-			latestRemoteTreeSha = pushResult.lastFetchedRemoteSha;
+			latestRemoteTreeSha = pushResult.lastFetchedRemoteShas;
 			latestCommitSha = pushResult.lastFetchedCommitSha;
 			pushedChanges = pushResult.pushedChanges;
 		} else {
@@ -546,9 +572,9 @@ export class FitSync implements IFitSync {
 
 		logCacheUpdate(
 			'sync',
-			this.fit.localSha || {},
+			this.fit.localShas || {},
 			newLocalState,
-			this.fit.lastFetchedRemoteSha || {},
+			this.fit.lastFetchedRemoteShas || {},
 			latestRemoteTreeSha,
 			this.fit.lastFetchedCommitSha,
 			latestCommitSha,
@@ -573,13 +599,15 @@ export class FitSync implements IFitSync {
 		const newlySkippedPaths = pushResult?.skippedPaths?.filter(p => !previousUnpushedKeys.has(p)) ?? [];
 
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteSha: latestRemoteTreeSha, // Unfiltered - must track ALL remote files to detect changes
+			lastFetchedRemoteShas: latestRemoteTreeSha,
 			lastFetchedCommitSha: latestCommitSha,
 			// TODO: Remove filterSyncedState after fixing bug where remote _fit/ files are passed to applyChanges
 			// Currently remote _fit/ paths bypass shouldSyncPath filtering and get SHAs computed.
 			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
-			localSha: this.fit.filterSyncedState(newLocalState),
+			localShas: this.fit.filterSyncedState(newLocalState),
 			unpushedFiles: this.fit.unpushedFiles,
+			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
+			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
 
 		return {
@@ -764,7 +792,7 @@ export class FitSync implements IFitSync {
 			parentCommitSha: CommitSha
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteSha: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
@@ -822,7 +850,7 @@ export class FitSync implements IFitSync {
 				// Return minimal push result so caller can update unpushedFiles
 				return {
 					pushedChanges: [],
-					lastFetchedRemoteSha: result.newState,
+					lastFetchedRemoteShas: result.newState,
 					lastFetchedCommitSha: result.commitSha,
 					skippedPaths: result.skippedPaths,
 					skippedWarning: result.skippedWarning,
@@ -838,7 +866,7 @@ export class FitSync implements IFitSync {
 
 		return {
 			pushedChanges,
-			lastFetchedRemoteSha: result.newState,
+			lastFetchedRemoteShas: result.newState,
 			lastFetchedCommitSha: result.commitSha,
 			skippedPaths: result.skippedPaths,
 			skippedWarning: result.skippedWarning,
