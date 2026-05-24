@@ -1950,6 +1950,52 @@ describe('FitSync', () => {
 		});
 	});
 
+	describe('rateLimitedPaths — transient upload failure retry', () => {
+		it('rate-limited file: localShas cleared so it is re-detected on next sync', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('normal.md', 'normal content');
+			localVault.setFile('blocked.md', 'blocked content');
+			remoteVault.setRateLimitedPaths(['blocked.md']);
+
+			const result = await fitSync.sync(createMockNotice() as any);
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'normal.md': 'normal content' });
+			// Exact localShas shape: normal.md present, blocked.md absent (re-detected next sync)
+			expect(localStoreState.localShas).toEqual({ 'normal.md': expect.any(String) });
+			expect(localStoreState.unpushedFiles).toEqual({});
+		});
+
+		it.each([
+			{ desc: 'manual sync', isAutoSync: false },
+			{ desc: 'auto sync', isAutoSync: true },
+		])('shows "Sync incomplete" notice ($desc)', async ({ isAutoSync }) => {
+			const fitSync = createFitSync();
+			localVault.setFile('blocked.md', 'content');
+			remoteVault.setRateLimitedPaths(['blocked.md']);
+
+			const mockNotice = createMockNotice();
+			await fitSync.sync(mockNotice as any, { isAutoSync });
+
+			const finalMessage = mockNotice.setMessage.mock.calls.at(-1)?.[0] as string;
+			expect(finalMessage).toContain('Sync incomplete');
+			expect(finalMessage).toContain('blocked.md');
+		});
+
+		it('next sync retries rate-limited file after localShas cleared', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('blocked.md', 'content');
+			remoteVault.setRateLimitedPaths(['blocked.md']);
+			await fitSync.sync(createMockNotice() as any);
+
+			const result = await fitSync.sync(createMockNotice() as any);
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'blocked.md': 'content' });
+			expect(localStoreState.localShas).toEqual({ 'blocked.md': expect.any(String) });
+		});
+	});
+
 	describe('SHA migration (localSha → localShas)', () => {
 		describe('loadLocalStore field mapping', () => {
 			it('localShas only (clean v2) — no migration, localSha empty', () => {

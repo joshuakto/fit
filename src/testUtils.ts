@@ -761,6 +761,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	private commitSha: CommitSha = 'initial-commit' as CommitSha;
 	private failureError: Error | null = null;
 	private _skippedPaths: Set<string> = new Set(); // Paths that return 422 on next applyChanges
+	private _rateLimitedPaths: Set<string> = new Set(); // Paths returned as rateLimitedPaths on next applyChanges
 	private owner: string;
 	private repo: string;
 	private branch: string;
@@ -791,6 +792,14 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	 */
 	setSkippedPaths(paths: string[]): void {
 		this._skippedPaths = new Set(paths);
+	}
+
+	/**
+	 * Configure paths to be returned as rateLimitedPaths on the next applyChanges call.
+	 * Simulates a transient rejection (e.g. rate limit) where the file should be retried next sync.
+	 */
+	setRateLimitedPaths(paths: string[]): void {
+		this._rateLimitedPaths = new Set(paths);
 	}
 
 	/**
@@ -925,17 +934,23 @@ export class FakeRemoteVault implements IVault<"remote"> {
 
 		const changes: FileChange[] = [];
 		const skippedPaths: string[] = [];
+		const rateLimitedPaths: string[] = [];
 
 		for (const file of filesToWrite) {
 			if (this._skippedPaths.has(file.path)) {
 				skippedPaths.push(file.path);
 				continue; // Simulate 422 skip
 			}
+			if (this._rateLimitedPaths.has(file.path)) {
+				rateLimitedPaths.push(file.path);
+				continue; // Simulate transient rejection
+			}
 			const existed = this.files.has(file.path);
 			this.setFile(file.path, file.content);
 			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
 		this._skippedPaths.clear(); // Consume after one applyChanges call
+		this._rateLimitedPaths.clear();
 
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
@@ -972,6 +987,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 			treeSha,
 			newState,
 			...(skippedPaths.length > 0 && { skippedPaths, skippedWarning }),
+			...(rateLimitedPaths.length > 0 && { rateLimitedPaths }),
 		};
 	}
 
