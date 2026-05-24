@@ -583,7 +583,7 @@ export default class FitSettingTab extends PluginSettingTab {
 						const { state } = await this.plugin.fit.remoteVault.readFromSource(true);
 
 						await this.plugin.saveLocalStoreCallback({
-							lastFetchedRemoteSha: state,
+							lastFetchedRemoteShas: state,
 						});
 
 						message(notice, "Cache has been updated");

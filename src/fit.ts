@@ -28,10 +28,10 @@ import { CommitSha } from "./util/hashing";
  * @see RemoteGitHubVault - Remote GitHub repository operations
  */
 export class Fit {
-	// TODO: Rename these for clarity: localFileShas, remoteCommitSha, remoteFileShas
-	localSha: FileStates;                   // Cache of local file SHAs
+	localShas: FileStates;                  // Canonical git blob SHA cache (primary, v2)
+	localSha: FileStates;                   // Legacy path+content SHA cache (migration source)
 	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
-	lastFetchedRemoteSha: FileStates;       // Cache of remote file SHAs
+	lastFetchedRemoteShas: FileStates;      // Canonical remote SHA cache
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
@@ -80,30 +80,29 @@ export class Fit {
 	}
 
 	loadLocalStore(localStore: LocalStores) {
-		this.localSha = localStore.localSha;
+		this.localShas = localStore.localShas ?? {};
+		this.localSha = localStore.localSha ?? {};
 		this.lastFetchedCommitSha = localStore.lastFetchedCommitSha;
-		this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha;
+		this.lastFetchedRemoteShas = localStore.lastFetchedRemoteShas;
 		this.unpushedFiles = localStore.unpushedFiles ?? {};
-		// Detect potentially corrupted/suspicious cache states
-		const localCount = Object.keys(this.localSha).length;
-		const remoteCount = Object.keys(this.lastFetchedRemoteSha).length;
+
+		const localCount = Object.keys(this.localShas).length;
+		const legacyCount = Object.keys(this.localSha).length;
+		const remoteCount = Object.keys(this.lastFetchedRemoteShas).length;
 		const warnings: string[] = [];
 
-		// Warn if caches are empty but commit SHA exists (possible cache corruption)
-		if (localCount === 0 && remoteCount === 0 && this.lastFetchedCommitSha) {
+		if (localCount === 0 && legacyCount === 0 && remoteCount === 0 && this.lastFetchedCommitSha) {
 			warnings.push('Empty SHA caches but commit SHA exists - possible cache corruption or first sync after data loss');
 		}
-
-		// Warn if local cache is empty but remote cache has files (asymmetric state)
-		if (localCount === 0 && remoteCount > 0) {
+		if (localCount === 0 && legacyCount === 0 && remoteCount > 0) {
 			warnings.push('Local SHA cache empty but remote cache has files - may incorrectly pull files as "new" that were deleted locally');
 		}
 
-		// Log SHA cache provenance for debugging
 		fitLogger.log('.. 📦 [Cache] Loaded SHA caches from storage', {
 			source: 'plugin data.json',
-			localShaCount: localCount,
-			remoteShaCount: remoteCount,
+			localShasCount: localCount,
+			legacyShaCount: legacyCount,
+			remoteShasCount: remoteCount,
 			lastCommit: this.lastFetchedCommitSha,
 			...(warnings.length > 0 && { warnings })
 		});
@@ -161,23 +160,59 @@ export class Fit {
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
-		// Filter both states to only trackable files for comparison (#169)
-		// This prevents hidden files (stored for baseline checking) from appearing as spurious changes
-		// Filter cached state to exclude hidden files
-		const trackableLocalSha: FileStates = {};
-		for (const [path, sha] of Object.entries(this.localSha)) {
-			if (this.localVault.shouldTrackState(path)) {
-				trackableLocalSha[path] = sha;
+
+		// Clean up orphaned legacy entries for files no longer present locally.
+		for (const path of Object.keys(this.localSha)) {
+			if (currentState[path] === undefined) {
+				delete this.localSha[path];
 			}
 		}
-		// Filter current state to exclude hidden files (defensive against bugs)
+
+		// Batch migration on first sync after upgrade: promote all legacy SHAs to canonical.
+		// Re-reads each legacy file to compute the legacy SHA and verify content is unchanged,
+		// then adopts the canonical SHA from readFromSource() as the new baseline.
+		// This doubles file reads for legacy files on this sync. Canonical-only and neither cases
+		// are handled normally by compareFileStates below.
+		const pendingLegacyPaths = Object.keys(this.localSha).filter(p => currentState[p] !== undefined);
+		if (pendingLegacyPaths.length > 0) {
+			const rePromotingPaths = pendingLegacyPaths.filter(p => this.localShas[p] !== undefined);
+			if (rePromotingPaths.length > 0) {
+				fitLogger.log('[Fit] Discarding stale canonical SHAs for re-promotion', {
+					count: rePromotingPaths.length,
+					reason: 'localSha and localShas both present — old client wrote legacy SHAs after a downgrade; treating localSha as more recent and re-running migration'
+				});
+			}
+			fitLogger.log('[Fit] Promoting legacy SHAs to canonical', { count: pendingLegacyPaths.length });
+			for (const path of pendingLegacyPaths) {
+				try {
+					const content = await this.localVault.readFileContent(path);
+					const legacySha = await LocalVault.fileLegacySha1(path, content);
+					if (legacySha === this.localSha[path]) {
+						// Content unchanged since legacy sync — adopt canonical SHA as baseline.
+						this.localShas[path] = currentState[path];
+					}
+					// On mismatch: file changed, no canonical baseline set → appears as ADDED below.
+				} catch {
+					// File unreadable — leave unresolved, re-tries next sync.
+				}
+				delete this.localSha[path];
+			}
+		}
+
+		// Filter both states to trackable paths only (#169)
+		const trackableLocalShas: FileStates = {};
+		for (const [path, sha] of Object.entries(this.localShas)) {
+			if (this.localVault.shouldTrackState(path)) {
+				trackableLocalShas[path] = sha;
+			}
+		}
 		const trackableCurrentState: FileStates = {};
 		for (const [path, sha] of Object.entries(currentState)) {
 			if (this.localVault.shouldTrackState(path)) {
 				trackableCurrentState[path] = sha;
 			}
 		}
-		const changes = compareFileStates(trackableCurrentState, trackableLocalSha);
+		const changes = compareFileStates(trackableCurrentState, trackableLocalShas);
 		return { changes, state: currentState };
 	}
 
@@ -195,7 +230,7 @@ export class Fit {
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
 		}
-		const changes = compareFileStates(state, this.lastFetchedRemoteSha);
+		const changes = compareFileStates(state, this.lastFetchedRemoteShas);
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {

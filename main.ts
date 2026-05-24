@@ -64,11 +64,18 @@ const DEFAULT_SETTINGS: FitSettings = {
  * Tracks sync state between plugin sessions to enable incremental sync
  */
 export interface LocalStores {
-	localSha: FileStates                   // File path -> SHA cache
+	localShas: FileStates                  // Canonical git blob SHA cache (primary)
+	// SHAs here use a legacy formula (SHA1(path + content)) that differs from canonical git blob SHA,
+	// with content encoded as base64 for png/jpg/jpeg/pdf and as plaintext for everything else.
+	// Downgrade notice: old client versions may find this field missing and see spurious local file
+	// changes, but those trigger re-upload overhead only and rarely clash unless the same files were
+	// also updated on remote during the same sync.
+	localSha?: FileStates                  // Legacy path+content SHA cache (migration source only)
 	lastFetchedCommitSha: CommitSha | null // Last synced commit
-	lastFetchedRemoteSha: FileStates       // Remote file path -> SHA cache
+	lastFetchedRemoteShas: FileStates      // Canonical remote SHA cache
+	lastFetchedRemoteSha?: FileStates      // Legacy field name — read-only fallback when loading old data
 	// Files that were skipped due to GitHub API size limits (422) and haven't reached
-	// remote yet. Maps path → FIT SHA at time of skip, so we can detect when the file
+	// remote yet. Maps path → SHA at time of skip, so we can detect when the file
 	// has been modified locally (and should re-enter the normal sync queue) or reconciled
 	// on remote (and should be removed from this list).
 	// Note: transient failures like rate limits (#179) should be tracked separately when needed since they SHOULD retry on subsequent syncs.
@@ -86,10 +93,11 @@ type SyncOutcome =
 	| { status: 'not-configured' };
 
 const DEFAULT_LOCAL_STORE: LocalStores = {
-	localSha: {},
+	localShas: {},
 	lastFetchedCommitSha: null,
-	lastFetchedRemoteSha: {},
+	lastFetchedRemoteShas: {},
 	unpushedFiles: {}
+	// Note: no localSha — absent means no legacy data to migrate
 };
 
 
@@ -529,15 +537,15 @@ export default class FitPlugin extends Plugin {
 	}
 
 	async loadLocalStore() {
-		const localStore = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
-		const localStoreObj: LocalStores = Object.keys(DEFAULT_LOCAL_STORE).reduce(
-			(obj, key: keyof LocalStores) => {
-				if (localStore.hasOwnProperty(key)) {
-					obj[key] = localStore[key];
-				}
-				return obj;
-			}, {} as LocalStores);
-		this.localStore = localStoreObj;
+		const storedData = (await this.loadData()) ?? {};
+		this.localStore = {
+			localShas: storedData.localShas ?? {},
+			localSha: storedData.localSha,                          // undefined if absent → omitted by JSON.stringify
+			lastFetchedCommitSha: storedData.lastFetchedCommitSha ?? null,
+			lastFetchedRemoteShas: storedData.lastFetchedRemoteSha ?? storedData.lastFetchedRemoteShas ?? {},
+			lastFetchedRemoteSha: undefined,                        // consume legacy field name → omitted by JSON.stringify, removing it from storage
+			unpushedFiles: storedData.unpushedFiles ?? {}
+		};
 	}
 
 	// allow saving of local stores property, passed in properties will override existing stored value
