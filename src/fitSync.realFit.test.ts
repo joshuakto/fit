@@ -1926,10 +1926,12 @@ describe('FitSync', () => {
 
 		it('remote change for skipped file: removed from unpushedFiles (user pushed via git)', async () => {
 			// Arrange: file was previously skipped; now it appears as a remote change
-			// (simulates user running `git push` outside Obsidian)
-			await remoteVault.setFile('huge.mp4', 'manually pushed content');
-			localVault.setFile('huge.mp4', 'manually pushed content'); // Same content locally
-			const hugeFileSha = 'some-sha' as BlobSha;
+			// (simulates user running `git push` outside Obsidian to upload the same content)
+			const content = 'manually pushed content';
+			await remoteVault.setFile('huge.mp4', content);
+			localVault.setFile('huge.mp4', content);
+			// Use real canonical SHA — parity optimization will detect match and skip download
+			const hugeFileSha = await LocalVault.fileSha1('huge.mp4', FileContent.fromPlainText(content));
 			localStoreState = makeLocalStore({
 				...localStoreState,
 				localShas: { 'huge.mp4': hugeFileSha },
