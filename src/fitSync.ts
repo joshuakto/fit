@@ -83,6 +83,8 @@ type SyncExecutionResult = {
 	newlySkippedPaths: string[];
 	/** Pre-built first-encounter notice for newly skipped files */
 	skippedWarning?: string;
+	/** Paths not uploaded due to a transient failure (localShas cleared so they retry next sync) */
+	rateLimitedPaths: string[];
 };
 
 export type ConflictResolutionResult = {
@@ -563,6 +565,26 @@ export class FitSync implements IFitSync {
 			delete newLocalState[path];
 		}
 
+		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
+		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
+		// where the user deletes the file before the retry — without a baseline, the deletion would
+		// be invisible to compareFileStates and leave an orphaned file on the remote.
+		// Do NOT add to unpushedFiles — these are expected to succeed on retry.
+		const rateLimitedPaths = pushResult?.rateLimitedPaths ?? [];
+		for (const path of rateLimitedPaths) {
+			const previousSha = this.fit.localShas[path];
+			if (previousSha !== undefined) {
+				newLocalState[path] = previousSha;
+			} else {
+				delete newLocalState[path];
+			}
+		}
+		if (rateLimitedPaths.length > 0) {
+			fitLogger.log(`[FitSync] ${rateLimitedPaths.length} file(s) deferred — localShas cleared for retry`, {
+				paths: rateLimitedPaths
+			});
+		}
+
 		if (Object.keys(newBaselineShas).length > 0) {
 			fitLogger.log('[FitSync] Updated local state with SHAs from written files', {
 				filesProcessed: Object.keys(newBaselineShas).length,
@@ -616,6 +638,7 @@ export class FitSync implements IFitSync {
 			conflicts: clashes,
 			newlySkippedPaths,
 			skippedWarning: pushResult?.skippedWarning,
+			rateLimitedPaths,
 		};
 	}
 
@@ -695,7 +718,7 @@ export class FitSync implements IFitSync {
 			);
 
 			// Phase 3: Execute - push, pull, persist (atomic operation)
-			const { localOps, remoteOps, conflicts, newlySkippedPaths, skippedWarning } = await this.executeSync(
+			const { localOps, remoteOps, conflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths } = await this.executeSync(
 				currentLocalState,
 				{
 					remoteChanges,
@@ -746,8 +769,20 @@ export class FitSync implements IFitSync {
 				fitLogger.log('[FitSync] Files still awaiting manual sync', { paths: remainingUnpushed });
 			}
 
-			// Set success message (only when not already replaced by the unpushed-files reminder)
-			if (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0) {
+			// Partial sync due to transient upload failure — show regardless of isAutoSync,
+			// overrides any earlier success/reminder message already set on syncNotice.
+			if (rateLimitedPaths.length > 0) {
+				const fileList = rateLimitedPaths.map(p => `• ${p}`).join('\n');
+				syncNotice.setMessage(
+					`Sync incomplete — ${rateLimitedPaths.length} file(s) not uploaded, ` +
+					`possibly due to rate limiting or a transient error. ` +
+					`They will be retried automatically on the next sync.\n${fileList}`
+				);
+			}
+
+			// Set success message (only when not already replaced by the unpushed-files reminder
+			// or the partial-sync notice above)
+			if (rateLimitedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
 				if (conflicts.length === 0) {
 					syncNotice.setMessage(`Sync successful`);
 				} else if (conflicts.some(f => f.remoteOp !== "REMOVED")) {
@@ -792,7 +827,7 @@ export class FitSync implements IFitSync {
 			parentCommitSha: CommitSha
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
-	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string, rateLimitedPaths?: string[]}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
@@ -846,14 +881,15 @@ export class FitSync implements IFitSync {
 					? 'All files skipped due to API size limit (422)'
 					: 'Local content matches remote despite SHA cache mismatch (likely SHA normalization or cache inconsistency)'
 			});
-			if (result.skippedPaths?.length) {
-				// Return minimal push result so caller can update unpushedFiles
+			if (result.skippedPaths?.length || result.rateLimitedPaths?.length) {
+				// Return minimal push result so caller can update unpushedFiles / clear retriable SHAs
 				return {
 					pushedChanges: [],
 					lastFetchedRemoteShas: result.newState,
 					lastFetchedCommitSha: result.commitSha,
 					skippedPaths: result.skippedPaths,
 					skippedWarning: result.skippedWarning,
+					rateLimitedPaths: result.rateLimitedPaths,
 				};
 			}
 			return null;
@@ -870,6 +906,7 @@ export class FitSync implements IFitSync {
 			lastFetchedCommitSha: result.commitSha,
 			skippedPaths: result.skippedPaths,
 			skippedWarning: result.skippedWarning,
+			rateLimitedPaths: result.rateLimitedPaths,
 		};
 	}
 

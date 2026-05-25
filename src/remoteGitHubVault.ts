@@ -19,6 +19,12 @@ import { detectSuspiciousCorrespondence } from "./util/pathPattern";
 import * as Encryption from "./encryption";
 
 /**
+ * Keywords that suggest a 401/403 blob rejection is size-related rather than transient.
+ * Used heuristically — absence does not guarantee the file is small enough to push.
+ */
+const LARGE_FILE_ERROR_KEYWORDS = ['too large', 'exceeds', 'blob is over', 'size limit'];
+
+/**
  * Represents a node in GitHub's git tree structure
  * Maps to GitHub API tree object format
  */
@@ -171,16 +177,14 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	}
 
 	/**
-	 * Returns true if the HTTP status code indicates a file-specific rejection that
-	 * should be skipped rather than treated as a sync-aborting error.
+	 * Returns true if the HTTP status code indicates a per-blob failure that applyChanges
+	 * should handle specially rather than propagating as a sync-aborting VaultError.
 	 *
-	 * 401/403: auth rejection — unlikely here since auth is pre-verified by readFromSource(),
-	 *          so more likely a size-based policy enforcement
-	 * 413: request entity too large
-	 * 422: unprocessable entity (GitHub's documented blob-too-large code)
+	 * 413/422: definitive size rejection — route to unpushedFiles.
+	 * 401/403: ambiguous — could be size-based policy or a transient failure (rate limit,
+	 *          secondary rate limit, etc.). applyChanges discriminates via keyword check.
 	 *
-	 * Excluded: 429 (rate limit — transient, not file-specific) and other 4xx codes
-	 * that indicate systemic API misuse or transient failures.
+	 * Excluded: 429 and 5xx codes — handled by the retry plugin before reaching here.
 	 */
 	private isBlobRejectionStatus(status: number): boolean {
 		return [401, 403, 413, 422].includes(status);
@@ -587,29 +591,64 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Wait for all tree nodes, collecting both successes and failures
 		const results = await Promise.allSettled(operations.map(op => op.promise));
 
-		// Extract successful nodes, collect per-file errors, and separate 422 skips
+		// Extract successful nodes, collect per-file errors, and bucket special rejections.
+		// Three rejection buckets:
+		//   skippedFiles    — definitive or likely size rejection (→ unpushedFiles, manual git)
+		//   retriableFiles  — ambiguous 401/403 without size keywords (→ retry next sync)
+		//   perFileErrors   — everything else (→ abort sync)
 		const treeNodes: TreeNode[] = [];
 		const perFileErrors: Array<{ path: string; error: unknown }> = [];
-		const skippedFiles: Array<{ path: string; sizeMB: string }> = [];
+		const skippedFiles: Array<{ path: string; sizeMB: string; heuristic: boolean }> = [];
+		const retriableFiles: Array<{ path: string }> = [];
 
 		results.forEach((result, index) => {
 			const { path, sizeBytes } = operations[index];
 			if (result.status === 'fulfilled' && result.value !== null) {
 				treeNodes.push(result.value);
-			} else if (result.status === 'rejected') {
-				const error = result.reason;
-				const errorObj = error as { status?: number };
-				const isFileRejection = typeof errorObj.status === 'number' && this.isBlobRejectionStatus(errorObj.status);
-				if (isFileRejection && sizeBytes !== null) {
-					const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
-					skippedFiles.push({ path, sizeMB });
-				} else {
-					perFileErrors.push({ path, error });
+				return;
+			}
+			if (result.status !== 'rejected') return;
+
+			const error = result.reason;
+			const errorObj = error as { status?: number; message?: string };
+			const status = errorObj.status;
+
+			if (typeof status !== 'number' || !this.isBlobRejectionStatus(status)) {
+				perFileErrors.push({ path, error });
+				return;
+			}
+
+			// 413/422: unambiguous size rejection codes — route directly to unpushedFiles
+			if (status === 413 || status === 422) {
+				if (sizeBytes !== null) {
+					skippedFiles.push({ path, sizeMB: (sizeBytes / (1024 * 1024)).toFixed(1), heuristic: false });
+				}
+				return;
+			}
+
+			// 401/403: ambiguous — check message for size keywords since GitHub reuses 403
+			// for both size-based policy enforcement and transient failures (rate limits)
+			const message = errorObj.message ?? '';
+			const looksLikeSize = LARGE_FILE_ERROR_KEYWORDS.some(kw => message.toLowerCase().includes(kw));
+			if (looksLikeSize && sizeBytes !== null) {
+				skippedFiles.push({ path, sizeMB: (sizeBytes / (1024 * 1024)).toFixed(1), heuristic: true });
+			} else {
+				retriableFiles.push({ path });
+				// Diagnostic: large file rejected with 401/403 but no matching keywords —
+				// may be a new size-limit message variant not yet in LARGE_FILE_ERROR_KEYWORDS.
+				if (sizeBytes !== null && sizeBytes > 15 * 1024 * 1024) {
+					fitLogger.log(
+						`[RemoteVault] Large file (~${(sizeBytes / (1024 * 1024)).toFixed(1)} MB) rejected with ${status} ` +
+						`but no known size-limit keywords found in the error response. ` +
+						`If this file consistently fails to sync, it may be too large for the GitHub API. ` +
+						`Share this log entry to help improve detection. Full error: "${message}"`,
+						{ path, status, sizeBytes }
+					);
 				}
 			}
 		});
 
-		// Non-422 errors abort the sync entirely (unchanged behaviour)
+		// Non-blob-rejection errors abort the sync entirely
 		if (perFileErrors.length > 0) {
 			const failedPaths = perFileErrors.map(e => e.path);
 			throw VaultError.network(
@@ -624,10 +663,18 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		let skippedWarning: string | undefined;
 		if (skippedFiles.length > 0) {
 			skippedPathsList = skippedFiles.map(f => f.path);
-			const fileLines = skippedFiles.map(f => `  • ${f.path} (~${f.sizeMB} MB)`).join('\n');
+			const heuristicCount = skippedFiles.filter(f => f.heuristic).length;
+			const fileLines = skippedFiles.map(f => {
+				const note = f.heuristic ? ' (size-related error inferred from response)' : '';
+				return `  • ${f.path} (~${f.sizeMB} MB)${note}`;
+			}).join('\n');
+			const heuristicNote = heuristicCount > 0
+				? `\n(${heuristicCount} file(s) above classified by error message keywords rather than a definitive rejection code — classification may be imprecise.)`
+				: '';
 			skippedWarning = [
-				`${skippedFiles.length} file(s) skipped — GitHub API rejected (possibly too large):`,
+				`${skippedFiles.length} file(s) skipped — GitHub API rejected, likely too large for the API:`,
 				fileLines,
+				heuristicNote,
 				'',
 				'To resolve, choose one:',
 				'  1. Exclude permanently: add path(s) to .gitignore',
@@ -639,7 +686,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			].join('\n');
 		}
 
-		// If no changes needed (all files skipped or no-ops), return without committing
+		// If no changes needed (all files skipped/retriable or no-ops), return without committing
 		if (treeNodes.length === 0) {
 			return {
 				changes: [],
@@ -647,6 +694,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 				treeSha: parentTreeSha,
 				newState: currentState,
 				...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
+				...(retriableFiles.length > 0 && { rateLimitedPaths: retriableFiles.map(f => f.path) }),
 			};
 		}
 
@@ -693,6 +741,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			newState,
 			userWarning,
 			...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
+			...(retriableFiles.length > 0 && { rateLimitedPaths: retriableFiles.map(f => f.path) }),
 		};
 	}
 

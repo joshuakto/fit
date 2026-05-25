@@ -53,12 +53,16 @@ type ApplyChangesResultMap = {
 		treeSha: TreeSha;
 		/** FileStates computed from the new tree (for cache updates) */
 		newState: FileStates;
-		/** Paths skipped because GitHub returned 422 (file too large for API).
-		 * Caller must add these to unpushedFiles — they are NOT in newState. */
+		/** Paths skipped due to a definitive or likely size rejection (413/422, or 401/403
+		 * with size-related keywords). Caller must add to unpushedFiles — not in newState. */
 		skippedPaths?: string[];
 		/** Pre-built first-encounter notice for skipped files (includes git CLI instructions
 		 * with repo/branch substituted). Show only when path is newly added to unpushedFiles. */
 		skippedWarning?: string;
+		/** Paths not uploaded due to a transient failure (e.g. rate limit).
+		 * Caller must NOT update localShas for these — leave old SHA so they are
+		 * re-detected as changed and retried on the next sync. */
+		rateLimitedPaths?: string[];
 	};
 };
 

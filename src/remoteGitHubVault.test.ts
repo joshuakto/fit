@@ -428,33 +428,47 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
-			describe("422 size-limit partial skip", () => {
-				function make422Error(): Error {
+			describe("blob rejection bucketing", () => {
+				function makeStatusError(status: number, message: string): Error {
 					// Must include response: {} so wrapOctokitError treats it as an HTTP error
-					// and re-throws as-is, preserving status === 422.
-					const err: any = new Error("input file size too large to process");
-					err.status = 422;
+					// and re-throws as-is, preserving the status code.
+					const err: any = new Error(message);
+					err.status = status;
 					err.response = {};
 					return err;
 				}
+				const make422Error = () => makeStatusError(422, "input file size too large to process");
+				const make413Error = () => makeStatusError(413, "Request Entity Too Large");
+				const make403SizeError = () => makeStatusError(403, "This file is too large to process");
+				const make403RateLimitError = () => makeStatusError(403, "You have exceeded a secondary rate limit");
 
-				it("should skip a single file that returns 422, returning skippedPaths and skippedWarning", async () => {
+				it.each([
+					{ label: "422 (unprocessable entity)", makeError: make422Error, bucket: "skipped" as const, heuristic: false },
+					{ label: "413 (request entity too large)", makeError: make413Error, bucket: "skipped" as const, heuristic: false },
+					{ label: "403 with size keyword", makeError: make403SizeError, bucket: "skipped" as const, heuristic: true },
+					{ label: "403 without size keywords", makeError: make403RateLimitError, bucket: "retriable" as const, heuristic: false },
+				])("routes single-file $label rejection to $bucket bucket", async ({ makeError, bucket, heuristic }) => {
 					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
-					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", make422Error());
+					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", makeError());
 
 					const result = await vault.applyChanges(
-						[{ path: "huge.mp4", content: FileContent.fromPlainText("x".repeat(100)) }],
+						[{ path: "file.bin", content: FileContent.fromPlainText("x".repeat(100)) }],
 						[]
 					);
 
-					expect(result.changes).toEqual([]);
-					expect(result.skippedPaths).toEqual(["huge.mp4"]);
-					expect(result.skippedWarning).toContain("huge.mp4");
-					expect(result.skippedWarning).toContain(".gitignore");
-					expect(result.skippedWarning).toContain("git push");
-					// Commit and tree should be unchanged (no-op)
-					expect(result.commitSha).toBe(PARENTCOMMIT123_SHA);
-					expect(result.treeSha).toBe(TREE456_SHA);
+					// No commit created when no files succeed
+					expect(result).toMatchObject({ changes: [], commitSha: PARENTCOMMIT123_SHA, treeSha: TREE456_SHA });
+
+					if (bucket === "skipped") {
+						expect(result).toMatchObject({ skippedPaths: ["file.bin"] });
+						expect(result.rateLimitedPaths).toBeUndefined();
+						expect(result.skippedWarning).toContain("file.bin");
+						expect(result.skippedWarning).toContain(".gitignore");
+						expect(result.skippedWarning?.includes("classified by error message keywords")).toBe(heuristic);
+					} else {
+						expect(result).toMatchObject({ rateLimitedPaths: ["file.bin"] });
+						expect(result.skippedPaths).toBeUndefined();
+					}
 				});
 
 				it("should skip only the 422 file and commit the rest when uploading multiple files", async () => {
@@ -500,7 +514,25 @@ describe("RemoteGitHubVault", () => {
 					expect(result.commitSha).not.toBe(PARENTCOMMIT123_SHA);
 				});
 
-				it("should throw VaultError for non-422 upload failures (unchanged behaviour)", async () => {
+				it("should commit successfully uploaded files when some are rate-limited", async () => {
+					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+					// Only the first blob call fails; second succeeds
+					fakeOctokit.simulateError("POST /repos/{owner}/{repo}/git/blobs", make403RateLimitError());
+
+					const result = await vault.applyChanges(
+						[
+							{ path: "rate-limited.md", content: FileContent.fromPlainText("blocked") },
+							{ path: "ok.md", content: FileContent.fromPlainText("fine") },
+						],
+						[]
+					);
+
+					expect(result.rateLimitedPaths).toEqual(["rate-limited.md"]);
+					expect(result.changes).toEqual([{ path: "ok.md", type: "ADDED" }]);
+					expect(result.commitSha).not.toBe(PARENTCOMMIT123_SHA);
+				});
+
+				it("should throw VaultError for non-blob-rejection upload failures (unchanged behaviour)", async () => {
 					fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
 					const serverError: any = new Error("Internal server error");
 					serverError.status = 500;
