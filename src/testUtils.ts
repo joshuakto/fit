@@ -477,6 +477,10 @@ export class FakeLocalVault implements IVault<"local"> {
 		}
 	}
 
+	deleteFile(path: string): void {
+		this.files.delete(path);
+	}
+
 	/**
 	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */

@@ -1994,6 +1994,30 @@ describe('FitSync', () => {
 			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'blocked.md': 'content' });
 			expect(localStoreState.localShas).toEqual({ 'blocked.md': expect.any(String) });
 		});
+
+		it('rate-limited modified file: deleting locally before retry removes it from remote', async () => {
+			// Sync 1: push blocked.md to remote, establishing a baseline SHA
+			const fitSync = createFitSync();
+			localVault.setFile('blocked.md', 'original content');
+			await fitSync.sync(createMockNotice() as any);
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'blocked.md': 'original content' });
+
+			// Sync 2: user modifies the file, but upload is rate-limited
+			localVault.setFile('blocked.md', 'modified content');
+			remoteVault.setRateLimitedPaths(['blocked.md']);
+			await fitSync.sync(createMockNotice() as any);
+			// baseline SHA preserved (not deleted) so the file remains tracked
+			expect(localStoreState.localShas).toEqual({ 'blocked.md': expect.any(String) });
+
+			// User deletes the file locally before the next sync
+			localVault.deleteFile('blocked.md');
+
+			// Sync 3: deletion should be detected (baseline present) and removed from remote
+			const result = await fitSync.sync(createMockNotice() as any);
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({});
+		});
 	});
 
 	describe('SHA migration (localSha → localShas)', () => {

@@ -565,11 +565,19 @@ export class FitSync implements IFitSync {
 			delete newLocalState[path];
 		}
 
-		// Retriable paths: remove from localShas so they are re-detected as changed on the next sync.
+		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
+		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
+		// where the user deletes the file before the retry — without a baseline, the deletion would
+		// be invisible to compareFileStates and leave an orphaned file on the remote.
 		// Do NOT add to unpushedFiles — these are expected to succeed on retry.
 		const rateLimitedPaths = pushResult?.rateLimitedPaths ?? [];
 		for (const path of rateLimitedPaths) {
-			delete newLocalState[path];
+			const previousSha = this.fit.localShas[path];
+			if (previousSha !== undefined) {
+				newLocalState[path] = previousSha;
+			} else {
+				delete newLocalState[path];
+			}
 		}
 		if (rateLimitedPaths.length > 0) {
 			fitLogger.log(`[FitSync] ${rateLimitedPaths.length} file(s) deferred — localShas cleared for retry`, {
