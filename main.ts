@@ -80,6 +80,11 @@ export interface LocalStores {
 	// on remote (and should be removed from this list).
 	// Note: transient failures like rate limits (#179) should be tracked separately when needed since they SHOULD retry on subsequent syncs.
 	unpushedFiles?: FileStates
+	// Paths with an unresolved _fit/ copy (pending clash state). localShas entry is absent
+	// for these paths. Resolved when _fit/ is deleted or matches local content.
+	// Downgrade-safe: absent field treated as empty array; missing localShas entry causes
+	// false-positive re-push on old clients (overhead only, not data loss).
+	pendingClashes?: string[]
 }
 
 /**
@@ -96,7 +101,8 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 	localShas: {},
 	lastFetchedCommitSha: null,
 	lastFetchedRemoteShas: {},
-	unpushedFiles: {}
+	unpushedFiles: {},
+	pendingClashes: []
 	// Note: no localSha — absent means no legacy data to migrate
 };
 

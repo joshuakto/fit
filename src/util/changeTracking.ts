@@ -34,8 +34,9 @@ export type FileStates = Record<string, BlobSha>;
  * - ChangeOperation: File has a tracked change (ADDED/MODIFIED/REMOVED)
  * - "untracked": File exists but state can't be determined (stat failed, hidden files)
  * - "protected": File is blocked by sync policy (shouldSyncPath returns false)
+ * - "pending": A previous clash for this file is unresolved (_fit/ copy still present)
  */
-export type LocalClashState = ChangeOperation | "untracked" | "protected";
+export type LocalClashState = ChangeOperation | "untracked" | "protected" | "pending";
 
 /** Represents a clash between local and remote changes to the same file */
 export type FileClash = {
