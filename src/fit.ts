@@ -5,7 +5,8 @@
  * (RemoteGitHubVault), and maintains sync state (cached SHAs for change detection).
  */
 
-import { LocalStores, FitSettings } from "@main";
+import { LocalStores } from "@/localStores";
+import { FitSettings } from "@/fitSettings";
 import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";

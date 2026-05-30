@@ -48,6 +48,18 @@ export class Component {
 	unload = vi.fn();
 }
 
+export class Plugin extends Component {
+	app: any = { vault: {} };
+	manifest: any = { id: 'fit', dir: null };
+	loadData = vi.fn().mockResolvedValue({});
+	saveData = vi.fn().mockResolvedValue(undefined);
+	addCommand = vi.fn();
+	addSettingTab = vi.fn();
+	addRibbonIcon = vi.fn().mockReturnValue({ addClass: vi.fn() });
+	registerInterval = vi.fn().mockReturnValue(1);
+	registerDomEvent = vi.fn();
+}
+
 export class Notice {
 	constructor(message: string) {}
 	setMessage = vi.fn();

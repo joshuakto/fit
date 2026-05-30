@@ -23,7 +23,7 @@ graph TB
 
 ## Core Components
 
-### FitPlugin (main.ts)
+### FitPlugin (src/fitPlugin.ts)
 **Purpose**: Plugin orchestrator and lifecycle manager (interfaces with 👤 user)
 - Manages plugin loading, settings persistence, auto-sync scheduling
 - Coordinates between sync engine and Obsidian UI

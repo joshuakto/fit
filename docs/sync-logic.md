@@ -1144,12 +1144,12 @@ GitHub's tree API includes a `mode` field indicating binary vs text. Could use t
 
 ## 🔒 Concurrency Control
 
-**Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [main.ts](../main.ts) entry points.
+**Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [src/fitPlugin.ts](../src/fitPlugin.ts) entry points.
 
 ```mermaid
 sequenceDiagram
     participant User as 👤 User Action
-    participant Entry as 🚪 Entry Points<br/>main.ts
+    participant Entry as 🚪 Entry Points<br/>fitPlugin.ts
     participant Sync as 🎭 FitSync.sync
     participant Vaults as 🗄️ Vaults<br/>Local & Remote
 
