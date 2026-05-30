@@ -54,7 +54,8 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 		MODIFIED: "change",
 		REMOVED: "delete",
 		untracked: "untracked",
-		protected: "protected"
+		protected: "protected",
+		pending: "pending"
 	};
 	const remoteStatusMap: Record<ChangeOperation, string> = {
 		ADDED:  "create",

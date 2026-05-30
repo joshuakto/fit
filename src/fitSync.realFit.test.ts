@@ -1076,16 +1076,25 @@ describe('FitSync', () => {
 			//   E. User edits either copy until they match → treated as resolved (parameterized)
 
 			async function setupClash(fitSync: FitSync) {
-				// Establish a clean baseline with 'doc.md' synced on both sides
+				// Establish a clean baseline: pre-load localStoreState with the synced SHA
+				// values so the next sync sees 'doc.md' as already in sync (no changes).
+				// Without this, empty caches would detect ADDED+ADDED (a false-positive clash)
+				// instead of the intended MODIFIED+MODIFIED scenario.
 				localVault.setFile('doc.md', 'original\n');
 				remoteVault.setFile('doc.md', 'original\n');
-				await syncAndHandleResult(fitSync, createMockNotice());
+				const remoteResult = await remoteVault.readFromSource();
+				const localResult = await localVault.readFromSource();
+				fitSync.fit.loadLocalStore(makeLocalStore({
+					localShas: localResult.state,
+					lastFetchedRemoteShas: remoteResult.state,
+					lastFetchedCommitSha: remoteResult.commitSha,
+				}));
 
 				// Both sides modify doc.md concurrently
 				localVault.setFile('doc.md', 'local edits\n');
 				remoteVault.setFile('doc.md', 'remote edits\n');
 
-				// Sync: clash detected, remote version written to _fit/doc.md, local kept
+				// Sync: MODIFIED+MODIFIED clash detected, remote version written to _fit/doc.md
 				const result = await syncAndHandleResult(fitSync, createMockNotice());
 				expect(result).toMatchObject({ success: true, clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md' })]) });
 				expect(localVault.getAllFilesAsRaw()).toMatchObject({
