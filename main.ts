@@ -548,6 +548,11 @@ export default class FitPlugin extends Plugin {
 		this.settings = settingsObj;
 	}
 
+	// TODO: loadLocalStore and saveLocalStoreCallback are the persistence contract for all
+	// sync state. Adding any new field to LocalStores requires updating BOTH this function
+	// and saveLocalStoreCallback — they are not tested together (see follow-up PR for
+	// main.ts integration tests). When adding a field: add it here with a ?? default,
+	// add it to saveLocalStoreCallback, and add a round-trip test.
 	async loadLocalStore() {
 		const storedData = (await this.loadData()) ?? {};
 		this.localStore = {

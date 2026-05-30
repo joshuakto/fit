@@ -99,6 +99,11 @@ describe('FitSync', () => {
 	 * Simulate main.ts sync result handling logic.
 	 * This covers error handling and user notification that currently lives outside FitSync.
 	 * TODO: Expand to handle success cases with conflict notifications (showUnappliedConflicts)
+	 *
+	 * Coverage gap: main.ts lifecycle (loadLocalStore deserialization, saveLocalStoreCallback
+	 * round-trip, settings-triggered saveLocalStore) is not exercised here. A dedicated
+	 * integration test file for main.ts would catch field-omission bugs like the
+	 * pendingClashes loadLocalStore regression — tracked in follow-up PR.
 	 */
 	async function syncAndHandleResult(fitSync: FitSync, notice: any) {
 		const result = await fitSync.sync(notice);
@@ -1198,6 +1203,49 @@ describe('FitSync', () => {
 					'doc.md': 'local edits\n',
 					'_fit/doc.md': 'remote edits\n',
 				});
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+			});
+
+			it('G: multiple pending syncs never re-include the path in localShas (prevents silent remote pull)', async () => {
+				// Regression guard: Phase 0 must keep the pending path out of localShas across
+				// consecutive syncs. If localShas re-includes the pending path with the LOCAL sha,
+				// the next sync sees remote-sha ≠ stored-sha → treats it as a safeRemote change
+				// → pulls and silently overwrites local edits.
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				for (let i = 0; i < 3; i++) {
+					await syncAndHandleResult(fitSync, createMockNotice());
+					expect(localStoreState.localShas).not.toHaveProperty('doc.md');
+					expect(localStoreState.pendingClashes).toContain('doc.md');
+				}
+
+				// Remote must never have received the local edits
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+				expect(localVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
+			});
+
+			it('H: pendingClashes survive simulated plugin reload (re-init from saved state)', async () => {
+				// Regression guard: pendingClashes must be included in the state saved by
+				// saveLocalStoreCallback and correctly restored when FitSync is re-initialized
+				// (analogous to plugin unload/reload between syncs).
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				expect(localStoreState.pendingClashes).toContain('doc.md');
+				expect(localStoreState.localShas).not.toHaveProperty('doc.md');
+
+				// Simulate plugin reload: new FitSync initialized from the saved localStoreState
+				const reloadedFitSync = createFitSync();
+
+				const result = await syncAndHandleResult(reloadedFitSync, createMockNotice());
+
+				// Phase 0 must run and surface the clash — not silently clear it
+				expect(result).toMatchObject({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md', localState: 'pending' })]),
+				});
+				expect(localVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
 				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
 			});
 		});
