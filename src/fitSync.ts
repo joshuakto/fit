@@ -844,12 +844,21 @@ export class FitSync implements IFitSync {
 
 			// Reclassify safeRemote items for active pending paths — new remote changes must
 			// go to _fit/ only, not overwrite the local file whose status is unresolved.
+			const reclassifiedFromSafeRemote = new Set(
+				initialSafeRemote.filter(c => activePendingPaths.has(c.path)).map(c => c.path)
+			);
 			const safeRemote = initialSafeRemote.filter(c => !activePendingPaths.has(c.path));
 			const clashes = [
 				...initialClashes,
 				...initialSafeRemote
 					.filter(c => activePendingPaths.has(c.path))
 					.map(c => ({ path: c.path, localState: 'pending' as const, remoteOp: c.type })),
+				// Surface still-pending paths with no current remote change so the user is
+				// reminded on every sync that these need resolution (not just the first sync).
+				...[...activePendingPaths]
+					.filter(p => !reclassifiedFromSafeRemote.has(p))
+					.filter(p => !initialClashes.some(c => c.path === p))
+					.map(p => ({ path: p, localState: 'pending' as const, remoteOp: 'MODIFIED' as const })),
 			];
 
 			// Phase 3: Execute - push, pull, persist (atomic operation)

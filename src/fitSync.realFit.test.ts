@@ -1178,6 +1178,28 @@ describe('FitSync', () => {
 				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe(expectedRemote);
 				expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('_fit/doc.md');
 			});
+
+			it('F: user ignores clash and syncs again — clash reported on every sync until resolved', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+				// After clash: doc.md='local edits\n', _fit/doc.md='remote edits\n', no remote changes
+
+				// Sync without resolving anything
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				// Must still report the pending clash so the user is reminded, even though
+				// remote hasn't changed and no local operations are performed.
+				expect(result).toMatchObject({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md', localState: 'pending' })]),
+				});
+				// Local and remote must be unchanged
+				expect(localVault.getAllFilesAsRaw()).toMatchObject({
+					'doc.md': 'local edits\n',
+					'_fit/doc.md': 'remote edits\n',
+				});
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+			});
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {

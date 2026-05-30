@@ -556,7 +556,8 @@ export default class FitPlugin extends Plugin {
 			lastFetchedCommitSha: storedData.lastFetchedCommitSha ?? null,
 			lastFetchedRemoteShas: storedData.lastFetchedRemoteSha ?? storedData.lastFetchedRemoteShas ?? {},
 			lastFetchedRemoteSha: undefined,                        // consume legacy field name → omitted by JSON.stringify, removing it from storage
-			unpushedFiles: storedData.unpushedFiles ?? {}
+			unpushedFiles: storedData.unpushedFiles ?? {},
+			pendingClashes: storedData.pendingClashes ?? [],
 		};
 	}
 
