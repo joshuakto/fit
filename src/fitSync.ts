@@ -762,7 +762,7 @@ export class FitSync implements IFitSync {
 								// readFileContent returns cached content from readFromSource (no extra network call).
 								try {
 									const remoteContent = await this.fit.remoteVault.readFileContent(path);
-									if (localContent.toBase64() === remoteContent.toBase64()) {
+									if (localContent.equals(remoteContent)) {
 										resolvedNoChangePaths.add(path);
 									}
 								} catch {

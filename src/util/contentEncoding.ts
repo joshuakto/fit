@@ -167,6 +167,13 @@ export class FileContent {
 		return Content.decodeFromBase64(content);
 	}
 
+	equals(other: FileContent): boolean {
+		if (this.content.encoding === other.content.encoding) {
+			return this.content.content === other.content.content;
+		}
+		return this.toBase64() === other.toBase64();
+	}
+
 	toRaw(): FileContentType {
 		return this.content;
 	}
