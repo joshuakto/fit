@@ -90,17 +90,22 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	footer.setText("Note:");
 	footer.style.fontWeight = "bold";
 	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-		.setText("Remote changes in _fit");
+		.setText("Remote version saved to _fit/ — file held pending until resolved");
 	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-		.setText("_fit folder is overwritten on conflict, copy needed changes outside _fit.");
+		.setText("Resolve: delete _fit/ copy (keep local), or edit either file until they match");
 
 	// Add explanatory notes for special local states
+	const hasPending = clashedFiles.some(c => c.localState === 'pending');
 	const hasProtected = clashedFiles.some(c => c.localState === 'protected');
 	const hasUntracked = clashedFiles.some(c => c.localState === 'untracked');
 
+	if (hasPending) {
+		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+			.setText("Pending: unresolved from a prior sync — will keep appearing and local changes won't sync until resolved");
+	}
 	if (hasProtected) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-			.setText("Protected: Paths excluded from sync by policy (.obsidian/, _fit/)");
+			.setText("Protected: path excluded from sync (.obsidian/, _fit/) — saved to _fit/ for transparency, not tracked as pending");
 	}
 	if (hasUntracked) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
