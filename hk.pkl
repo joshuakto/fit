@@ -1,0 +1,24 @@
+amends "package://github.com/jdx/hk/releases/download/v1.46.0/hk@1.46.0#/Config.pkl"
+
+fail_fast = false
+
+local typecheck = new Step { check = "sh scripts/npm-hook.sh typecheck" }
+local lint = new Step { check = "sh scripts/npm-hook.sh lint" }
+
+hooks {
+    // pre-commit: fast checks. Run manually via `hk run pre-commit`.
+    ["pre-commit"] {
+        steps {
+            ["typecheck"] = typecheck
+            ["lint"] = lint
+        }
+    }
+    // pre-push: repeats pre-commit steps (not guaranteed to have run) plus tests.
+    ["pre-push"] {
+        steps {
+            ["typecheck"] = typecheck
+            ["lint"] = lint
+            ["test"] { check = "sh scripts/npm-hook.sh test" }
+        }
+    }
+}
