@@ -5,7 +5,7 @@ import FitSettingTab from '@/fitSettingTab';
 import { FitSync } from '@/fitSync';
 import { showFileChanges, showUnappliedConflicts } from '@/utils';
 import { fitLogger } from '@/logger';
-import { LocalStores, DEFAULT_LOCAL_STORE, parseLocalStore } from '@/localStores';
+import { LocalStores, parseLocalStore } from '@/localStores';
 import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
 import * as Encryption from "@/encryption";
@@ -102,7 +102,6 @@ export default class FitPlugin extends Plugin {
 
 	// use of arrow functions to ensure this refers to the FitPlugin class
 	saveLocalStoreCallback = async (localStore: Partial<LocalStores>): Promise<void> => {
-		await this.loadLocalStore();
 		this.localStore = {...this.localStore, ...localStore};
 		await this.saveLocalStore();
 	};
@@ -474,15 +473,13 @@ export default class FitPlugin extends Plugin {
 
 	// allow saving of local stores property, passed in properties will override existing stored value
 	async saveLocalStore() {
-		const data = Object.assign({}, DEFAULT_LOCAL_STORE, await this.loadData());
-		await this.saveData({...data, ...this.localStore});
+		await this.saveData({...this.settings, ...this.localStore});
 		// sync local store to Fit class as well upon saving
 		this.fit.loadLocalStore(this.localStore);
 	}
 
 	async saveSettings() {
-		const data = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		await this.saveData({...data, ...this.settings});
+		await this.saveData({...this.settings, ...this.localStore});
 		// update auto sync interval with new setting
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving

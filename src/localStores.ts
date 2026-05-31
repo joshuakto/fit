@@ -31,15 +31,6 @@ export interface LocalStores {
 	pendingClashes?: string[]
 }
 
-export const DEFAULT_LOCAL_STORE: LocalStores = {
-	localShas: {},
-	lastFetchedCommitSha: null,
-	lastFetchedRemoteShas: {},
-	unpushedFiles: {},
-	pendingClashes: []
-	// Note: no localSha — absent means no legacy data to migrate
-};
-
 /**
  * Deserialize raw stored data into a typed LocalStores object.
  * Pure function — no Obsidian dependency — so it can be unit-tested directly.
