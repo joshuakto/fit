@@ -33,6 +33,7 @@ export class Fit {
 	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
 	lastFetchedRemoteShas: FileStates;      // Canonical remote SHA cache
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
+	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 
@@ -85,6 +86,7 @@ export class Fit {
 		this.lastFetchedCommitSha = localStore.lastFetchedCommitSha;
 		this.lastFetchedRemoteShas = localStore.lastFetchedRemoteShas;
 		this.unpushedFiles = localStore.unpushedFiles ?? {};
+		this.pendingClashes = localStore.pendingClashes ?? [];
 
 		const localCount = Object.keys(this.localShas).length;
 		const legacyCount = Object.keys(this.localSha).length;

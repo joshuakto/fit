@@ -437,6 +437,7 @@ export class FitSync implements IFitSync {
 		safeLocal: FileChange[],
 		safeRemote: FileChange[],
 		clashes: FileClash[],
+		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
 	): Promise<SyncExecutionResult> {
@@ -477,10 +478,17 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 3: Execute sync operations
-		// Prepare clash files for writing to _fit/ directory
+		// Prepare clash files for writing to _fit/ directory.
+		// readFileContent uses content cached by readFromSource() — no extra API calls.
+		// Reminder-only paths (pendingReminderPaths) are excluded: remote content is unchanged
+		// so there is nothing new to write. They remain in clashes for state-management purposes
+		// (the loop below still deletes them from newLocalState to prevent leaking into localShas).
+		// Deletion of a pending path arrives with remoteOp === 'REMOVED' via the reclassification
+		// path above, so the remoteOp !== 'REMOVED' filter here can never incorrectly skip it.
 		const clashFiles = await Promise.all(
 			clashes
-				.filter(c => c.remoteOp !== 'REMOVED') // Skip deletions
+				.filter(c => c.remoteOp !== 'REMOVED')
+				.filter(c => !pendingReminderPaths.has(c.path))
 				.map(async (clash) => {
 					const content = await this.fit.remoteVault.readFileContent(clash.path);
 					return this.prepareConflictFile(clash.path, content.toBase64());
@@ -566,6 +574,21 @@ export class FitSync implements IFitSync {
 			delete newLocalState[path];
 		}
 
+		// Update pendingClashes: newly-clashed tracked files enter pending state.
+		// Remove their baseline so FIT makes no assumption about the canonical version.
+		// Untracked/protected clashes are excluded — they use the #169 baseline mechanism instead.
+		// Paths already in pendingClashes (localState === 'pending') stay there.
+		for (const clash of clashes) {
+			if (clash.remoteOp !== 'REMOVED' &&
+				clash.localState !== 'untracked' &&
+				clash.localState !== 'protected') {
+				if (!this.fit.pendingClashes.includes(clash.path)) {
+					this.fit.pendingClashes.push(clash.path);
+				}
+				delete newLocalState[clash.path];
+			}
+		}
+
 		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
 		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
 		// where the user deletes the file before the retry — without a baseline, the deletion would
@@ -629,6 +652,7 @@ export class FitSync implements IFitSync {
 			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
 			localShas: this.fit.filterSyncedState(newLocalState),
 			unpushedFiles: this.fit.unpushedFiles,
+			pendingClashes: this.fit.pendingClashes,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
@@ -680,7 +704,113 @@ export class FitSync implements IFitSync {
 			const {changes: localChanges, state: currentLocalState} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
-			const filteredLocalChanges = localChanges.filter(c => this.fit.shouldSyncPath(c.path));
+
+			// Phase 0: Resolve pending clashes
+			// For each path with an unresolved _fit/ copy, check if the user has resolved it.
+			const activePendingPaths = new Set<string>();
+			const pendingDeletions: string[] = [];
+			// Paths resolved with content matching remote — already in sync, no push needed.
+			const resolvedNoChangePaths = new Set<string>();
+
+			if (this.fit.pendingClashes.length > 0) {
+				fitLogger.log('.. ⏳ [Phase0] Checking pending clashes', { count: this.fit.pendingClashes.length, paths: this.fit.pendingClashes });
+				const pathsToCheck = [
+					...this.fit.pendingClashes.map(p => `_fit/${p}`),
+					...this.fit.pendingClashes,
+				];
+				// All paths here are tracked (non-hidden, non-protected), so vault index would
+				// suffice for existence checks. collectFilesystemState uses adapter.stat, which
+				// is fine given the small count; if this becomes a bottleneck, check
+				// getAbstractFileByPath first and fall back to adapter.stat only on null.
+				const { existenceMap: pendingExistenceMap } = await this.collectFilesystemState(pathsToCheck);
+				const stillPending: string[] = [];
+				const fitCopiesToDelete: string[] = [];
+
+				for (const path of this.fit.pendingClashes) {
+					const fitState = pendingExistenceMap.get(`_fit/${path}`);
+					const localState = pendingExistenceMap.get(path);
+
+					if (fitState === undefined || localState === undefined) {
+						// Stat failed — keep pending conservatively
+						activePendingPaths.add(path);
+						stillPending.push(path);
+						continue;
+					}
+
+					const fitExists = fitState !== 'nonexistent';
+					const localExists = localState !== 'nonexistent';
+
+					if (!fitExists) {
+						// _fit/ deleted by user — clash is resolved
+						if (!localExists) {
+							// Both gone — push deletion to remote
+							pendingDeletions.push(path);
+						}
+						// If local exists: no baseline → ADDED → pushed in normal detection
+					} else if (!localExists) {
+						// Local deleted but _fit/ remains — treat as deletion, clean up _fit/
+						pendingDeletions.push(path);
+						fitCopiesToDelete.push(`_fit/${path}`);
+					} else {
+						// Both exist — resolved if content matches, still pending otherwise
+						try {
+							const [fitContent, localContent] = await Promise.all([
+								this.fit.localVault.readFileContent(`_fit/${path}`),
+								this.fit.localVault.readFileContent(path),
+							]);
+							const [fitSha, localSha] = await Promise.all([
+								LocalVault.fileSha1(path, fitContent),
+								LocalVault.fileSha1(path, localContent),
+							]);
+
+							if (fitSha === localSha) {
+								// Resolved — queue _fit/ copy for deletion; path re-enters normal detection
+								fitCopiesToDelete.push(`_fit/${path}`);
+								// Check if local content already matches remote — if so, no push needed.
+								// readFileContent returns cached content from readFromSource (no extra network call).
+								try {
+									const remoteContent = await this.fit.remoteVault.readFileContent(path);
+									if (localContent.equals(remoteContent)) {
+										resolvedNoChangePaths.add(path);
+									}
+								} catch {
+									// Can't read remote — safe to push (may cause harmless re-push)
+								}
+							} else {
+								activePendingPaths.add(path);
+								stillPending.push(path);
+							}
+						} catch {
+							// Can't read — keep pending conservatively
+							activePendingPaths.add(path);
+							stillPending.push(path);
+						}
+					}
+				}
+
+				if (fitCopiesToDelete.length > 0) {
+					await this.fit.localVault.applyChanges([], fitCopiesToDelete);
+				}
+
+				const originalCount = this.fit.pendingClashes.length;
+				this.fit.pendingClashes = stillPending;
+
+				fitLogger.log('.. ✅ [Phase0] Pending clash check complete', {
+					resolved: originalCount - stillPending.length,
+					stillPending: stillPending.length,
+					activePending: activePendingPaths.size,
+					pendingDeletions: pendingDeletions.length,
+					resolvedNoChange: resolvedNoChangePaths.size,
+				});
+			}
+
+			const filteredLocalChanges = [
+				...localChanges
+					.filter(c => this.fit.shouldSyncPath(c.path))
+					.filter(c => !activePendingPaths.has(c.path))
+					.filter(c => !resolvedNoChangePaths.has(c.path)),
+				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),
+			];
 
 			// Log detected changes for diagnostics
 			const localCount = filteredLocalChanges.length;
@@ -713,15 +843,41 @@ export class FitSync implements IFitSync {
 			// Phase 2: Compare & Resolve - determine safe vs clashed changes
 			const localScanPaths = new Set(Object.keys(currentLocalState));
 			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
-			const { safeLocal, safeRemote, clashes, existenceMap } = await this.compareAndResolveChanges(
+			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
 				remoteChanges,
 				localScanPaths,
 				remoteScanPaths
 			);
 
+			// Reclassify safeRemote items for active pending paths — new remote changes must
+			// go to _fit/ only, not overwrite the local file whose status is unresolved.
+			const reclassifiedFromSafeRemote = new Set(
+				initialSafeRemote.filter(c => activePendingPaths.has(c.path)).map(c => c.path)
+			);
+			const safeRemote = initialSafeRemote.filter(c => !activePendingPaths.has(c.path));
+			// Reminder-only pending clashes: still unresolved from a prior sync, no new remote change
+			// this cycle. Included in clashes for state-management purposes (prevents the path from
+			// leaking back into localShas via currentLocalState), but passed separately so executeSync
+			// can skip the download+write step — remote content is unchanged, nothing new to write.
+			// Note: remote deletion of a pending path arrives via remoteChanges as REMOVED and is
+			// reclassified above with the real remoteOp, so it never ends up here as a reminder.
+			const pendingReminderPaths = new Set(
+				[...activePendingPaths]
+					.filter(p => !reclassifiedFromSafeRemote.has(p))
+					.filter(p => !initialClashes.some(c => c.path === p))
+			);
+			const clashes = [
+				...initialClashes,
+				...initialSafeRemote
+					.filter(c => activePendingPaths.has(c.path))
+					.map(c => ({ path: c.path, localState: 'pending' as const, remoteOp: c.type })),
+				...[...pendingReminderPaths]
+					.map(p => ({ path: p, localState: 'pending' as const, remoteOp: 'MODIFIED' as const })),
+			];
+
 			// Phase 3: Execute - push, pull, persist (atomic operation)
-			const { localOps, remoteOps, conflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths } = await this.executeSync(
+			const { localOps, remoteOps, conflicts: executedConflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths } = await this.executeSync(
 				currentLocalState,
 				{
 					remoteChanges,
@@ -731,9 +887,12 @@ export class FitSync implements IFitSync {
 				safeLocal,
 				safeRemote,
 				clashes,
+				pendingReminderPaths,
 				existenceMap,
 				syncNotice
 			);
+
+			const conflicts = executedConflicts;
 
 			// Log conflicts if any (these are real unresolved conflicts, not temporary clashes)
 			if (conflicts.length > 0) {
@@ -786,9 +945,9 @@ export class FitSync implements IFitSync {
 			// Set success message (only when not already replaced by the unpushed-files reminder
 			// or the partial-sync notice above)
 			if (rateLimitedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
-				if (conflicts.length === 0) {
+				if (executedConflicts.length === 0) {
 					syncNotice.setMessage(`Sync successful`);
-				} else if (conflicts.some(f => f.remoteOp !== "REMOVED")) {
+				} else if (executedConflicts.some(f => f.remoteOp !== "REMOVED")) {
 					syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
 				} else {
 					syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);

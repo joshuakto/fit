@@ -99,6 +99,11 @@ describe('FitSync', () => {
 	 * Simulate main.ts sync result handling logic.
 	 * This covers error handling and user notification that currently lives outside FitSync.
 	 * TODO: Expand to handle success cases with conflict notifications (showUnappliedConflicts)
+	 *
+	 * Coverage gap: main.ts lifecycle (loadLocalStore deserialization, saveLocalStoreCallback
+	 * round-trip, settings-triggered saveLocalStore) is not exercised here. A dedicated
+	 * integration test file for main.ts would catch field-omission bugs like the
+	 * pendingClashes loadLocalStore regression — tracked in follow-up PR.
 	 */
 	async function syncAndHandleResult(fitSync: FitSync, notice: any) {
 		const result = await fitSync.sync(notice);
@@ -1043,7 +1048,7 @@ describe('FitSync', () => {
 				clash: expect.arrayContaining([
 					expect.objectContaining({
 						path: 'document.md',
-						localState: 'MODIFIED',
+						localState: 'pending',
 						remoteOp: 'MODIFIED'
 					})
 				])
@@ -1056,6 +1061,193 @@ describe('FitSync', () => {
 				{method: 'setMessage', args: ['Change conflicts detected']},
 				{method: 'setMessage', args: ['Synced with remote, unresolved conflicts written to _fit']}
 			]);
+		});
+
+		describe('clash lifecycle: pending resolution across multiple syncs', () => {
+			// State machine for files written to _fit/ — the "pending clash" state.
+			// See docs/sync-logic.md "Conflict Resolution" for the full decision tree.
+			//
+			// When a clash is written to _fit/, the file enters a pending state:
+			//   - localShas entry is REMOVED (baseline invalidated; downgrade-safe since a
+			//     missing entry is a false-positive re-push, not a silent data loss)
+			//   - pendingClashes tracks the path until the user resolves it
+			//
+			// A pending clash is resolved when _fit/{path} is deleted OR its content
+			// matches local. Resolution scenarios:
+			//   A. Remote changes again while pending → _fit/ updated, local NOT overwritten
+			//   B. User edits to a merged version, deletes _fit/ → merged version pushed
+			//   C. User deletes _fit/ (keeps local unchanged) → local pushed to remote
+			//   D. User deletes both local and _fit/ → deletion pushed to remote
+			//   E. User edits either copy until they match → treated as resolved (parameterized)
+
+			async function setupClash(fitSync: FitSync) {
+				// Establish a clean baseline: pre-load localStoreState with the synced SHA
+				// values so the next sync sees 'doc.md' as already in sync (no changes).
+				// Without this, empty caches would detect ADDED+ADDED (a false-positive clash)
+				// instead of the intended MODIFIED+MODIFIED scenario.
+				localVault.setFile('doc.md', 'original\n');
+				remoteVault.setFile('doc.md', 'original\n');
+				const remoteResult = await remoteVault.readFromSource();
+				const localResult = await localVault.readFromSource();
+				fitSync.fit.loadLocalStore(makeLocalStore({
+					localShas: localResult.state,
+					lastFetchedRemoteShas: remoteResult.state,
+					lastFetchedCommitSha: remoteResult.commitSha,
+				}));
+
+				// Both sides modify doc.md concurrently
+				localVault.setFile('doc.md', 'local edits\n');
+				remoteVault.setFile('doc.md', 'remote edits\n');
+
+				// Sync: MODIFIED+MODIFIED clash detected, remote version written to _fit/doc.md
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true, clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md' })]) });
+				expect(localVault.getAllFilesAsRaw()).toMatchObject({
+					'doc.md': 'local edits\n',
+					'_fit/doc.md': 'remote edits\n',
+				});
+			}
+
+			it('A: remote changes again while clash is pending — _fit/ updated, local NOT overwritten', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				remoteVault.setFile('doc.md', 'remote edits v2\n');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true });
+
+				const files = localVault.getAllFilesAsRaw();
+				expect(files['doc.md']).toBe('local edits\n');
+				expect(files['_fit/doc.md']).toBe('remote edits v2\n');
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits v2\n');
+			});
+
+			it('B: user resolves by editing to merged version — merged version pushed', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				localVault.setFile('doc.md', 'merged content\n');
+				localVault.deleteFile('_fit/doc.md');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true, clash: [] });
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('merged content\n');
+				expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('_fit/doc.md');
+			});
+
+			it('C: user resolves by deleting _fit/ (keeping local unchanged) — local pushed to remote', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				localVault.deleteFile('_fit/doc.md');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true, clash: [] });
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
+			});
+
+			it('D: user deletes both local file and _fit/ — deletion pushed to remote', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				localVault.deleteFile('doc.md');
+				localVault.deleteFile('_fit/doc.md');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true, clash: [] });
+				expect(remoteVault.getAllFilesAsRaw()).not.toHaveProperty('doc.md');
+			});
+
+			it.each([
+				{
+					name: 'user edits _fit/ to match local (endorsing local version)',
+					setup: (lv: FakeLocalVault) => { lv.setFile('_fit/doc.md', 'local edits\n'); },
+					expectedRemote: 'local edits\n',
+				},
+				{
+					name: 'user edits local to match _fit/ (endorsing remote version)',
+					setup: (lv: FakeLocalVault) => { lv.setFile('doc.md', 'remote edits\n'); },
+					expectedRemote: 'remote edits\n',
+				},
+			])('E: $name — treated as resolved, correct version synced', async ({ setup, expectedRemote }) => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+				// After clash: local='local edits\n', _fit/='remote edits\n', remote='remote edits\n'
+
+				setup(localVault);
+
+				// Non-discrepant _fit/ = resolved. Push whichever version is now canonical.
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toMatchObject({ success: true, clash: [] });
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe(expectedRemote);
+				expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('_fit/doc.md');
+			});
+
+			it('F: user ignores clash and syncs again — clash reported on every sync until resolved', async () => {
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+				// After clash: doc.md='local edits\n', _fit/doc.md='remote edits\n', no remote changes
+
+				// Sync without resolving anything
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				// Must still report the pending clash so the user is reminded, even though
+				// remote hasn't changed and no local operations are performed.
+				expect(result).toMatchObject({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md', localState: 'pending' })]),
+				});
+				// Local and remote must be unchanged
+				expect(localVault.getAllFilesAsRaw()).toMatchObject({
+					'doc.md': 'local edits\n',
+					'_fit/doc.md': 'remote edits\n',
+				});
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+			});
+
+			it('G: multiple pending syncs never re-include the path in localShas (prevents silent remote pull)', async () => {
+				// Regression guard: Phase 0 must keep the pending path out of localShas across
+				// consecutive syncs. If localShas re-includes the pending path with the LOCAL sha,
+				// the next sync sees remote-sha ≠ stored-sha → treats it as a safeRemote change
+				// → pulls and silently overwrites local edits.
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				for (let i = 0; i < 3; i++) {
+					await syncAndHandleResult(fitSync, createMockNotice());
+					expect(localStoreState.localShas).not.toHaveProperty('doc.md');
+					expect(localStoreState.pendingClashes).toContain('doc.md');
+				}
+
+				// Remote must never have received the local edits
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+				expect(localVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
+			});
+
+			it('H: pendingClashes survive simulated plugin reload (re-init from saved state)', async () => {
+				// Regression guard: pendingClashes must be included in the state saved by
+				// saveLocalStoreCallback and correctly restored when FitSync is re-initialized
+				// (analogous to plugin unload/reload between syncs).
+				const fitSync = createFitSync();
+				await setupClash(fitSync);
+
+				expect(localStoreState.pendingClashes).toContain('doc.md');
+				expect(localStoreState.localShas).not.toHaveProperty('doc.md');
+
+				// Simulate plugin reload: new FitSync initialized from the saved localStoreState
+				const reloadedFitSync = createFitSync();
+
+				const result = await syncAndHandleResult(reloadedFitSync, createMockNotice());
+
+				// Phase 0 must run and surface the clash — not silently clear it
+				expect(result).toMatchObject({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md', localState: 'pending' })]),
+				});
+				expect(localVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
+				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
+			});
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {

@@ -80,6 +80,11 @@ export interface LocalStores {
 	// on remote (and should be removed from this list).
 	// Note: transient failures like rate limits (#179) should be tracked separately when needed since they SHOULD retry on subsequent syncs.
 	unpushedFiles?: FileStates
+	// Paths with an unresolved _fit/ copy (pending clash state). localShas entry is absent
+	// for these paths. Resolved when _fit/ is deleted or matches local content.
+	// Downgrade-safe: absent field treated as empty array; missing localShas entry causes
+	// false-positive re-push on old clients (overhead only, not data loss).
+	pendingClashes?: string[]
 }
 
 /**
@@ -96,7 +101,8 @@ const DEFAULT_LOCAL_STORE: LocalStores = {
 	localShas: {},
 	lastFetchedCommitSha: null,
 	lastFetchedRemoteShas: {},
-	unpushedFiles: {}
+	unpushedFiles: {},
+	pendingClashes: []
 	// Note: no localSha — absent means no legacy data to migrate
 };
 
@@ -542,6 +548,11 @@ export default class FitPlugin extends Plugin {
 		this.settings = settingsObj;
 	}
 
+	// TODO: loadLocalStore and saveLocalStoreCallback are the persistence contract for all
+	// sync state. Adding any new field to LocalStores requires updating BOTH this function
+	// and saveLocalStoreCallback — they are not tested together (see follow-up PR for
+	// main.ts integration tests). When adding a field: add it here with a ?? default,
+	// add it to saveLocalStoreCallback, and add a round-trip test.
 	async loadLocalStore() {
 		const storedData = (await this.loadData()) ?? {};
 		this.localStore = {
@@ -550,7 +561,8 @@ export default class FitPlugin extends Plugin {
 			lastFetchedCommitSha: storedData.lastFetchedCommitSha ?? null,
 			lastFetchedRemoteShas: storedData.lastFetchedRemoteSha ?? storedData.lastFetchedRemoteShas ?? {},
 			lastFetchedRemoteSha: undefined,                        // consume legacy field name → omitted by JSON.stringify, removing it from storage
-			unpushedFiles: storedData.unpushedFiles ?? {}
+			unpushedFiles: storedData.unpushedFiles ?? {},
+			pendingClashes: storedData.pendingClashes ?? [],
 		};
 	}
 

@@ -25,6 +25,19 @@ FIT uses SHA-based change detection to maintain **baseline state** versions (`Lo
 
 **Critical**: Baseline updates only on successful sync. Failed syncs preserve baseline, so next sync detects all accumulated changes.
 
+### Why SHA Comparison?
+
+**Problem with timestamps:**
+- Clock skew between devices
+- Unreliable on mobile platforms
+- Lost when files are copied/restored
+
+**SHA advantages:**
+- Content-based comparison
+- Handles clock differences
+- Detects actual changes vs metadata changes
+- Enables three-way merge detection
+
 ### Cache Structure
 
 ```typescript
@@ -101,18 +114,30 @@ This enables future syncs to compare current local SHA vs baseline to determine 
 
 **Note:** Reading hidden files for baseline comparison requires using `vault.adapter` API instead of `vault.getAbstractFileByPath()`. See [docs/api-compatibility.md](./api-compatibility.md) "Reading Untracked Files".
 
-### Why SHA Comparison?
+## Concepts and Invariants
 
-**Problem with timestamps:**
-- Clock skew between devices
-- Unreliable on mobile platforms
-- Lost when files are copied/restored
+### Baseline
 
-**SHA advantages:**
-- Content-based comparison
-- Handles clock differences
-- Detects actual changes vs metadata changes
-- Enables three-way merge detection
+Each file path has a **baseline** SHA in `localShas` (local) and `lastFetchedRemoteShas` (remote). A baseline entry for `path` means: *this was the confirmed state of the file after the last successful sync.* Change detection works by comparing the current scanned state against the baseline.
+
+- Baselines are updated only on successful sync completion. A failed sync leaves them unchanged, so the next sync re-detects all accumulated changes.
+- A path **absent** from `localShas` has no confirmed local baseline — either it was never synced, or a clash removed the entry (see [Pending](#pending) below).
+
+### `_fit/` as scratchpad
+
+The `_fit/` directory is **never part of the synced vault.** It is out-of-band storage where FIT places copies of remote file versions during conflict resolution, so the user can inspect both sides before deciding.
+
+- `_fit/path` is always a copy of a *remote* version, never the local version.
+- The canonical local version of `path` is always at `path`, not at `_fit/path`.
+- `_fit/` contents are excluded from sync in both directions (`shouldSyncPath` returns false).
+
+### Pending
+
+A path is **pending** when it has an unresolved `_fit/` copy — the user has not yet confirmed which version to keep. FIT tracks pending paths in `pendingClashes` (persisted in `LocalStores`).
+
+- A pending path has no baseline: `localShas[path]` is absent. FIT makes no assumption about which version is canonical.
+- FIT **shields** pending paths: excluded from push (local version is unconfirmed) and protected from remote overwrites (new remote versions go to `_fit/` only).
+- A path leaves pending when the user resolves the discrepancy — deleting `_fit/path`, or editing either file until both copies match. See [Pending Clash State Machine](#pending-clash-state-machine).
 
 ## Change Detection
 
@@ -152,6 +177,8 @@ cachedLocalSha = {
 
 // Result: file2.md detected as REMOVED
 ```
+
+**Phase 0 note:** Before this detection runs, Phase 0 pre-processing excludes active pending clash paths (files with an unresolved `_fit/` copy tracked in `pendingClashes`). They re-enter this detection once resolved.
 
 ### ☁️ Remote Change Detection
 
@@ -415,8 +442,12 @@ FIT uses a **phased sync architecture** that maintains clear boundaries between 
 
 ```mermaid
 flowchart TD
-    Start[Start Sync] --> Phase1[Phase 1: Collect State]
-    Phase1 --> Gather1[💾 Scan local vault<br/>tracked files only]
+    Start[Start Sync] --> Phase0[Phase 0: Resolve Pending Clashes]
+    Phase0 --> PendingCheck{pendingClashes<br/>non-empty?}
+    PendingCheck -->|No| Phase1
+    PendingCheck -->|Yes| ResolvePending[Check _fit/ vs local for each pending path<br/>Resolved paths: re-enter normal detection<br/>Active paths: excluded from push/pull]
+    ResolvePending --> Phase1[Phase 1: Collect State]
+    Phase1 --> Gather1[💾 Scan local vault<br/>tracked + resolved-pending files]
     Gather1 --> Gather2[☁️ Read remote tree<br/>all files]
 
     Gather2 --> Phase2[Phase 2: Compare & Resolve]
@@ -427,11 +458,11 @@ flowchart TD
 
     Classify --> Resolve[Resolve ambiguities:<br/>Batch stat filesystem]
     Resolve --> Verify[Verify untracked files:<br/>protected? exists? baseline SHA?]
-    Verify --> Reclassify[Reclassify:<br/>❓ → ✓ Safe or 🔀 Clash]
+    Verify --> Reclassify[Reclassify:<br/>❓ → ✓ Safe or 🔀 Clash<br/>safeRemote + active pending → 🔀 Clash]
 
     Reclassify --> Phase3[Phase 3: Execute Sync]
-    Phase3 --> ResolveConflicts[Resolve clashes<br/>📁 Write to _fit/]
-    ResolveConflicts --> Push[⬆️ Push local changes]
+    Phase3 --> ResolveConflicts[Resolve clashes<br/>📁 Write to _fit/<br/>Remove from localShas, add to pendingClashes]
+    ResolveConflicts --> Push[⬆️ Push non-conflicted local changes]
     Push --> Pull[⬇️ Pull safe remote changes]
     Pull --> Persist[Persist state atomically]
 
@@ -441,24 +472,30 @@ flowchart TD
 
 **Architecture Principles:**
 
-1. **Phase 1 (Collect)**: Gather state from vaults in isolation
-   - Local: Only tracked files (efficient Obsidian API scan)
+1. **Phase 0 (Pending Clash Resolution)**: Pre-process files with unresolved `_fit/` copies
+   - Check each `pendingClashes` path: is `_fit/` still present? Does it match local?
+   - Resolved paths (no `_fit/`, or `_fit/` matches local) re-enter normal detection
+   - Active pending paths are excluded from push and shielded from remote overwrites
+
+2. **Phase 1 (Collect)**: Gather state from vaults in isolation
+   - Local: Only tracked files (efficient Obsidian API scan), excluding active-pending paths
    - Remote: All files (GitHub tree)
    - No filesystem checks yet
 
-2. **Phase 2 (Compare & Resolve)**: Determine outcomes and resolve ambiguities
+3. **Phase 2 (Compare & Resolve)**: Determine outcomes and resolve ambiguities
    - **Compare**: Classify changes based on vault state
      - Tracked files with changes on both sides → **Clash** (definite conflict)
      - Tracked files changed on one side → **Safe** (can apply directly)
      - Untracked remote changes → **Needs Verification** (insufficient info)
+     - safeRemote changes to active-pending paths → reclassified as **Clash** (new remote goes to `_fit/` only)
    - **Resolve**: Resolve ambiguity for untracked files
      - Batch collect filesystem state (one `stat` call for all paths)
      - Check: Is path protected? Does file exist locally? Baseline SHA match?
      - Reclassify: Needs Verification → Safe or Clash
 
-3. **Phase 3 (Execute)**: Apply changes and persist state
-   - Resolve real clashes (write to `_fit/`)
-   - Push and pull safe changes
+4. **Phase 3 (Execute)**: Apply changes and persist state
+   - Resolve real clashes (write to `_fit/`, remove from `localShas`, add to `pendingClashes`)
+   - Push non-conflicted local changes; pull safe remote changes
    - Atomically update SHA cache
 
 **Key Benefits:**
@@ -468,6 +505,45 @@ flowchart TD
 - **Testable**: Phases can be tested independently
 
 **Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
+
+### Pending Clash State Machine
+
+Once a clash is written, the file enters a **pending** state that persists across syncs until explicitly resolved. `pendingClashes` is persisted in `LocalStores`; `localShas[path]` is removed so the file has no stale baseline.
+
+```mermaid
+flowchart TD
+    Clash[🔀 Clash detected] --> WriteFit[Write remote → 📁 _fit/path]
+    WriteFit --> UpdateState[Remove localShas entry<br/>Add to pendingClashes]
+    UpdateState --> Pending
+
+    Pending([⏳ Pending]) --> NextSync[Next sync: Phase 0 check]
+
+    NextSync --> FitGone{_fit/path<br/>exists?}
+
+    FitGone -->|No, deleted| LocalGone{local file<br/>exists?}
+    FitGone -->|Yes| FitMatchesLocal{_fit/ content<br/>== local?}
+
+    LocalGone -->|Yes| PushLocal[local has no baseline<br/>→ ADDED → pushed ✓]
+    LocalGone -->|No| PushDelete[enqueue deletion<br/>→ remote file removed ✓]
+
+    FitMatchesLocal -->|Yes| PushResolved[re-enter normal detection<br/>push/no-op as appropriate ✓]
+    FitMatchesLocal -->|No| StillPending[Still pending:<br/>excluded from push/pull<br/>new remote → _fit/ only]
+
+    PushLocal --> Resolved([✅ Resolved])
+    PushDelete --> Resolved
+    PushResolved --> Resolved
+    StillPending --> Pending
+```
+
+**Resolution scenarios** (see `fitSync.realFit.test.ts` "clash lifecycle" describe block for tests):
+
+| Scenario | `_fit/` state | Local state | Outcome |
+|----------|--------------|-------------|---------|
+| A | Remote changes again | Unchanged | `_fit/` updated to latest remote, local preserved |
+| B | Deleted by user | Edited (merged) | Merged version pushed |
+| C | Deleted by user | Unchanged | Local pushed as-is |
+| D | Deleted by user | Also deleted | Deletion pushed to remote |
+| E | Edited to match local (or vice versa) | Matches `_fit/` | Resolved; canonical version pushed or no-op |
 
 ### Sync Operation Types
 
@@ -531,8 +607,8 @@ remoteChanges = [
 1. Identify clashed files
 2. For each clash, check if content actually differs
 3. If no actual difference, treat as compatible
-4. If real 🔀 conflict, save remote version to 📁 `_fit/`
-5. Push local changes (including conflicted files)
+4. If real 🔀 conflict, save remote version to 📁 `_fit/`, add path to `pendingClashes`, remove from `localShas`
+5. Push **non-conflicted** local changes only (conflicted files are withheld until resolved)
 6. Pull non-conflicted remote changes
 
 ## 🔀 Conflict Resolution
@@ -592,14 +668,14 @@ flowchart TD
 - User can manually restore from 📁 `_fit/` if needed
 
 **☁️ Remote deleted, 💾 local MODIFIED:**
-- Keep local version in original location
-- Push to remote (restores the file remotely)
-- Local version wins automatically
+- Keep local version in original location (not deleted)
+- ⚠️ Local MODIFIED is in `clashes`, not `safeLocal` — it is **not** pushed. The file ends up locally present but remotely absent with the divergence invisible to subsequent syncs. Tracked as a known bug.
 
 **Both sides MODIFIED (different content):**
 - Keep 💾 local version in original location
 - Save ☁️ remote version → 📁 `_fit/path/to/file.md`
-- User manually merges the two versions
+- Remove path from `localShas`, add to `pendingClashes`
+- Subsequent syncs hold the file in pending state until resolved — see [Pending Clash State Machine](#pending-clash-state-machine)
 - Binary files (`.png`, `.jpg`, `.pdf`) saved as-is to 📁 `_fit/`
 
 ## Initial Sync
