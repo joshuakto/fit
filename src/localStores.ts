@@ -29,6 +29,7 @@ export interface LocalStores {
 	// Downgrade-safe: absent field treated as empty array; missing localShas entry causes
 	// false-positive re-push on old clients (overhead only, not data loss).
 	pendingClashes?: string[]
+	lastSyncedAt?: number  // Unix ms timestamp of last successful sync completion
 }
 
 /**
@@ -51,5 +52,6 @@ export function parseLocalStore(data: Record<string, unknown> | null | undefined
 		lastFetchedRemoteSha: undefined,               // consume legacy field → omitted by JSON.stringify
 		unpushedFiles: (d.unpushedFiles ?? {}) as unknown as FileStates,
 		pendingClashes: (d.pendingClashes ?? []) as unknown as string[],
+		lastSyncedAt: (d.lastSyncedAt as number | undefined) ?? undefined,
 	};
 }

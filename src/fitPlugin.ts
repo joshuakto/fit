@@ -1,4 +1,6 @@
 import { Plugin, SettingTab } from 'obsidian';
+import { FitStatusModal } from '@/fitStatusModal';
+import { renderExplanation, type AutoSyncInfo } from '@/fitStatusExplainer';
 import { Fit } from '@/fit';
 import FitNotice from '@/fitNotice';
 import FitSettingTab from '@/fitSettingTab';
@@ -296,6 +298,10 @@ export default class FitPlugin extends Plugin {
 		// Handle all sync outcomes with centralized UI lifecycle management
 		switch (outcome.status) {
 			case 'success':
+				// Record sync timestamp for status display
+				this.localStore = { ...this.localStore, lastSyncedAt: Date.now() };
+				void this.saveLocalStore();
+
 				// Show optional notifications
 				if (this.settings.notifyConflicts) {
 					showUnappliedConflicts(outcome.result.clash);
@@ -347,6 +353,29 @@ export default class FitPlugin extends Plugin {
 	triggerManualSync = async (): Promise<void> => {
 		await this.executeSyncWithUICoordination('manual');
 	};
+
+	private async explainSyncStatus(): Promise<void> {
+		if (!this.checkSettingsConfigured()) return;
+		// Reload so status reflects disk state even if user hasn't synced since startup.
+		await this.loadLocalStore();
+		this.fit.loadLocalStore(this.localStore);
+
+		const explanation = await this.fitSync.explainStatus();
+
+		const { owner, repo, autoSync, checkEveryXMinutes } = this.settings;
+		const sha = this.localStore.lastFetchedCommitSha;
+		const commitUrl = (owner && repo && sha)
+			? `https://github.com/${owner}/${repo}/tree/${sha}`
+			: null;
+		const autoSyncInfo: AutoSyncInfo = {
+			enabled: autoSync !== 'off',
+			intervalMinutes: checkEveryXMinutes,
+			lastSyncedAt: this.localStore.lastSyncedAt ?? null,
+		};
+
+		const renderable = renderExplanation(explanation, { commitUrl, autoSyncInfo });
+		new FitStatusModal(this.app, renderable).open();
+	}
 
 	loadRibbonIcons() {
 		// Pull from remote then Push to remote if no clashing changes detected during pull
@@ -416,6 +445,12 @@ export default class FitPlugin extends Plugin {
 				id: 'fit-sync',
 				name: 'Fit Sync',
 				callback: this.triggerManualSync
+			});
+
+			this.addCommand({
+				id: 'fit-explain-status',
+				name: 'Explain sync status',
+				callback: () => this.explainSyncStatus()
 			});
 
 			// This adds a settings tab so the user can configure various aspects of the plugin

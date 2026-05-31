@@ -322,12 +322,69 @@
 .file-MODIFIED {
     background-color: rgba(249, 180, 52, 0.4);
     background-image: var(--file-change);
-
 }
 
 .file-REMOVED {
     background-color: rgba(255, 99, 71, 0.3);
     background-image: var(--file-delete);
+}
+
+/* File blocked from syncing until conflict is resolved.
+   Amber-orange (warmer than MODIFIED yellow) + change icon signals "has changes but stuck". */
+.file-needs-resolution {
+    background-color: rgba(255, 140, 0, 0.35);
+    background-image: var(--file-change);
+}
+
+/* File skipped during push (e.g. exceeds GitHub size limit). Muted grey signals "blocked, not active". */
+.file-push-skipped {
+    background-color: rgba(140, 140, 140, 0.2);
+    background-image: var(--file-change);
+    opacity: 0.7;
+}
+
+/* Unified file status list — mirrors post-sync notice layout */
+.fit-status-list {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0;
+}
+
+/* Group header row: <details><summary> toggle for section description */
+.fit-status-group {
+    list-style: none;
+    padding: 0;
+    margin-top: 10px;
+}
+
+.fit-status-group-label {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+    list-style: none;
+}
+
+.fit-status-group-desc {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin: 4px 0 4px 14px;
+    line-height: 1.4;
+}
+
+/* Secondary label shown after the file path (e.g. _fit/ counterpart for conflicts) */
+.fit-file-detail {
+    opacity: 0.55;
+    font-size: 0.85em;
+    margin-left: 8px;
+}
+
+.fit-autosync-note, .fit-scan-note, .fit-info-note {
+    font-size: 0.85em;
+    opacity: 0.7;
+    margin: 4px 0;
 }
 
 .file-changes-heading {

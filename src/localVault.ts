@@ -62,6 +62,12 @@ export class LocalVault implements IVault<"local"> {
 		this.vault = vault;
 	}
 
+	/** Returns file size in bytes, or null if path doesn't exist or is not a file. */
+	getFileSizeBytes(path: string): number | null {
+		const file = this.vault.getAbstractFileByPath(path);
+		return file instanceof TFile ? file.stat.size : null;
+	}
+
 	/**
 	 * Check if path should be included in state tracking.
 	 *
@@ -185,7 +191,11 @@ export class LocalVault implements IVault<"local"> {
 			}
 		});
 
-		// If any files failed, throw a VaultError with details
+		// If any files failed, throw a VaultError with details.
+		// TODO: Instead of aborting on partial failure, skip unreadable files and include
+		// partialState (Object.fromEntries(shaEntries)) in details so callers can process
+		// the files that succeeded. This would unblock sync for vaults with permission-restricted
+		// files (e.g. EACCES) — see related issue for sync-level graceful degradation.
 		if (failedPaths.length > 0) {
 			throw new VaultError(
 				'filesystem',

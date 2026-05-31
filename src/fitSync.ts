@@ -10,6 +10,7 @@ import { detectNormalizationMismatches } from "./util/filePath";
 import { BlobSha, CommitSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
+import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -63,7 +64,8 @@ function logCacheUpdate(
  * @see FitSync - The concrete implementation
  */
 export interface IFitSync {
-	fit: Fit
+	fit: Fit;
+	explainStatus(): Promise<StatusExplanation>;
 }
 
 /**
@@ -1127,6 +1129,51 @@ export class FitSync implements IFitSync {
 		}
 
 		return baseMessage;
+	}
+
+	async explainStatus(): Promise<StatusExplanation> {
+		fitLogger.log('[ExplainStatus] Checking sync status...');
+
+		const snapshot: SyncStatusSnapshot = {
+			lastFetchedCommitSha: this.fit.lastFetchedCommitSha,
+			trackedFileCount: Object.keys(this.fit.localShas).length,
+			pendingClashes: [...this.fit.pendingClashes],
+			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
+		};
+
+		if (!snapshot.lastFetchedCommitSha) {
+			return { kind: 'never-synced' };
+		}
+
+		let localChanges: FileChange[] | null = null;
+		let scanFailedPaths: string[] | undefined;
+
+		try {
+			const result = await this.fit.getLocalChanges();
+			localChanges = result.changes;
+		} catch (err) {
+			scanFailedPaths = err instanceof VaultError && err.details?.failedPaths
+				? err.details.failedPaths
+				: [];
+			fitLogger.log('[ExplainStatus] Vault scan failed', err);
+		}
+
+		// Pre-classify local changes that exceed GitHub's 100MB file size limit.
+		// These will fail on push just like files already in unpushedFiles.
+		if (localChanges) {
+			const GITHUB_SIZE_LIMIT = 100 * 1024 * 1024;
+			const knownOversized = new Set(snapshot.oversizedFilePaths);
+			for (const change of localChanges) {
+				if (change.type === 'REMOVED') continue;
+				const size = this.fit.localVault.getFileSizeBytes(change.path);
+				if (size !== null && size >= GITHUB_SIZE_LIMIT && !knownOversized.has(change.path)) {
+					snapshot.oversizedFilePaths = [...snapshot.oversizedFilePaths, change.path];
+					knownOversized.add(change.path);
+				}
+			}
+		}
+
+		return buildStatusExplanation(snapshot, localChanges, scanFailedPaths);
 	}
 
 	async clear(): Promise<boolean> {

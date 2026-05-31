@@ -19,6 +19,12 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 **Note:** This plugin is still in beta, please backup your vault before using this plugin.
 
+## Coming soon
+
+**Sync status overview** — an upcoming command ("Explain Sync Status") will open a detailed view of your vault's sync state: pending local changes, unresolved conflicts, files too large to push, and auto-sync timing. Preview:
+
+<img alt="Fit Sync Status modal preview showing conflict, oversized file, and sync scope note" src="docs/assets/fit-status-modal-preview.png" width="500">
+
 
 # Quick demo
 
