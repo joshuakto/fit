@@ -1,6 +1,6 @@
 import { Fit } from "./fit";
 import { FileChange, FileClash, FileStates, determineLocalChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
-import { LocalStores } from "@main";
+import { LocalStores } from "@/localStores";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
 import { fitLogger } from "./logger";

@@ -5,7 +5,7 @@
  * Encapsulates all GitHub API operations for file state management.
  */
 
-import { LocalStores } from "@main";
+import { LocalStores } from "@/localStores";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";

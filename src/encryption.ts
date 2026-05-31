@@ -10,7 +10,7 @@
  * - Cache must be cleared when master key changes
  */
 
-import FitPlugin from "@main";
+import FitPlugin from "@/fitPlugin";
 import { arrayBufferToBase64, base64ToArrayBuffer } from "obsidian";
 
 const encoder = new TextEncoder();

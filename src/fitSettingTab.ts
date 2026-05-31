@@ -1,4 +1,4 @@
-import FitPlugin from "@main";
+import FitPlugin from "@/fitPlugin";
 import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
 import { setEqual } from "./utils";
 import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
