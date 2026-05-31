@@ -432,6 +432,7 @@ describe('Logger', () => {
 			const content = adapter.content!;
 			expect(content).toContain('"name": "Error"');
 			expect(content).toContain('"message": "test error message"');
+			expect(content).toContain('"stack"');
 			expect(content).toContain('"status": 422');
 			expect(content).toContain('"method": "POST"');
 			expect(content).toContain('"response"');
