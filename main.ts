@@ -7,7 +7,7 @@
 import { Plugin, SettingTab } from 'obsidian';
 import { Fit } from '@/fit';
 import FitNotice from '@/fitNotice';
-import FitSettingTab from '@/fitSetting';
+import FitSettingTab from '@/fitSettingTab';
 import { FitSync } from '@/fitSync';
 import { showFileChanges, showUnappliedConflicts } from '@/utils';
 import { fitLogger } from '@/logger';

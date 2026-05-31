@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import FitSettingTab from './fitSetting';
+import FitSettingTab from './fitSettingTab';
 import { FitLogger } from './logger';
 
 const EMPTY_SETTINGS = { pat: '', avatarUrl: '', owner: '', repo: '', branch: '' };
