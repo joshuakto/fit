@@ -191,7 +191,6 @@ export class LocalVault implements IVault<"local"> {
 				'filesystem',
 				`Failed to read ${failedPaths.length} file(s) from local vault: ${failedPaths.map(f => f.path).join(', ')}`,
 				{
-					originalError: failedPaths[0].error,
 					failedPaths: failedPaths.map(f => f.path),
 					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
 				}

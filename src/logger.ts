@@ -79,6 +79,14 @@ function sanitizeForLogging(data: unknown, depth = 0): unknown {
 	if (data instanceof Error) {
 		result.name = data.name;
 		result.message = sanitizeForLogging(data.message, depth + 1);
+		if (data.stack) {
+			// Cap at 15 lines so Obsidian/Promise internals don't drown out app frames
+			const lines = data.stack.split('\n');
+			const MAX_STACK_LINES = 15;
+			result.stack = lines.length > MAX_STACK_LINES
+				? lines.slice(0, MAX_STACK_LINES).join('\n') + `\n    ... (${lines.length - MAX_STACK_LINES} more frames)`
+				: data.stack;
+		}
 	}
 
 	for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
