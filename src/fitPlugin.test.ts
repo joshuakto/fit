@@ -79,17 +79,62 @@ describe('FitPlugin persistence lifecycle', () => {
 			);
 		});
 
-		it('merges partial update with existing persisted data', async () => {
+		it('merges partial update into existing in-memory store', async () => {
 			const plugin = makePlugin();
-			mockLoad(plugin, { localShas: { 'existing.md': sha('old') }, pendingClashes: [] });
+			plugin.localStore = { localShas: { 'existing.md': sha('old') }, pendingClashes: [], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
 
 			await (plugin.fitSync as unknown as StubFitSync).simulateSyncSave({ pendingClashes: ['z.md'] });
 
 			expect(plugin.saveData).toHaveBeenCalledWith(
 				expect.objectContaining({
+					localShas: { 'existing.md': 'old' },
 					pendingClashes: ['z.md'],
 				})
 			);
+		});
+	});
+
+	describe('saveLocalStore / saveSettings write merged in-memory state', () => {
+		it('saveLocalStore includes settings fields so concurrent saveSettings cannot lose them', async () => {
+			const plugin = makePlugin();
+			plugin.settings = { pat: 'token', owner: 'alice', repo: 'r', branch: 'main' } as any;
+			plugin.localStore = { localShas: { 'a.md': sha('s1') }, pendingClashes: [], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
+
+			await plugin.saveLocalStore();
+
+			expect(plugin.saveData).toHaveBeenCalledWith(
+				expect.objectContaining({ pat: 'token', localShas: { 'a.md': 's1' } })
+			);
+		});
+
+		it('saveSettings includes localStore fields so concurrent saveLocalStore cannot lose them', async () => {
+			const plugin = makePlugin();
+			plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+			plugin.settings = { pat: 'token', owner: 'alice', repo: 'r', branch: 'main', checkEveryXMinutes: 5 } as any;
+			plugin.localStore = { localShas: {}, pendingClashes: ['x.md'], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
+			plugin.startOrUpdateAutoSyncInterval = vi.fn() as any;
+
+			await plugin.saveSettings();
+
+			expect(plugin.saveData).toHaveBeenCalledWith(
+				expect.objectContaining({ pat: 'token', pendingClashes: ['x.md'] })
+			);
+		});
+
+		it('concurrent saveLocalStore + saveSettings both land in the final persisted state', async () => {
+			const plugin = makePlugin();
+			plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+			plugin.settings = { pat: 'token' } as any;
+			plugin.localStore = { localShas: {}, pendingClashes: ['x.md'], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
+			plugin.startOrUpdateAutoSyncInterval = vi.fn() as any;
+
+			// Fire both without awaiting — simulates concurrent execution
+			await Promise.all([plugin.saveLocalStore(), plugin.saveSettings()]);
+
+			// Both calls write full merged state, so both contain both sides
+			for (const call of (plugin.saveData as Mock).mock.calls) {
+				expect(call[0]).toMatchObject({ pat: 'token', pendingClashes: ['x.md'] });
+			}
 		});
 	});
 
