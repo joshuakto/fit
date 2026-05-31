@@ -50,15 +50,15 @@ export const DEFAULT_LOCAL_STORE: LocalStores = {
  *   2. Add to saveLocalStoreCallback in fitSync.ts
  *   3. Add a round-trip assertion in localStores.test.ts
  */
-export function parseLocalStore(data: Record<string, any> | null | undefined): LocalStores {
+export function parseLocalStore(data: Record<string, unknown> | null | undefined): LocalStores {
 	const d = data ?? {};
 	return {
-		localShas: d.localShas ?? {},
-		localSha: d.localSha,                          // undefined if absent → omitted by JSON.stringify
-		lastFetchedCommitSha: d.lastFetchedCommitSha ?? null,
-		lastFetchedRemoteShas: d.lastFetchedRemoteSha ?? d.lastFetchedRemoteShas ?? {},
+		localShas: (d.localShas ?? {}) as unknown as FileStates,
+		localSha: d.localSha as unknown as FileStates | undefined,  // undefined if absent → omitted by JSON.stringify
+		lastFetchedCommitSha: (d.lastFetchedCommitSha ?? null) as unknown as CommitSha | null,
+		lastFetchedRemoteShas: (d.lastFetchedRemoteSha ?? d.lastFetchedRemoteShas ?? {}) as unknown as FileStates,
 		lastFetchedRemoteSha: undefined,               // consume legacy field → omitted by JSON.stringify
-		unpushedFiles: d.unpushedFiles ?? {},
-		pendingClashes: d.pendingClashes ?? [],
+		unpushedFiles: (d.unpushedFiles ?? {}) as unknown as FileStates,
+		pendingClashes: (d.pendingClashes ?? []) as unknown as string[],
 	};
 }
