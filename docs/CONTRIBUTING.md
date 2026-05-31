@@ -10,6 +10,18 @@ cd fit && npm install
 npm run dev
 ```
 
+**Hooks (recommended):** Run lint, typecheck, and tests automatically via git hooks.
+
+1. Install [hk](https://hk.jdx.dev) and [pkl](https://pkl-lang.org/main/current/pkl-cli/index.html#installation) via your package manager:
+   - macOS: `brew install hk`
+   - Arch Linux: `yay -S hk-bin pkl-bin`
+   - Other: see [hk installation docs](https://hk.jdx.dev/installation.html)
+2. Register the git hooks: `hk install`
+
+After this, `git push` will run lint, typecheck, and tests, blocking the push on failure and matching what CI checks.
+
+If you use [jj](https://jj-vcs.github.io/jj/), install [jj-hooks](https://crates.io/crates/jj-hooks) to trigger git hooks from jj operations.
+
 **Unit Tests**: Run `npm test` to execute unit tests (Vitest), or `npm run test:watch` for development with file watching.
 
 **E2E Tests**: Run `npm run test:e2e` for desktop tests, `npm run test:android` for Android tests. See `test/README.md` for detailed setup and troubleshooting.
