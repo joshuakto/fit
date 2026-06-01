@@ -561,7 +561,7 @@ export class FitSync implements IFitSync {
 		// 3c. Update local state using SHAs computed by LocalVault (performance optimization)
 		// LocalVault computed SHAs from in-memory content during file writes (see docs/sync-logic.md).
 		// Benefits: avoids redundant I/O, prevents race conditions, no normalization in Obsidian.
-		// Only trackable files included (hidden files excluded to avoid spurious deletions).
+		// Only sync-candidate files included (non-syncable paths like .obsidian/ excluded).
 		// Note: We await the SHA promise here (not earlier) to allow parallel computation with other sync operations.
 		const newBaselineShas = await localFileOpsRecord.newBaselineStates;
 
@@ -806,9 +806,10 @@ export class FitSync implements IFitSync {
 				});
 			}
 
+			// localChanges is pre-filtered by getLocalChanges() (shouldTrackState + shouldSyncPath).
+			// pendingDeletions come from pendingClashes which were synced paths originally.
 			const filteredLocalChanges = [
 				...localChanges
-					.filter(c => this.fit.shouldSyncPath(c.path))
 					.filter(c => !activePendingPaths.has(c.path))
 					.filter(c => !resolvedNoChangePaths.has(c.path)),
 				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),

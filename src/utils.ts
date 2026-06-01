@@ -98,6 +98,7 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	const hasPending = clashedFiles.some(c => c.localState === 'pending');
 	const hasProtected = clashedFiles.some(c => c.localState === 'protected');
 	const hasUntracked = clashedFiles.some(c => c.localState === 'untracked');
+	const hasHidden = clashedFiles.some(c => c.path.split('/').some(p => p.startsWith('.')));
 
 	if (hasPending) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
@@ -110,5 +111,9 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	if (hasUntracked) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
 			.setText("Untracked: Could not verify local state - check logs for details");
+	}
+	if (hasHidden) {
+		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
+			.setText("Hidden file conflict: Obsidian won't show the _fit/ copy in its file explorer. Resolve on desktop using a file manager, or open the _fit/ folder directly.");
 	}
 }

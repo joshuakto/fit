@@ -18,6 +18,7 @@ export interface FitSettings {
 	notifyChanges: boolean
 	notifyConflicts: boolean
 	enableDebugLogging: boolean
+	syncHiddenFiles: boolean
 }
 
 export const DEFAULT_SETTINGS: FitSettings = {
@@ -32,5 +33,6 @@ export const DEFAULT_SETTINGS: FitSettings = {
 	autoSync: "off",
 	notifyChanges: true,
 	notifyConflicts: true,
-	enableDebugLogging: true
+	enableDebugLogging: true,
+	syncHiddenFiles: true,
 };

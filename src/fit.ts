@@ -50,6 +50,9 @@ export class Fit {
 		// This is called when user changes settings in UI
 		// TODO: Use DI to pass the right impl from FitSync caller.
 
+		// Apply local vault settings unconditionally (don't require PAT)
+		this.localVault.configure({ syncHiddenFiles: setting.syncHiddenFiles });
+
 		// Skip if no PAT - no API access possible
 		if (!setting.pat) {
 			return;
@@ -202,16 +205,23 @@ export class Fit {
 			}
 		}
 
-		// Filter both states to trackable paths only (#169)
+		// Filter both states to paths that are trackable AND syncable (#169).
+		// shouldTrackState: LocalVault can read the file (always true when syncHiddenFiles=true).
+		// shouldSyncPath: sync policy allows pushing (filters _fit/, .obsidian/, etc.).
+		// Both required — protected paths like .obsidian/ are readable but never pushed,
+		// and would appear as phantom ADDED changes without this combined filter.
+		const isSyncCandidate = (path: string) =>
+			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path);
+
 		const trackableLocalShas: FileStates = {};
 		for (const [path, sha] of Object.entries(this.localShas)) {
-			if (this.localVault.shouldTrackState(path)) {
+			if (isSyncCandidate(path)) {
 				trackableLocalShas[path] = sha;
 			}
 		}
 		const trackableCurrentState: FileStates = {};
 		for (const [path, sha] of Object.entries(currentState)) {
-			if (this.localVault.shouldTrackState(path)) {
+			if (isSyncCandidate(path)) {
 				trackableCurrentState[path] = sha;
 			}
 		}
