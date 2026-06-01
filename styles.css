@@ -387,6 +387,32 @@
     margin: 4px 0;
 }
 
+.fit-field-warning-section {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--color-orange);
+}
+
+.fit-field-warning-heading {
+    font-weight: 600;
+    margin: 0 0 6px 0;
+}
+
+.fit-field-warning-field {
+    color: var(--text-error);
+}
+
+.fit-field-warning-list {
+    margin: 0 0 6px 0;
+    padding-left: 1.4em;
+}
+
+.fit-field-warning-hint {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin: 0;
+}
+
 .file-changes-heading {
     font-weight: bold;
     font-size: small;
@@ -501,6 +527,191 @@
     border-radius: 6px;
     padding: 8px 12px;
     background: var(--background-secondary-alt);
+}
+
+/* === Obsidian config sync settings === */
+
+.fit-obsidian-sync-group {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 18px;
+}
+
+.fit-obsidian-sync-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    border-top: 1px solid var(--background-modifier-border);
+    gap: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.fit-obsidian-sync-row:first-child {
+    border-top: none;
+}
+
+.fit-obsidian-sync-row:hover {
+    background: var(--background-modifier-hover);
+}
+
+.fit-obsidian-sync-label {
+    flex: 1;
+    min-width: 0;
+}
+
+.fit-obsidian-sync-name {
+    font-size: 0.9em;
+    font-weight: 500;
+}
+
+.fit-obsidian-sync-path {
+    font-size: 0.78em;
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+}
+
+.fit-obsidian-custom-paths,
+.fit-obsidian-future-paths {
+    margin-bottom: 18px;
+}
+
+.fit-obsidian-custom-heading {
+    font-size: 0.8em;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+}
+
+.fit-obsidian-custom-path-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.fit-obsidian-custom-path-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fit-obsidian-input-wrap {
+    display: flex;
+    align-items: stretch;
+    flex: 1;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--background-primary);
+    min-width: 0;
+}
+
+.fit-obsidian-path-prefix {
+    font-family: var(--font-monospace);
+    font-size: 0.82em;
+    color: var(--text-muted);
+    padding: 4px 4px 4px 8px;
+    background: var(--background-secondary);
+    white-space: nowrap;
+    border-right: 1px solid var(--background-modifier-border);
+    display: flex;
+    align-items: center;
+}
+
+.fit-obsidian-path-input {
+    flex: 1;
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    font-family: var(--font-monospace);
+    font-size: 0.82em;
+    padding: 4px 8px;
+    min-width: 0;
+    outline: none;
+}
+
+.fit-obsidian-path-status {
+    font-size: 0.8em;
+    white-space: normal;
+    line-height: 1.4;
+}
+
+.fit-obsidian-path-status.error {
+    color: var(--text-error);
+}
+
+.fit-obsidian-path-status.warning {
+    color: var(--color-orange, #e8a020);
+}
+
+.fit-obsidian-remove-btn {
+    background: none;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px 8px;
+    font-size: 1em;
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+
+.fit-obsidian-remove-btn:hover {
+    color: var(--text-error);
+    border-color: var(--text-error);
+}
+
+.fit-obsidian-add-btn {
+    font-size: 0.85em;
+    color: var(--interactive-accent);
+    background: none;
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 4px 12px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 2px;
+}
+
+.fit-obsidian-add-btn:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+}
+
+.fit-obsidian-future-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 0.85em;
+    font-family: var(--font-monospace);
+}
+
+.fit-obsidian-path-readonly {
+    color: var(--text-muted);
+}
+
+.fit-obsidian-future-note {
+    font-size: 0.82em;
+    color: var(--text-muted);
+    margin: 2px 0 4px 0;
+}
+
+.fit-obsidian-future-list {
+    margin: 0 0 4px 0;
+    padding-left: 1.4em;
+    font-size: 0.85em;
+    font-family: var(--font-monospace);
+}
+
+.fit-obsidian-unknown-rule {
+    font-size: 0.85em;
+    color: var(--text-error);
+    font-weight: normal;
 }
 
 .clear {

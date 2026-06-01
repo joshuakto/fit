@@ -440,6 +440,106 @@ describe('FitSync', () => {
 			const uniquePaths = new Set(statLog);
 			expect(statLog.length).toBe(uniquePaths.size);
 		});
+		it('should sync opted-in .obsidian/ file directly (not to _fit/)', async () => {
+			const fitSync = createFitSync();
+			fitSync.fit.obsidianSyncRules = { '.obsidian/appearance.json': {} };
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+			], []);
+
+			const mockNotice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			expect(result).toMatchObject({ success: true });
+			// Opted-in file synced directly; not saved to _fit/
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': '{"theme":"dark"}',
+				'normal.md': 'Normal file'
+			});
+			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
+		});
+
+		it('should always exclude .obsidian/workspace.json even with a rule', async () => {
+			const fitSync = createFitSync();
+			// User mistakenly tries to sync workspace.json — denylist wins
+			fitSync.fit.obsidianSyncRules = { '.obsidian/workspace.json': {} };
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/workspace.json', content: FileContent.fromPlainText('{}') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+			], []);
+
+			const mockNotice = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// workspace.json saved to _fit/, not synced directly
+			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeDefined();
+			expect(localVault.getAllFilesAsRaw()['.obsidian/workspace.json']).toBeUndefined();
+		});
+
+		it('should block .obsidian/plugins/fit/data.json even with a rule (needs field-level exclusion for PAT)', async () => {
+			const fitSync = createFitSync();
+			fitSync.fit.obsidianSyncRules = { '.obsidian/plugins/fit/data.json': {} };
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{"pat":"secret"}') },
+			], []);
+
+			const mockNotice = createMockNotice();
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Blocked by OBSIDIAN_NEEDS_MERGE — PAT requires field-level exclusion (v2)
+			expect(localVault.getAllFilesAsRaw()['.obsidian/plugins/fit/data.json']).toBeUndefined();
+		});
+
+		describe('shouldSyncPath — dynamic ownDataPath', () => {
+			it('blocks own data.json when pluginDir matches install dir', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault,
+					'.obsidian/plugins/fit-dev'
+				);
+				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/data.json': {} };
+				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/data.json')).toBe(false);
+			});
+
+			it('does not block other files under alternate install dir', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault,
+					'.obsidian/plugins/fit-dev'
+				);
+				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/config.json': {} };
+				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/config.json')).toBe(true);
+			});
+
+			it('still blocks standard plugins/fit/data.json via OBSIDIAN_NEEDS_MERGE even without pluginDir', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault
+					// no pluginDir
+				);
+				fit.obsidianSyncRules = { '.obsidian/plugins/fit/data.json': {} };
+				expect(fit.shouldSyncPath('.obsidian/plugins/fit/data.json')).toBe(false);
+			});
+
+			it('does NOT block alternate dir data.json without pluginDir (gap closed by passing pluginDir)', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault
+					// no pluginDir — simulates old construction path
+				);
+				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/data.json': {} };
+				// Without pluginDir, fit-dev/data.json is not in OBSIDIAN_NEEDS_MERGE — would sync
+				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/data.json')).toBe(true);
+			});
+		});
 	});
 
 	describe('👻 Hidden file handling', () => {

@@ -5,6 +5,7 @@
  */
 
 import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
+import { ObsidianSyncRules } from "@/fitSettings";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
@@ -97,14 +98,18 @@ async function collectHiddenInDir(
 export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
 	private syncHiddenFiles = true;
+	private obsidianSyncRules: ObsidianSyncRules = {};
 
 	constructor(vault: Vault) {
 		this.vault = vault;
 	}
 
-	configure(opts: { syncHiddenFiles?: boolean }): void {
+	configure(opts: { syncHiddenFiles?: boolean; obsidianSyncRules?: ObsidianSyncRules }): void {
 		if (opts.syncHiddenFiles !== undefined) {
 			this.syncHiddenFiles = opts.syncHiddenFiles;
+		}
+		if (opts.obsidianSyncRules !== undefined) {
+			this.obsidianSyncRules = opts.obsidianSyncRules;
 		}
 	}
 
@@ -139,7 +144,8 @@ export class LocalVault implements IVault<"local"> {
 		if (!this.syncHiddenFiles) {
 			const parts = filePath.split('/');
 			if (parts.some(part => part.startsWith('.'))) {
-				return false;
+				// Explicitly opted-in obsidian paths are tracked regardless of syncHiddenFiles
+				return filePath in this.obsidianSyncRules;
 			}
 		}
 
