@@ -219,10 +219,7 @@ export class LocalVault implements IVault<"local"> {
 	 */
 	// NOTE: Public visibility for tests.
 	static fileSha1(_path: string, fileContent: FileContent): Promise<BlobSha> {
-		const b64 = fileContent.toBase64(); // already normalized (no whitespace) by FileContent
-		const binStr = atob(b64);
-		const rawBytes = Uint8Array.from(binStr, c => c.charCodeAt(0));
-		return computeGitBlobSha(rawBytes);
+		return computeGitBlobSha(fileContent.toBytes());
 	}
 
 	/**

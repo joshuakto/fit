@@ -31,19 +31,17 @@ export function decodeFileContent(arrayBuffer: ArrayBuffer): FileContent {
 	const hasNullByte = bytes.some(b => b === 0);
 
 	if (hasNullByte) {
-		// Binary file - return as base64
-		const base64 = arrayBufferToBase64(arrayBuffer);
-		return FileContent.fromBase64(base64);
+		return FileContent.fromArrayBuffer(arrayBuffer, 'base64');
 	}
 
-	// No null bytes - try UTF-8 decode with fatal:true (throws on invalid UTF-8)
+	// No null bytes - probe UTF-8 validity. Result discarded; we only need throw/no-throw.
+	// FileContent.fromArrayBuffer stores the raw bytes and decodes lazily on first toPlainText().
 	try {
-		const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
-		return FileContent.fromPlainText(text);
+		new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
+		return FileContent.fromArrayBuffer(arrayBuffer, 'plaintext');
 	} catch {
-		// Invalid UTF-8 (binary file) - return as base64
-		const base64 = arrayBufferToBase64(arrayBuffer);
-		return FileContent.fromBase64(base64);
+		// Invalid UTF-8 sequence — treat as binary
+		return FileContent.fromArrayBuffer(arrayBuffer, 'base64');
 	}
 }
 

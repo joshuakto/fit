@@ -115,9 +115,30 @@ export const Content = {
  */
 export class FileContent {
 	private content: FileContentType;
+	// Raw bytes are the canonical representation. When constructed from
+	// ArrayBuffer (the common read path), bytes are stored here immediately
+	// and base64/plaintext strings are derived lazily and cached. When
+	// constructed from a string, bytes are decoded lazily on first toBytes().
+	private rawBytes: Uint8Array | null;
+	private base64Cache: Base64Content | null = null;
 
-	constructor(content: FileContentType) {
+	private constructor(content: FileContentType, rawBytes: Uint8Array | null) {
 		this.content = content;
+		this.rawBytes = rawBytes;
+	}
+
+	/**
+	 * Create a FileContent from raw bytes with an encoding hint.
+	 * This is the preferred constructor for local file reads — bytes are stored
+	 * directly so SHA computation never needs to re-encode or re-decode.
+	 */
+	static fromArrayBuffer(buffer: ArrayBuffer, encoding: 'plaintext' | 'base64'): FileContent {
+		const bytes = new Uint8Array(buffer);
+		// String form is derived lazily on first toBase64()/toPlainText() call
+		const placeholder = encoding === 'plaintext'
+			? { encoding: 'plaintext' as const, content: '' as PlainTextContent }
+			: { encoding: 'base64' as const, content: '' as Base64Content };
+		return new FileContent(placeholder, bytes);
 	}
 
 	/**
@@ -127,7 +148,7 @@ export class FileContent {
 	 * @param content - Plain text string (will be branded as PlainTextContent)
 	 */
 	static fromPlainText(content: string | PlainTextContent): FileContent {
-		return new FileContent({ encoding: 'plaintext', content: Content.asPlainText(content) });
+		return new FileContent({ encoding: 'plaintext', content: Content.asPlainText(content) }, null);
 	}
 
 	/**
@@ -140,19 +161,54 @@ export class FileContent {
 		if (typeof content !== 'string') {
 			throw new TypeError(`FileContent.fromBase64: expected a string but got ${typeof content}`);
 		}
-		const normalized = removeLineEndingsFromBase64String(content);
-		return new FileContent({ encoding: 'base64', content: Content.asBase64(normalized) });
+		const normalized = Content.asBase64(removeLineEndingsFromBase64String(content));
+		return new FileContent({ encoding: 'base64', content: normalized }, null);
 	}
 
 	/**
-	 * Get content as Base64Content, converting if needed
+	 * Get raw bytes. For files read from disk this is zero-copy.
+	 * For string-constructed instances the bytes are decoded/encoded once and cached.
+	 */
+	toBytes(): Uint8Array {
+		if (this.rawBytes !== null) {
+			return this.rawBytes;
+		}
+		const { encoding, content } = this.content;
+		if (encoding === 'plaintext') {
+			// fromPlainText path: encode string to UTF-8 bytes
+			this.rawBytes = new TextEncoder().encode(content);
+		} else {
+			// fromBase64 path: decode base64 string to bytes
+			const binStr = atob(content);
+			const bytes = new Uint8Array(binStr.length);
+			for (let i = 0; i < binStr.length; i++) {
+				bytes[i] = binStr.charCodeAt(i);
+			}
+			this.rawBytes = bytes;
+		}
+		return this.rawBytes;
+	}
+
+	/**
+	 * Get content as Base64Content, converting if needed. Result is cached.
 	 */
 	toBase64(): Base64Content {
-		const { encoding, content } = this.content;
-		if (encoding === 'base64') {
-			return content;
+		if (this.base64Cache !== null) {
+			return this.base64Cache;
 		}
-		return Content.encodeToBase64(content);
+		const { encoding, content } = this.content;
+		let result: Base64Content;
+		if (encoding === 'base64' && content !== '') {
+			result = content;
+		} else if (encoding === 'plaintext' && content !== '') {
+			result = Content.encodeToBase64(content);
+		} else {
+			// constructed from ArrayBuffer — derive from rawBytes
+			const bytes = this.toBytes();
+			result = Content.asBase64(arrayBufferToBase64(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer));
+		}
+		this.base64Cache = result;
+		return result;
 	}
 
 	/**
@@ -161,36 +217,57 @@ export class FileContent {
 	 */
 	toPlainText(): PlainTextContent {
 		const { encoding, content } = this.content;
-		if (encoding === 'plaintext') {
+		if (encoding === 'plaintext' && content !== '') {
 			return content;
 		}
-		return Content.decodeFromBase64(content);
+		if (encoding === 'plaintext' && this.rawBytes !== null) {
+			// constructed from ArrayBuffer with plaintext hint
+			const text = new TextDecoder('utf-8', { fatal: true }).decode(this.rawBytes);
+			// cache it back
+			this.content = { encoding: 'plaintext', content: Content.asPlainText(text) };
+			return this.content.content as PlainTextContent;
+		}
+		return Content.decodeFromBase64(this.toBase64());
 	}
 
 	equals(other: FileContent): boolean {
-		if (this.content.encoding === other.content.encoding) {
+		// Fast path: same encoding, both have string content already
+		if (this.content.encoding === other.content.encoding &&
+			this.content.content !== '' && other.content.content !== '') {
 			return this.content.content === other.content.content;
 		}
+		// Normalize to base64 for comparison (native string equality, avoids O(n) JS loop)
 		return this.toBase64() === other.toBase64();
 	}
 
 	toRaw(): FileContentType {
-		return this.content;
+		// If we have a string already, return it directly
+		const { encoding, content } = this.content;
+		if (encoding === 'plaintext' && content !== '') return this.content;
+		if (encoding === 'base64' && content !== '') return this.content;
+		// Derive from rawBytes
+		if (encoding === 'plaintext') {
+			const text = this.toPlainText();
+			return { encoding: 'plaintext', content: text };
+		}
+		return { encoding: 'base64', content: this.toBase64() };
 	}
 
 	/**
-	 * Get the size of the content in bytes (approximate for base64)
+	 * Get the size of the content in bytes.
 	 */
 	size(): number {
+		if (this.rawBytes !== null) {
+			return this.rawBytes.length;
+		}
 		const { encoding, content } = this.content;
 		if (encoding === 'plaintext') {
-			// For plain text, length is the byte count
+			// Plain text: string length == byte count for ASCII; may undercount multibyte chars,
+			// but callers use this for rough sizing (e.g. 422 threshold checks), not exact math.
 			return content.length;
-		} else {
-			// For base64, approximate byte size
-			// Base64 encoding: 4 chars represent 3 bytes
-			return Math.floor((content.length * 3) / 4);
 		}
+		// Base64: approximate (exact would require decoding). 4 chars → 3 bytes.
+		return Math.floor((content.length * 3) / 4);
 	}
 }
 
