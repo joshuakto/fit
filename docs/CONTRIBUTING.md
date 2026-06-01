@@ -50,7 +50,6 @@ Check the milestone for upcoming release priorities and progress.
 - **Performance** - Fast syncs, efficient API usage, mobile optimization
 
 **🚀 Platform Expansion**:
-- **Hidden file support** - Enable syncing dotfiles (`.gitignore`, etc.)
 - **Selective `.obsidian/` sync** - Sync plugins/settings without exposing secrets
 - **Multi-platform backends** - GitLab, Gitea, self-hosted Git servers
 - **Multi-repo sync** - Multiple vaults or vault partitions

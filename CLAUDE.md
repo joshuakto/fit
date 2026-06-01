@@ -1,1 +1,1 @@
-AGENTS.local.md
+AGENTS.md
