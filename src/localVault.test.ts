@@ -289,9 +289,11 @@ describe('LocalVault', () => {
 			const { state } = await localVault.readFromSource();
 
 			// Both normal and hidden files appear in state
-			expect(Object.keys(state).sort()).toEqual(['.gitignore', 'note.md']);
-			expect(state['note.md']).toBeTruthy();
-			expect(state['.gitignore']).toBeTruthy();
+			const sha40 = expect.stringMatching(/^[0-9a-f]{40}$/);
+			expect(state).toEqual({
+				'note.md': sha40,
+				'.gitignore': sha40
+			});
 		});
 	});
 
