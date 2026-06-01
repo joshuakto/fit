@@ -1,7 +1,19 @@
-import { describe, it, expect, vi, type Mock } from 'vitest';
+import { describe, it, expect, vi, type Mock, beforeEach } from 'vitest';
 import FitPlugin from '@/fitPlugin';
+import { FitStatusModal } from '@/fitStatusModal';
 import type { LocalStores } from '@/localStores';
 import type { BlobSha } from '@/util/hashing';
+
+vi.mock('@/fitStatusModal', () => ({
+	// Must use a regular function (not arrow) so it can be used as a constructor with `new`.
+	FitStatusModal: vi.fn().mockImplementation(function(
+		this: { open: ReturnType<typeof vi.fn>; renderable: unknown },
+		_app: unknown, renderable: unknown
+	) {
+		this.open = vi.fn();
+		this.renderable = renderable;
+	})
+}));
 
 // Minimal stand-in for FitSync: holds the plugin's saveLocalStoreCallback (passed in its
 // constructor exactly as real code does) and exposes a helper to simulate a sync save,
@@ -20,6 +32,7 @@ class StubFitSync {
 
 	getSyncErrorMessage = vi.fn().mockReturnValue('error');
 	sync = vi.fn();
+	explainStatus = vi.fn();
 }
 
 function makePlugin() {
@@ -158,5 +171,36 @@ describe('FitPlugin persistence lifecycle', () => {
 			await plugin.loadLocalStore();
 			expect(plugin.localStore.lastFetchedRemoteShas).toEqual({ 'file.md': 'oldsha' });
 		});
+	});
+});
+
+describe('FitPlugin.explainSyncStatus routing', () => {
+	function makeConfiguredPlugin() {
+		const plugin = makePlugin();
+		plugin.settings = { pat: 'token', owner: 'alice', repo: 'notes', branch: 'main', autoSync: 'off', checkEveryXMinutes: 30 } as any;
+		plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+		return plugin;
+	}
+
+	function stubExplain(plugin: FitPlugin, result: unknown) {
+		(plugin.fitSync as unknown as StubFitSync).explainStatus.mockResolvedValue(result);
+	}
+
+	beforeEach(() => {
+		vi.mocked(FitStatusModal).mockClear();
+	});
+
+	it('always opens FitStatusModal regardless of explanation kind', async () => {
+		const plugin = makeConfiguredPlugin();
+		for (const explanation of [
+			{ kind: 'never-synced' },
+			{ kind: 'ok', fileCount: 5, shortSha: 'abc1234' },
+			{ kind: 'issues', sections: [{ heading: 'h', description: 'd', items: [{ path: 'x.md', cls: 'file-MODIFIED' }] }], scanNote: null },
+		]) {
+			vi.mocked(FitStatusModal).mockClear();
+			stubExplain(plugin, explanation);
+			await (plugin as any).explainSyncStatus();
+			expect(FitStatusModal).toHaveBeenCalledOnce();
+		}
 	});
 });

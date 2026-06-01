@@ -61,9 +61,27 @@ export class Plugin extends Component {
 }
 
 export class Notice {
-	constructor(message: string) {}
+	noticeEl: HTMLElement & { addClasses: (classes: string[]) => void };
+	constructor(_message: string) {
+		const el = document.createElement('div');
+		(el as any).addClasses = vi.fn();
+		this.noticeEl = el as any;
+	}
 	setMessage = vi.fn();
 	hide = vi.fn();
+}
+
+export class Modal {
+	app: unknown;
+	contentEl: HTMLElement;
+	constructor(app: unknown) {
+		this.app = app;
+		this.contentEl = document.createElement('div');
+	}
+	open = vi.fn();
+	close = vi.fn();
+	onOpen() {}
+	onClose() {}
 }
 
 export const Platform = {
