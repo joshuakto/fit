@@ -154,7 +154,7 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: [],
 				scanNote: null,
-				};
+			};
 
 		case 'ok':
 			return {
@@ -164,7 +164,7 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: [],
 				scanNote: null,
-				};
+			};
 
 		case 'issues':
 			return {
@@ -174,6 +174,6 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: explanation.sections,
 				scanNote: explanation.scanNote,
-				};
+			};
 	}
 }
