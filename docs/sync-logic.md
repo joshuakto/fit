@@ -102,7 +102,7 @@ See [SHA Computation Strategy](#sha-computation-strategy) below for detailed rat
 
 ### Baseline Recording for Untracked Files (#169)
 
-**Problem:** Hidden files (starting with `.`) are not tracked by `LocalVault.readFromSource()` but can be changed remotely. Without baseline SHAs, they clash on every sync even when unchanged.
+**Problem:** When `syncHiddenFiles = false`, hidden files are not tracked by `LocalVault.readFromSource()` but can still be changed remotely. Without baseline SHAs, they clash on every sync even when unchanged.
 
 **Solution:** Record baseline SHAs for untracked files when they're written from remote:
 - Direct writes: SHA computed during write (standard path)
@@ -279,39 +279,26 @@ if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
 }
 ```
 
-### 2. Hidden Files (`shouldTrackState`) - Track Conservatively
+### 2. Hidden Files (`shouldTrackState`) - Configurable
 
-- **Filtered by:** `LocalVault.shouldTrackState()`
-- **Applied to:** 💾 Local vault only (Obsidian can't read hidden files)
-- **Reason:** Obsidian Vault API cannot read hidden files/directories
+- **Filtered by:** `LocalVault.shouldTrackState()` (respects `syncHiddenFiles` setting)
+- **Applied to:** 💾 Local vault only
+- **Default:** Hidden files are synced (opt-out via Settings → Sync hidden files)
 
-**Hidden files:** Any path component starting with `.` (e.g., `.gitignore`, `.hidden-config.json`)
+**Hidden files:** Any path component starting with `.` (e.g., `.gitignore`, `.env`)
 
-**Behavior:**
-- **💾 Local tracking:** Excluded from `localShas` (can't reliably scan)
-- **☁️ Remote tracking:** Included in `lastFetchedRemoteShas` (can read from GitHub API)
-- **⬇️ Remote→Local:** Save to 📁 `_fit/` for safety (can't verify local state)
-- **⬆️ Local→Remote:** Silently ignored (never synced)
+**When `syncHiddenFiles = true` (default):**
+- Local vault performs a full recursive `adapter.list` scan on each sync to discover hidden paths (Obsidian's `vault.getFiles()` omits them)
+- Hidden files read via `vault.adapter.readBinary()` and tracked in `localShas` like any other file
+- Subject to `.gitignore` filtering and `shouldSyncPath` policy as normal
+- ⚠️ Clash copies (written to `_fit/`) won't appear in Obsidian's file explorer — requires desktop file manager to resolve
 
-**Why asymmetric tracking?**
-- We CAN read hidden files from remote (GitHub API)
-- We CANNOT read hidden files from local (Obsidian Vault API limitation)
-- Conservative approach: assume potential conflict, save to `_fit/`
+**When `syncHiddenFiles = false`:**
+- Hidden paths excluded from `localShas` (can't reliably scan via Vault API)
+- Remote hidden files saved to `_fit/` for safety (can't verify local state)
+- Local hidden files never pushed
 
-**Safety implication:**
-```typescript
-// Remote has .gitignore, local also has .gitignore (different content)
-// We can't read local .gitignore to compare
-// Solution: Save remote version to _fit/.gitignore (no overwrite risk)
-
-localShas = {}  // .gitignore not tracked
-lastFetchedRemoteShas = { ".gitignore": "abc123" }
-
-// On sync:
-// - Remote .gitignore saved to _fit/.gitignore
-// - Local .gitignore preserved (untouched)
-// - User manually resolves if needed
-```
+**Note:** `shouldTrackState` controls LocalVault's scanning capability. Sync policy decisions (e.g. never push `.obsidian/`) are handled separately by `Fit.shouldSyncPath()`.
 
 ### 3. Gitignore Patterns (`GitignoreFilter`) - User-Defined Exclusions
 
@@ -343,20 +330,21 @@ node_modules/
 
 ### Combined Filtering: `.obsidian/` Files
 
-Files in `.obsidian/` are filtered by BOTH:
-1. **Protected path:** `!shouldSyncPath(".obsidian/...")`
-2. **Hidden path:** `!shouldTrackState(".obsidian/...")` (starts with `.`)
+`.obsidian/` files are excluded by `shouldSyncPath` regardless of the `syncHiddenFiles` setting.
+With `syncHiddenFiles = true`, `shouldTrackState` returns `true` for them (they are read and hashed),
+but `getLocalChanges` filters by both `shouldTrackState` AND `shouldSyncPath`, so they never appear
+as local changes and are never pushed.
 
 **Result:**
 - Never synced in either direction
 - Remote `.obsidian/` files saved to `_fit/.obsidian/` for transparency
-- Excluded from both `localShas` and `lastFetchedRemoteShas`
+- Excluded from `lastFetchedRemoteShas`; present in `localShas` scan but filtered before change detection
 
 ### Implementation Locations
 
 **Path filtering:**
 - [`Fit.shouldSyncPath()`](../src/fit.ts) - Protected path check
-- [`LocalVault.shouldTrackState()`](../src/localVault.ts) - Hidden file check
+- [`LocalVault.shouldTrackState()`](../src/localVault.ts) - Hidden file check (respects syncHiddenFiles setting)
 - [`GitignoreFilter`](../src/util/gitignore.ts) - User-defined exclusions (local only)
 - [`FitSync.sync()`](../src/fitSync.ts) - Filters local changes before sync
 - [`FitSync.applyRemoteChanges()`](../src/fitSync.ts) - Handles remote protected/hidden files with safety checks
@@ -380,17 +368,17 @@ flowchart TD
 
 **Critical Risk:** When tracking capabilities change (version upgrade or setting toggle), cached state can become inconsistent with new scan behavior.
 
-**Most dangerous scenario:** **Tracking REMOVED** (hidden file tracking reverted/disabled)
+**Most dangerous scenario:** **Tracking REMOVED** (hidden file tracking disabled after being on)
 
-**Realistic example:** v2 implements full hidden file tracking via DataAdapter, then either v3 reverts it (performance regression) or user disables "Sync hidden files" setting.
+**Realistic example:** User disables "Sync hidden files" setting after having synced hidden files.
 
 ```typescript
-// v2 tracked .gitignore via DataAdapter, cache state:
-localShas = { ".gitignore": "abc123" }  // v2 tracked it
+// syncHiddenFiles was true, .gitignore was tracked:
+localShas = { ".gitignore": "abc123" }
 lastFetchedRemoteShas = { ".gitignore": "abc123" }
 
-// After v3 upgrade or setting disabled:
-newScan = {}  // Reverted to Vault API (can't read hidden files)
+// After setting disabled:
+newScan = {}  // Vault API only — can't see hidden files
 compareFileStates(newScan, localShas) // → reports ".gitignore" as REMOVED
 // ⚠️ Risk: Plugin pushes deletion to remote → DATA LOSS
 ```
@@ -501,7 +489,7 @@ flowchart TD
 **Key Benefits:**
 - **Principled boundaries**: Each phase has clear inputs/outputs
 - **Efficient batching**: Single filesystem stat for all verification needs
-- **Future-proof**: Supports planned features (continuous sync, explicit tracking, full hidden file sync)
+- **Future-proof**: Supports planned features (continuous sync, explicit tracking)
 - **Testable**: Phases can be tested independently
 
 **Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
@@ -575,7 +563,7 @@ flowchart TD
 **Changes detected:** Remote commit SHA changed but no file changes
 **Actions:** Just update `lastFetchedCommitSha` cache
 
-This happens when remote has a commit but it doesn't affect tracked files (e.g., `.gitignore` change, or files outside sync scope).
+This happens when remote has a commit but it doesn't affect tracked files (e.g., a change to a file excluded by `.gitignore`, or a file outside the configured sync scope).
 
 #### 5. Compatible Changes (No Conflicts)
 **Changes detected:** Both local and remote changes

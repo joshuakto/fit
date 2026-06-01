@@ -80,16 +80,18 @@ describe('LocalVault', () => {
 	});
 
 	describe('shouldTrackState', () => {
-		it('should exclude hidden files (starting with .)', () => {
+		it('should exclude hidden files (starting with .) when syncHiddenFiles is off', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: false });
 
 			expect(localVault.shouldTrackState('.obsidian/config.json')).toBe(false);
 			expect(localVault.shouldTrackState('.gitignore')).toBe(false);
 			expect(localVault.shouldTrackState('.DS_Store')).toBe(false);
 		});
 
-		it('should exclude files in hidden directories', () => {
+		it('should exclude files in hidden directories when syncHiddenFiles is off', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: false });
 
 			expect(localVault.shouldTrackState('.obsidian/plugins/fit/main.js')).toBe(false);
 			expect(localVault.shouldTrackState('folder/.hidden/file.md')).toBe(false);
@@ -110,6 +112,16 @@ describe('LocalVault', () => {
 			expect(localVault.shouldTrackState('_fit')).toBe(true); // _fit as a filename (without /) IS tracked
 			expect(localVault.shouldTrackState('_fit/')).toBe(true); // _fit/ directory is tracked (filtering done by Fit.shouldSyncPath)
 			expect(localVault.shouldTrackState('_fit/conflict.md')).toBe(true); // Files in _fit/ are tracked by LocalVault
+		});
+
+		it('should include hidden files when syncHiddenFiles is enabled', () => {
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+
+			expect(localVault.shouldTrackState('.gitignore')).toBe(true);
+			expect(localVault.shouldTrackState('.obsidian/config.json')).toBe(true);
+			expect(localVault.shouldTrackState('notes/.gitignore')).toBe(true);
+			expect(localVault.shouldTrackState('normal/file.md')).toBe(true);
 		});
 	});
 
@@ -142,7 +154,7 @@ describe('LocalVault', () => {
 				`"5e1e15cb4d9afa9689ba28b99e3d17ed7384edca"`);
 		});
 
-		it('should exclude ignored paths from state', async () => {
+		it('should exclude hidden paths from state when syncHiddenFiles is off', async () => {
 			const mockFiles = [
 				StubTFile.ofPath('normal.md'),
 				StubTFile.ofPath('_fit/conflict.md'),
@@ -156,9 +168,9 @@ describe('LocalVault', () => {
 			});
 
 			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: false });
 			const { state } = await localVault.readFromSource();
 
-			// Only hidden files are excluded from state tracking
 			expect(Object.keys(state).sort()).toEqual(['_fit/conflict.md', 'normal.md']);
 		});
 
@@ -249,6 +261,37 @@ describe('LocalVault', () => {
 			// Should compute SHA using plaintext (not base64)
 			const sha = state['notes.xyz'];
 			expect(sha).toBeTruthy();
+		});
+
+		it('should include hidden files when syncHiddenFiles is enabled', async () => {
+			const normalFiles = [StubTFile.ofPath('note.md')];
+
+			mockVault.getFiles.mockReturnValue(normalFiles as TFile[]);
+			mockVault.readBinary.mockImplementation(async (file: TFile) => {
+				if (file.path === 'note.md') return new TextEncoder().encode('note content').buffer;
+				return new ArrayBuffer(0);
+			});
+			mockVault.getAbstractFileByPath.mockImplementation((path: string) => {
+				// .gitignore is a hidden file — not in vault index
+				return normalFiles.find(f => f.path === path) ?? null;
+			});
+
+			const gitignoreBytes = new TextEncoder().encode('*.log\n').buffer;
+			(mockVault.adapter as any).list = vi.fn().mockImplementation(async (dir: string) => {
+				if (dir === '/') return { files: ['note.md', '.gitignore'], folders: [] };
+				return { files: [], folders: [] };
+			});
+			(mockVault.adapter as any).read = vi.fn().mockResolvedValue('*.log\n');
+			(mockVault.adapter as any).readBinary = vi.fn().mockResolvedValue(gitignoreBytes);
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state } = await localVault.readFromSource();
+
+			// Both normal and hidden files appear in state
+			expect(Object.keys(state).sort()).toEqual(['.gitignore', 'note.md']);
+			expect(state['note.md']).toBeTruthy();
+			expect(state['.gitignore']).toBeTruthy();
 		});
 	});
 

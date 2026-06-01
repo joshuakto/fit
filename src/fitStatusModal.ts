@@ -2,7 +2,7 @@ import { App, Modal } from 'obsidian';
 import type { RenderableExplanation } from '@/fitStatusExplainer';
 
 const FILE_TOOLTIP: Record<string, string> = {
-	'file-needs-resolution': 'Conflict — review or delete the _fit/ counterpart, then sync again.',
+	'file-needs-resolution': 'Conflict — review or delete the _fit/ counterpart, then sync again. Hidden files (starting with .) won\'t appear in Obsidian\'s file explorer; use a desktop file manager.',
 	'file-ADDED':            'Added locally — will push on next sync.',
 	'file-MODIFIED':         'Modified locally — will push on next sync.',
 	'file-REMOVED':          'Deleted locally — will push on next sync.',
@@ -64,13 +64,8 @@ export class FitStatusModal extends Modal {
 		}
 
 		const infoP = contentEl.createEl('p', { cls: 'fit-info-note' });
-		infoP.createSpan({ text: 'Hidden files (starting with ' });
-		infoP.createEl('code', { text: '.' });
-		infoP.createSpan({ text: ') and ' });
 		infoP.createEl('code', { text: '.obsidian/' });
-		infoP.createSpan({ text: ' are excluded from sync. Support for these is planned — see issues ' });
-		infoP.createEl('a', { text: '#92', href: 'https://github.com/joshuakto/fit/issues/92' });
-		infoP.createSpan({ text: ' and ' });
+		infoP.createSpan({ text: ' is excluded from sync. Support is planned — see issue ' });
 		infoP.createEl('a', { text: '#67', href: 'https://github.com/joshuakto/fit/issues/67' });
 		infoP.createSpan({ text: '.' });
 	}

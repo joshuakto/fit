@@ -4,7 +4,7 @@
  * Implements IVault for Obsidian vault files.
  */
 
-import { TFile, TFolder, Vault } from "obsidian";
+import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
@@ -45,10 +45,49 @@ function isBinaryExtensionForLegacySha(extension: string): boolean {
 }
 
 /**
+ * Recursively scan vault adapter for hidden file paths (any path component starts with '.').
+ * vault.getFiles() does not return hidden files, so this adapter-based scan is needed
+ * when syncHiddenFiles is enabled. Results are vault-relative paths.
+ */
+async function scanHiddenPaths(adapter: DataAdapter): Promise<string[]> {
+	const results: string[] = [];
+	await collectHiddenInDir(adapter, '/', results);
+	return results;
+}
+
+async function collectHiddenInDir(
+	adapter: DataAdapter,
+	dir: string,
+	results: string[],
+	dirIsHidden = false
+): Promise<void> {
+	let listing: ListedFiles;
+	try {
+		listing = await adapter.list(dir);
+	} catch {
+		return;
+	}
+
+	for (const file of listing.files) {
+		// Skip per-file check when already inside a hidden directory — all paths are hidden
+		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
+			results.push(file);
+		}
+	}
+
+	await Promise.all(
+		listing.folders.map(folder => {
+			const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
+			return collectHiddenInDir(adapter, folder, results, folderIsHidden);
+		})
+	);
+}
+
+/**
  * Local vault implementation for Obsidian.
  *
  * Encapsulates all Obsidian Vault API operations including:
- * - Path filtering (hidden files starting with '.' - Vault API limitation)
+ * - Path filtering (hidden files starting with '.', configurable via syncHiddenFiles setting)
  * - SHA-1 hash computation from vault file contents
  * - Change detection via baseline state comparison
  * - File read/write/delete operations
@@ -57,9 +96,16 @@ function isBinaryExtensionForLegacySha(extension: string): boolean {
  */
 export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
+	private syncHiddenFiles = true;
 
 	constructor(vault: Vault) {
 		this.vault = vault;
+	}
+
+	configure(opts: { syncHiddenFiles?: boolean }): void {
+		if (opts.syncHiddenFiles !== undefined) {
+			this.syncHiddenFiles = opts.syncHiddenFiles;
+		}
 	}
 
 	/** Returns file size in bytes, or null if path doesn't exist or is not a file. */
@@ -81,14 +127,20 @@ export class LocalVault implements IVault<"local"> {
 	 * configurable via settings with an opt-out for users who encounter issues.
 	 */
 	shouldTrackState(filePath: string): boolean {
-		// Exclude hidden files/directories (any path component starting with .)
-		// This is critical because Obsidian's Vault API can write hidden files
-		// but cannot read them back (getAbstractFileByPath returns null)
+		// When syncHiddenFiles is disabled, exclude hidden files/directories
+		// (any path component starting with .). This is critical because Obsidian's
+		// Vault API can write hidden files but cannot read them back
+		// (getAbstractFileByPath returns null).
+		//
+		// When syncHiddenFiles is enabled, hidden files are included and read via
+		// vault.adapter.readBinary() instead of the vault index.
 		//
 		// Obsidian vault paths always use forward slashes (even on Windows)
-		const parts = filePath.split('/');
-		if (parts.some(part => part.startsWith('.'))) {
-			return false;
+		if (!this.syncHiddenFiles) {
+			const parts = filePath.split('/');
+			if (parts.some(part => part.startsWith('.'))) {
+				return false;
+			}
 		}
 
 		return true;
@@ -117,13 +169,28 @@ export class LocalVault implements IVault<"local"> {
 	 */
 	async readFromSource(): Promise<VaultReadResult> {
 		const allFiles = this.vault.getFiles();
+		const vaultIndexPaths = allFiles.map(f => f.path);
 
-		// Filter to only tracked paths (excludes hidden files that Vault API can't read)
-		const allPaths = allFiles.map(f => f.path);
+		// When syncHiddenFiles is enabled, also discover hidden paths via adapter
+		// (vault.getFiles() only returns non-hidden files due to Obsidian API limitations).
+		// This involves a full recursive directory scan and has performance overhead.
+		let hiddenPaths: string[] = [];
+		if (this.syncHiddenFiles) {
+			hiddenPaths = await scanHiddenPaths(this.vault.adapter);
+			if (hiddenPaths.length > 0) {
+				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
+					count: hiddenPaths.length, paths: hiddenPaths
+				});
+			}
+		}
+
+		const allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+
+		// Filter to only tracked paths (excludes hidden files when syncHiddenFiles is off)
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
 		const untrackedPaths = allPaths.filter(path => !this.shouldTrackState(path));
 
-		// Create map for quick file size lookups
+		// Create map for quick file size lookups (vault-indexed files only; hidden files lack TFile.stat)
 		const fileSizeMap = new Map(allFiles.map(f => [f.path, f.stat.size]));
 
 		if (untrackedPaths.length > 0) {
@@ -133,8 +200,7 @@ export class LocalVault implements IVault<"local"> {
 		}
 
 		// Load .gitignore filters; pass allPaths so already-scanned .gitignore
-		// entries skip a redundant stat (future-proof for when vault.getFiles()
-		// exposes hidden files).
+		// entries skip a redundant stat.
 		const allPathsSet = new Set(allPaths);
 		const gitignoreFilter = await GitignoreFilter.load(this.vault.adapter, trackedPaths, allPathsSet);
 
@@ -306,14 +372,16 @@ export class LocalVault implements IVault<"local"> {
 				continue;
 			}
 
-			// Folder doesn't exist, create it
-			// Use Vault API if the path is trackable (Vault can manage it), adapter otherwise
+			// Folder doesn't exist, create it.
+			// Vault API (createFolder) can't manage hidden paths even when syncHiddenFiles is on —
+			// the limitation is in the Vault API itself, not in our tracking preference.
+			const folderIsHidden = currentPath.split('/').some(p => p.startsWith('.'));
 			try {
-				if (this.shouldTrackState(currentPath + '/placeholder')) {
-					// Trackable path - use vault API (keeps vault index in sync)
+				if (!folderIsHidden) {
+					// Non-hidden path - use vault API (keeps vault index in sync)
 					await this.vault.createFolder(currentPath);
 				} else {
-					// Untrackable path (hidden) - use adapter directly
+					// Hidden path - Vault API can't manage it, use adapter directly
 					await this.vault.adapter.mkdir(currentPath);
 				}
 			} catch (error) {

@@ -72,9 +72,13 @@ export function buildStatusExplanation(
 
 	if (pendingClashes.length > 0) {
 		const n = pendingClashes.length;
+		const hasHiddenClashes = pendingClashes.some(p => p.split('/').some(part => part.startsWith('.')));
+		const hiddenNote = hasHiddenClashes
+			? ' Some conflicted files are hidden (start with .) — Obsidian won\'t show them in its file explorer. Use a desktop file manager to access the _fit/ copies.'
+			: '';
 		sections.push({
 			heading: `${n} conflicted file${n === 1 ? '' : 's'} need resolution`,
-			description: 'Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.',
+			description: `Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.${hiddenNote}`,
 			items: pendingClashes.map(path => ({
 				path,
 				cls: 'file-needs-resolution',
