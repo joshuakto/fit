@@ -270,7 +270,7 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const content = await localVault.readFileContent('note.md');
 
-			expect(content).toEqual(FileContent.fromPlainText(expectedContent));
+			expect(content.toPlainText()).toBe(expectedContent);
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
 		});
 
@@ -288,7 +288,7 @@ describe('LocalVault', () => {
 			// Should always use readBinary and detect as binary via null byte
 			expect(mockVault.read).not.toHaveBeenCalled();
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
-			expect(content).toEqual(FileContent.fromBase64(arrayBufferToContent(binaryData)));
+			expect(content.toBase64()).toBe(arrayBufferToContent(binaryData));
 		});
 
 		it('should throw error if file not found', async () => {
@@ -322,7 +322,7 @@ describe('LocalVault', () => {
 			// Should use readBinary but decode as text (no null bytes)
 			expect(mockVault.read).not.toHaveBeenCalled();
 			expect(mockVault.readBinary).toHaveBeenCalledWith(mockFile);
-			expect(content).toEqual(FileContent.fromPlainText(textContent));
+			expect(content.toPlainText()).toBe(textContent);
 		});
 	});
 
