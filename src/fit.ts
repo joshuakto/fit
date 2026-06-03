@@ -140,7 +140,7 @@ export class Fit {
 	/**
 	 * Check if a file path should be included in sync operations.
 	 *
-	 * Excludes:
+	 * Excludes paths based on sync policy:
 	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
 	 * - `.obsidian/`: Excluded by default; individual paths may be opted in via obsidianSyncRules
 	 *
@@ -153,7 +153,10 @@ export class Fit {
 	 * @returns true if path should be included in sync
 	 */
 	shouldSyncPath(path: string): boolean {
-		if (path.startsWith("_fit/")) return false;
+		// Exclude _fit/ directory (conflict resolution area)
+		if (path.startsWith("_fit/")) {
+			return false;
+		}
 
 		if (path.startsWith(".obsidian/")) {
 			// Always-excluded regardless of user rules
