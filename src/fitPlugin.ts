@@ -11,7 +11,7 @@ import { LocalStores, parseLocalStore } from '@/localStores';
 import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
 import * as Encryption from "@/encryption";
-import { FitSettings, DEFAULT_SETTINGS } from '@/fitSettings';
+import { FitSettings, DEFAULT_SETTINGS, findNewFields } from '@/fitSettings';
 
 /**
  * Discriminated union representing the outcome of a sync operation.
@@ -302,13 +302,25 @@ export default class FitPlugin extends Plugin {
 				this.localStore = { ...this.localStore, lastSyncedAt: Date.now() };
 				void this.saveLocalStore();
 
-				// Show optional notifications
+				// Show optional notifications; field warnings computed async so they don't block UI teardown
 				if (this.settings.notifyConflicts) {
 					showUnappliedConflicts(outcome.result.clash);
 				}
-				if (this.settings.notifyChanges) {
-					showFileChanges(outcome.result.changeGroups);
-				}
+				void (async () => {
+					const fieldWarnings = await this.computePostSyncFieldWarnings(outcome.result.changeGroups);
+					if (this.settings.notifyChanges) {
+						showFileChanges(outcome.result.changeGroups, fieldWarnings);
+					}
+					if (fieldWarnings.size > 0) {
+						for (const [path, newFields] of fieldWarnings) {
+							const rule = this.settings.obsidianSyncRules[path];
+							if (rule?.fields) {
+								rule.fields = [...new Set([...rule.fields, ...newFields])];
+							}
+						}
+						await this.saveSettings();
+					}
+				})();
 
 				// Show success completion state in notice
 				if (triggerType === 'auto') {
@@ -374,7 +386,7 @@ export default class FitPlugin extends Plugin {
 		};
 
 		const renderable = renderExplanation(explanation, { commitUrl, autoSyncInfo });
-		new FitStatusModal(this.app, renderable).open();
+		new FitStatusModal(this.app, renderable, this.settings.obsidianSyncRules).open();
 	}
 
 	loadRibbonIcons() {
@@ -435,7 +447,7 @@ export default class FitPlugin extends Plugin {
 			this.githubConnection = this.settings.pat
 				? new GitHubConnection(this.settings.pat)
 				: null;
-			this.fit = new Fit(this.settings, this.localStore, this.app.vault);
+			this.fit = new Fit(this.settings, this.localStore, this.app.vault, this.manifest.dir ?? undefined);
 			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
 			this.settingTab = new FitSettingTab(this.app, this);
 			this.loadRibbonIcons();
@@ -511,6 +523,28 @@ export default class FitPlugin extends Plugin {
 		await this.saveData({...this.settings, ...this.localStore});
 		// sync local store to Fit class as well upon saving
 		this.fit.loadLocalStore(this.localStore);
+	}
+
+	private async computePostSyncFieldWarnings(
+		changeGroups: Array<{heading: string, changes: Array<{path: string, type: string}>}>
+	): Promise<Map<string, string[]>> {
+		const warnings = new Map<string, string[]>();
+		for (const group of changeGroups) {
+			for (const change of group.changes) {
+				if (change.type === 'REMOVED') continue;
+				const rule = this.settings.obsidianSyncRules[change.path];
+				if (!rule?.fields) continue;
+				try {
+					const text = await this.app.vault.adapter.read(change.path);
+					const parsed = JSON.parse(text);
+					if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+						const newFields = findNewFields(rule.fields, Object.keys(parsed));
+						if (newFields.length > 0) warnings.set(change.path, newFields);
+					}
+				} catch { /* file unreadable or not JSON */ }
+			}
+		}
+		return warnings;
 	}
 
 	async saveSettings() {

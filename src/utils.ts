@@ -13,7 +13,10 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 	return isEqual;
 }
 
-export function showFileChanges(records: Array<{heading: string, changes: FileChange[]}>): void {
+export function showFileChanges(
+	records: Array<{heading: string, changes: FileChange[]}>,
+	fieldWarnings: Map<string, string[]> = new Map()
+): void {
 	console.log(records);
 	if (records.length === 0 || records.every(r=>r.changes.length===0)) {return;}
 	const fileOpsNotice = new Notice("", 0);
@@ -40,8 +43,18 @@ export function showFileChanges(records: Array<{heading: string, changes: FileCh
 				const listItem = fileOpsNotice.noticeEl.createEl("li", {
 					cls: "file-update-row"
 				});
-				listItem.setText(`${path}`);
 				listItem.addClass(`file-${changeType}`);
+				const newFields = fieldWarnings.get(path);
+				if (newFields?.length) {
+					listItem.createSpan({ text: path });
+					listItem.createSpan({ text: ` — new field${newFields.length > 1 ? 's' : ''}: ` });
+					newFields.forEach((f, i) => {
+						if (i > 0) listItem.createSpan({ text: ', ' });
+						listItem.createEl('code', { text: f, cls: 'fit-field-warning-field' });
+					});
+				} else {
+					listItem.setText(path);
+				}
 			}
 		}
 	});

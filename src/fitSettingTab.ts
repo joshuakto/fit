@@ -1,13 +1,27 @@
 import FitPlugin from "@/fitPlugin";
+import { findNewFields, isUiManaged } from "@/fitSettings";
+import { OBSIDIAN_ALWAYS_EXCLUDED, OBSIDIAN_NEEDS_MERGE } from "@/fit";
 import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
 import { setEqual } from "./utils";
-import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
+import { GitHubOwnerSuggest, GitHubRepoSuggest, ObsidianPathSuggest } from "./util/obsidianHelpers";
 import { VaultError } from "./vault";
 import { fitLogger } from "./logger";
 import FitNotice from "./fitNotice";
 import * as Encryption from "./encryption";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
+
+// Known .obsidian/ files with friendly display names.
+// Must use "replace" strategy (v1 only). Paths in OBSIDIAN_ALWAYS_EXCLUDED are not listed.
+const KNOWN_OBSIDIAN_FILES: { label: string; path: string }[] = [
+	{ label: "Appearance (theme, fonts, CSS snippets)", path: ".obsidian/appearance.json" },
+	{ label: "Core app settings",                       path: ".obsidian/app.json" },
+	{ label: "Hotkeys",                                 path: ".obsidian/hotkeys.json" },
+	{ label: "Daily notes settings",                    path: ".obsidian/daily-notes.json" },
+	{ label: "Templates settings",                      path: ".obsidian/templates.json" },
+	{ label: "Graph view settings",                     path: ".obsidian/graph.json" },
+	{ label: "Canvas settings",                         path: ".obsidian/canvas.json" },
+];
 
 /**
  * Settings UI for Fit plugin.
@@ -676,6 +690,302 @@ export default class FitSettingTab extends PluginSettingTab {
 		if (this.plugin.settings.autoSync === "off") {
 			checkIntervalSlider.settingEl.addClass("clear");
 		}
+
+		// Hidden files setting
+		new Setting(containerEl)
+			.setName("Sync hidden files")
+			.setDesc("Include files and folders whose names start with '.' (e.g. .gitignore, .env). " +
+				"Disable if you notice slower syncs on a very large vault — " +
+				"it adds a recursive directory scan on each sync. " +
+				"Add a .gitignore to exclude specific hidden paths (e.g. .env, .DS_Store).")
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncHiddenFiles)
+				.onChange(async (value) => {
+					this.plugin.settings.syncHiddenFiles = value;
+					await this.plugin.saveSettings();
+				}));
+	};
+
+	obsidianSyncBlock = () => {
+		const {containerEl} = this;
+
+		new Setting(containerEl)
+			.setHeading()
+			.setName("Obsidian config sync")
+			.setDesc("Sync selected Obsidian config files across devices. " +
+				"Workspace layout and FIT's own data are always excluded.");
+
+		const rules = this.plugin.settings.obsidianSyncRules;
+
+		const saveRules = async () => {
+			await this.plugin.saveSettings();
+			this.plugin.fit.loadSettings(this.plugin.settings);
+		};
+
+		// === Compact known-file list ===
+		const knownGroup = containerEl.createDiv({ cls: 'fit-obsidian-sync-group' });
+		for (const { label, path } of KNOWN_OBSIDIAN_FILES) {
+			const shortPath = path.replace('.obsidian/', '');
+			const row = knownGroup.createDiv({ cls: 'fit-obsidian-sync-row' });
+
+			const labelEl = row.createDiv({ cls: 'fit-obsidian-sync-label' });
+			const nameRow = labelEl.createDiv({ cls: 'fit-obsidian-sync-name' });
+			nameRow.createSpan({ text: label });
+			if (path in rules && !isUiManaged(rules[path])) {
+				nameRow.createSpan({ text: ' — unknown rule', cls: 'fit-obsidian-unknown-rule' });
+			}
+			labelEl.createDiv({ text: shortPath, cls: 'fit-obsidian-sync-path' });
+
+			const checked = path in rules && isUiManaged(rules[path]);
+			const toggleEl = row.createDiv({ cls: `checkbox-container${checked ? ' is-enabled' : ''}` });
+			toggleEl.createEl('input', { type: 'checkbox' });
+
+			row.addEventListener('click', async () => {
+				const nowEnabled = !toggleEl.hasClass('is-enabled');
+				toggleEl.toggleClass('is-enabled', nowEnabled);
+				if (nowEnabled) {
+					rules[path] = {};
+				} else if (!rules[path] || isUiManaged(rules[path])) {
+					delete rules[path];
+				}
+				await saveRules();
+			});
+		}
+
+		// === Custom paths ===
+
+		// Build suggestion list from installed plugins (without .obsidian/ prefix — input shows that as a label)
+		const pluginManifests: Record<string, unknown> =
+			(this.plugin.app as unknown as { plugins?: { manifests?: Record<string, unknown> } })
+				.plugins?.manifests ?? {};
+		const pathSuggestions = Object.keys(pluginManifests)
+			.filter(id => id !== this.plugin.manifest.id)
+			.map(id => `plugins/${id}/data.json`);
+
+		const denylistReason = (p: string): string | null => {
+			if (OBSIDIAN_ALWAYS_EXCLUDED.has(p)) return 'Workspace layout is device-specific — always excluded';
+			return null;
+		};
+		const isKnownTogglePath = (p: string) => KNOWN_OBSIDIAN_FILES.some(f => f.path === p);
+		const needsMerge = (p: string) => OBSIDIAN_NEEDS_MERGE.has(p);
+
+		// Plugin installer files — hard block (code, manifest, styles) or soft warn (docs)
+		const isInstallerManagedFile = (rel: string): boolean => {
+			if (!/^plugins\/[^/]+\//.test(rel)) return false;
+			const filename = rel.split('/').pop() ?? '';
+			return filename === 'manifest.json' || /\.(js|mjs|ts|css)$/.test(filename);
+		};
+		const isPluginDocFile = (rel: string): boolean => {
+			if (!/^plugins\/[^/]+\//.test(rel)) return false;
+			const filename = rel.split('/').pop() ?? '';
+			return /\.md$/.test(filename);
+		};
+
+		const readJsonFields = async (vaultPath: string): Promise<string[] | null> => {
+			try {
+				const text = await this.plugin.app.vault.adapter.read(vaultPath);
+				const parsed = JSON.parse(text);
+				if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+					return Object.keys(parsed);
+				}
+			} catch {
+				// file missing, unreadable, or not a JSON object
+			}
+			return null;
+		};
+
+		const customSection = containerEl.createDiv({ cls: 'fit-obsidian-custom-paths' });
+		customSection.createDiv({ text: 'Additional paths', cls: 'fit-obsidian-custom-heading' });
+		const pathsList = customSection.createDiv({ cls: 'fit-obsidian-paths-list' });
+
+		const ownDataPath = this.plugin.manifest.dir
+			? `${this.plugin.manifest.dir}/data.json`
+			: '.obsidian/plugins/fit/data.json';
+
+		const addPathRow = (initialRelative: string) => {
+			let currentRelative = initialRelative;
+			const row = pathsList.createDiv({ cls: 'fit-obsidian-custom-path-row' });
+			const controls = row.createDiv({ cls: 'fit-obsidian-custom-path-controls' });
+
+			const inputWrap = controls.createDiv({ cls: 'fit-obsidian-input-wrap' });
+			inputWrap.createSpan({ text: '.obsidian/', cls: 'fit-obsidian-path-prefix' });
+			const input = inputWrap.createEl('input', { cls: 'fit-obsidian-path-input' });
+			input.placeholder = 'plugins/my-plugin/data.json';
+			input.value = initialRelative;
+			new ObsidianPathSuggest(this.app, input, pathSuggestions);
+
+			const removeBtn = controls.createEl('button', { cls: 'fit-obsidian-remove-btn', text: '×' });
+			const statusEl = row.createDiv({ cls: 'fit-obsidian-path-status' });
+
+			const validate = (rel: string): boolean => {
+				const full = `.obsidian/${rel}`;
+				if (!rel) {
+					statusEl.empty(); statusEl.className = 'fit-obsidian-path-status';
+					return false;
+				}
+				const denyReason = denylistReason(full);
+				if (denyReason) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status error';
+					statusEl.setText(denyReason);
+					return false;
+				}
+				if (full === ownDataPath) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status error';
+					statusEl.createSpan({ text: 'Contains your GitHub token — syncing requires field-level exclusion not yet available (' });
+					statusEl.createEl('a', { text: 'issue #67', href: 'https://github.com/joshuakto/fit/issues/67' });
+					statusEl.createSpan({ text: ')' });
+					return false;
+				}
+				if (needsMerge(full)) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status error';
+					statusEl.createSpan({ text: 'Not yet supported — needs merge logic to avoid install conflicts (' });
+					statusEl.createEl('a', { text: 'issue #67', href: 'https://github.com/joshuakto/fit/issues/67' });
+					statusEl.createSpan({ text: ')' });
+					return false;
+				}
+				if (isKnownTogglePath(full)) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status warning';
+					statusEl.setText('Use the toggle above');
+					return false;
+				}
+				if (/^plugins\/[^/]+\/data\.json$/.test(rel)) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status warning';
+					statusEl.setText('Plugin data files often contain API tokens or credentials. Inspect this file before enabling sync — credential exposure via git history is hard to reverse.');
+					return true;
+				}
+				if (isInstallerManagedFile(rel)) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status error';
+					statusEl.setText('Plugin code and manifest files are managed by Obsidian\'s installer — syncing these will cause conflicts and is not supported');
+					return false;
+				}
+				if (isPluginDocFile(rel)) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status warning';
+					statusEl.setText('This file is part of the plugin installation — syncing it is unlikely to be useful');
+					return true;
+				}
+				if (!rel.endsWith('.json')) {
+					statusEl.empty();
+					statusEl.className = 'fit-obsidian-path-status warning';
+					statusEl.setText('Non-JSON file — make sure this isn\'t a secret or credential before syncing');
+					return true;
+				}
+				statusEl.empty(); statusEl.className = 'fit-obsidian-path-status';
+				return true;
+			};
+
+			// Async: check if file has gained top-level JSON fields not in rule.fields.
+			// Only shows if statusEl is currently empty (doesn't override validation messages).
+			const checkNewFieldsWarning = async (rel: string) => {
+				if (!rel || statusEl.textContent) return;
+				const full = `.obsidian/${rel}`;
+				const rule = rules[full];
+				if (!rule?.fields) return;
+				const currentFields = await readJsonFields(full);
+				// Guard: input may have changed while awaiting
+				if (input.value.trim().replace(/^\.?obsidian\//, '') !== rel) return;
+				if (!currentFields) return;
+				const newFields = findNewFields(rule.fields, currentFields);
+				if (newFields.length === 0) return;
+				if (statusEl.textContent) return; // re-check after await
+				statusEl.empty();
+				statusEl.className = 'fit-obsidian-path-status warning';
+				statusEl.setText(`New fields since last review: ${newFields.join(', ')} — focus input to acknowledge`);
+			};
+
+			if (validate(initialRelative)) {
+				checkNewFieldsWarning(initialRelative);
+			}
+
+			// Merge current file's top-level fields into stored list on focus (additive, clears warning).
+			input.addEventListener('focus', async () => {
+				const rel = input.value.trim().replace(/^\.?obsidian\//, '');
+				const full = `.obsidian/${rel}`;
+				const rule = rules[full];
+				if (!rel || !rule || rule.fields === undefined) return;
+				const currentFields = await readJsonFields(full);
+				if (currentFields) {
+					rule.fields = Array.from(new Set([...rule.fields, ...currentFields]));
+					await saveRules();
+				}
+				// Revalidate to restore clean statusEl (field warning now cleared)
+				validate(rel);
+			});
+
+			// Validate on blur only — avoids suggestion-popover flicker from live DOM updates during input
+			input.addEventListener('blur', () => {
+				const rel = input.value.trim().replace(/^\.?obsidian\//, '');
+				if (validate(rel)) {
+					checkNewFieldsWarning(rel);
+				}
+			});
+
+			input.addEventListener('change', async () => {
+				const newRel = input.value.trim().replace(/^\.?obsidian\//, '');
+				const oldFull = `.obsidian/${currentRelative}`;
+				const newFull = `.obsidian/${newRel}`;
+
+				if (currentRelative && oldFull !== newFull && rules[oldFull] && isUiManaged(rules[oldFull])) {
+					delete rules[oldFull];
+				}
+				if (validate(newRel)) {
+					if (!rules[newFull]) rules[newFull] = {};
+					// Capture top-level fields on first enable (additive — preserves any existing list)
+					if (newRel.endsWith('.json')) {
+						const capturedFields = await readJsonFields(newFull);
+						if (capturedFields) {
+							const existing = rules[newFull].fields ?? [];
+							rules[newFull].fields = Array.from(new Set([...existing, ...capturedFields]));
+						}
+					}
+					currentRelative = newRel;
+				}
+				await saveRules();
+			});
+
+			removeBtn.addEventListener('click', async () => {
+				const full = `.obsidian/${currentRelative}`;
+				if (currentRelative && rules[full] && isUiManaged(rules[full])) {
+					delete rules[full];
+					await saveRules();
+				}
+				row.remove();
+			});
+		};
+
+		// Render existing custom paths
+		for (const fullPath of Object.keys(rules)) {
+			if (!KNOWN_OBSIDIAN_FILES.some(f => f.path === fullPath) && isUiManaged(rules[fullPath])) {
+				addPathRow(fullPath.replace('.obsidian/', ''));
+			}
+		}
+
+		customSection.createEl('button', { cls: 'fit-obsidian-add-btn', text: '+ Add path' })
+			.addEventListener('click', () => addPathRow(''));
+
+		// Unrecognized-rule entries: read-only, so users know they exist and won't accidentally delete them
+		const futureEntries = Object.entries(rules).filter(([, rule]) => !isUiManaged(rule));
+		if (futureEntries.length > 0) {
+			const futureSection = containerEl.createDiv({ cls: 'fit-obsidian-future-paths' });
+			futureSection.createDiv({ text: 'Unrecognized rules', cls: 'fit-obsidian-custom-heading' });
+			const dataJsonPath = this.plugin.manifest.dir
+				? `${this.plugin.manifest.dir}/data.json`
+				: '.obsidian/plugins/fit/data.json';
+			const noteEl = futureSection.createDiv({ cls: 'fit-obsidian-future-note' });
+			noteEl.createSpan({ text: 'These paths have a sync rule this version of FIT cannot configure. They are treated as ignored until reconfigured or removed in ' });
+			noteEl.createEl('code', { text: dataJsonPath });
+			noteEl.createSpan({ text: '.' });
+			const ul = futureSection.createEl('ul', { cls: 'fit-obsidian-future-list' });
+			for (const [path] of futureEntries) {
+				ul.createEl('li', { text: path.replace('.obsidian/', ''), cls: 'fit-obsidian-path-readonly' });
+			}
+		}
 	};
 
 	noticeConfigBlock = () => {
@@ -757,20 +1067,6 @@ export default class FitSettingTab extends PluginSettingTab {
 				row.createDiv({cls: "file-conflict-delete"});
 			}
 		);
-
-		// Hidden files setting
-		new Setting(containerEl)
-			.setName("Sync hidden files")
-			.setDesc("Include files and folders whose names start with '.' (e.g. .gitignore, .env). " +
-				"Disable if you notice slower syncs on a very large vault — " +
-				"it adds a recursive directory scan on each sync. " +
-				"Add a .gitignore to exclude specific hidden paths (e.g. .env, .DS_Store).")
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.syncHiddenFiles)
-				.onChange(async (value) => {
-					this.plugin.settings.syncHiddenFiles = value;
-					await this.plugin.saveSettings();
-				}));
 
 		// Debug logging setting
 		new Setting(containerEl)
@@ -927,6 +1223,7 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.githubUserInfoBlock();
 		this.repoInfoBlock();
 		this.localConfigBlock();
+		this.obsidianSyncBlock();
 		this.noticeConfigBlock();
 		this.refreshFields("withCache");
 	}

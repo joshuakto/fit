@@ -242,29 +242,39 @@ currentLocalSha = {}  // File doesn't exist
 
 FIT implements three layers of path filtering:
 
-### 1. Protected Paths (`shouldSyncPath`) - Never Sync
+### 1. Protected Paths (`shouldSyncPath`) - Default Excluded
 
 - **Filtered by:** `Fit.shouldSyncPath()`
 - **Applied to:** Both ⬆️ local→remote and ⬇️ remote→local
-- **Reason:** Protect critical system directories
+- **Reason:** Protect critical system directories by default; `.obsidian/` paths can be individually opted in
 
-**Protected paths:**
-- `.obsidian/` - Obsidian workspace settings, plugins, themes
-- `_fit/` - Conflict resolution directory
+**Always-excluded paths (no opt-in):**
+- `.obsidian/workspace.json`, `.obsidian/workspace-mobile.json` — device-specific layout
+- `.obsidian/community-plugins.json`, `.obsidian/core-plugins.json` — need array-merge logic (v2)
+- `<pluginDir>/data.json` (e.g. `plugins/fit/data.json`) — contains PAT; needs field-level exclusion (v2)
+- `_fit/` — conflict resolution directory
 
-**Behavior:**
-- **⬆️ Local→Remote:** Never push protected paths to remote
-- **⬇️ Remote→Local:** Save to 📁 `_fit/` for user transparency (e.g., `_fit/.obsidian/app.json`)
+**Opt-in `.obsidian/` paths (`obsidianSyncRules`):**
+Individual `.obsidian/` files can be synced by adding an entry to `FitSettings.obsidianSyncRules`:
+```typescript
+// Opt in appearance.json for replace-strategy sync:
+obsidianSyncRules: { ".obsidian/appearance.json": {} }
+```
+Paths not in `obsidianSyncRules` (or in the always-excluded set) remain blocked.
+
+**Behavior for blocked paths:**
+- **⬆️ Local→Remote:** Never pushed
+- **⬇️ Remote→Local:** Saved to 📁 `_fit/` for transparency (e.g., `_fit/.obsidian/app.json`)
 - **📦 SHA Caches:** Excluded from both `localShas` and `lastFetchedRemoteShas`
 
 **Why save remote protected paths to `_fit/`?**
 - User can see what exists on remote without risk
 - Prevents silent data loss
-- Consistent behavior: all !shouldSyncPath files go to `_fit/`, even `_fit/` files themselves (→ `_fit/_fit/`)
+- Consistent behavior: all `!shouldSyncPath` files go to `_fit/`, even `_fit/` files themselves (→ `_fit/_fit/`)
 
 **Example:**
 ```typescript
-// Remote has .obsidian/app.json
+// Remote has .obsidian/app.json (not opted in)
 remoteChanges = [
   { path: ".obsidian/app.json", content: "{\"theme\":\"dark\"}" }
 ]
@@ -330,15 +340,21 @@ node_modules/
 
 ### Combined Filtering: `.obsidian/` Files
 
-`.obsidian/` files are excluded by `shouldSyncPath` regardless of the `syncHiddenFiles` setting.
-With `syncHiddenFiles = true`, `shouldTrackState` returns `true` for them (they are read and hashed),
-but `getLocalChanges` filters by both `shouldTrackState` AND `shouldSyncPath`, so they never appear
-as local changes and are never pushed.
+By default, `.obsidian/` files are excluded by `shouldSyncPath` regardless of `syncHiddenFiles`.
+When a path is opted in via `obsidianSyncRules`, two additional rules apply:
 
-**Result:**
+- `shouldTrackState` returns `true` for opted-in `.obsidian/` paths even when `syncHiddenFiles = false`,
+  so they are scanned and hashed like regular files.
+- `shouldSyncPath` returns `true` for opted-in paths not in the always-excluded set (see above).
+
+**Result for non-opted-in `.obsidian/` paths:**
 - Never synced in either direction
-- Remote `.obsidian/` files saved to `_fit/.obsidian/` for transparency
-- Excluded from `lastFetchedRemoteShas`; present in `localShas` scan but filtered before change detection
+- Remote copies saved to `_fit/.obsidian/` for transparency
+- Excluded from `lastFetchedRemoteShas`; present in local scan but filtered before change detection
+
+**Result for opted-in `.obsidian/` paths:**
+- Tracked in `localShas` and synced bidirectionally like any regular file
+- `syncHiddenFiles = false` does not suppress them (explicit opt-in overrides the hidden-file default)
 
 ### Implementation Locations
 

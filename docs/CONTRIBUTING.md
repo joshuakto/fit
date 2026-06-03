@@ -50,7 +50,7 @@ Check the milestone for upcoming release priorities and progress.
 - **Performance** - Fast syncs, efficient API usage, mobile optimization
 
 **🚀 Platform Expansion**:
-- **Selective `.obsidian/` sync** - Sync plugins/settings without exposing secrets
+- **Selective `.obsidian/` sync** - v1 shipped in 1.6 (replace-strategy + field tracking); v2: field-level exclusion (#67)
 - **Multi-platform backends** - GitLab, Gitea, self-hosted Git servers
 - **Multi-repo sync** - Multiple vaults or vault partitions
 

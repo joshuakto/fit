@@ -51,10 +51,12 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 - Any files in your vault root
 
 **❌ NOT synced (protected paths):**
-- `.obsidian/` folder (Obsidian settings and plugins — see [#67](https://github.com/joshuakto/fit/issues/67) for planned support)
+- `.obsidian/` folder — excluded to prevent overwriting device-specific settings (selective opt-in coming in 1.6)
 - `_fit/` folder (conflict resolution area)
 
-> **Coming in the 1.6 release:** Hidden files (`.gitignore`, `.env`, etc.) will sync by default. `.gitignore` **rules** are already respected — files matched by your patterns are excluded from sync.
+> **Coming in the 1.6 release:**
+> - Hidden files (`.gitignore`, `.env`, etc.) will sync by default. `.gitignore` **rules** are already respected — files matched by your patterns are excluded from sync.
+> - Selective `.obsidian/` sync — opt individual config files (appearance, hotkeys, graph settings, plugin data) in via Settings. Workspace layout files and plugin installer files are always excluded regardless.
 
 ### Conflict handling
 

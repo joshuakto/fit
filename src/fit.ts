@@ -6,13 +6,29 @@
  */
 
 import { LocalStores } from "@/localStores";
-import { FitSettings } from "@/fitSettings";
+import { FitSettings, ObsidianSyncRules } from "@/fitSettings";
 import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
+
+// .obsidian/ paths excluded from sync regardless of obsidianSyncRules.
+// workspace files are device-specific.
+export const OBSIDIAN_ALWAYS_EXCLUDED = new Set([
+	".obsidian/workspace.json",
+	".obsidian/workspace-mobile.json",
+]);
+
+// Paths blocked in v1 because safe sync requires v2 capabilities:
+// - community/core plugins: need array-merge to avoid install conflicts across devices
+// - plugins/fit/data.json: contains PAT — needs field-level exclusion before it can safely sync
+export const OBSIDIAN_NEEDS_MERGE = new Set([
+	".obsidian/community-plugins.json",
+	".obsidian/core-plugins.json",
+	".obsidian/plugins/fit/data.json",
+]);
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -35,12 +51,15 @@ export class Fit {
 	lastFetchedRemoteShas: FileStates;      // Canonical remote SHA cache
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
+	obsidianSyncRules: ObsidianSyncRules;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
+	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
 
 
-	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault) {
+	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
 		this.localVault = new LocalVault(vault);
+		if (pluginDir) this.ownDataPath = `${pluginDir}/data.json`;
 		this.loadSettings(setting);  // NOTE: creates this.remoteVault
 		this.loadLocalStore(localStores);
 	}
@@ -51,7 +70,11 @@ export class Fit {
 		// TODO: Use DI to pass the right impl from FitSync caller.
 
 		// Apply local vault settings unconditionally (don't require PAT)
-		this.localVault.configure({ syncHiddenFiles: setting.syncHiddenFiles });
+		this.obsidianSyncRules = setting.obsidianSyncRules ?? {};
+		this.localVault.configure({
+			syncHiddenFiles: setting.syncHiddenFiles,
+			obsidianSyncRules: this.obsidianSyncRules,
+		});
 
 		// Skip if no PAT - no API access possible
 		if (!setting.pat) {
@@ -119,9 +142,7 @@ export class Fit {
 	 *
 	 * Excludes paths based on sync policy:
 	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
-	 * - `.obsidian/`: Obsidian workspace settings and plugin code
-	 *
-	 * Future: Will also respect .gitignore patterns when implemented.
+	 * - `.obsidian/`: Excluded by default; individual paths may be opted in via obsidianSyncRules
 	 *
 	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
 	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
@@ -137,9 +158,22 @@ export class Fit {
 			return false;
 		}
 
-		// Exclude .obsidian/ directory (Obsidian workspace settings and plugins)
 		if (path.startsWith(".obsidian/")) {
-			return false;
+			// Always-excluded regardless of user rules
+			if (OBSIDIAN_ALWAYS_EXCLUDED.has(path)) return false;
+			if (OBSIDIAN_NEEDS_MERGE.has(path)) return false;
+			// Block own data.json dynamically — covers symlinked/alternate install dirs
+			if (this.ownDataPath && path === this.ownDataPath) return false;
+
+			const rule = this.obsidianSyncRules?.[path];
+			if (!rule) return false;
+
+			const strategy = rule.sync ?? "replace";
+			if (strategy !== "replace") {
+				fitLogger.log(`[Sync] WARNING: Unknown strategy "${strategy}" for ${path} — skipping (not supported in this version)`);
+				return false;
+			}
+			return true;
 		}
 
 		return true;

@@ -1,3 +1,28 @@
+// V1: only "replace" supported. V2 will add "array-merge" | "fields".
+export type ObsidianSyncStrategy = "replace";
+
+export interface ObsidianSyncRule {
+	sync?: ObsidianSyncStrategy;
+	// Known top-level JSON field names captured at enable time.
+	// UI warns when the file gains fields not in this list.
+	// undefined = not yet captured (no warning shown).
+	fields?: string[];
+}
+
+// Map of .obsidian/ file path → sync rule. Paths not listed are not synced.
+export type ObsidianSyncRules = Record<string, ObsidianSyncRule>;
+
+/** True if the UI can safely read/write this rule (v1 strategies only). */
+export function isUiManaged(rule: ObsidianSyncRule): boolean {
+	return rule.sync === undefined || rule.sync === "replace";
+}
+
+/** Returns fields in currentFields not present in knownFields. */
+export function findNewFields(knownFields: string[], currentFields: string[]): string[] {
+	const known = new Set(knownFields);
+	return currentFields.filter(f => !known.has(f));
+}
+
 export interface FitSettings {
 	// TODO: When adding support for multiple remote providers (GitLab, Gitea),
 	// consider using a discriminated union structure:
@@ -19,6 +44,7 @@ export interface FitSettings {
 	notifyConflicts: boolean
 	enableDebugLogging: boolean
 	syncHiddenFiles: boolean
+	obsidianSyncRules: ObsidianSyncRules
 }
 
 export const DEFAULT_SETTINGS: FitSettings = {
@@ -35,4 +61,5 @@ export const DEFAULT_SETTINGS: FitSettings = {
 	notifyConflicts: true,
 	enableDebugLogging: true,
 	syncHiddenFiles: true,
+	obsidianSyncRules: {},
 };

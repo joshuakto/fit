@@ -203,3 +203,35 @@ export class GitHubRepoSuggest extends AbstractInputSuggest<string> {
 		this.close();
 	}
 }
+
+/**
+ * Autocomplete for .obsidian/ sub-paths (shown without the .obsidian/ prefix).
+ * Used in the Obsidian config sync settings UI.
+ */
+export class ObsidianPathSuggest extends AbstractInputSuggest<string> {
+	private pathList: string[] = [];
+	private inputEl: HTMLInputElement;
+
+	constructor(app: App, inputEl: HTMLInputElement, suggestions: string[]) {
+		super(app, inputEl);
+		this.inputEl = inputEl;
+		this.pathList = suggestions;
+	}
+
+	getSuggestions(query: string): string[] {
+		const lowerQuery = query.toLowerCase();
+		return lowerQuery
+			? this.pathList.filter(s => s.toLowerCase().includes(lowerQuery))
+			: this.pathList;
+	}
+
+	renderSuggestion(value: string, el: HTMLElement): void {
+		el.setText(value);
+	}
+
+	selectSuggestion(value: string, _evt: MouseEvent | KeyboardEvent): void {
+		this.setValue(value);
+		this.inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+		this.close();
+	}
+}
