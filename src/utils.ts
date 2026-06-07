@@ -191,10 +191,10 @@ export function getDiffText(oldContent: string, newContent: string): string {
     for (let part of diff) {
         let text = part.value
         if (part.removed) {
-            text = `<span style="color:rgb(223, 73, 73)">---</span>${part.value}`
+            text = `==---==${part.value}\n`
         }
         else if (part.added) {
-            text = `<span style="color:rgb(0, 176, 80)">+++</span>${part.value}`
+            text = `==+++==${part.value}\n`
         }
 
         const lines = text.split('\n');
