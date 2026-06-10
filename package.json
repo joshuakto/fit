@@ -60,7 +60,7 @@
 	},
 	"optionalDependencies": {
 		"@wdio/appium-service": "^9.23.0",
-		"appium": "^3.2.2",
+		"appium": "^3.5.0",
 		"appium-uiautomator2-driver": "^7.0.0"
 	}
 }
