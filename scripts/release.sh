@@ -90,25 +90,34 @@ REPOROOT=$(git rev-parse --show-toplevel)
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-git show "$PARENT":manifest.json  > "$TMPDIR/manifest.json"
-git show "$PARENT":versions.json  > "$TMPDIR/versions.json"
-git show "$PARENT":package.json   > "$TMPDIR/package.json"
+git show "$PARENT":manifest.json     > "$TMPDIR/manifest.json"
+git show "$PARENT":versions.json     > "$TMPDIR/versions.json"
+git show "$PARENT":package.json      > "$TMPDIR/package.json"
+git show "$PARENT":package-lock.json > "$TMPDIR/package-lock.json"
 
 # version-bump.mjs reads/writes manifest.json and versions.json relative to CWD
 (cd "$TMPDIR" && npm_package_version="$VERSION" node "$REPOROOT/version-bump.mjs")
 
-# Update package.json version field
+# Update package.json and package-lock.json version fields
 node -e "
-const fs = require('fs'), f = '$TMPDIR/package.json';
-const p = JSON.parse(fs.readFileSync(f, 'utf8'));
-p.version = '$VERSION';
-fs.writeFileSync(f, JSON.stringify(p, null, '\t') + '\n');
+const fs = require('fs');
+const v = '$VERSION';
+const pf = '$TMPDIR/package.json';
+const p = JSON.parse(fs.readFileSync(pf, 'utf8'));
+p.version = v;
+fs.writeFileSync(pf, JSON.stringify(p, null, '\t') + '\n');
+const lf = '$TMPDIR/package-lock.json';
+const l = JSON.parse(fs.readFileSync(lf, 'utf8'));
+l.version = v;
+if (l.packages && l.packages['']) l.packages[''].version = v;
+fs.writeFileSync(lf, JSON.stringify(l, null, 2) + '\n');
 "
 
-# Build git blobs for the three changed files
+# Build git blobs for the four changed files
 MANIFEST_BLOB=$(git hash-object -w "$TMPDIR/manifest.json")
 VERSIONS_BLOB=$(git hash-object -w "$TMPDIR/versions.json")
 PKG_BLOB=$(git hash-object -w "$TMPDIR/package.json")
+LOCK_BLOB=$(git hash-object -w "$TMPDIR/package-lock.json")
 
 # Build the release tree by taking BASE_REF's root tree entries and swapping
 # in the updated blobs. Uses no index — avoids conflicts with jj's index lock.
@@ -117,9 +126,10 @@ TREE=$(git ls-tree "$PARENT" | while IFS='	' read -r meta path; do
     type=$(printf '%s' "$meta" | cut -d' ' -f2)
     sha=$(printf '%s' "$meta" | cut -d' ' -f3)
     case "$path" in
-        manifest.json) sha="$MANIFEST_BLOB" ;;
-        versions.json) sha="$VERSIONS_BLOB" ;;
-        package.json)  sha="$PKG_BLOB" ;;
+        manifest.json)     sha="$MANIFEST_BLOB" ;;
+        versions.json)     sha="$VERSIONS_BLOB" ;;
+        package.json)      sha="$PKG_BLOB" ;;
+        package-lock.json) sha="$LOCK_BLOB" ;;
     esac
     printf '%s %s %s\t%s\n' "$mode" "$type" "$sha" "$path"
 done | git mktree)
