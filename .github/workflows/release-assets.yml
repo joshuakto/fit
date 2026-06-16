@@ -3,6 +3,11 @@ name: Attach Release Assets
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and attach assets to'
+        required: true
 
 permissions:
   contents: write
@@ -11,9 +16,18 @@ jobs:
   build-and-attach:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ steps.tag.outputs.value }}
 
       - uses: actions/setup-node@v4
         with:
@@ -25,6 +39,6 @@ jobs:
       - run: npm run build
 
       - name: Upload assets to release
-        run: gh release upload "${{ github.event.release.tag_name }}" main.js manifest.json styles.css --clobber
+        run: gh release upload "${{ steps.tag.outputs.value }}" main.js manifest.json styles.css --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
