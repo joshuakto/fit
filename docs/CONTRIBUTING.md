@@ -37,7 +37,7 @@ If you use [jj](https://jj-vcs.github.io/jj/), install [jj-hooks](https://crates
 ## Roadmap & Priorities
 
 ### Upcoming Release
-**Milestone**: [1.5](https://github.com/joshuakto/fit/milestone/2)
+**Milestone**: [1.6](https://github.com/joshuakto/fit/milestone/3)
 
 Check the milestone for upcoming release priorities and progress.
 
