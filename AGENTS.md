@@ -11,12 +11,12 @@
 FIT is an Obsidian plugin that syncs vault files to GitHub. It must run on both desktop and mobile (Obsidian's mobile environment has no Node.js).
 
 Key docs:
-- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** — setup, PR process, release workflow
+- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** — setup, PR process, release workflow, roadmap and current milestone
 - **[docs/architecture.md](docs/architecture.md)** — component overview
 - **[docs/api-compatibility.md](docs/api-compatibility.md)** — what APIs are safe to use
 - **[docs/sync-logic.md](docs/sync-logic.md)** — sync internals
 
-Current milestones: [1.5](https://github.com/joshuakto/fit/milestone/2) | [1.6](https://github.com/joshuakto/fit/milestone/3)
+When shipping a feature: update the relevant doc(s) above to reflect the new state.
 
 ---
 
@@ -30,6 +30,14 @@ The plugin runs in Obsidian's mobile environment with no Node.js. Violations cau
 - ✅ Use Obsidian's `arrayBufferToBase64()` instead of `Buffer.from(...).toString('base64')`
 
 See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
+
+---
+
+## Development Quick Reference
+
+**Commands**: `npm test`, `npm run typecheck && npm run lint`
+**Targeted test**: `npm test -- --testNamePattern="pattern"`
+**Architecture**: Vaults (storage) → Fit/FitSync (sync logic) → src/fitPlugin.ts (Obsidian integration)
 
 ---
 
