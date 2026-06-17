@@ -1,3 +1,10 @@
+/**
+ * Pure logic for the "Explain Sync Status" command.
+ * {@link buildStatusExplanation} classifies current state into a {@link StatusExplanation},
+ * then {@link renderExplanation} converts it to a {@link RenderableExplanation} for the modal.
+ * Design notes: docs/sync-logic.md § Explain Sync Status
+ */
+
 import type { FileChange } from '@/util/changeTracking';
 
 export interface SyncStatusSnapshot {
@@ -26,6 +33,12 @@ export interface AutoSyncInfo {
 	now?: number;  // injectable for tests
 }
 
+/**
+ * Discriminated union produced by {@link buildStatusExplanation}.
+ * - `never-synced`: no baseline yet — prompt user to run their first sync.
+ * - `ok`: everything in sync, show file count + commit SHA.
+ * - `issues`: one or more sections (conflicts, oversized files, pending local changes).
+ */
 export type StatusExplanation =
 	| { kind: 'never-synced' }
 	| { kind: 'ok'; fileCount: number; shortSha: string }
@@ -48,6 +61,12 @@ const CHANGE_CLS: Record<string, string> = {
 	REMOVED:  'file-REMOVED',
 };
 
+/**
+ * Classifies current sync state into a {@link StatusExplanation}.
+ * @param snapshot - Cached store state (no I/O); read from fit.pendingClashes, unpushedFiles, etc.
+ * @param localChanges - Result of getLocalChanges(); null if the scan threw (partial failure).
+ * @param scanFailedPaths - Paths that failed during scan, surfaced in scanNote when localChanges is null.
+ */
 export function buildStatusExplanation(
 	snapshot: SyncStatusSnapshot,
 	localChanges: FileChange[] | null,
@@ -142,6 +161,10 @@ function formatAutoSyncNote(info: AutoSyncInfo): string {
 	return `Auto-sync: every ${intervalMinutes} min · last synced ${elapsed} · next in ~${nextMin} min`;
 }
 
+/**
+ * Converts a {@link StatusExplanation} into a flat {@link RenderableExplanation} for the modal.
+ * Separates display concerns (commit URL, auto-sync note) from classification logic.
+ */
 export function renderExplanation(
 	explanation: StatusExplanation,
 	opts: { commitUrl?: string | null; autoSyncInfo?: AutoSyncInfo } = {},

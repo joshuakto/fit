@@ -1,3 +1,8 @@
+/**
+ * Obsidian modal UI for the "Explain Sync Status" command.
+ * Receives a RenderableExplanation from fitStatusExplainer.ts and renders it.
+ */
+
 import { App, Modal } from 'obsidian';
 import type { RenderableExplanation } from '@/fitStatusExplainer';
 import { ObsidianSyncRules, findNewFields } from '@/fitSettings';
@@ -10,6 +15,12 @@ const FILE_TOOLTIP: Record<string, string> = {
 	'file-push-skipped':     'Exceeds GitHub file size limit — reduce size or remove to sync.',
 };
 
+/**
+ * Modal shown by the "Explain Sync Status" command.
+ * Renders a {@link RenderableExplanation} (from {@link renderExplanation}) and
+ * asynchronously checks synced .obsidian/ files for new fields not in the stored
+ * rule.fields snapshot, warning the user if any appear.
+ */
 export class FitStatusModal extends Modal {
 	private renderable: RenderableExplanation;
 	private obsidianSyncRules: ObsidianSyncRules;

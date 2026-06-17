@@ -103,6 +103,7 @@ Both local and remote caches use the canonical Git blob SHA format: `SHA1("blob 
 - **FitLogger**: Cross-platform diagnostic logging (enabled by default, writes to `.obsidian/plugins/fit/debug.log`)
 - **Settings UI**: GitHub authentication and configuration management
 - **Notifications**: User feedback during sync operations
+- **Explain Sync Status**: `fitSync.explainStatus()` → `FitStatusModal` — read-only status snapshot (no network); shows pending clashes, oversized files, local changes, auto-sync timing. See [sync-logic.md § Explain Sync Status](sync-logic.md#explain-sync-status).
 
 ## Data Flow
 
