@@ -682,6 +682,32 @@ flowchart TD
 - Subsequent syncs hold the file in pending state until resolved — see [Pending Clash State Machine](#pending-clash-state-machine)
 - Binary files (`.png`, `.jpg`, `.pdf`) saved as-is to 📁 `_fit/`
 
+## Explain Sync Status
+
+The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault's current sync state as a modal without running a sync. It reads already-cached state (no network calls) plus a local filesystem scan.
+
+**Implementation:** [`src/fitStatusExplainer.ts`](../src/fitStatusExplainer.ts) (pure logic + types), [`src/fitStatusModal.ts`](../src/fitStatusModal.ts) (Obsidian modal UI), [`src/fitSync.ts:explainStatus()`](../src/fitSync.ts)
+
+### What it shows
+
+| Category | Source | Shown when |
+|---|---|---|
+| Never-synced notice | `lastFetchedCommitSha === null` | First launch before any sync |
+| Conflicted files | `pendingClashes` | One or more paths in pending state |
+| Oversized files | `unpushedFiles` + live size check on local changes | File exceeds GitHub's 100 MB limit |
+| Pending local changes | `getLocalChanges()` diff | Local edits not yet pushed |
+| All-clear / commit SHA | all of the above empty | Everything in sync |
+
+### Auto-merge and Explain
+
+When `array-merge` (or any future auto-resolving strategy) resolves a conflict silently, no entry is added to `pendingClashes` — the merged content is written locally and the push deferred. This means **Explain will not surface auto-merged files as conflicts**. If a user asks "why did my plugin list change?", the answer is in the sync log, not the status modal. This is intentional: the file is not in a broken state.
+
+If `autoMerge: false` is set on a rule, the clash file IS written to `_fit/` and the path IS added to `pendingClashes`, so it will appear in the Explain modal under "conflicted files".
+
+### Keeping Explain accurate
+
+When changing what state is stored in `pendingClashes`, `unpushedFiles`, or the shape of `FileChange`, update `fitStatusExplainer.ts` and its tests (`src/fitStatusExplainer.test.ts`) to match. The explainer's inputs are a snapshot of those stores — if a new blocking condition is added (e.g. a new clash type), add a corresponding section in `buildStatusExplanation()`.
+
 ## Initial Sync
 
 ### First-Time Setup
