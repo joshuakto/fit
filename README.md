@@ -57,6 +57,7 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 > **Coming in the 1.6 release:**
 > - Hidden files (`.gitignore`, `.env`, etc.) will sync by default. `.gitignore` **rules** are already respected — files matched by your patterns are excluded from sync.
 > - Selective `.obsidian/` sync — opt individual config files (appearance, hotkeys, graph settings, plugin data) in via Settings. Workspace layout files and plugin installer files are always excluded regardless.
+> - **Canvas auto-merge** — when two devices independently add nodes or edges to the same `.canvas` file, FIT will auto-merge the changes without producing a `_fit/` clash file. Only true conflicts (the same node or edge edited differently on both devices) still require manual resolution.
 
 ### Conflict handling
 

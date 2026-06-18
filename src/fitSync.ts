@@ -11,6 +11,7 @@ import { BlobSha, CommitSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
 import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
+import { CANVAS_MERGE_SPEC, mergeJson, serialiseMerged } from './util/jsonMerge';
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -153,7 +154,8 @@ export class FitSync implements IFitSync {
 		deleteFromLocalNonClashed: string[],
 		clashFiles: Array<{path: string, content: FileContent}>,
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
-		syncNotice: FitNotice
+		syncNotice: FitNotice,
+		mergedPaths?: Set<string>
 	): Promise<ApplyChangesResult<"local">> {
 		if (clashFiles.length > 0) {
 			syncNotice.setMessage('Change conflicts detected');
@@ -180,7 +182,8 @@ export class FitSync implements IFitSync {
 			//
 			// If file not in cache but exists on disk → treat as clash, save to _fit/
 			// If file not in cache and doesn't exist → safe to write directly
-			if (!this.fit.localShas.hasOwnProperty(change.path)) {
+			// Exception: mergedPaths — caller already read and merged local content, safe to write.
+			if (!this.fit.localShas.hasOwnProperty(change.path) && !mergedPaths?.has(change.path)) {
 				// Not in cache - check if file exists using statPaths result
 				const stat = existenceMap.get(change.path);
 				if (stat === undefined) {
@@ -478,10 +481,46 @@ export class FitSync implements IFitSync {
 		// (the loop below still deletes them from newLocalState to prevent leaking into localShas).
 		// Deletion of a pending path arrives with remoteOp === 'REMOVED' via the reclassification
 		// path above, so the remoteOp !== 'REMOVED' filter here can never incorrectly skip it.
+
+		// Auto-merge: canvas clashes are resolved via semantic JSON merge (id-keyed set union).
+		// Successful merges bypass _fit/ entirely; the merged result is written locally and
+		// pushed on the next sync. mergedPaths tells applyRemoteChanges these are safe to
+		// write even when not yet in localShas (caller already incorporated local content).
+		const autoMergedCanvasClashes: Array<{path: string, content: FileContent}> = [];
+		const autoMergeFailedClashPaths = new Set<string>();
+
+		await Promise.all(
+			clashes
+				.filter(c => c.remoteOp !== 'REMOVED')
+				.filter(c => !pendingReminderPaths.has(c.path))
+				.filter(c => c.path.endsWith('.canvas'))
+				.map(async (clash) => {
+					const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
+					const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
+					if (remoteContent === null || localContent === null) {
+						autoMergeFailedClashPaths.add(clash.path);
+						return;
+					}
+					const result = mergeJson(null, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+					if (!result.merged) {
+						fitLogger.log('[FitSync] Canvas auto-merge failed, falling back to clash', {
+							path: clash.path, reason: result.reason,
+						});
+						autoMergeFailedClashPaths.add(clash.path);
+						return;
+					}
+					autoMergedCanvasClashes.push({
+						path: clash.path,
+						content: FileContent.fromPlainText(serialiseMerged(result.value)),
+					});
+				})
+		);
+
 		const clashFiles = await Promise.all(
 			clashes
 				.filter(c => c.remoteOp !== 'REMOVED')
 				.filter(c => !pendingReminderPaths.has(c.path))
+				.filter(c => !c.path.endsWith('.canvas') || autoMergeFailedClashPaths.has(c.path))
 				.map(async (clash) => {
 					const content = await this.fit.remoteVault.readFileContent(clash.path);
 					return this.prepareConflictFile(clash.path, content.toBase64());
@@ -533,19 +572,25 @@ export class FitSync implements IFitSync {
 		}
 
 		// 3b. Pull remote changes to local (with safety checks and clash resolution)
+		// autoMergedCanvasClashes are written as normal files (not to _fit/), deferred push on next sync.
+		// mergedPaths bypasses the untracked-file safety redirect — content already merged from local.
+		const allAddToLocal = [...addToLocalNonClashed, ...autoMergedCanvasClashes];
+		const mergedPaths = new Set(autoMergedCanvasClashes.map(c => c.path));
 		const localFileOpsRecord = await this.applyRemoteChanges(
-			addToLocalNonClashed,
+			allAddToLocal,
 			deleteFromLocalNonClashed,
 			clashFiles,
 			existenceMap,
-			syncNotice
+			syncNotice,
+			mergedPaths
 		);
 
-		if (addToLocalNonClashed.length > 0 || deleteFromLocalNonClashed.length > 0 || clashFiles.length > 0) {
+		if (allAddToLocal.length > 0 || deleteFromLocalNonClashed.length > 0 || clashFiles.length > 0) {
 			fitLogger.log('.. ⬇️ [Pull] Applied remote changes to local', {
-				filesWritten: addToLocalNonClashed.length,
+				filesWritten: allAddToLocal.length,
 				filesDeleted: deleteFromLocalNonClashed.length,
-				clashesWrittenToFit: clashFiles.length
+				clashesWrittenToFit: clashFiles.length,
+				...(autoMergedCanvasClashes.length > 0 && { canvasAutoMerged: autoMergedCanvasClashes.length }),
 			});
 		}
 
@@ -584,10 +629,12 @@ export class FitSync implements IFitSync {
 		// Update pendingClashes: newly-clashed tracked files enter pending state.
 		// Remove their baseline so FIT makes no assumption about the canonical version.
 		// Untracked clashes are excluded — they use the #169 baseline mechanism instead.
+		// Auto-merged canvas clashes are resolved — they don't enter pending state.
 		// Paths already in pendingClashes (localState === 'pending') stay there.
 		for (const clash of clashes) {
 			if (clash.remoteOp !== 'REMOVED' &&
-				clash.localState !== 'untracked') {
+				clash.localState !== 'untracked' &&
+				!mergedPaths.has(clash.path)) {
 				if (!this.fit.pendingClashes.includes(clash.path)) {
 					this.fit.pendingClashes.push(clash.path);
 				}
