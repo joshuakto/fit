@@ -1143,8 +1143,19 @@ export default class FitSettingTab extends PluginSettingTab {
 				branch_dropdown.empty();
 				this.existingBranches = [];
 			} else {
+				// Capture values at call time so we can detect stale results from
+				// user typing the repo name while a debounced fetch is in-flight
+				const ownerAtCall = this.plugin.settings.owner;
+				const repoAtCall = this.plugin.settings.repo;
+
 				try {
-					const latestBranches = await this.plugin.githubConnection.getBranches(this.plugin.settings.owner, this.plugin.settings.repo);
+					const latestBranches = await this.plugin.githubConnection.getBranches(ownerAtCall, repoAtCall);
+
+					// Guard: owner or repo changed while the API request was in-flight — discard stale result
+					if (ownerAtCall !== this.plugin.settings.owner || repoAtCall !== this.plugin.settings.repo) {
+						return;
+					}
+
 					if (!setEqual<string>(this.existingBranches, latestBranches)) {
 						branch_dropdown.empty();
 						this.existingBranches = latestBranches;
@@ -1160,13 +1171,18 @@ export default class FitSettingTab extends PluginSettingTab {
 						}
 					}
 				} catch (error) {
+					// If owner/repo changed during the fetch, the error is from a stale partial value — discard silently
+					if (ownerAtCall !== this.plugin.settings.owner || repoAtCall !== this.plugin.settings.repo) {
+						return;
+					}
+
 					// Repository not found or inaccessible - clear branch dropdown
 					branch_dropdown.empty();
 					this.existingBranches = [];
 					// Only log unexpected errors; 404s are expected as user types incomplete repo names
 					if (!(error instanceof VaultError && error.type === 'remote_not_found')) {
 						const errorMsg = error instanceof Error ? error.message : String(error);
-						this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${this.plugin.settings.owner}/${this.plugin.settings.repo}: ${errorMsg}`, { error });
+						this.plugin.logger.log(`[FitSettings] Could not fetch branches for ${ownerAtCall}/${repoAtCall}: ${errorMsg}`, { error });
 					}
 				}
 			}
