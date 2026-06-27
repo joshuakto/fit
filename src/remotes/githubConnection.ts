@@ -350,7 +350,7 @@ export class GitHubConnection {
 			} else if (context?.owner) {
 				message = `Owner '${context.owner}' not found or inaccessible`;
 			}
-			throw VaultError.network(message, { originalError: error });
+			throw VaultError.remoteNotFound(message, { originalError: error });
 		}
 
 		// Other errors: re-throw as-is
