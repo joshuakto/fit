@@ -39,6 +39,7 @@ var import_obsidian7 = require("obsidian");
 // src/const.ts
 var rootFitFolder = "_fit";
 var conflictReportPath = rootFitFolder + "/report-conflict.md";
+var changesReportPath = rootFitFolder + "/report-changes.md";
 var conflictResolutionFolder = rootFitFolder + "/conflict/";
 var basicTemplateConflict = "<<<---";
 
@@ -1410,32 +1411,18 @@ function getDiffText(oldContent, newContent) {
   if (!hasChanges) {
     return basicTemplateConflict + "No differences found";
   }
-  let currentLine = "";
-  let hasLineChanges = false;
   for (let part of diff) {
-    let text = part.value;
-    if (part.removed) {
-      text = `==---==${part.value}
-`;
-    } else if (part.added) {
-      text = `==+++==${part.value}
-`;
+    if (!part.added && !part.removed) {
+      continue;
     }
-    const lines = text.split("\n");
-    currentLine += lines[0];
-    if (part.added || part.removed) {
-      hasLineChanges = true;
+    const marker = part.added ? "==+++==" : "==---==";
+    const lines = part.value.split("\n");
+    if (lines[lines.length - 1] === "") {
+      lines.pop();
     }
-    for (let i = 1; i < lines.length; i++) {
-      if (hasLineChanges) {
-        result += currentLine + "\n";
-      }
-      currentLine = lines[i];
-      hasLineChanges = part.added || part.removed;
+    for (let line of lines) {
+      result += marker + line + "\n";
     }
-  }
-  if (hasLineChanges && currentLine) {
-    result += currentLine + "\n";
   }
   return result;
 }
@@ -1481,7 +1468,7 @@ var Fit = class {
     const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
     return hashHex;
   }
-  async computeFileLocalSha(path) {
+  async computeFileLocalContent(path) {
     const fullPath = this.syncPath + path;
     let content;
     const file = await this.vaultOps.getTFile(fullPath);
@@ -1501,29 +1488,51 @@ var Fit = class {
         content = await this.vaultOps.vault.adapter.read(fullPath);
       }
     }
-    return await this.fileSha1(path + content);
+    return content;
   }
-  async computeLocalSha() {
+  isSyncedPath(path) {
+    return !path.startsWith(rootFitFolder) && path.startsWith(this.syncPath) && !this.excludes.contains(path) && !this.excludes.some(
+      (exclude) => path.startsWith(exclude) && !this.syncPath.startsWith(exclude)
+      // NOTE if one syncPath nested in another syncPath
+    );
+  }
+  async getSyncedLocalPaths() {
     const allPaths = await this.vaultOps.getFilesInVault();
-    const paths = [];
-    for (let path of allPaths) {
-      let isExcluded = path.startsWith(rootFitFolder) || !path.startsWith(this.syncPath) || this.excludes.contains(path) || this.excludes.some(
-        (exclude) => path.startsWith(exclude) && !this.syncPath.startsWith(exclude)
-        // NOTE if one syncPath nested in another syncPath
-      );
-      const result2 = path.replace(this.syncPath, "");
-      if (!isExcluded)
-        paths.push(result2);
+    return allPaths.filter((path) => this.isSyncedPath(path)).map((path) => path.replace(this.syncPath, ""));
+  }
+  async computeLocalFileSha(path) {
+    const content = await this.computeFileLocalContent(path);
+    if (content === null) {
+      return null;
     }
-    const asyncCompute = paths.map(
+    const sha = await this.fileSha1(path + content);
+    return [path, sha];
+  }
+  async getLocalContentByPaths(paths) {
+    const uniquePaths = Array.from(new Set(paths));
+    const asyncCompute = uniquePaths.map(
       async (path) => {
-        const sha = await this.computeFileLocalSha(path);
-        return [path, sha];
+        const fullPath = this.syncPath + path;
+        if (!await this.vaultOps.vault.adapter.exists(fullPath)) {
+          return null;
+        }
+        const content = await this.computeFileLocalContent(path);
+        if (content === null) {
+          return null;
+        }
+        return [path, content];
       }
     );
-    const computed = await Promise.all(asyncCompute);
-    const result = computed.filter((el) => !!el[1]);
-    return Object.fromEntries(result);
+    const computed = (await Promise.all(asyncCompute)).filter(Boolean);
+    return Object.fromEntries(computed);
+  }
+  async computeLocalSha() {
+    const paths = await this.getSyncedLocalPaths();
+    const asyncCompute = paths.map(
+      async (path) => this.computeLocalFileSha(path)
+    );
+    const computed = (await Promise.all(asyncCompute)).filter(Boolean);
+    return Object.fromEntries(computed);
   }
   async remoteUpdated() {
     const remoteCommitSha = await this.getRef();
@@ -2288,12 +2297,15 @@ var FitPull = class {
     const addToLocal = await this.getRemoteNonDeletionChangesContent(changesToProcess);
     return { addToLocal, deleteFromLocal };
   }
-  async pullRemoteToLocal(remoteUpdate, saveLocalStoreCallback) {
+  async pullRemoteToLocal(remoteUpdate, saveLocalStoreCallback, beforeWrite) {
     const { remoteChanges, remoteTreeSha, latestRemoteCommitSha } = remoteUpdate;
     let { addToLocal, deleteFromLocal } = await this.prepareChangesToExecute(remoteChanges);
     const basepath = this.fit.syncPath;
     addToLocal = this.fit.getAddToLocal(addToLocal);
     deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal);
+    if (beforeWrite) {
+      await beforeWrite(addToLocal);
+    }
     const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(
       addToLocal,
       deleteFromLocal
@@ -2306,7 +2318,7 @@ var FitPull = class {
         localSha: await this.fit.computeLocalSha()
       }
     );
-    return fileOpsRecord;
+    return { fileOpsRecord, addToLocal };
   }
 };
 
@@ -2353,6 +2365,58 @@ var FitPush = class {
   }
 };
 
+// src/changeReport.ts
+function decodeBase64ToText(content) {
+  const binary = atob(removeLineEndingsFromBase64String(content));
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+function buildChangeReportText(records) {
+  if (records.length === 0) {
+    return "";
+  }
+  let result = "";
+  const templateStart = "start of the: ";
+  const templateEnd = "end of the: ";
+  for (let record of records) {
+    result += basicTemplateConflict + templateStart + record.path + "\n";
+    if (record.status === "created") {
+      result += "remote: created\n";
+    } else if (record.status === "deleted") {
+      result += "remote: deleted\n";
+    } else if (record.isBinary) {
+      result += "remote: changed binary file\n";
+    } else if (record.oldContent !== void 0 && record.newContent !== void 0) {
+      result += getDiffText(
+        record.oldContent,
+        decodeBase64ToText(record.newContent)
+      );
+    } else {
+      result += "remote: changed\n";
+    }
+    result += "\n";
+    result += basicTemplateConflict + templateEnd + record.path + "\n";
+    result += "\n\n\n";
+  }
+  return result;
+}
+function buildAppliedRemoteChangeReport(addToLocal, fileOpsRecord, localContent, basepath) {
+  const newContentByPath = Object.fromEntries(
+    addToLocal.map(({ path, content }) => [path, content])
+  );
+  return buildChangeReportText(
+    fileOpsRecord.map((fileOp) => {
+      const relativePath = fileOp.path.replace(basepath, "");
+      return {
+        ...fileOp,
+        isBinary: isBinaryFile(fileOp.path),
+        oldContent: localContent[relativePath],
+        newContent: newContentByPath[fileOp.path]
+      };
+    })
+  );
+}
+
 // src/fitSync.ts
 var FitSync = class {
   constructor(fit, vaultOps, saveLocalStoreCallback) {
@@ -2398,6 +2462,11 @@ var FitSync = class {
       localChanges,
       localTreeSha: currentLocalSha
     };
+  }
+  async getLocalContentForReport(addToLocal) {
+    const basepath = this.fit.syncPath;
+    const paths = addToLocal.map(({ path }) => path.replace(basepath, ""));
+    return await this.fit.getLocalContentByPaths(paths);
   }
   generateConflictReport(path, localContent, remoteContent) {
     const detectedExtension = extractExtension(path);
@@ -2559,7 +2628,14 @@ var FitSync = class {
     const basepath = this.fit.syncPath;
     addToLocal = this.fit.getAddToLocal(addToLocal);
     deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal);
+    const localContent = await this.getLocalContentForReport(addToLocal);
     const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal);
+    const changeReportText = buildAppliedRemoteChangeReport(
+      addToLocal,
+      localFileOpsRecord,
+      localContent,
+      basepath
+    );
     await this.saveLocalStoreCallback(
       basepath,
       {
@@ -2569,7 +2645,7 @@ var FitSync = class {
       }
     );
     syncNotice.setMessage("Sync successful");
-    return { localOps: localFileOpsRecord, remoteOps: pushedChanges };
+    return { localOps: localFileOpsRecord, remoteOps: pushedChanges, changeReportText };
   }
   async syncWithConflicts(localChanges, remoteUpdate, syncNotice) {
     const { latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha } = remoteUpdate;
@@ -2605,9 +2681,16 @@ var FitSync = class {
     const basepath = this.fit.syncPath;
     addToLocal = this.fit.getAddToLocal(addToLocal);
     deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal);
+    const localContent = await this.getLocalContentForReport(addToLocal);
     const localFileOpsRecord = await this.vaultOps.updateLocalFiles(
       addToLocal,
       deleteFromLocal
+    );
+    const changeReportText = buildAppliedRemoteChangeReport(
+      addToLocal,
+      localFileOpsRecord,
+      localContent,
+      basepath
     );
     await this.saveLocalStoreCallback(
       basepath,
@@ -2625,7 +2708,7 @@ var FitSync = class {
     } else {
       syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
     }
-    return { unresolvedFiles, localOps: ops, remoteOps: pushedChanges };
+    return { unresolvedFiles, localOps: ops, remoteOps: pushedChanges, changeReportText };
   }
   async unresolvedChangesConflicts() {
     return await this.vaultOps.vault.adapter.exists(conflictResolutionFolder);
@@ -2652,14 +2735,25 @@ var FitSync = class {
     }
     const remoteUpdate = preSyncCheckResult.remoteUpdate;
     if (preSyncCheckResult.status === "onlyRemoteChanged") {
-      const fileOpsRecord = await this.fitPull.pullRemoteToLocal(
+      let localContent = {};
+      const { fileOpsRecord, addToLocal } = await this.fitPull.pullRemoteToLocal(
         remoteUpdate,
-        this.saveLocalStoreCallback
+        this.saveLocalStoreCallback,
+        async (changesToWrite) => {
+          localContent = await this.getLocalContentForReport(changesToWrite);
+        }
+      );
+      const changeReportText = buildAppliedRemoteChangeReport(
+        addToLocal,
+        fileOpsRecord,
+        localContent,
+        this.fit.syncPath
       );
       syncNotice.setMessage("Sync successful");
       return {
         ops: [{ heading: "Local file updates:", ops: fileOpsRecord }],
-        clash: []
+        clash: [],
+        changeReportText
         // basepath: this.fit.syncPath
       };
     }
@@ -2690,7 +2784,7 @@ var FitSync = class {
       return;
     }
     if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-      const { localOps, remoteOps } = await this.syncCompatibleChanges(
+      const { localOps, remoteOps, changeReportText } = await this.syncCompatibleChanges(
         localUpdate,
         remoteUpdate,
         syncNotice
@@ -2700,7 +2794,8 @@ var FitSync = class {
           { heading: "Local file updates:", ops: localOps },
           { heading: "Remote file updates:", ops: remoteOps }
         ],
-        clash: []
+        clash: [],
+        changeReportText
         // basepath: this.fit.syncPath
       };
     }
@@ -2711,13 +2806,14 @@ var FitSync = class {
         syncNotice
       );
       if (conflictResolutionResult) {
-        const { unresolvedFiles, localOps, remoteOps } = conflictResolutionResult;
+        const { unresolvedFiles, localOps, remoteOps, changeReportText } = conflictResolutionResult;
         return {
           ops: [
             { heading: "Local file updates:", ops: localOps },
             { heading: "Remote file updates:", ops: remoteOps }
           ],
-          clash: unresolvedFiles
+          clash: unresolvedFiles,
+          changeReportText
           // basepath: this.fit.syncPath
         };
       }
@@ -2930,6 +3026,7 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
       if (!this.checkSettingsConfigured()) {
         return;
       }
+      const changeReports = [];
       for (let i_ in this.fitSync) {
         let i = Number(i_);
         const fitSync = this.fitSync[i];
@@ -2950,6 +3047,16 @@ var FitPlugin2 = class extends import_obsidian7.Plugin {
           showUnappliedConflicts(clash);
         if (this.storage.notifyChanges)
           showFileOpsRecord(ops);
+        if (syncRecords.changeReportText) {
+          changeReports.push(syncRecords.changeReportText);
+        }
+      }
+      if (changeReports.length > 0) {
+        await this.vaultOps.ensureFolderExists(changesReportPath);
+        await this.vaultOps.vault.adapter.write(
+          changesReportPath,
+          changeReports.join("\n")
+        );
       }
     };
     // wrapper to convert error to notice, return true if error is caught

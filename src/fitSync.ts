@@ -8,6 +8,7 @@ import { VaultOperations } from "./vaultOps"
 import { LocalStores } from "main"
 import FitNotice from "./fitNotice"
 import { conflictResolutionFolder } from "./const"
+import { buildAppliedRemoteChangeReport } from "./changeReport"
 
 export interface IFitSync {
     fit: Fit
@@ -96,6 +97,12 @@ export class FitSync implements IFitSync {
             localChanges,
             localTreeSha: currentLocalSha
         }
+    }
+
+    private async getLocalContentForReport(addToLocal: Array<{path: string, content: string}>): Promise<Record<string, string>> {
+        const basepath = this.fit.syncPath
+        const paths = addToLocal.map(({path}) => path.replace(basepath, ""))
+        return await this.fit.getLocalContentByPaths(paths)
     }
 
     private generateConflictReport(path: string, localContent: string, remoteContent: string): ConflictReport {
@@ -297,7 +304,7 @@ export class FitSync implements IFitSync {
     async syncCompatibleChanges(
         localUpdate: LocalUpdate,
         remoteUpdate: RemoteUpdate,
-        syncNotice: FitNotice): Promise<{localOps: LocalChange[], remoteOps: FileOpRecord[]}> {
+        syncNotice: FitNotice): Promise<{localOps: LocalChange[], remoteOps: FileOpRecord[], changeReportText: string}> {
             let {addToLocal, deleteFromLocal} = await this.fitPull.prepareChangesToExecute(
                 remoteUpdate.remoteChanges)
             syncNotice.setMessage("Uploading local changes")
@@ -324,8 +331,14 @@ export class FitSync implements IFitSync {
             addToLocal = this.fit.getAddToLocal(addToLocal)
             deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal)
 
-
+            const localContent = await this.getLocalContentForReport(addToLocal)
             const localFileOpsRecord = await this.vaultOps.updateLocalFiles(addToLocal, deleteFromLocal)
+            const changeReportText = buildAppliedRemoteChangeReport(
+                addToLocal,
+                localFileOpsRecord,
+                localContent,
+                basepath
+            )
             await this.saveLocalStoreCallback(
                 basepath,
                 {
@@ -335,14 +348,15 @@ export class FitSync implements IFitSync {
                 }
             )
             syncNotice.setMessage("Sync successful")
-            return {localOps: localFileOpsRecord, remoteOps: pushedChanges}
+            return {localOps: localFileOpsRecord, remoteOps: pushedChanges, changeReportText}
     }
 
 
     async syncWithConflicts(
         localChanges: LocalChange[],
         remoteUpdate: RemoteUpdate,
-        syncNotice: FitNotice) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[]} | null>
+        syncNotice: FitNotice
+    ) : Promise<{unresolvedFiles: ClashStatus[], localOps: LocalChange[], remoteOps: LocalChange[], changeReportText: string} | null>
     {
         const {latestRemoteCommitSha, clashedFiles, remoteTreeSha: latestRemoteTreeSha} = remoteUpdate
         const {noConflict, unresolvedFiles, fileOpsRecord} = await this.resolveConflicts(clashedFiles, latestRemoteTreeSha)
@@ -386,9 +400,16 @@ export class FitSync implements IFitSync {
         addToLocal = this.fit.getAddToLocal(addToLocal)
         deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal)
 
+        const localContent = await this.getLocalContentForReport(addToLocal)
         const localFileOpsRecord = await this.vaultOps.updateLocalFiles(
             addToLocal,
             deleteFromLocal
+        )
+        const changeReportText = buildAppliedRemoteChangeReport(
+            addToLocal,
+            localFileOpsRecord,
+            localContent,
+            basepath
         )
 
         await this.saveLocalStoreCallback(
@@ -407,7 +428,7 @@ export class FitSync implements IFitSync {
         } else {
             syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`)
         }
-        return {unresolvedFiles, localOps: ops, remoteOps: pushedChanges}
+        return {unresolvedFiles, localOps: ops, remoteOps: pushedChanges, changeReportText}
     }
 
     private async unresolvedChangesConflicts(): Promise<boolean> {
@@ -418,6 +439,7 @@ export class FitSync implements IFitSync {
             Promise<{
                     ops: Array<{heading: string, ops: FileOpRecord[]}>,
                     clash: ClashStatus[],
+                    changeReportText?: string
                     // basepath: string
                 } | void
             >
@@ -449,9 +471,19 @@ export class FitSync implements IFitSync {
 
         const remoteUpdate = preSyncCheckResult.remoteUpdate
         if (preSyncCheckResult.status === "onlyRemoteChanged") {
-            const fileOpsRecord = await this.fitPull.pullRemoteToLocal(
+            let localContent: Record<string, string> = {}
+            const {fileOpsRecord, addToLocal} = await this.fitPull.pullRemoteToLocal(
                 remoteUpdate,
-                this.saveLocalStoreCallback
+                this.saveLocalStoreCallback,
+                async (changesToWrite) => {
+                    localContent = await this.getLocalContentForReport(changesToWrite)
+                }
+            )
+            const changeReportText = buildAppliedRemoteChangeReport(
+                addToLocal,
+                fileOpsRecord,
+                localContent,
+                this.fit.syncPath
             )
 
             syncNotice.setMessage("Sync successful")
@@ -459,6 +491,7 @@ export class FitSync implements IFitSync {
             return {
                 ops: [{heading: "Local file updates:", ops: fileOpsRecord}],
                 clash: [],
+                changeReportText,
                 // basepath: this.fit.syncPath
             }
         }
@@ -495,7 +528,7 @@ export class FitSync implements IFitSync {
         // state if the transaction failed) If you have ideas on how to make this more transaction-like,
         //  please open an issue on the fit repo
         if (preSyncCheckResult.status === "localAndRemoteChangesCompatible") {
-            const {localOps, remoteOps} = await this.syncCompatibleChanges(
+            const {localOps, remoteOps, changeReportText} = await this.syncCompatibleChanges(
                 localUpdate, remoteUpdate, syncNotice)
                 return ({
                     ops: [
@@ -503,6 +536,7 @@ export class FitSync implements IFitSync {
                         {heading: "Remote file updates:", ops: remoteOps},
                     ],
                     clash: [],
+                    changeReportText,
                     // basepath: this.fit.syncPath
                 })
         }
@@ -513,7 +547,7 @@ export class FitSync implements IFitSync {
             )
 
             if (conflictResolutionResult) {
-                const {unresolvedFiles, localOps, remoteOps} = conflictResolutionResult
+                const {unresolvedFiles, localOps, remoteOps, changeReportText} = conflictResolutionResult
 
                 return ({
                     ops:[
@@ -521,6 +555,7 @@ export class FitSync implements IFitSync {
                         {heading: "Remote file updates:", ops: remoteOps},
                     ],
                     clash: unresolvedFiles,
+                    changeReportText,
                     // basepath: this.fit.syncPath
                 })
             }

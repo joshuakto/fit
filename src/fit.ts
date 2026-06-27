@@ -11,7 +11,6 @@ type AddToLocal = {
     content: string;
 }
 
-
 export type TreeNode = {
     path: string,
     mode: "100644" | "100755" | "040000" | "160000" | "120000" | undefined,
@@ -115,7 +114,7 @@ export class Fit implements IFit {
         return hashHex;
     }
 
-    private async computeFileLocalSha(path: string): Promise<string|null> {
+    private async computeFileLocalContent(path: string): Promise<string|null> {
         const fullPath = this.syncPath + path
 
         // compute sha1 based on path and file content
@@ -142,39 +141,67 @@ export class Fit implements IFit {
             }
         }
 
-        return await this.fileSha1(path + content)
+        return content
     }
 
-    async computeLocalSha(): Promise<{[k:string]:string}> {
+    private isSyncedPath(path: string): boolean {
+        return !path.startsWith(rootFitFolder)
+            && path.startsWith(this.syncPath)
+            && !this.excludes.contains(path)
+            && !this.excludes.some(
+                exclude => path.startsWith(exclude)
+                    && !this.syncPath.startsWith(exclude) // NOTE if one syncPath nested in another syncPath
+            )
+    }
+
+    private async getSyncedLocalPaths(): Promise<string[]> {
         const allPaths = await this.vaultOps.getFilesInVault()
-        const paths = []
-        for (let path of allPaths) {
-            // TODO нужны ли мне эти файлы в будущем?
-            let isExcluded = path.startsWith(rootFitFolder)
-                || !path.startsWith(this.syncPath)
-                || this.excludes.contains(path)
+        return allPaths
+            .filter(path => this.isSyncedPath(path))
+            .map(path => path.replace(this.syncPath, ""))
+    }
 
-                || this.excludes.some(
-                        exclude => path.startsWith(exclude)
-                            && !this.syncPath.startsWith(exclude) // NOTE if one syncPath nested in another syncPath
-                    );
-
-            const result = path.replace(this.syncPath, "")
-
-            if (!isExcluded)
-                paths.push(result)
+    private async computeLocalFileSha(path: string): Promise<[string, string] | null> {
+        const content = await this.computeFileLocalContent(path)
+        if (content === null) {
+            return null
         }
-        const asyncCompute = paths.map(
+
+        const sha = await this.fileSha1(path + content)
+        return [path, sha]
+    }
+
+    async getLocalContentByPaths(paths: string[]): Promise<Record<string, string>> {
+        const uniquePaths = Array.from(new Set(paths))
+        const asyncCompute = uniquePaths.map(
             async (path) => {
-                const sha = await this.computeFileLocalSha(path)
-                return [path, sha]
+                const fullPath = this.syncPath + path
+                if (!await this.vaultOps.vault.adapter.exists(fullPath)) {
+                    return null
+                }
+
+                const content = await this.computeFileLocalContent(path)
+                if (content === null) {
+                    return null
+                }
+
+                return [path, content]
             }
         )
 
-        const computed = await Promise.all(asyncCompute)
-        const result = computed.filter(el => !!el[1])
+        const computed = (await Promise.all(asyncCompute)).filter(Boolean) as Array<[string, string]>
+        return Object.fromEntries(computed)
+    }
 
-        return Object.fromEntries(result)
+    async computeLocalSha(): Promise<{[k:string]:string}> {
+        const paths = await this.getSyncedLocalPaths()
+        const asyncCompute = paths.map(
+            async (path) => this.computeLocalFileSha(path)
+        )
+
+        const computed = (await Promise.all(asyncCompute)).filter(Boolean) as Array<[string, string]>
+
+        return Object.fromEntries(computed)
     }
 
     async remoteUpdated(): Promise<{remoteCommitSha: string, updated: boolean}> {

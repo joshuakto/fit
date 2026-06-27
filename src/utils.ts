@@ -185,37 +185,20 @@ export function getDiffText(oldContent: string, newContent: string): string {
         return basicTemplateConflict + 'No differences found';
     }
 
-    let currentLine = '';
-    let hasLineChanges = false;
-
     for (let part of diff) {
-        let text = part.value
-        if (part.removed) {
-            text = `==---==${part.value}\n`
-        }
-        else if (part.added) {
-            text = `==+++==${part.value}\n`
+        if (!part.added && !part.removed) {
+            continue
         }
 
-        const lines = text.split('\n');
-
-        currentLine += lines[0];
-        if (part.added || part.removed) {
-            hasLineChanges = true;
+        const marker = part.added ? "==+++==" : "==---=="
+        const lines = part.value.split('\n')
+        if (lines[lines.length - 1] === "") {
+            lines.pop()
         }
 
-        for (let i = 1; i < lines.length; i++) {
-            if (hasLineChanges) {
-                result += currentLine + '\n'
-            }
-
-            currentLine = lines[i]
-            hasLineChanges = part.added || part.removed
+        for (let line of lines) {
+            result += marker + line + '\n'
         }
-    }
-
-    if (hasLineChanges && currentLine) {
-        result += currentLine + '\n';
     }
 
     return result;

@@ -15,6 +15,7 @@ type PrePullCheckResult = (
 );
 
 type SaveCallback = (path: string, localStore: Partial<LocalStores>) => Promise<void>
+type BeforeWriteCallback = (addToLocal: Array<{path: string, content: string}>) => Promise<void>
 
 export interface IFitPull {
     fit: Fit
@@ -77,8 +78,9 @@ export class FitPull implements IFitPull {
 
     async pullRemoteToLocal(
         remoteUpdate: RemoteUpdate,
-        saveLocalStoreCallback: SaveCallback
-    ) : Promise<FileOpRecord[]>
+        saveLocalStoreCallback: SaveCallback,
+        beforeWrite?: BeforeWriteCallback
+    ) : Promise<{fileOpsRecord: FileOpRecord[], addToLocal: Array<{path: string, content: string}>}>
     {
             const {remoteChanges, remoteTreeSha, latestRemoteCommitSha} = remoteUpdate
             let {addToLocal, deleteFromLocal} = await this.prepareChangesToExecute(remoteChanges)
@@ -86,6 +88,10 @@ export class FitPull implements IFitPull {
             const basepath = this.fit.syncPath
             addToLocal = this.fit.getAddToLocal(addToLocal)
             deleteFromLocal = this.fit.getDeleteFromLocal(deleteFromLocal)
+
+            if (beforeWrite) {
+                await beforeWrite(addToLocal)
+            }
 
             const fileOpsRecord = await this.fit.vaultOps.updateLocalFiles(
                 addToLocal,
@@ -100,6 +106,7 @@ export class FitPull implements IFitPull {
                     localSha: await this.fit.computeLocalSha()
                 }
             )
-            return fileOpsRecord
+
+            return {fileOpsRecord, addToLocal}
     }
 }

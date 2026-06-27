@@ -1,5 +1,5 @@
 import { normalizePath, Plugin, SettingTab, TFile } from 'obsidian';
-import { basicTemplateConflict, conflictReportPath, conflictResolutionFolder, rootFitFolder } from 'src/const';
+import { basicTemplateConflict, changesReportPath, conflictReportPath, conflictResolutionFolder, rootFitFolder } from 'src/const';
 import { Fit, OctokitHttpError } from 'src/fit';
 import FitNotice from 'src/fitNotice';
 import FitSettingTab from 'src/fitSetting';
@@ -184,6 +184,7 @@ export default class FitPlugin extends Plugin {
     sync = async (syncNotice: FitNotice): Promise<void> => {
         if (!this.checkSettingsConfigured()) { return }
         // await this.loadLocalStore()
+        const changeReports: string[] = []
         for (let i_ in this.fitSync) {
             let i = Number(i_)
             const fitSync = this.fitSync[i]
@@ -207,6 +208,18 @@ export default class FitPlugin extends Plugin {
 
             if (this.storage.notifyChanges)
                 showFileOpsRecord(ops)
+
+            if (syncRecords.changeReportText) {
+                changeReports.push(syncRecords.changeReportText)
+            }
+        }
+
+        if (changeReports.length > 0) {
+            await this.vaultOps.ensureFolderExists(changesReportPath)
+            await this.vaultOps.vault.adapter.write(
+                changesReportPath,
+                changeReports.join("\n")
+            )
         }
     }
 
