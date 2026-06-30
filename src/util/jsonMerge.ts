@@ -44,10 +44,15 @@ export type MergeResult =
 /**
  * Merge two JSON strings using the given spec.
  *
+ * @param baseText   - Base file content (content at last sync); null if unavailable
  * @param localText  - Local file content (UTF-8 JSON string)
  * @param remoteText - Remote file content (UTF-8 JSON string)
  * @param spec       - Merge spec describing keyed arrays and exclusions
- * @returns MergeResult: merged JSON string on success, or reason for failure
+ * @returns MergeResult: merged value on success, or reason for failure
+ *
+ * When baseText is null, one-sided key/array presence is treated as unknown-intent
+ * and falls back to merged:false (conservative). When baseText is provided, the
+ * base is used to distinguish additions from deletions.
  */
 export function mergeJson(
 	baseText: string | null,
@@ -68,16 +73,20 @@ export function mergeJson(
 		return { merged: false, reason: 'remote content is not valid JSON' };
 	}
 
+	let base: unknown = null;
+	if (baseText !== null) {
+		try {
+			base = JSON.parse(baseText);
+		} catch {
+			base = null; // unparseable base → fall back to no-base behaviour
+		}
+	}
+
 	if (typeof local !== 'object' || local === null || Array.isArray(local)) {
 		return { merged: false, reason: 'local JSON root is not an object' };
 	}
 	if (typeof remote !== 'object' || remote === null || Array.isArray(remote)) {
 		return { merged: false, reason: 'remote JSON root is not an object' };
-	}
-
-	let base: unknown = null;
-	if (baseText !== null) {
-		try { base = JSON.parse(baseText); } catch { /* unparseable base → no-base behaviour */ }
 	}
 	const baseObj = (typeof base === 'object' && base !== null && !Array.isArray(base))
 		? base as Record<string, unknown>
@@ -100,8 +109,9 @@ type ArrayMergeResult =
  * - Keys in spec.keyedArrays → id-keyed set merge
  * - Other keys present in both, equal → include unchanged
  * - Other keys present in both, different → conflict (merged: false); no silent data loss
- * - Keys/arrays present on only one side → conflict (no base available to distinguish addition from deletion)
- *   Base-aware three-way resolution is implemented in the next PR (powpvpwx).
+ * - Keys present in only one side:
+ *   - base provided: check whether the absent side deleted it or the present side added it
+ *   - base null: unknown intent → conflict (conservative)
  */
 function mergeObjects(
 	base: Record<string, unknown> | null,
@@ -110,7 +120,11 @@ function mergeObjects(
 	spec: JsonMergeSpec,
 ): MergeResult {
 	const result: Record<string, unknown> = {};
-	const allKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+	const allKeys = new Set([
+		...Object.keys(local),
+		...Object.keys(remote),
+		...(base ? Object.keys(base) : []),
+	]);
 
 	for (const key of allKeys) {
 		if (key in spec.keyedArrays) continue; // handled below
@@ -124,8 +138,24 @@ function mergeObjects(
 			}
 			result[key] = remote[key];
 		} else if (inLocal !== inRemote) {
-			return { merged: false, reason: `ambiguous one-sided presence of key "${key}" (no merge base available)` };
+			// One side has the key, the other doesn't
+			if (base === null) {
+				// Can't distinguish addition from deletion without base
+				return { merged: false, reason: `ambiguous one-sided presence of key "${key}" (no base available)` };
+			}
+			const inBase = key in base;
+			if (!inBase) {
+				// Key is new on one side → addition, include it
+				result[key] = inLocal ? local[key] : remote[key];
+			} else if (inLocal) {
+				// Remote deleted it, local kept it → conflict
+				return { merged: false, reason: `remote deleted key "${key}" but local still has it` };
+			} else {
+				// Local deleted it, remote kept it → conflict
+				return { merged: false, reason: `local deleted key "${key}" but remote still has it` };
+			}
 		}
+		// key in neither local nor remote (was in base, both deleted) → omit from result
 	}
 
 	for (const [path, idKey] of Object.entries(spec.keyedArrays)) {
@@ -133,13 +163,30 @@ function mergeObjects(
 		const key = path;
 		const localArr = local[key];
 		const remoteArr = remote[key];
+		const baseArr = base?.[key];
 
-		if (!Array.isArray(remoteArr) && !Array.isArray(localArr)) continue;
-		if (!Array.isArray(remoteArr) || !Array.isArray(localArr)) {
-			return { merged: false, reason: `ambiguous one-sided presence of array "${key}" (no merge base available)` };
+		const localHas = Array.isArray(localArr);
+		const remoteHas = Array.isArray(remoteArr);
+
+		if (!localHas && !remoteHas) continue;
+
+		if (localHas !== remoteHas) {
+			// One side missing the array entirely
+			if (base === null) {
+				return { merged: false, reason: `ambiguous one-sided presence of array "${key}" (no base available)` };
+			}
+			const baseHas = Array.isArray(baseArr);
+			if (!baseHas) {
+				// New on one side → addition
+				result[key] = localHas ? localArr : remoteArr;
+			} else {
+				// One side deleted the array entirely → conflict
+				return { merged: false, reason: `one side deleted array "${key}" entirely` };
+			}
+			continue;
 		}
 
-		const arrayResult = mergeKeyedArrays(localArr, remoteArr, idKey);
+		const arrayResult = mergeKeyedArrays(localArr as unknown[], remoteArr as unknown[], idKey);
 		if (!arrayResult.ok) {
 			return { merged: false, reason: `conflicting edits to element with ${idKey}=${String(arrayResult.conflictId)} in "${key}"` };
 		}

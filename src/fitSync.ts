@@ -501,7 +501,8 @@ export class FitSync implements IFitSync {
 						autoMergeFailedClashPaths.add(clash.path);
 						return;
 					}
-					const result = mergeJson(null, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+					const baseText = this.fit.cachedMergeableContents[clash.path] ?? null;
+					const result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
 					if (!result.merged) {
 						fitLogger.log('[FitSync] Canvas auto-merge failed, falling back to clash', {
 							path: clash.path, reason: result.reason,
@@ -509,6 +510,7 @@ export class FitSync implements IFitSync {
 						autoMergeFailedClashPaths.add(clash.path);
 						return;
 					}
+					this.fit.cachedMergeableContents[clash.path] = serialiseMerged(result.value);
 					autoMergedCanvasClashes.push({
 						path: clash.path,
 						content: FileContent.fromPlainText(serialiseMerged(result.value)),
@@ -594,6 +596,25 @@ export class FitSync implements IFitSync {
 			});
 		}
 
+		// Populate merge base cache for successfully synced canvas files.
+		// Pulled canvas files: content already in memory from the download.
+		for (const item of addToLocalNonClashed) {
+			if (item.path.endsWith('.canvas')) {
+				this.fit.cachedMergeableContents[item.path] = item.content.toPlainText();
+			}
+		}
+		// Pushed canvas files: local content is now the shared base.
+		for (const change of safeLocal) {
+			if (change.type !== 'REMOVED' && change.path.endsWith('.canvas')) {
+				try {
+					const content = await this.fit.localVault.readFileContent(change.path);
+					this.fit.cachedMergeableContents[change.path] = content.toPlainText();
+				} catch {
+					// Best-effort; absent entry falls back to two-way merge next sync
+				}
+			}
+		}
+
 		// 3b'. Track protected path SHA arrivals for opt-in reconciliation.
 		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
 		// Only the remote SHA is recorded — no content download, no _fit/ write.
@@ -624,6 +645,7 @@ export class FitSync implements IFitSync {
 		// Remove deleted files from state
 		for (const path of deleteFromLocalNonClashed) {
 			delete newLocalState[path];
+			delete this.fit.cachedMergeableContents[path];
 		}
 
 		// Update pendingClashes: newly-clashed tracked files enter pending state.
@@ -639,6 +661,8 @@ export class FitSync implements IFitSync {
 					this.fit.pendingClashes.push(clash.path);
 				}
 				delete newLocalState[clash.path];
+				// Stale base would corrupt the next merge attempt after the user resolves this clash.
+				delete this.fit.cachedMergeableContents[clash.path];
 			}
 		}
 
