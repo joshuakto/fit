@@ -7,7 +7,7 @@
 
 import { LocalStores } from "@/localStores";
 import { FitSettings, ObsidianSyncRules } from "@/fitSettings";
-import { FileChange, FileClash, FileStates, LocalClashState, compareFileStates } from "./util/changeTracking";
+import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
@@ -51,6 +51,7 @@ export class Fit {
 	lastFetchedRemoteShas: FileStates;      // Canonical remote SHA cache
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
+	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
 	obsidianSyncRules: ObsidianSyncRules;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
@@ -114,6 +115,7 @@ export class Fit {
 		this.lastFetchedRemoteShas = localStore.lastFetchedRemoteShas;
 		this.unpushedFiles = localStore.unpushedFiles ?? {};
 		this.pendingClashes = localStore.pendingClashes ?? [];
+		this.protectedPathShas = localStore.protectedPathShas ?? {};
 
 		const localCount = Object.keys(this.localShas).length;
 		const legacyCount = Object.keys(this.localSha).length;
@@ -290,45 +292,5 @@ export class Fit {
 		}
 
 		return { changes, state, commitSha };
-	}
-
-	getClashedChanges(localChanges: FileChange[], remoteChanges:FileChange[]): Array<FileClash> {
-		const clashes: Array<FileClash> = [];
-
-		// Step 1: Filter out remote changes to untracked/unsynced paths and treat as clashes.
-		const trackedRemoteChanges: FileChange[] = [];
-
-		for (const remoteChange of remoteChanges) {
-			if (this.shouldSyncPath(remoteChange.path) && this.localVault.shouldTrackState(remoteChange.path)) {
-				trackedRemoteChanges.push(remoteChange);
-			} else {
-				// Determine if blocked by sync policy or untracked
-				const localState: LocalClashState = !this.shouldSyncPath(remoteChange.path)
-					? 'protected'
-					: 'untracked';
-				clashes.push({
-					path: remoteChange.path,
-					localState,
-					remoteOp: remoteChange.type
-				});
-			}
-		}
-
-		// Step 2: Find tracked paths that changed on both sides
-		const localChangesByPath = new Map(localChanges.map(lc => [lc.path, lc.type]));
-
-		for (const remoteChange of trackedRemoteChanges) {
-			const localState = localChangesByPath.get(remoteChange.path);
-			if (localState !== undefined) {
-				// Both sides changed this tracked path
-				clashes.push({
-					path: remoteChange.path,
-					localState,
-					remoteOp: remoteChange.type
-				});
-			}
-		}
-
-		return clashes;
 	}
 }

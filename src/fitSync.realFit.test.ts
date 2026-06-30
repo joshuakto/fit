@@ -304,7 +304,7 @@ describe('FitSync', () => {
 	});
 
 	describe('Protected path handling (📁 shouldSyncPath filtering)', () => {
-		it('should save remote 📁 .obsidian/ files to _fit/ (both protected and hidden)', async () => {
+		it('should silently track remote 📁 .obsidian/ SHA without writing to _fit/', async () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();
 
@@ -320,31 +320,31 @@ describe('FitSync', () => {
 			const mockNotice = createMockNotice();
 			const result = await syncAndHandleResult(fitSync, mockNotice);
 
-			// Verify: Sync succeeded with protected files treated as clashes
-			expect(result).toEqual(expect.objectContaining({ success: true }));
-			// Protected/hidden files are now treated as clashes and get appropriate messaging
-			expect(mockNotice._calls).toContainEqual({
+			// Verify: Sync succeeded, protected files silently ignored (not treated as conflicts)
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			// Protected paths do not trigger conflict notice
+			expect(mockNotice._calls).not.toContainEqual({
 				method: 'setMessage',
 				args: ['Synced with remote, unresolved conflicts written to _fit']
 			});
 
-			// Verify: .obsidian/ files saved to _fit/ for safety, normal file pulled directly
+			// Verify: Only normal file written locally — no _fit/ writes for protected paths
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// .obsidian/ files saved to _fit/ (protected path - never write directly to .obsidian/)
-				'_fit/.obsidian/app.json': '{"theme":"dark"}',
-				'_fit/.obsidian/plugins/plugin1/main.js': 'Plugin code',
-				// Normal file pulled directly
 				'normal.md': 'Normal file'
 			});
 
-			// Verify: LocalStores - .obsidian/ files NOT tracked (filtered by shouldSyncPath)
-			// Protected paths (.obsidian/, _fit/) are excluded from both local and remote caches
+			// Verify: LocalStores - .obsidian/ files NOT tracked in localShas (filtered by shouldSyncPath)
+			// Remote SHAs for protected paths stored in protectedPathShas for opt-in reconciliation
 			expect(localStoreState).toMatchObject({
 				localShas: {
 					'normal.md': expect.any(String)  // Only normal file
 				},
 				lastFetchedRemoteShas: {
 					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
+				},
+				protectedPathShas: {
+					'.obsidian/app.json': expect.any(String),
+					'.obsidian/plugins/plugin1/main.js': expect.any(String)
 				}
 			});
 		});
@@ -383,39 +383,31 @@ describe('FitSync', () => {
 				{ path: 'remote-normal.md', content: FileContent.fromPlainText('Normal remote file') }
 			], []);
 
-			// === STEP 4: Attempt sync - should pull both files, but save _fit/ to _fit/_fit/ ===
+			// === STEP 4: Attempt sync - should pull remote-normal.md, silently ignore remote _fit/ ===
 			const mockNotice2 = createMockNotice();
 			const result2 = await syncAndHandleResult(fitSync, mockNotice2);
 
-			// Verify: Both files pulled, but _fit/ file saved to _fit/_fit/ (protected path treated as clash)
+			// Verify: Normal file pulled, remote _fit/ file silently ignored (SHA tracked, not written)
 			expect(result2).toEqual({
 				success: true,
 				changeGroups: expect.arrayContaining([
 					{
 						heading: expect.stringContaining('Local file updates'),
 						changes: expect.arrayContaining([
-							expect.objectContaining({ path: '_fit/_fit/remote-conflict.md', type: 'ADDED' }),
 							expect.objectContaining({ path: 'remote-normal.md', type: 'ADDED' })
 						])
 					}
 				]),
-				clash: [{
-					path: '_fit/remote-conflict.md',
-					localState: 'protected',
-					remoteOp: 'ADDED'
-				}]
+				clash: []
 			});
 
-			// Verify: Final local vault state
+			// Verify: Final local vault state — no _fit/_fit/ write for remote _fit/ files
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'_fit/conflict.md': 'Remote version saved locally', // Local-only (created in step 1)
 				'_fit/nested/file.md': 'Another conflict',          // Local-only (created in step 1)
-				// Remote _fit/ saved to _fit/_fit/ (protected path)
-				'_fit/_fit/remote-conflict.md': 'Remote _fit file content',
 				'normal.md': 'Normal file content',                 // Synced (created in step 1)
 				'remote-normal.md': 'Normal remote file'            // Pulled from remote (step 4)
 			});
-			// NOT present: '_fit/remote-conflict.md' (would conflict with our conflict resolution area)
 
 			// Verify: LocalStores track different files:
 			// - localShas: Only synced files (excludes _fit/ and other protected paths)
@@ -440,6 +432,34 @@ describe('FitSync', () => {
 			const uniquePaths = new Set(statLog);
 			expect(statLog.length).toBe(uniquePaths.size);
 		});
+		it('should not trigger junk clash when user opts in a previously-protected path', async () => {
+			// Simulate: remote has .obsidian/graph.json, client A synced without opt-in
+			// then user enables sync for that path
+			const fitSync = createFitSync();
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
+			], []);
+
+			// First sync without opt-in: caches SHA in protectedPathShas (no _fit/ write)
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeTruthy();
+
+			// User opts in the path
+			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+
+			// First sync with opt-in: reconciliation should set baseline from protectedPathShas,
+			// no junk clash even though local doesn't have the file yet
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Should succeed with no conflicts — reconciliation handled it
+			expect(result).toMatchObject({ success: true, clash: [] });
+			// protectedPathShas entry should be cleared (path is now tracked)
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
+			// File should now be in localShas (tracked)
+			expect(localStoreState.localShas?.['.obsidian/graph.json']).toBeTruthy();
+		});
+
 		it('should sync opted-in .obsidian/ file directly (not to _fit/)', async () => {
 			const fitSync = createFitSync();
 			fitSync.fit.obsidianSyncRules = { '.obsidian/appearance.json': {} };
@@ -474,8 +494,8 @@ describe('FitSync', () => {
 			const mockNotice = createMockNotice();
 			await syncAndHandleResult(fitSync, mockNotice);
 
-			// workspace.json saved to _fit/, not synced directly
-			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeDefined();
+			// workspace.json silently ignored — no _fit/ write, no direct sync
+			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeUndefined();
 			expect(localVault.getAllFilesAsRaw()['.obsidian/workspace.json']).toBeUndefined();
 		});
 

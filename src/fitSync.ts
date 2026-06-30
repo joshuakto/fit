@@ -172,21 +172,6 @@ export class FitSync implements IFitSync {
 		}
 
 		for (const change of addToLocalNonClashed) {
-			// SAFETY: Save protected paths to _fit/ (e.g., .obsidian/, _fit/)
-			// These paths should never be written directly to the vault to avoid:
-			// - Overwriting critical Obsidian settings/plugins (.obsidian/)
-			// - Conflicting with our conflict resolution area (_fit/)
-			// - User confusion from inconsistent behavior (_fit/_fit/ for remote _fit/ files)
-			if (!this.fit.shouldSyncPath(change.path)) {
-				fitLogger.log('[FitSync] Protected path - saving to _fit/ for safety', {
-					path: change.path,
-					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
-				});
-				clashPaths.add(change.path);
-				resolvedChanges.push(change);
-				continue; // Don't write to protected path
-			}
-
 			// SAFETY: Check filesystem for files not in localShas cache
 			// This protects against:
 			// 1. Version migrations where tracking rules changed
@@ -217,18 +202,9 @@ export class FitSync implements IFitSync {
 			resolvedChanges.push({path: change.path, content: change.content});
 		}
 
-		// SAFETY: Never delete protected or untracked files from local
+		// SAFETY: Never delete untracked files from local
 		const safeDeleteFromLocal = [];
 		for (const path of deleteFromLocalNonClashed) {
-			// Skip deletion of protected paths (shouldn't exist locally, but be safe)
-			if (!this.fit.shouldSyncPath(path)) {
-				fitLogger.log('[FitSync] Skipping deletion of protected path', {
-					path,
-					reason: 'path excluded by shouldSyncPath (e.g., .obsidian/, _fit/)'
-				});
-				continue; // Skip deletion
-			}
-
 			// SAFETY: Check if file is in cache before deleting
 			// If not in cache, we cannot verify it's safe to delete
 			if (!this.fit.localShas.hasOwnProperty(path)) {
@@ -253,7 +229,7 @@ export class FitSync implements IFitSync {
 		const addToLocal = resolvedChanges;
 		const deleteFromLocal = safeDeleteFromLocal;
 
-		// Apply changes with clashPaths to write protected/unsafe paths to _fit/
+		// Apply changes with clashPaths to write unsafe/clash paths to _fit/
 		const result = await this.fit.localVault.applyChanges(addToLocal, deleteFromLocal, { clashPaths });
 
 		// Show user warning if encoding issues detected
@@ -377,7 +353,7 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 2c: Simple clash detection
-		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
+		const { safeLocal, safeRemote, clashes, protectedRemote } = resolveAllChanges(
 			localChanges,
 			remoteChanges,
 			protectedPaths,
@@ -414,11 +390,12 @@ export class FitSync implements IFitSync {
 		fitLogger.log('[FitSync] Conflict detection complete', {
 			safeLocal: safeLocal.length,
 			safeRemote: safeRemote.length,
-			clashes: clashes.length
+			clashes: clashes.length,
+			protectedRemote: protectedRemote.length
 		});
 
 		return {
-			safeLocal, safeRemote, clashes, statError, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure, existenceMap
+			safeLocal, safeRemote, clashes, protectedRemote, statError, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure, existenceMap
 		};
 	}
 
@@ -439,6 +416,7 @@ export class FitSync implements IFitSync {
 		safeLocal: FileChange[],
 		safeRemote: FileChange[],
 		clashes: FileClash[],
+		protectedRemote: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
@@ -558,6 +536,20 @@ export class FitSync implements IFitSync {
 			});
 		}
 
+		// 3b'. Track protected path SHA arrivals for opt-in reconciliation.
+		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
+		// Only the remote SHA is recorded — no content download, no _fit/ write.
+		// When the user later opts in a path, the reconciliation pre-sync step reads
+		// protectedPathShas to establish a baseline and avoid junk clashes.
+		for (const change of protectedRemote) {
+			if (change.type === 'REMOVED') {
+				delete this.fit.protectedPathShas[change.path];
+				continue;
+			}
+			const remoteSha = remoteUpdate.remoteTreeSha[change.path];
+			if (remoteSha) this.fit.protectedPathShas[change.path] = remoteSha;
+		}
+
 		// 3c. Update local state using SHAs computed by LocalVault (performance optimization)
 		// LocalVault computed SHAs from in-memory content during file writes (see docs/sync-logic.md).
 		// Benefits: avoids redundant I/O, prevents race conditions, no normalization in Obsidian.
@@ -578,12 +570,11 @@ export class FitSync implements IFitSync {
 
 		// Update pendingClashes: newly-clashed tracked files enter pending state.
 		// Remove their baseline so FIT makes no assumption about the canonical version.
-		// Untracked/protected clashes are excluded — they use the #169 baseline mechanism instead.
+		// Untracked clashes are excluded — they use the #169 baseline mechanism instead.
 		// Paths already in pendingClashes (localState === 'pending') stay there.
 		for (const clash of clashes) {
 			if (clash.remoteOp !== 'REMOVED' &&
-				clash.localState !== 'untracked' &&
-				clash.localState !== 'protected') {
+				clash.localState !== 'untracked') {
 				if (!this.fit.pendingClashes.includes(clash.path)) {
 					this.fit.pendingClashes.push(clash.path);
 				}
@@ -655,6 +646,7 @@ export class FitSync implements IFitSync {
 			localShas: this.fit.filterSyncedState(newLocalState),
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
+			protectedPathShas: this.fit.protectedPathShas,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
@@ -683,6 +675,34 @@ export class FitSync implements IFitSync {
 
 		try {
 			syncNotice.setMessage("Checking for changes...");
+
+			// Pre-sync: reconcile paths that became tracked since last sync (e.g. user opted in via obsidianSyncRules).
+			// Without this, a path with no localShas entry but an existing local file → untrackedPaths → junk clash.
+			const reconcilePaths = Object.keys(this.fit.protectedPathShas)
+				.filter(p => this.fit.shouldSyncPath(p));
+			if (reconcilePaths.length > 0) {
+				fitLogger.log('[FitSync] Reconciling newly-tracked paths from protectedPathShas', { paths: reconcilePaths });
+				for (const path of reconcilePaths) {
+					const cachedRemoteSha = this.fit.protectedPathShas[path];
+					delete this.fit.protectedPathShas[path];
+					try {
+						const content = await this.fit.localVault.readFileContent(path);
+						const currentSha = await LocalVault.fileSha1(path, content);
+						// Establish baseline from current local content so detection sees no spurious change.
+						// If local == remote: also update lastFetchedRemoteShas → full no-op (no download).
+						// If local != remote: remote shows as ADDED → applied (remote wins on first opt-in sync).
+						this.fit.localShas[path] = currentSha;
+						if (currentSha === cachedRemoteSha) {
+							this.fit.lastFetchedRemoteShas[path] = cachedRemoteSha;
+						}
+					} catch {
+						// File absent locally. lastFetchedRemoteShas may already have this path from prior
+						// syncs (it stores the full remote tree including protected paths). Clear it so
+						// remote appears as ADDED and gets applied this sync.
+						delete this.fit.lastFetchedRemoteShas[path];
+					}
+				}
+			}
 
 			// Get local and remote changes in parallel
 			// Use allSettled to ensure both operations complete (or fail) before processing
@@ -846,7 +866,7 @@ export class FitSync implements IFitSync {
 			// Phase 2: Compare & Resolve - determine safe vs clashed changes
 			const localScanPaths = new Set(Object.keys(currentLocalState));
 			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
-			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, existenceMap } = await this.compareAndResolveChanges(
+			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, protectedRemote, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
 				remoteChanges,
 				localScanPaths,
@@ -890,6 +910,7 @@ export class FitSync implements IFitSync {
 				safeLocal,
 				safeRemote,
 				clashes,
+				protectedRemote,
 				pendingReminderPaths,
 				existenceMap,
 				syncNotice
@@ -899,8 +920,6 @@ export class FitSync implements IFitSync {
 
 			// Log conflicts if any (these are real unresolved conflicts, not temporary clashes)
 			if (conflicts.length > 0) {
-				const protectedConflicts = conflicts.filter(c => c.localState === 'protected');
-
 				fitLogger.log('[FitSync] Sync completed with conflicts', {
 					conflictCount: conflicts.length,
 					conflicts: conflicts.map(c => ({
@@ -909,12 +928,6 @@ export class FitSync implements IFitSync {
 						remote: c.remoteOp
 					}))
 				});
-
-				if (protectedConflicts.length > 0) {
-					fitLogger.log(`[FitSync] ${protectedConflicts.length} path(s) blocked by sync policy`, {
-						protectedPaths: protectedConflicts.map(c => c.path)
-					});
-				}
 			}
 
 			// Show tiered warning for files still awaiting manual sync

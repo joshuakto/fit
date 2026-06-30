@@ -125,7 +125,9 @@ Each file path has a **baseline** SHA in `localShas` (local) and `lastFetchedRem
 
 ### `_fit/` as scratchpad
 
-The `_fit/` directory is **never part of the synced vault.** It is out-of-band storage where FIT places copies of remote file versions during conflict resolution, so the user can inspect both sides before deciding.
+The `_fit/` directory is **never part of the synced vault.** It is out-of-band storage where FIT places copies of remote file versions for conflict resolution:
+
+1. **Conflict copies:** When both local and remote changed the same tracked file, the remote version is written to `_fit/path` for the user to inspect. The path enters `pendingClashes`.
 
 - `_fit/path` is always a copy of a *remote* version, never the local version.
 - The canonical local version of `path` is always at `path`, not at `_fit/path`.
@@ -264,30 +266,22 @@ Paths not in `obsidianSyncRules` (or in the always-excluded set) remain blocked.
 
 **Behavior for blocked paths:**
 - **⬆️ Local→Remote:** Never pushed
-- **⬇️ Remote→Local:** Saved to 📁 `_fit/` for transparency (e.g., `_fit/.obsidian/app.json`)
-- **📦 SHA Caches:** Excluded from both `localShas` and `lastFetchedRemoteShas`
+- **⬇️ Remote→Local:** Silently tracked — no write, no notice. Remote SHA recorded in `protectedPathShas[path]` for use during opt-in transition (see below).
+- **📦 SHA Caches:** Excluded from `localShas`. Tracked in `protectedPathShas`.
 
-**Why save remote protected paths to `_fit/`?**
-- User can see what exists on remote without risk
-- Prevents silent data loss
-- Consistent behavior: all `!shouldSyncPath` files go to `_fit/`, even `_fit/` files themselves (→ `_fit/_fit/`)
+**Why not treat as a clash?**
+A "conflict" requires two parties with competing claims to the same file. A protected path has no local ownership — remote is authoritative by definition. Showing a conflict notice for every sync where remote has a protected file the current client doesn't track is misleading and noisy.
 
-**Example:**
-```typescript
-// Remote has .obsidian/app.json (not opted in)
-remoteChanges = [
-  { path: ".obsidian/app.json", content: "{\"theme\":\"dark\"}" }
-]
+**protectedPathShas:**
+`LocalStores.protectedPathShas` maps `path → last-seen remote SHA`. Enables the opt-in transition without a junk clash (see below). Entries are cleared when the path becomes opted in.
 
-// Filtering applied in FitSync.applyRemoteChanges():
-if (!this.fit.shouldSyncPath(".obsidian/app.json")) {
-  // Save to _fit/.obsidian/app.json instead of .obsidian/app.json
-  resolvedChanges.push({
-    path: "_fit/.obsidian/app.json",
-    content: "{\"theme\":\"dark\"}"
-  });
-}
-```
+**Opt-in transition:**
+When `obsidianSyncRules` gains a new entry, at the start of the next sync FIT reconciles `protectedPathShas` entries for newly-tracked paths:
+- If local file exists and matches cached remote SHA: set baseline in `localShas` and `lastFetchedRemoteShas` — sync is a no-op.
+- If local file exists but differs: set baseline in `localShas` (local will be pushed); `lastFetchedRemoteShas` not set so remote appears ADDED → remote applied (overwrite).
+- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path.
+
+In all cases the `protectedPathShas` entry is deleted (path is now tracked normally).
 
 ### 2. Hidden Files (`shouldTrackState`) - Configurable
 
@@ -623,11 +617,12 @@ remoteChanges = [
 
 **Phase 2b**: Batch collects filesystem state for all paths needing verification
 
-**Phase 2c**: Resolves all changes to final safe/clash outcomes:
+**Phase 2c**: Resolves all changes to final safe/clash/protectedRemote outcomes:
 - **Tracked files**: Both sides changed → clash
-- **Untracked files**: Checks filesystem existence, protection rules, and (future: baseline SHA)
-  - Exists locally or protected → clash
-  - Doesn't exist and not protected → safe
+- **Protected paths** (`!shouldSyncPath`): → `protectedRemote` (separate category, not a clash; SHA recorded in `protectedPathShas`, no write)
+- **Untracked files**: Checks filesystem existence and baseline SHA (#169)
+  - Exists locally (and changed from baseline, or no baseline) → clash
+  - Doesn't exist locally → safe
   - Stat failed → conservative clash
 
 **Implementation:**

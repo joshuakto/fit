@@ -67,7 +67,6 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 		MODIFIED: "change",
 		REMOVED: "delete",
 		untracked: "untracked",
-		protected: "protected",
 		pending: "pending"
 	};
 	const remoteStatusMap: Record<ChangeOperation, string> = {
@@ -109,17 +108,12 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 
 	// Add explanatory notes for special local states
 	const hasPending = clashedFiles.some(c => c.localState === 'pending');
-	const hasProtected = clashedFiles.some(c => c.localState === 'protected');
 	const hasUntracked = clashedFiles.some(c => c.localState === 'untracked');
 	const hasHidden = clashedFiles.some(c => c.path.split('/').some(p => p.startsWith('.')));
 
 	if (hasPending) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
 			.setText("Pending: unresolved from a prior sync — will keep appearing and local changes won't sync until resolved");
-	}
-	if (hasProtected) {
-		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-			.setText("Protected: path excluded from sync (.obsidian/, _fit/) — saved to _fit/ for transparency, not tracked as pending");
 	}
 	if (hasUntracked) {
 		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})

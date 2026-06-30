@@ -30,6 +30,12 @@ export interface LocalStores {
 	// false-positive re-push on old clients (overhead only, not data loss).
 	pendingClashes?: string[]
 	lastSyncedAt?: number  // Unix ms timestamp of last successful sync completion
+	// Remote SHA cache for paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
+	// Enables junk-clash-free opt-in: when the user adds a path to obsidianSyncRules, the
+	// reconciliation pre-sync step uses this SHA to establish a baseline without re-downloading.
+	// Entries are cleared when a path becomes opted in (baseline reconciliation takes over).
+	// Downgrade-safe: absent field treated as empty object.
+	protectedPathShas?: FileStates
 }
 
 /**
@@ -53,5 +59,6 @@ export function parseLocalStore(data: Record<string, unknown> | null | undefined
 		unpushedFiles: (d.unpushedFiles ?? {}) as unknown as FileStates,
 		pendingClashes: (d.pendingClashes ?? []) as unknown as string[],
 		lastSyncedAt: (d.lastSyncedAt as number | undefined) ?? undefined,
+		protectedPathShas: (d.protectedPathShas ?? {}) as unknown as FileStates,
 	};
 }

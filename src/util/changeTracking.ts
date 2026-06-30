@@ -33,10 +33,12 @@ export type FileStates = Record<string, BlobSha>;
  * When detecting clashes, we need to know the local state:
  * - ChangeOperation: File has a tracked change (ADDED/MODIFIED/REMOVED)
  * - "untracked": File exists but state can't be determined (stat failed, hidden files)
- * - "protected": File is blocked by sync policy (shouldSyncPath returns false)
  * - "pending": A previous clash for this file is unresolved (_fit/ copy still present)
+ *
+ * Note: protected paths (shouldSyncPath=false) are returned separately as
+ * protectedRemote from resolveAllChanges — they are not clashes and never appear here.
  */
-export type LocalClashState = ChangeOperation | "untracked" | "protected" | "pending";
+export type LocalClashState = ChangeOperation | "untracked" | "pending";
 
 /** Represents a clash between local and remote changes to the same file */
 export type FileClash = {
@@ -172,7 +174,7 @@ export function resolveUntrackedState(
  * @param remoteChanges - Changes detected in remote vault
  * @param protectedPaths - Paths blocked by sync policy (shouldSyncPath)
  * @param untrackedPaths - Paths with unknown state (stat failed or untracked changes)
- * @returns Final categorization into safe changes and clashes
+ * @returns Final categorization into safe changes, clashes, and protected remote arrivals
  */
 export function resolveAllChanges(
 	localChanges: FileChange[],
@@ -183,12 +185,15 @@ export function resolveAllChanges(
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
 	clashes: FileClash[];
+	/** Remote changes to paths excluded by shouldSyncPath — not clashes, handled separately */
+	protectedRemote: FileChange[];
 } {
 	const localChangePaths = new Set(localChanges.map(c => c.path));
 
 	const safeLocal: FileChange[] = [];
 	const safeRemote: FileChange[] = [];
 	const clashes: FileClash[] = [];
+	const protectedRemote: FileChange[] = [];
 
 	// Process all local changes
 	for (const localChange of localChanges) {
@@ -214,19 +219,14 @@ export function resolveAllChanges(
 			continue;
 		}
 
-		// Determine local state based on block reason
-		let localState: LocalClashState | null = null;
 		if (protectedPaths.has(remoteChange.path)) {
-			localState = 'protected';
+			// Protected path arrival — not a clash, handled separately
+			protectedRemote.push(remoteChange);
 		} else if (untrackedPaths.has(remoteChange.path)) {
-			localState = 'untracked';
-		}
-
-		if (localState !== null) {
-			// Blocked - treat as clash
+			// Untracked: can't verify local state — block conservatively
 			clashes.push({
 				path: remoteChange.path,
-				localState,
+				localState: 'untracked',
 				remoteOp: remoteChange.type
 			});
 		} else {
@@ -235,7 +235,7 @@ export function resolveAllChanges(
 		}
 	}
 
-	return { safeLocal, safeRemote, clashes };
+	return { safeLocal, safeRemote, clashes, protectedRemote };
 }
 
 /**
