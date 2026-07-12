@@ -2,7 +2,7 @@
  * Tests for Logger
  */
 
-import { LogFileAdapter, Logger } from "@/logger";
+import { FitLogger, LogFileAdapter, Logger } from "@/logger";
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const UTF8_BOM = '\uFEFF';
@@ -532,5 +532,55 @@ describe('Logger', () => {
 			// Should have depth limit message somewhere
 			expect(content).toContain('[nested too deep]');
 		});
+	});
+});
+
+describe('FitLogger', () => {
+	beforeEach(() => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('should replace an existing rotated log backup', async () => {
+		const pluginDir = '.obsidian/plugins/fit';
+		const logPath = `${pluginDir}/debug.log`;
+		const rotatedPath = `${logPath}.0`;
+		const currentLog = UTF8_BOM + 'current log content';
+		const files = new Map<string, string>([
+			[logPath, currentLog],
+			[rotatedPath, 'previous rotated content']
+		]);
+		const adapter = {
+			exists: vi.fn(async (path: string) => files.has(path)),
+			read: vi.fn(async (path: string) => files.get(path) ?? ''),
+			append: vi.fn(async (path: string, data: string) => {
+				files.set(path, (files.get(path) ?? '') + data);
+			}),
+			remove: vi.fn(async (path: string) => {
+				files.delete(path);
+			}),
+			rename: vi.fn(async (oldPath: string, newPath: string) => {
+				if (files.has(newPath)) {
+					throw new Error('Destination file already exists!');
+				}
+				files.set(newPath, files.get(oldPath) ?? '');
+				files.delete(oldPath);
+			})
+		};
+		const logger = new FitLogger({ adapter: null, maxLogSize: 1 });
+
+		logger.configure({ adapter } as any, pluginDir);
+		logger.setEnabled(true);
+		logger.log('New entry');
+		await logger.flush();
+
+		expect(adapter.remove).toHaveBeenCalledWith(rotatedPath);
+		expect(adapter.rename).toHaveBeenCalledWith(logPath, rotatedPath);
+		expect(files.get(rotatedPath)).toBe(currentLog);
+		expect(files.get(logPath)).toContain('New entry');
 	});
 });

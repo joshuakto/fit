@@ -285,6 +285,9 @@ export class FitLogger extends Logger {
 			async renameTo(newName: string): Promise<void> {
 				const dirPath = logPath.substring(0, logPath.lastIndexOf('/'));
 				const newPath = `${dirPath}/${newName}`;
+				if (await vault.adapter.exists(newPath)) {
+					await vault.adapter.remove(newPath);
+				}
 				await vault.adapter.rename(logPath, newPath);
 			}
 		};
