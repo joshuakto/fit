@@ -673,11 +673,24 @@ export class FitSync implements IFitSync {
 	private async _doSync(syncNotice: FitNotice, options?: { isAutoSync?: boolean }): Promise<SyncResult> {
 		const isAutoSync = options?.isAutoSync ?? false;
 
+		// Snapshots for pre-sync reconciliation rollback (see comment below).
+		// Initialized to empty so catch block can always restore safely, even if try throws before mutation.
+		let preReconcileProtectedPathShas = {...this.fit.protectedPathShas};
+		let preReconcileLocalShas = {...this.fit.localShas};
+		let preReconcileLastFetchedRemoteShas = {...this.fit.lastFetchedRemoteShas};
+
 		try {
 			syncNotice.setMessage("Checking for changes...");
 
 			// Pre-sync: reconcile paths that became tracked since last sync (e.g. user opted in via obsidianSyncRules).
 			// Without this, a path with no localShas entry but an existing local file → untrackedPaths → junk clash.
+			// Snapshot the three stores mutated here so we can restore them if the sync subsequently fails.
+			// saveLocalStoreCallback only runs on success, so in-memory mutations would otherwise leak
+			// into the next sync attempt and cause junk clashes or missed reconciliation.
+			preReconcileProtectedPathShas = {...this.fit.protectedPathShas};
+			preReconcileLocalShas = {...this.fit.localShas};
+			preReconcileLastFetchedRemoteShas = {...this.fit.lastFetchedRemoteShas};
+
 			const reconcilePaths = Object.keys(this.fit.protectedPathShas)
 				.filter(p => this.fit.shouldSyncPath(p));
 			if (reconcilePaths.length > 0) {
@@ -982,6 +995,12 @@ export class FitSync implements IFitSync {
 		} catch (error) {
 			// Handle unexpected errors that escape from individual sync operations.
 
+			// Restore pre-reconciliation in-memory state so next sync attempt can re-run reconciliation.
+			// saveLocalStoreCallback only fires on success, so without this restore the mutations leak.
+			this.fit.protectedPathShas = preReconcileProtectedPathShas;
+			this.fit.localShas = preReconcileLocalShas;
+			this.fit.lastFetchedRemoteShas = preReconcileLastFetchedRemoteShas;
+
 			// VaultError from vault operations (both LocalVault and RemoteGitHubVault)
 			if (error instanceof VaultError) {
 				return { success: false, error };
@@ -990,8 +1009,8 @@ export class FitSync implements IFitSync {
 			// All other errors - sync orchestration failures
 			const errorMessage = error instanceof Error
 				? String(error) // Gets "ErrorType: message" which includes both type and message
-				: (error && typeof error === 'object' && error.message)
-					? String(error.message)
+				: (error && typeof error === 'object' && 'message' in error)
+					? String((error as { message: unknown }).message)
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
 		}

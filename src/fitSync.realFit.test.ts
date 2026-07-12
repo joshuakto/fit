@@ -460,6 +460,38 @@ describe('FitSync', () => {
 			expect(localStoreState.localShas?.['.obsidian/graph.json']).toBeTruthy();
 		});
 
+		it('should restore pre-reconciliation state when sync fails after opt-in mutation', async () => {
+			// Kody bug: reconciliation mutates protectedPathShas/localShas/lastFetchedRemoteShas before
+			// sync succeeds. If sync then fails, mutations leak into next attempt → missed reconciliation.
+			const fitSync = createFitSync();
+
+			// Remote has a .obsidian/ file that we'll opt in to
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
+			], []);
+
+			// First sync without opt-in: caches SHA in protectedPathShas
+			await syncAndHandleResult(fitSync, createMockNotice());
+			const cachedSha = localStoreState.protectedPathShas?.['.obsidian/graph.json'];
+			expect(cachedSha).toBeTruthy();
+
+			// User opts in the path
+			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+
+			// Second sync fails after reconciliation mutates state
+			remoteVault.setFailure(VaultError.network("Couldn't reach GitHub API"));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// In-memory protectedPathShas must be restored to pre-reconciliation state
+			// so next sync attempt can re-run reconciliation from the correct baseline.
+			expect(fitSync.fit.protectedPathShas['.obsidian/graph.json']).toBe(cachedSha);
+
+			// Third sync (succeeds): reconciliation re-runs, no junk clash
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toMatchObject({ success: true, clash: [] });
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
+		});
+
 		it('should sync opted-in .obsidian/ file directly (not to _fit/)', async () => {
 			const fitSync = createFitSync();
 			fitSync.fit.obsidianSyncRules = { '.obsidian/appearance.json': {} };
