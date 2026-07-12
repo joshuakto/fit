@@ -39,7 +39,7 @@
 		"@wdio/mocha-framework": "^9.23.0",
 		"@wdio/spec-reporter": "^9.20.0",
 		"builtin-modules": "^5.0.0",
-		"esbuild": "^0.27.2",
+		"esbuild": "^0.28.1",
 		"eslint": "^9.39.2",
 		"expect-webdriverio": "^5.6.1",
 		"globals": "^17.0.0",
