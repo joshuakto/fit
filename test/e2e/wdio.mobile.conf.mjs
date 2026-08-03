@@ -51,7 +51,16 @@ export const config = {
 		...appiumService,
 	],
 
-	reporters: ['obsidian'],
+	reporters: [
+		'obsidian',
+		['allure', {
+			// Relative to process.cwd() (repo root when run via `npm run test:android`),
+			// not relative to this config file.
+			outputDir: `allure-results/android-${obsidianVersion}`,
+			disableWebdriverStepsReporting: false,
+			disableWebdriverScreenshotsReporting: false,
+		}],
+	],
 	cacheDir: cacheDir,
 
 	mochaOpts: {

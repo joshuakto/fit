@@ -72,6 +72,14 @@ jobs:
         path: test-results/
         retention-days: 30
 
+    - name: Upload Allure results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: allure-results-desktop
+        path: allure-results/
+        retention-days: 30
+
   test-android:
     env:
       AVD_ARGS: "-no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none"
@@ -164,6 +172,47 @@ jobs:
           path: |
             test-results/
             appium-server.log
+          retention-days: 30
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-android-${{ matrix.obsidian-version }}
+          path: allure-results/
+          retention-days: 30
+
+  allure-report:
+    if: always()
+    needs: [test-desktop, test-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all Allure result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: allure-results-*
+          path: allure-results-raw
+          merge-multiple: false
+
+      - name: Merge Allure results into one tree
+        run: |
+          mkdir -p allure-results-raw allure-results
+          # each artifact unpacks to allure-results-raw/<artifact-name>/<original-outputDir-suffix>/*
+          find allure-results-raw -mindepth 1 -type f -exec cp -t allure-results {} +
+
+      # No gh-pages publish (yet) — just generate the static HTML report and
+      # upload it as a normal build artifact. Download + unzip it, then run
+      # `npx allure-commandline open <unzipped-dir>` locally (Allure's data
+      # files are loaded via fetch(), which browsers block over file://, so
+      # it needs a local server rather than opening index.html directly).
+      - name: Generate Allure report
+        run: npx --yes allure-commandline@2 generate allure-results --clean -o allure-report
+
+      - name: Upload Allure report
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
           retention-days: 30
 
   check:

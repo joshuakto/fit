@@ -25,7 +25,16 @@ export const config: WebdriverIO.Config = {
 	})),
 
 	services: ['obsidian'],
-	reporters: ['obsidian'],
+	reporters: [
+		'obsidian',
+		['allure', {
+			// Relative to process.cwd() (repo root when run via `npm run test:e2e`),
+			// not relative to this config file.
+			outputDir: 'allure-results/desktop',
+			disableWebdriverStepsReporting: false,
+			disableWebdriverScreenshotsReporting: false,
+		}],
+	],
 	cacheDir: cacheDir,
 
 	mochaOpts: {
