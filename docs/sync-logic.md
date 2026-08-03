@@ -603,11 +603,13 @@ remoteChanges = [
 
 **Actions:**
 1. Identify clashed files
-2. For each clash, check if content actually differs
-3. If no actual difference, treat as compatible
+2. For each clash, compare canonical git blob SHAs (local vs. incoming remote) — this is a content check, not a heuristic, since matching SHA-1 over `"blob " + len + NUL + bytes` means byte-identical content
+3. If SHAs match (e.g. two devices/sync plugins independently producing the same edit), skip entirely — no `_fit/` write, no push, no pull; local state already matches remote
 4. If real 🔀 conflict, save remote version to 📁 `_fit/`, add path to `pendingClashes`, remove from `localShas`
 5. Push **non-conflicted** local changes only (conflicted files are withheld until resolved)
 6. Pull non-conflicted remote changes
+
+Skipped when encryption is enabled — encrypted blob SHAs aren't comparable to plaintext content SHAs, so the fast path is disabled and clashes fall through to normal resolution.
 
 ## 🔀 Conflict Resolution
 
@@ -618,9 +620,10 @@ remoteChanges = [
 **Phase 2b**: Batch collects filesystem state for all paths needing verification
 
 **Phase 2c**: Resolves all changes to final safe/clash/protectedRemote outcomes:
-- **Tracked files**: Both sides changed → clash
+- **Tracked files**: Both sides changed → clash, *unless* local and remote blob SHAs are equal (identical content) → skipped entirely, no reconciliation needed
 - **Protected paths** (`!shouldSyncPath`): → `protectedRemote` (separate category, not a clash; SHA recorded in `protectedPathShas`, no write)
-- **Untracked files**: Checks filesystem existence and baseline SHA (#169)
+- **Untracked files**: Checks filesystem existence, remote-content SHA, and baseline SHA (#169)
+  - Local content SHA matches incoming remote SHA → safe, no clash (regardless of baseline)
   - Exists locally (and changed from baseline, or no baseline) → clash
   - Doesn't exist locally → safe
   - Stat failed → conservative clash
@@ -656,8 +659,8 @@ flowchart TD
 - **Resolution:** ✓ Automatically resolved - both sides agree
 
 **Both sides modified, but content is identical:**
-- **Example:** Line ending differences, whitespace changes
-- **Resolution:** ✓ Automatically resolved - SHA differs but content effectively the same
+- **Example:** Two devices (or a third-party sync plugin racing on the same note) independently produce the same resulting edit
+- **Resolution:** ✓ Automatically resolved - local and remote blob SHAs match, so nothing is written to `_fit/`, pushed, or pulled
 
 #### Manual Resolution Required
 

@@ -303,6 +303,41 @@ describe('FitSync', () => {
 		expect(consoleLogSpy).toHaveBeenCalled();
 	});
 
+	it('should not write to _fit/ when local and remote clash to identical content', async () => {
+		// Reproduces two devices independently producing the same edit (e.g. a third-party
+		// sync plugin like TickTickSync applying the same task-completion metadata on both
+		// devices within the same window) — both sides differ from baseline, but agree with
+		// each other, so there's nothing to reconcile.
+		localVault.setFile('note.md', 'Original content');
+		await remoteVault.setFile('note.md', 'Original content');
+
+		const remoteResult = await remoteVault.readFromSource();
+		localStoreState = makeLocalStore({
+			localShas: await localVault.readFromSource().then(r => r.state),
+			lastFetchedRemoteShas: remoteResult.state,
+			lastFetchedCommitSha: remoteResult.commitSha
+		});
+		const fitSync = createFitSync();
+
+		// Both sides edit independently but converge on the same resulting text.
+		localVault.setFile('note.md', 'Original content ✅ done');
+		await remoteVault.setFile('note.md', 'Original content ✅ done');
+
+		const mockNotice = createMockNotice();
+		const result = await syncAndHandleResult(fitSync, mockNotice);
+
+		expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+
+		// No _fit/ copy written, local content untouched.
+		expect(localVault.getAllFilesAsRaw()).toEqual({
+			'note.md': 'Original content ✅ done'
+		});
+
+		// Baseline converges on the shared content SHA so future syncs don't re-flag it.
+		const localSha = await LocalVault.fileSha1('note.md', FileContent.fromPlainText('Original content ✅ done'));
+		expect(localStoreState.localShas['note.md']).toBe(localSha);
+	});
+
 	describe('Protected path handling (📁 shouldSyncPath filtering)', () => {
 		it('should silently track remote 📁 .obsidian/ SHA without writing to _fit/', async () => {
 			// === SETUP: Initial synced state ===

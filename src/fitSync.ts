@@ -283,7 +283,9 @@ export class FitSync implements IFitSync {
 		localChanges: FileChange[],
 		remoteChanges: FileChange[],
 		localScanPaths: Set<string>,
-		remoteScanPaths: Set<string>
+		remoteScanPaths: Set<string>,
+		currentLocalState: FileStates,
+		remoteTreeSha: FileStates
 	) {
 		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
 		detectNormalizationMismatches(Array.from(localScanPaths), Array.from(remoteScanPaths));
@@ -323,8 +325,7 @@ export class FitSync implements IFitSync {
 		// For files that exist locally AND have a baseline SHA, read and compute current SHA
 		// This allows baseline comparison to prevent unnecessary clashes
 		const pathsNeedingShaCheck = Array.from(pathsToStat).filter(path =>
-			filesystemState.get(path) === true &&
-			this.fit.localShas[path] !== undefined
+			filesystemState.get(path) === true
 		);
 
 		const currentShas = new Map<string, BlobSha>();
@@ -341,6 +342,15 @@ export class FitSync implements IFitSync {
 			}
 		}
 
+		// Content-identity fast path: when local and remote independently produced
+		// byte-identical content (same canonical git blob SHA), there's nothing to reconcile —
+		// skip the clash entirely instead of writing a redundant copy to _fit/. Guarded off
+		// under encryption: encrypted blob SHAs aren't comparable to plaintext content SHAs.
+		let encryptionEnabled = false;
+		try { encryptionEnabled = Encryption.isEnabled(); } catch { /* uninitialized — treat as disabled */ }
+		const identityRemoteShas = encryptionEnabled ? {} : remoteTreeSha;
+		const identityLocalShas = encryptionEnabled ? {} : currentLocalState;
+
 		// Phase 2b (part 2): Resolve untracked state from filesystem checks
 		const localChangePaths = new Set(localChanges.map(c => c.path));
 		const { protectedPaths, untrackedPaths } = resolveUntrackedState(
@@ -349,7 +359,8 @@ export class FitSync implements IFitSync {
 			filesystemState,
 			this.fit.localShas,
 			currentShas,
-			isProtectedPath
+			isProtectedPath,
+			identityRemoteShas
 		);
 
 		// Phase 2c: Simple clash detection
@@ -357,7 +368,9 @@ export class FitSync implements IFitSync {
 			localChanges,
 			remoteChanges,
 			protectedPaths,
-			untrackedPaths
+			untrackedPaths,
+			identityLocalShas,
+			identityRemoteShas
 		);
 
 		// Track stat failures for logging
@@ -883,7 +896,9 @@ export class FitSync implements IFitSync {
 				filteredLocalChanges,
 				remoteChanges,
 				localScanPaths,
-				remoteScanPaths
+				remoteScanPaths,
+				currentLocalState,
+				remoteTreeSha
 			);
 
 			// Reclassify safeRemote items for active pending paths — new remote changes must
