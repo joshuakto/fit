@@ -115,6 +115,28 @@ describe('FIT Plugin E2E Tests', function() {
 			// Test PAT authentication flow with stubbed GitHub API
 			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
 
+			// Obsidian 1.13+ defaults to opening Settings in a separate OS window
+			// on desktop (app.vault.getConfig('settingsPopoutWindow')), and on
+			// Android too — both stopped rendering settings in this test's
+			// same-window DOM. Force it off so Settings renders in-page, matching
+			// pre-1.13 behavior. Neither this config key nor app.setting.close()
+			// can be assumed to exist/behave safely on every platform, so this
+			// must not throw and block the actual open-settings command below.
+			try {
+				await browser.executeObsidian(({ app }) => {
+					try {
+						(app.vault as any).setConfig?.('settingsPopoutWindow', false);
+						if ((app as any).setting?.popout) {
+							(app as any).setting.close();
+						}
+					} catch (e) {
+						console.warn('settingsPopoutWindow workaround failed in-page:', String(e));
+					}
+				});
+			} catch (e) {
+				console.warn('settingsPopoutWindow workaround call itself failed:', String(e));
+			}
+
 			// 1. Open Obsidian settings
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
