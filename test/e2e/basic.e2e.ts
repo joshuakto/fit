@@ -144,8 +144,15 @@ describe('FIT Plugin E2E Tests', function() {
 			// Take screenshot of settings page before trying to find FIT tab
 			await takeScreenshot('settings-opened');
 
-			// 2. Navigate to FIT plugin settings
+			// 2. Navigate to FIT plugin settings.
+			// Screenshot-confirmed: on Android, Settings can open directly onto
+			// the last-active tab's content (no .vertical-tab-nav-item list
+			// visible at all in that case), so check whether we're already
+			// looking at FIT's pane before assuming there's a tab left to click.
 			const fitTabFound = await browser.executeObsidian(() => {
+				if (document.querySelector('input[placeholder*="personal access token"]')) {
+					return true;
+				}
 				// Find FIT tab in settings sidebar (case-insensitive search)
 				const fitTab = Array.from(document.querySelectorAll('.vertical-tab-nav-item'))
 					.find(el => el.textContent?.toLowerCase().includes('fit'));
