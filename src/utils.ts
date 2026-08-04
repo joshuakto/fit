@@ -15,11 +15,12 @@ export function setEqual<T>(arr1: Array<T>, arr2: Array<T>) {
 
 export function showFileChanges(
 	records: Array<{heading: string, changes: FileChange[]}>,
-	fieldWarnings: Map<string, string[]> = new Map()
+	fieldWarnings: Map<string, string[]> = new Map(),
+	durationMs = 0
 ): void {
 	console.log(records);
 	if (records.length === 0 || records.every(r=>r.changes.length===0)) {return;}
-	const fileOpsNotice = new Notice("", 0);
+	const fileOpsNotice = new Notice("", durationMs);
 	records.map(recordSet => {
 		if (recordSet.changes.length === 0) {return;}
 		const heading = fileOpsNotice.noticeEl.createEl("span", {

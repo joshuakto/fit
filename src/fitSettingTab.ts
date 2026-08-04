@@ -997,7 +997,8 @@ export default class FitSettingTab extends PluginSettingTab {
 			name: string,
 			getValue: () => boolean,
 			setValue: (v: boolean) => Promise<void>,
-			renderPreview: (el: HTMLElement) => void
+			renderPreview: (el: HTMLElement) => void,
+			renderExtra?: (el: HTMLElement) => void
 		) => {
 			const item = groupEl.createDiv({cls: "fit-notice-radio-item"});
 			item.createDiv({text: name, cls: "fit-notice-radio-name"});
@@ -1020,10 +1021,13 @@ export default class FitSettingTab extends PluginSettingTab {
 			hideLabel.createSpan({text: "Don't show"});
 
 			const previewEl = item.createDiv({cls: "fit-notice-preview-content"});
+			const extraEl = renderExtra ? item.createDiv({cls: "fit-notice-extra-content"}) : null;
 			if (getValue()) {
 				renderPreview(previewEl);
+				if (extraEl && renderExtra) renderExtra(extraEl);
 			} else {
 				previewEl.hide();
+				extraEl?.hide();
 			}
 
 			showInput.addEventListener("change", async () => {
@@ -1031,10 +1035,16 @@ export default class FitSettingTab extends PluginSettingTab {
 				previewEl.empty();
 				renderPreview(previewEl);
 				previewEl.show();
+				if (extraEl && renderExtra) {
+					extraEl.empty();
+					renderExtra(extraEl);
+					extraEl.show();
+				}
 			});
 			hideInput.addEventListener("change", async () => {
 				await setValue(false);
 				previewEl.hide();
+				extraEl?.hide();
 			});
 		};
 
@@ -1048,6 +1058,25 @@ export default class FitSettingTab extends PluginSettingTab {
 				el.createEl("li", {text: "notes/example.md", cls: "file-update-row file-ADDED"});
 				el.createDiv({text: "Modified", cls: "file-changes-subheading"});
 				el.createEl("li", {text: "journal/today.md", cls: "file-update-row file-MODIFIED"});
+			},
+			(el) => {
+				const fileChangesDurationSetting = new Setting(el)
+					.setName('File changes notice duration')
+					.setDesc(this.plugin.settings.fileChangesNoticeDurationSec === 0
+						? 'Notice stays on screen until clicked.'
+						: `Notice auto-dismisses after ${this.plugin.settings.fileChangesNoticeDurationSec} seconds.`)
+					.addSlider(slider => slider
+						.setLimits(0, 60, 1)
+						.setValue(this.plugin.settings.fileChangesNoticeDurationSec)
+						.setDynamicTooltip()
+						.onChange(async (value) => {
+							this.plugin.settings.fileChangesNoticeDurationSec = value;
+							await this.plugin.saveSettings();
+							fileChangesDurationSetting.setDesc(value === 0
+								? 'Notice stays on screen until clicked.'
+								: `Notice auto-dismisses after ${value} seconds.`);
+						})
+					);
 			}
 		);
 

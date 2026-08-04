@@ -309,7 +309,11 @@ export default class FitPlugin extends Plugin {
 				void (async () => {
 					const fieldWarnings = await this.computePostSyncFieldWarnings(outcome.result.changeGroups);
 					if (this.settings.notifyChanges) {
-						showFileChanges(outcome.result.changeGroups, fieldWarnings);
+						showFileChanges(
+							outcome.result.changeGroups,
+							fieldWarnings,
+							this.settings.fileChangesNoticeDurationSec * 1000
+						);
 					}
 					if (fieldWarnings.size > 0) {
 						for (const [path, newFields] of fieldWarnings) {
@@ -494,7 +498,7 @@ export default class FitPlugin extends Plugin {
 		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
-					if (key == "checkEveryXMinutes") {
+					if (key == "checkEveryXMinutes" || key == "fileChangesNoticeDurationSec") {
 						obj[key] = Number(settings[key]);
 					}
 					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging" || key === "syncHiddenFiles") {

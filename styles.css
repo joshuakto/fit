@@ -529,6 +529,10 @@
     background: var(--background-secondary-alt);
 }
 
+.fit-notice-extra-content {
+    margin-top: 20px;
+}
+
 /* === Obsidian config sync settings === */
 
 .fit-obsidian-sync-group {

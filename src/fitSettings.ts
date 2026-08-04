@@ -41,6 +41,7 @@ export interface FitSettings {
 	checkEveryXMinutes: number
 	autoSync: "on" | "off" | "muted" | "remind"
 	notifyChanges: boolean
+	fileChangesNoticeDurationSec: number   // 0 = stays until clicked
 	notifyConflicts: boolean
 	enableDebugLogging: boolean
 	syncHiddenFiles: boolean
@@ -58,6 +59,7 @@ export const DEFAULT_SETTINGS: FitSettings = {
 	checkEveryXMinutes: 5,
 	autoSync: "off",
 	notifyChanges: true,
+	fileChangesNoticeDurationSec: 0,   // preserves current "click to dismiss" behavior by default
 	notifyConflicts: true,
 	enableDebugLogging: true,
 	syncHiddenFiles: true,
