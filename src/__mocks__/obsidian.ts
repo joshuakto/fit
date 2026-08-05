@@ -61,10 +61,11 @@ export class Plugin extends Component {
 }
 
 export class Notice {
-	noticeEl: HTMLElement & { addClasses: (classes: string[]) => void };
-	constructor(_message: string) {
-		const el = document.createElement('div');
+	noticeEl: HTMLElement & { addClasses: (classes: string[]) => void; removeClasses: (classes: string[]) => void };
+	constructor(_message: string, _duration?: number) {
+		const el = enhanceElement(document.createElement('div'));
 		(el as any).addClasses = vi.fn();
+		(el as any).removeClasses = vi.fn();
 		this.noticeEl = el as any;
 	}
 	setMessage = vi.fn();

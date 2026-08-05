@@ -1,6 +1,12 @@
+// Unit tests for FitPlugin: persistence lifecycle, sync-outcome UI coordination, and
+// settings-driven notice behavior. Mocks only true external boundaries (Obsidian's
+// Notice/Modal/Plugin API via src/__mocks__/obsidian.ts); internal collaborators like
+// src/utils.ts's showFileChanges run for real so their own logic stays covered here.
+// See src/fitStatusExplainer.test.ts for the status-explanation formatting itself.
 import { describe, it, expect, vi, type Mock, beforeEach } from 'vitest';
 import FitPlugin from '@/fitPlugin';
 import { FitStatusModal } from '@/fitStatusModal';
+import { DEFAULT_SETTINGS } from '@/fitSettings';
 import type { LocalStores } from '@/localStores';
 import type { BlobSha } from '@/util/hashing';
 
@@ -14,6 +20,21 @@ vi.mock('@/fitStatusModal', () => ({
 		this.renderable = renderable;
 	})
 }));
+
+const { NoticeCtor } = vi.hoisted(() => ({ NoticeCtor: vi.fn() }));
+
+// Spy on the real (mocked-Obsidian) Notice constructor rather than mocking showFileChanges
+// itself, so showFileChanges's own DOM-building logic stays exercised by these tests.
+vi.mock('obsidian', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('obsidian')>();
+	class SpyNotice extends actual.Notice {
+		constructor(message: string, duration?: number) {
+			super(message, duration);
+			NoticeCtor(message, duration);
+		}
+	}
+	return { ...actual, Notice: SpyNotice };
+});
 
 // Minimal stand-in for FitSync: holds the plugin's saveLocalStoreCallback (passed in its
 // constructor exactly as real code does) and exposes a helper to simulate a sync save,
@@ -202,5 +223,67 @@ describe('FitPlugin.explainSyncStatus routing', () => {
 			await (plugin as any).explainSyncStatus();
 			expect(FitStatusModal).toHaveBeenCalledOnce();
 		}
+	});
+});
+
+describe('FitPlugin sync-success notice duration wiring', () => {
+	// fileChangesNoticeDurationSec is stored in seconds (Setting UI is a 0-60s slider);
+	// Notice's constructor wants milliseconds. This covers the unit conversion at the
+	// showFileChanges call site (src/fitPlugin.ts), not showFileChanges's own pass-through.
+	// settingsOverride left {} = no override, so DEFAULT_SETTINGS' own value (0) flows
+	// through untouched, same as a real fresh install.
+	function makeConfiguredPlugin(settingsOverride: Partial<typeof DEFAULT_SETTINGS> = {}) {
+		const plugin = makePlugin();
+		plugin.settings = {
+			...DEFAULT_SETTINGS,
+			pat: 'token', owner: 'alice', repo: 'notes', branch: 'main',
+			notifyChanges: true,
+			notifyConflicts: false,
+			...settingsOverride,
+		};
+		plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+		plugin.fitSyncRibbonIconEl = { addClass: vi.fn(), removeClass: vi.fn() } as any;
+		return plugin;
+	}
+
+	const successOutcome = {
+		success: true,
+		changeGroups: [{ heading: 'Local file updates:', changes: [{ path: 'notes/a.md', type: 'ADDED' }] }],
+		clash: []
+	};
+
+	beforeEach(() => {
+		NoticeCtor.mockClear();
+	});
+
+	// onSyncStart also creates a Notice ("Initiating sync"/"Auto syncing") independent of
+	// this setting, so we isolate the file-changes notice by its distinct (empty) message.
+	it('converts fileChangesNoticeDurationSec (seconds) to milliseconds for the Notice', async () => {
+		const plugin = makeConfiguredPlugin({ fileChangesNoticeDurationSec: 30 });
+		(plugin.fitSync as unknown as StubFitSync).sync.mockResolvedValue(successOutcome);
+
+		await (plugin as any).executeSyncWithUICoordination('manual');
+		await vi.waitFor(() => expect(NoticeCtor).toHaveBeenCalledWith('', 30000));
+	});
+
+	it('creates the notice with duration 0 when no custom duration is configured', async () => {
+		const plugin = makeConfiguredPlugin(); // no override - real DEFAULT_SETTINGS value is used
+		(plugin.fitSync as unknown as StubFitSync).sync.mockResolvedValue(successOutcome);
+
+		await (plugin as any).executeSyncWithUICoordination('manual');
+		await vi.waitFor(() => expect(NoticeCtor).toHaveBeenCalledWith('', 0));
+	});
+
+	it('does not create a file-changes notice when notifyChanges is disabled', async () => {
+		const plugin = makeConfiguredPlugin({ fileChangesNoticeDurationSec: 30 });
+		plugin.settings.notifyChanges = false;
+		(plugin.fitSync as unknown as StubFitSync).sync.mockResolvedValue(successOutcome);
+
+		await (plugin as any).executeSyncWithUICoordination('manual');
+		// Flush the fire-and-forget async block in executeSyncWithUICoordination
+		// so a false positive (call happening after assertion) can't hide here.
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(NoticeCtor).not.toHaveBeenCalledWith('', expect.anything());
 	});
 });
