@@ -709,17 +709,17 @@ interface JsonMergeSpec {
 }
 ```
 
-`mergeJson(local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization.
+`mergeJson(local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
 
-### Future extension: `.fitattributes`
+### Future extension: `.fitattributes` (#337)
 
-Canvas merge is the first use of the merge engine. A follow-up FR will add a `.fitattributes` file (analogous to `.gitattributes`) where users can declare:
+Canvas merge is the first use of the merge engine. #337 will add a `.fitattributes` file (analogous to `.gitattributes`) where users can declare:
 - Additional paths to merge with keyed-array semantics
 - Order-significance selectors (opt arrays into index-based merge)
-- Field exclusion selectors (ignore specific JSON paths during comparison)
+- Field exclusion selectors (ignore specific JSON paths during comparison) — required for #67
 - Text-mode policies (`always-local`, `always-remote`) for non-JSON files
 
-Until `.fitattributes` is implemented, only `.canvas` files use semantic merge.
+Until #337 is implemented, only `.canvas` files use semantic merge.
 
 ## Explain Sync Status
 

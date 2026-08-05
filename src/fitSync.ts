@@ -610,7 +610,8 @@ export class FitSync implements IFitSync {
 					const content = await this.fit.localVault.readFileContent(change.path);
 					this.fit.cachedMergeableContents[change.path] = content.toPlainText();
 				} catch {
-					// Best-effort; absent entry falls back to two-way merge next sync
+					// Best-effort; stale entry cleared so next sync falls back to two-way merge
+					delete this.fit.cachedMergeableContents[change.path];
 				}
 			}
 		}

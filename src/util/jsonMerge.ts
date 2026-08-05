@@ -11,7 +11,7 @@
  *
  * Design notes: docs/sync-logic.md § Semantic JSON Merge
  *
- * Future extension points (tracked in .fitattributes FR):
+ * Future extension points (tracked in #337 — .fitattributes):
  * - Order-significance selectors (opt arrays IN to ordered/index-based merge)
  * - Field exclusion selectors (ignore specific JSON paths during comparison)
  * - Text-mode policy (always-local, always-remote, clash) for non-JSON files
@@ -31,7 +31,7 @@ export interface JsonMergeSpec {
 	 * Example: { "nodes": "id", "edges": "id" }
 	 *
 	 * Paths are relative to the root object. Nested paths not yet supported
-	 * (deferred to .fitattributes implementation).
+	 * (deferred to #337 — .fitattributes).
 	 */
 	keyedArrays: Record<string, string>;
 }
@@ -127,10 +127,10 @@ function mergeObjects(
 	]);
 
 	for (const key of allKeys) {
-		if (key in spec.keyedArrays) continue; // handled below
+		if (Object.prototype.hasOwnProperty.call(spec.keyedArrays, key)) continue; // handled below
 
-		const inLocal = key in local;
-		const inRemote = key in remote;
+		const inLocal = Object.prototype.hasOwnProperty.call(local, key);
+		const inRemote = Object.prototype.hasOwnProperty.call(remote, key);
 
 		if (inLocal && inRemote) {
 			if (!deepEqual(local[key], remote[key])) {
@@ -143,7 +143,7 @@ function mergeObjects(
 				// Can't distinguish addition from deletion without base
 				return { merged: false, reason: `ambiguous one-sided presence of key "${key}" (no base available)` };
 			}
-			const inBase = key in base;
+			const inBase = Object.prototype.hasOwnProperty.call(base, key);
 			if (!inBase) {
 				// Key is new on one side → addition, include it
 				result[key] = inLocal ? local[key] : remote[key];
