@@ -8,7 +8,7 @@ import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, PlainTextContent } from './util/contentEncoding';
 import { FilePath } from './util/filePath';
-import { BlobSha, CommitSha, computeSha1, TreeSha } from "./util/hashing";
+import { BlobSha, CommitSha, computeGitBlobSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
 
@@ -826,8 +826,10 @@ export class FakeRemoteVault implements IVault<"remote"> {
 			fileContent = FileContent.fromPlainText(content);
 		}
 		this.files.set(path, fileContent);
-		// Store blob SHA -> content mapping for readFileContent
-		const sha = await computeSha1(path + fileContent.toBase64()) as BlobSha;
+		// Store blob SHA -> content mapping for readFileContent.
+		// Canonical git blob SHA (matches GitHub's actual blob SHAs) so tests exercise the same
+		// local/remote SHA comparability that production relies on (e.g. SHA parity fast paths).
+		const sha = await computeGitBlobSha(fileContent.toBytes());
 		this.blobShas.set(sha, fileContent.toBase64());
 	}
 
@@ -886,7 +888,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		for (const [path, content] of this.files.entries()) {
 			if (this.shouldTrackState(path)) {
 				const base64Content = content.toBase64();
-				const sha = await computeSha1(path + base64Content) as BlobSha;
+				const sha = await computeGitBlobSha(content.toBytes());
 				state[path] = sha;
 				// Store blob SHA -> content mapping for readFileContent if requested
 				if (storeBlobShaMapping) {

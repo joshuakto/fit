@@ -115,6 +115,28 @@ describe('FIT Plugin E2E Tests', function() {
 			// Test PAT authentication flow with stubbed GitHub API
 			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
 
+			// Obsidian 1.13+ defaults to opening Settings in a separate OS window
+			// on desktop (app.vault.getConfig('settingsPopoutWindow')), and on
+			// Android too — both stopped rendering settings in this test's
+			// same-window DOM. Force it off so Settings renders in-page, matching
+			// pre-1.13 behavior. Neither this config key nor app.setting.close()
+			// can be assumed to exist/behave safely on every platform, so this
+			// must not throw and block the actual open-settings command below.
+			try {
+				await browser.executeObsidian(({ app }) => {
+					try {
+						(app.vault as any).setConfig?.('settingsPopoutWindow', false);
+						if ((app as any).setting?.popout) {
+							(app as any).setting.close();
+						}
+					} catch (e) {
+						console.warn('settingsPopoutWindow workaround failed in-page:', String(e));
+					}
+				});
+			} catch (e) {
+				console.warn('settingsPopoutWindow workaround call itself failed:', String(e));
+			}
+
 			// 1. Open Obsidian settings
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
@@ -122,8 +144,15 @@ describe('FIT Plugin E2E Tests', function() {
 			// Take screenshot of settings page before trying to find FIT tab
 			await takeScreenshot('settings-opened');
 
-			// 2. Navigate to FIT plugin settings
+			// 2. Navigate to FIT plugin settings.
+			// Screenshot-confirmed: on Android, Settings can open directly onto
+			// the last-active tab's content (no .vertical-tab-nav-item list
+			// visible at all in that case), so check whether we're already
+			// looking at FIT's pane before assuming there's a tab left to click.
 			const fitTabFound = await browser.executeObsidian(() => {
+				if (document.querySelector('input[placeholder*="personal access token"]')) {
+					return true;
+				}
 				// Find FIT tab in settings sidebar (case-insensitive search)
 				const fitTab = Array.from(document.querySelectorAll('.vertical-tab-nav-item'))
 					.find(el => el.textContent?.toLowerCase().includes('fit'));

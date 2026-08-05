@@ -99,6 +99,8 @@ export function determineLocalChecksNeeded(
  * @param baselineShas - Baseline SHA cache for detecting unchanged files (#169)
  * @param currentShas - Current SHAs for files that exist locally
  * @param isProtectedPath - Function to check if path is protected
+ * @param remoteShas - Incoming remote blob SHAs, keyed by path — used to detect that a local
+ *   untracked file already has the same content as the remote arrival (no real clash)
  * @returns Sets of paths categorized by block reason
  */
 export function resolveUntrackedState(
@@ -107,7 +109,8 @@ export function resolveUntrackedState(
 	filesystemState: Map<string, boolean | null>,
 	baselineShas: FileStates,
 	currentShas: Map<string, BlobSha>,
-	isProtectedPath: (path: string) => boolean
+	isProtectedPath: (path: string) => boolean,
+	remoteShas: FileStates = {}
 ): {
 	protectedPaths: Set<string>;
 	untrackedPaths: Set<string>;
@@ -148,10 +151,18 @@ export function resolveUntrackedState(
 		}
 
 		// Case 4: File exists locally but wasn't in scan (untracked)
-		// Check if it's unchanged from baseline (#169)
-		const baselineSha = baselineShas[remoteChange.path];
 		const currentSha = currentShas.get(remoteChange.path);
 
+		// Local content already matches the incoming remote content - nothing to reconcile,
+		// regardless of whether a baseline exists (e.g. two devices independently producing
+		// the same edit, such as two sync plugins racing on the same note).
+		const remoteSha = remoteShas[remoteChange.path];
+		if (currentSha !== undefined && remoteSha !== undefined && currentSha === remoteSha) {
+			continue;
+		}
+
+		// Check if it's unchanged from baseline (#169)
+		const baselineSha = baselineShas[remoteChange.path];
 		if (baselineSha !== undefined && currentSha !== undefined && currentSha === baselineSha) {
 			// Unchanged from baseline - clear for remote (no action needed)
 			continue;
@@ -174,13 +185,18 @@ export function resolveUntrackedState(
  * @param remoteChanges - Changes detected in remote vault
  * @param protectedPaths - Paths blocked by sync policy (shouldSyncPath)
  * @param untrackedPaths - Paths with unknown state (stat failed or untracked changes)
+ * @param localShas - Current local blob SHAs, keyed by path — used to detect that a local change
+ *   and a remote change independently produced identical content (no real clash)
+ * @param remoteShas - Incoming remote blob SHAs, keyed by path
  * @returns Final categorization into safe changes, clashes, and protected remote arrivals
  */
 export function resolveAllChanges(
 	localChanges: FileChange[],
 	remoteChanges: FileChange[],
 	protectedPaths: Set<string>,
-	untrackedPaths: Set<string>
+	untrackedPaths: Set<string>,
+	localShas: FileStates = {},
+	remoteShas: FileStates = {}
 ): {
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
@@ -200,6 +216,18 @@ export function resolveAllChanges(
 		const remoteChange = remoteChanges.find(c => c.path === localChange.path);
 
 		if (remoteChange) {
+			// Both sides changed content independently - but if the resulting content is
+			// byte-identical (e.g. two devices/sync plugins converging on the same edit),
+			// there is nothing to reconcile: skip entirely (no push, no pull, no _fit/ write).
+			const localSha = localShas[localChange.path];
+			const remoteSha = remoteShas[remoteChange.path];
+			if (
+				localChange.type !== "REMOVED" && remoteChange.type !== "REMOVED" &&
+				localSha !== undefined && remoteSha !== undefined && localSha === remoteSha
+			) {
+				continue;
+			}
+
 			// Both sides changed - definite clash
 			clashes.push({
 				path: localChange.path,
