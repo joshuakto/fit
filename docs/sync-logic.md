@@ -686,18 +686,26 @@ Some file types can be merged automatically even when both local and remote chan
 
 ### Canvas files (`.canvas`)
 
-Canvas files are JSON with the schema `{ nodes: [{id, ...}], edges: [{id, ...}] }`. Both arrays are **id-keyed sets** — element order is not meaningful (position is encoded in `x`/`y` fields, not array index). Two devices editing the same canvas independently almost always produce disjoint additions, making set-union merge safe and correct.
+Canvas files are JSON with the schema `{ nodes: [{id, ...}], edges: [{id, ...}] }`. Both arrays are **id-keyed sets** — element order is not meaningful (position is encoded in `x`/`y` fields, not array index). Two devices editing the same canvas independently most often produce disjoint changes, and even overlapping changes on different fields of the same node can be resolved unambiguously with a merge base.
+
+**Three-way merge base:** Before running merges for confirmed-clashing canvas files, FIT fetches the base version — the content as of the last successful sync — directly from GitHub using `lastFetchedRemoteShas[path]` as the blob SHA. All base fetches run in parallel before any merges are attempted. If a fetch fails (network error, or path is in `pendingClashes` where the base semantics are ambiguous), the merge falls back gracefully to two-way behavior.
 
 **Merge semantics:**
-- Nodes/edges arrays: union by `id`; per-element conflict (same `id`, different content) → falls back to `_fit/` clash file
-- Items with matching `id` and identical content → no conflict, no duplication
+- Nodes/edges arrays: merged by `id`, order-agnostic (array reordering on one side doesn't cause spurious conflicts; remote item order is preserved, local-only additions appended)
+- Items with matching `id` and identical content on both sides → no conflict, taken as-is
+- Items with matching `id` but different content → three-way resolution using base item:
+  - Base matches remote → remote didn't change it; take local version
+  - Base matches local → local didn't change it; take remote version
+  - Base matches neither → both sides genuinely changed the same item → falls back to `_fit/` clash file
+  - Base unavailable → any same-id difference → falls back to `_fit/` clash file (two-way fallback)
+- Items only on one side → included from that side (set-union)
 - Other top-level keys present in both: equal values → included; different values → falls back to `_fit/` clash file (no silent data loss)
 - Keys present on only one side → included from that side
 - Parse failure or non-object root → falls back to `_fit/` clash file
 
 **Result:** merged content written to the local file, SHA stored in baseline, path excluded from `pendingClashes`. From the user's perspective, no clash ever occurred.
 
-**Implementation:** [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts) (merge engine + `CANVAS_MERGE_SPEC`), [`src/fitSync.ts`](../src/fitSync.ts) (canvas auto-merge block before `clashFiles` computation)
+**Implementation:** [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts) (merge engine + `CANVAS_MERGE_SPEC`), [`src/remoteGitHubVault.ts`](../src/remoteGitHubVault.ts) (`readFileBlobBySha` for base fetch), [`src/fitSync.ts`](../src/fitSync.ts) (parallel base pre-fetch + canvas auto-merge block before `clashFiles` computation)
 
 ### Merge engine design (`JsonMergeSpec`)
 
@@ -709,7 +717,7 @@ interface JsonMergeSpec {
 }
 ```
 
-`mergeJson(local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
+`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
 
 ### Future extension: `.fitattributes` (#337)
 

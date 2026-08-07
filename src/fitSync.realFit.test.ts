@@ -2647,6 +2647,36 @@ describe('FitSync', () => {
 			expect(merged.edges.map((e: any) => e.id)).toEqual(expect.arrayContaining(['e1', 'e2']));
 		});
 
+		it('three-way merge resolves same-node position change vs remote addition without clash', async () => {
+			// Discriminating case: local moved node 'a'; remote added node 'b' and left 'a' unchanged.
+			// Two-way merge (no base) sees a@local != a@remote → conflict.
+			// Three-way merge sees base_item == remote_item for 'a' → remote unchanged → local wins.
+			const fitSync = createFitSync();
+
+			// Sync 1: establish baseline so lastFetchedRemoteShas has the initial blob SHA.
+			const initialCanvas = canvasJson([node('a', 0, 0)]);
+			localVault.setFile('board.canvas', initialCanvas);
+			await remoteVault.setFile('board.canvas', initialCanvas);
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Both sides diverge from the baseline.
+			localVault.setFile('board.canvas', canvasJson([node('a', 100, 100)]));       // local: 'a' moved
+			await remoteVault.setFile('board.canvas', canvasJson([node('a', 0, 0), node('b', 200, 200)])); // remote: 'b' added, 'a' untouched
+
+			// Sync 2: three-way merge should resolve without a clash file.
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/board.canvas');
+
+			const merged = JSON.parse(files['board.canvas']);
+			const nodeA = merged.nodes.find((n: { id: string }) => n.id === 'a');
+			const nodeB = merged.nodes.find((n: { id: string }) => n.id === 'b');
+			expect(nodeA).toMatchObject({ id: 'a', x: 100, y: 100 }); // local position wins (remote didn't change it)
+			expect(nodeB).toMatchObject({ id: 'b' });                   // remote addition included
+		});
+
 		it('non-canvas files with clashes still go to _fit/ unaffected', async () => {
 			const fitSync = createFitSync();
 			localVault.setFile('note.md', 'local version');

@@ -186,7 +186,12 @@ function mergeObjects(
 			continue;
 		}
 
-		const arrayResult = mergeKeyedArrays(localArr as unknown[], remoteArr as unknown[], idKey);
+		const arrayResult = mergeKeyedArrays(
+			localArr as unknown[],
+			remoteArr as unknown[],
+			Array.isArray(baseArr) ? baseArr as unknown[] : undefined,
+			idKey,
+		);
 		if (!arrayResult.ok) {
 			return { merged: false, reason: `conflicting edits to element with ${idKey}=${String(arrayResult.conflictId)} in "${key}"` };
 		}
@@ -197,40 +202,63 @@ function mergeObjects(
 }
 
 /**
- * Merge two arrays as id-keyed sets.
+ * Merge two arrays as id-keyed sets with optional three-way resolution.
  *
- * Algorithm:
- * 1. Start with remote array in remote order
- * 2. Append local-only items (items whose id key is absent from remote)
- * 3. If same id exists in both but content differs → conflict (caller falls back to clash file)
+ * Remote order is preserved. Local-only items (ids absent from remote) are appended.
+ * For same-id items with differing content, three-way resolution is attempted when
+ * base is available: if only one side changed, that side wins; if both changed, conflict.
+ * With no base, any same-id difference is a conflict (two-way fallback).
  *
  * Items without the id key field are kept from remote only (conservative).
  */
 function mergeKeyedArrays(
 	local: unknown[],
 	remote: unknown[],
+	base: unknown[] | undefined,
 	idKey: string,
 ): ArrayMergeResult {
-	const remoteById = new Map<unknown, unknown>();
-	for (const item of remote) {
-		if (isObject(item) && idKey in item) {
-			remoteById.set((item as Record<string, unknown>)[idKey], item);
-		}
-	}
+	const hasId = (item: unknown): item is Record<string, unknown> =>
+		isObject(item) && Object.prototype.hasOwnProperty.call(item, idKey);
 
-	const localOnly: unknown[] = [];
+	const localById = new Map<unknown, unknown>();
 	for (const item of local) {
-		if (!isObject(item)) continue;
-		const id = (item as Record<string, unknown>)[idKey];
-		if (id === undefined) continue;
-		if (!remoteById.has(id)) {
-			localOnly.push(item);
-		} else if (!deepEqual(item, remoteById.get(id))) {
-			return { ok: false, conflictId: id };
+		if (hasId(item)) localById.set(item[idKey], item);
+	}
+
+	const baseById = new Map<unknown, unknown>();
+	if (base !== undefined) {
+		for (const item of base) {
+			if (hasId(item)) baseById.set(item[idKey], item);
 		}
 	}
 
-	return { ok: true, value: [...remote, ...localOnly] };
+	const seenIds = new Set<unknown>();
+	const result: unknown[] = [];
+
+	for (const remoteItem of remote) {
+		if (!hasId(remoteItem)) { result.push(remoteItem); continue; }
+		const id = remoteItem[idKey];
+		seenIds.add(id);
+		const localItem = localById.get(id);
+		if (localItem === undefined || deepEqual(localItem, remoteItem)) {
+			result.push(remoteItem);
+			continue;
+		}
+		// Same id, different content — attempt three-way resolution
+		const baseItem = baseById.get(id);
+		if (baseItem !== undefined) {
+			if (deepEqual(baseItem, remoteItem)) { result.push(localItem); continue; } // remote unchanged → local wins
+			if (deepEqual(baseItem, localItem))  { result.push(remoteItem); continue; } // local unchanged → remote wins
+		}
+		return { ok: false, conflictId: id }; // no base or genuine divergence
+	}
+
+	for (const item of local) {
+		if (!hasId(item)) continue;
+		if (!seenIds.has(item[idKey])) result.push(item);
+	}
+
+	return { ok: true, value: result };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

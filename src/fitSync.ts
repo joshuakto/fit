@@ -486,36 +486,55 @@ export class FitSync implements IFitSync {
 		// Successful merges bypass _fit/ entirely; the merged result is written locally and
 		// pushed on the next sync. mergedPaths tells applyRemoteChanges these are safe to
 		// write even when not yet in localShas (caller already incorporated local content).
+		const canvasClashCandidates = clashes
+			.filter(c => c.remoteOp !== 'REMOVED')
+			.filter(c => !pendingReminderPaths.has(c.path))
+			.filter(c => c.path.endsWith('.canvas'));
+
+		// Pre-fetch base blobs in parallel before running merges (three-way merge base).
+		// Base = content at last successful sync = lastFetchedRemoteShas blob SHA.
+		const canvasBaseTexts = new Map<string, string | null>();
+		await Promise.all(canvasClashCandidates.map(async (clash) => {
+			const baseSha = this.fit.lastFetchedRemoteShas[clash.path];
+			if (!baseSha) { canvasBaseTexts.set(clash.path, null); return; }
+			try {
+				const content = await this.fit.remoteVault.readFileBlobBySha(baseSha);
+				canvasBaseTexts.set(clash.path, content.toPlainText());
+				fitLogger.log('... [FitSync] Fetched base blob for canvas merge', { path: clash.path, sha: baseSha });
+			} catch (e) {
+				fitLogger.log('... [FitSync] Base blob fetch failed, falling back to two-way merge', { path: clash.path, sha: baseSha, error: String(e) });
+				canvasBaseTexts.set(clash.path, null);
+			}
+		}));
+
 		const autoMergedCanvasClashes: Array<{path: string, content: FileContent}> = [];
 		const autoMergeFailedClashPaths = new Set<string>();
 
 		await Promise.all(
-			clashes
-				.filter(c => c.remoteOp !== 'REMOVED')
-				.filter(c => !pendingReminderPaths.has(c.path))
-				.filter(c => c.path.endsWith('.canvas'))
-				.map(async (clash) => {
-					const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
-					const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
-					if (remoteContent === null || localContent === null) {
-						autoMergeFailedClashPaths.add(clash.path);
-						return;
-					}
-					const baseText = this.fit.cachedMergeableContents[clash.path] ?? null;
-					const result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
-					if (!result.merged) {
-						fitLogger.log('[FitSync] Canvas auto-merge failed, falling back to clash', {
-							path: clash.path, reason: result.reason,
-						});
-						autoMergeFailedClashPaths.add(clash.path);
-						return;
-					}
-					this.fit.cachedMergeableContents[clash.path] = serialiseMerged(result.value);
-					autoMergedCanvasClashes.push({
-						path: clash.path,
-						content: FileContent.fromPlainText(serialiseMerged(result.value)),
+			canvasClashCandidates.map(async (clash) => {
+				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
+				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
+				if (remoteContent === null || localContent === null) {
+					autoMergeFailedClashPaths.add(clash.path);
+					return;
+				}
+				const baseText = canvasBaseTexts.get(clash.path) ?? null;
+				const result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+				if (!result.merged) {
+					fitLogger.log('.. [FitSync] Canvas auto-merge failed, falling back to clash', {
+						path: clash.path, reason: result.reason,
 					});
-				})
+					autoMergeFailedClashPaths.add(clash.path);
+					return;
+				}
+				fitLogger.log('.. [FitSync] Canvas auto-merge succeeded', {
+					path: clash.path, hadBase: baseText !== null,
+				});
+				autoMergedCanvasClashes.push({
+					path: clash.path,
+					content: FileContent.fromPlainText(serialiseMerged(result.value)),
+				});
+			})
 		);
 
 		const clashFiles = await Promise.all(
@@ -596,26 +615,6 @@ export class FitSync implements IFitSync {
 			});
 		}
 
-		// Populate merge base cache for successfully synced canvas files.
-		// Pulled canvas files: content already in memory from the download.
-		for (const item of addToLocalNonClashed) {
-			if (item.path.endsWith('.canvas')) {
-				this.fit.cachedMergeableContents[item.path] = item.content.toPlainText();
-			}
-		}
-		// Pushed canvas files: local content is now the shared base.
-		for (const change of safeLocal) {
-			if (change.type !== 'REMOVED' && change.path.endsWith('.canvas')) {
-				try {
-					const content = await this.fit.localVault.readFileContent(change.path);
-					this.fit.cachedMergeableContents[change.path] = content.toPlainText();
-				} catch {
-					// Best-effort; stale entry cleared so next sync falls back to two-way merge
-					delete this.fit.cachedMergeableContents[change.path];
-				}
-			}
-		}
-
 		// 3b'. Track protected path SHA arrivals for opt-in reconciliation.
 		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
 		// Only the remote SHA is recorded — no content download, no _fit/ write.
@@ -646,7 +645,6 @@ export class FitSync implements IFitSync {
 		// Remove deleted files from state
 		for (const path of deleteFromLocalNonClashed) {
 			delete newLocalState[path];
-			delete this.fit.cachedMergeableContents[path];
 		}
 
 		// Update pendingClashes: newly-clashed tracked files enter pending state.
@@ -662,8 +660,6 @@ export class FitSync implements IFitSync {
 					this.fit.pendingClashes.push(clash.path);
 				}
 				delete newLocalState[clash.path];
-				// Stale base would corrupt the next merge attempt after the user resolves this clash.
-				delete this.fit.cachedMergeableContents[clash.path];
 			}
 		}
 
@@ -739,7 +735,7 @@ export class FitSync implements IFitSync {
 		return {
 			localOps: localFileOpsRecord.changes,
 			remoteOps: pushedChanges,
-			conflicts: clashes,
+			conflicts: clashes.filter(c => !mergedPaths.has(c.path)),
 			newlySkippedPaths,
 			skippedWarning: pushResult?.skippedWarning,
 			rateLimitedPaths,

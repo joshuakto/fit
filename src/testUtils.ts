@@ -927,6 +927,14 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		return FileContent.fromBase64(content.toBase64());
 	}
 
+	async readFileBlobBySha(sha: BlobSha): Promise<FileContent> {
+		const base64 = this.blobShas.get(sha);
+		if (base64 === undefined) {
+			throw new Error(`Blob SHA not found: ${sha}`);
+		}
+		return FileContent.fromBase64(base64);
+	}
+
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>,

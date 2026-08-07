@@ -59,6 +59,30 @@ describe('mergeJson', () => {
 			expect(result).toMatchObject({ merged: false, reason: expect.stringContaining('a') });
 		});
 
+		it('three-way: remote unchanged from base → local edit wins', () => {
+			const base = JSON.stringify({ items: [{ id: 'a', val: 'base' }] });
+			const local = JSON.stringify({ items: [{ id: 'a', val: 'local' }] });
+			const remote = JSON.stringify({ items: [{ id: 'a', val: 'base' }] }); // remote unchanged
+			const result = mergeJson(base, local, remote, spec);
+			expect(result).toEqual({ merged: true, value: { items: [{ id: 'a', val: 'local' }] } });
+		});
+
+		it('three-way: local unchanged from base → remote edit wins', () => {
+			const base = JSON.stringify({ items: [{ id: 'a', val: 'base' }] });
+			const local = JSON.stringify({ items: [{ id: 'a', val: 'base' }] }); // local unchanged
+			const remote = JSON.stringify({ items: [{ id: 'a', val: 'remote' }] });
+			const result = mergeJson(base, local, remote, spec);
+			expect(result).toEqual({ merged: true, value: { items: [{ id: 'a', val: 'remote' }] } });
+		});
+
+		it('three-way: both sides changed same item → genuine conflict', () => {
+			const base = JSON.stringify({ items: [{ id: 'a', val: 'base' }] });
+			const local = JSON.stringify({ items: [{ id: 'a', val: 'local' }] });
+			const remote = JSON.stringify({ items: [{ id: 'a', val: 'remote' }] });
+			const result = mergeJson(base, local, remote, spec);
+			expect(result).toMatchObject({ merged: false, reason: expect.stringContaining('a') });
+		});
+
 		it('same-id with identical content is not a conflict', () => {
 			const local = JSON.stringify({ items: [{ id: 'a', val: 'same' }] });
 			const remote = JSON.stringify({ items: [{ id: 'a', val: 'same' }] });

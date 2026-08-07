@@ -52,7 +52,6 @@ export class Fit {
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
-	cachedMergeableContents: Record<string, string> = {}; // In-memory cache; last-synced content for merge-eligible paths (e.g. .canvas)
 	obsidianSyncRules: ObsidianSyncRules;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
