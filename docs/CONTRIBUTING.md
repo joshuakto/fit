@@ -43,6 +43,8 @@ Check the milestone for upcoming release priorities and progress.
 
 ### Long-Term Strategic Priorities
 
+_These priorities operationalize the philosophy in [architecture.md § Design Principles](./architecture.md#design-principles) (never lose data, minimize forced user intervention, conservative opt-in, minimize sync churn)._
+
 **🛡️ Core Stability** (always active):
 - **Data loss prevention** - Filesystem safety, reliable deletion handling
 - **Sync reliability** - Handle edge cases, large files, encoding issues
@@ -120,6 +122,7 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 - **Handle errors gracefully** especially for GitHub API calls
 - **Preserve user data** during sync conflicts
 - **Test edge cases** (large files, network issues, invalid credentials)
+- **Mobile compatibility is normative, not optional** — no Node.js built-ins, no `Buffer`, no non-fatal `TextDecoder`. See [api-compatibility.md](./api-compatibility.md) for the full list; violations cause silent failures or crashes on mobile
 
 ## Release Process
 
@@ -174,6 +177,8 @@ See [Obsidian Hub release guide](https://publish.obsidian.md/hub/04+-+Guides%2C+
 
 ## Pending README changes for next stable release
 
+`README.md` is shipped as-is in the Obsidian community plugin directory, so it must always describe the current **stable** release — not unreleased changes sitting in `main` or beta. Upcoming features may be hinted at, but only clearly labeled as upcoming, never presented as already generally available.
+
 Apply these manually when cutting stable, then clear the list. Add to this list as you ship features that change what README says.
 
 - **Remove "still in beta" note** (line ~20): delete the `**Note:** This plugin is still in beta...` line.
@@ -189,6 +194,8 @@ Apply these manually when cutting stable, then clear the list. Add to this list 
 Please use your judgement and try to follow conventions from surrounding code to keep project quality high. Most critical project guidelines will be validated by GitHub checks on PRs, so there aren't too many strict requirements you need to follow.
 
 **Linting**: Check for code style issues with `npm run lint` and automatically fix fixable issues with `npm run lint:fix`.
+
+**Testing**: One test = one thing (use parameterized tests for variations, not near-duplicate tests hitting the same line). Mock only true external boundaries (Obsidian's API) — mocking our own internal modules hides real regressions instead of catching them.
 
 If you'd like to help set up more automated checking, there are a few quality aspects we don't have automated checks for but would like to:
 

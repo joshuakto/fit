@@ -260,13 +260,30 @@ Extend notification system for:
 - User data is never lost during sync conflicts
 - Graceful degradation when network/API issues occur
 - Error scenarios should clearly communicate problems to users so they can resolve problems
+- ✅ *e.g.* a clash writes the remote version to `_fit/` instead of overwriting the local file
+- ❌ *not this* — silently picking "last write wins" and discarding the other version
+
+### Minimal Friction
+- Manual intervention is reserved for genuine ambiguity — safely automatable merges (e.g. canvas auto-merge) resolve without blocking sync
+- Special/config paths (`.obsidian/`) sync only when explicitly opted in — nothing ambiguous syncs by default
+- Sync design minimizes churn between multiple syncing clients (baseline/SHA caching avoids re-triggering the same change back and forth)
+- ✅ *e.g.* two devices editing different, non-overlapping fields of the same `.canvas` file merge automatically — no prompt
+- ❌ *not this* — requiring manual approval for every field change even when local and remote touched entirely disjoint fields
+- ❌ *not this* — saving a clash to `_fit/foo` but then pushing local `foo` over remote anyway: git's content would churn from remote to local version
+- ❌ *not this* — blocking the whole sync because one file is clashed, instead of letting every other file proceed
+- ❌ *not this* — syncing an entire settings file whose values differ by platform (e.g. a UI layout setting), so switching devices repeatedly overwrites the other device's preferred value
 
 ### 👤 User Agency
 - Users maintain full control over conflict resolution
 - Clear feedback about what changes will occur
 - Easy rollback through git history
+- ✅ *e.g.* periodic auto-sync is opt-in — users choose whether and how often it runs, it's never forced on
+- ✅ *e.g.* Explain Sync Status shows pending changes and clashes before anything happens
+- ❌ *not this* — silently syncing on a schedule the user never enabled or can't see running
 
 ### Cross-Platform Consistency
 - Identical behavior on desktop and mobile Obsidian
 - Platform-agnostic file handling and sync logic
 - Consistent UI patterns across environments
+- ✅ *e.g.* CI runs Appium E2E tests against the earliest and latest supported Obsidian versions to catch compatibility regressions before they ship
+- ❌ *not this* — reaching for an internal/undocumented API that happens to work today, without confirming it's reliably available everywhere

@@ -2,13 +2,15 @@
 
 ## Local overrides
 
-**If `AGENTS.local.md` exists in the repo root, you MUST read it before proceeding.** It contains personal workflow details, tool-specific conventions, and session startup instructions that take precedence over this file.
+**You MUST read @AGENTS.local.md before proceeding if it exists.** It contains personal workflow details, tool-specific conventions, and session startup instructions that take precedence over this file.
 
 ---
 
 ## Project
 
 FIT is an Obsidian plugin that syncs vault files to GitHub. It must run on both desktop and mobile (Obsidian's mobile environment has no Node.js).
+
+Core design tenets (never lose data, minimize forced user intervention, conservative opt-in for special files, minimize sync churn between clients): see [docs/architecture.md § Design Principles](docs/architecture.md#design-principles).
 
 Key docs:
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** — setup, PR process, release workflow, roadmap and current milestone
@@ -38,6 +40,7 @@ See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
 **Commands**: `npm test`, `npm run typecheck && npm run lint`
 **Targeted test**: `npm test -- --testNamePattern="pattern"`
 **Architecture**: Vaults (storage) → Fit/FitSync (sync logic) → src/fitPlugin.ts (Obsidian integration)
+**Testing conventions**: see [docs/CONTRIBUTING.md § Code Quality](docs/CONTRIBUTING.md#code-quality)
 
 ---
 

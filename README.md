@@ -19,6 +19,14 @@ This project is a community collaboration. If you'd like to contribute please ch
 
 **Note:** This plugin is still in beta, please backup your vault before using this plugin.
 
+## Why FIT
+
+- **Conflict-safe by design** — conflicting changes are preserved side-by-side, never silently overwritten
+- **Sync doesn't block you unnecessarily** — safe changes merge automatically; only genuine conflicts need your input
+- **Nothing sensitive syncs by chance** — config/settings files (`.obsidian/`) are opt-in, not synced by default
+
+See [docs/architecture.md § Design Principles](docs/architecture.md#design-principles) for the full philosophy behind these choices.
+
 ## Coming soon
 
 **Sync status overview** — an upcoming command ("Explain Sync Status") will open a detailed view of your vault's sync state: pending local changes, unresolved conflicts, files too large to push, and auto-sync timing. Preview:
