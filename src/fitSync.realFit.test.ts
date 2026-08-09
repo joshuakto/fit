@@ -2560,4 +2560,142 @@ describe('FitSync', () => {
 			});
 		});
 	});
+
+	describe('Canvas auto-merge (#309)', () => {
+		const node = (id: string, x = 0, y = 0) =>
+			({ id, type: 'file', file: `${id}.md`, x, y, width: 400, height: 400 });
+		const canvasJson = (nodes: object[], edges: object[] = []) =>
+			JSON.stringify({ nodes, edges }, null, '\t');
+
+		async function setupSyncedCanvas(fitSync: FitSync, content: string) {
+			localVault.setFile('board.canvas', content);
+			await remoteVault.setFile('board.canvas', content);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+		}
+
+		it('independent node additions on both sides auto-merge without a clash file', async () => {
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a')]);
+			await setupSyncedCanvas(fitSync, base);
+
+			localVault.setFile('board.canvas', canvasJson([node('a'), node('local')]));
+			await remoteVault.setFile('board.canvas', canvasJson([node('a'), node('remote')]));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/board.canvas');
+
+			const merged = JSON.parse(files['board.canvas']);
+			expect(merged.nodes.map((n: any) => n.id)).toEqual(expect.arrayContaining(['a', 'local', 'remote']));
+		});
+
+		it('auto-merged canvas not added to pendingClashes', async () => {
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a')]);
+			await setupSyncedCanvas(fitSync, base);
+
+			localVault.setFile('board.canvas', canvasJson([node('a'), node('local')]));
+			await remoteVault.setFile('board.canvas', canvasJson([node('a'), node('remote')]));
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.pendingClashes).not.toContain('board.canvas');
+		});
+
+		it('same-node conflict (both sides edit same id): falls back to _fit/ clash file', async () => {
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a', 0, 0)]);
+			await setupSyncedCanvas(fitSync, base);
+
+			localVault.setFile('board.canvas', canvasJson([node('a', 100, 100)]));
+			await remoteVault.setFile('board.canvas', canvasJson([node('a', 999, 999)]));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).toHaveProperty('_fit/board.canvas');
+			const local = JSON.parse(files['board.canvas']);
+			expect(local.nodes[0]).toMatchObject({ id: 'a', x: 100, y: 100 });
+		});
+
+		it('edge additions from both sides auto-merge', async () => {
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a'), node('b'), node('c')], []);
+			await setupSyncedCanvas(fitSync, base);
+
+			localVault.setFile('board.canvas', canvasJson(
+				[node('a'), node('b'), node('c')],
+				[{ id: 'e1', fromNode: 'a', fromSide: 'right', toNode: 'b', toSide: 'left' }]
+			));
+			await remoteVault.setFile('board.canvas', canvasJson(
+				[node('a'), node('b'), node('c')],
+				[{ id: 'e2', fromNode: 'b', fromSide: 'right', toNode: 'c', toSide: 'left' }]
+			));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const merged = JSON.parse(localVault.getAllFilesAsRaw()['board.canvas']);
+			expect(merged.edges.map((e: any) => e.id)).toEqual(expect.arrayContaining(['e1', 'e2']));
+		});
+
+		it('three-way merge resolves same-node position change vs remote addition without clash', async () => {
+			// Discriminating case: local moved node 'a'; remote added node 'b' and left 'a' unchanged.
+			// Two-way merge (no base) sees a@local != a@remote → conflict.
+			// Three-way merge sees base_item == remote_item for 'a' → remote unchanged → local wins.
+			const fitSync = createFitSync();
+
+			// Sync 1: establish baseline so lastFetchedRemoteShas has the initial blob SHA.
+			const initialCanvas = canvasJson([node('a', 0, 0)]);
+			localVault.setFile('board.canvas', initialCanvas);
+			await remoteVault.setFile('board.canvas', initialCanvas);
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Both sides diverge from the baseline.
+			localVault.setFile('board.canvas', canvasJson([node('a', 100, 100)]));       // local: 'a' moved
+			await remoteVault.setFile('board.canvas', canvasJson([node('a', 0, 0), node('b', 200, 200)])); // remote: 'b' added, 'a' untouched
+
+			// Sync 2: three-way merge should resolve without a clash file.
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/board.canvas');
+
+			const merged = JSON.parse(files['board.canvas']);
+			const nodeA = merged.nodes.find((n: { id: string }) => n.id === 'a');
+			const nodeB = merged.nodes.find((n: { id: string }) => n.id === 'b');
+			expect(nodeA).toMatchObject({ id: 'a', x: 100, y: 100 }); // local position wins (remote didn't change it)
+			expect(nodeB).toMatchObject({ id: 'b' });                   // remote addition included
+		});
+
+		it('non-canvas files with clashes still go to _fit/ unaffected', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('note.md', 'local version');
+			await remoteVault.setFile('note.md', 'original');
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			localVault.setFile('note.md', 'local edits');
+			await remoteVault.setFile('note.md', 'remote edits');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/note.md');
+			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+	});
 });

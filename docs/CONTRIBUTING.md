@@ -179,7 +179,7 @@ Apply these manually when cutting stable, then clear the list. Add to this list 
 - **Remove "still in beta" note** (line ~20): delete the `**Note:** This plugin is still in beta...` line.
 - **Remove "Coming soon" section**: the "Explain Sync Status" command shipped in 1.6 — delete the entire `## Coming soon` block (the heading, description, and preview image).
 - **Update `.obsidian/` bullet** (under "NOT synced"): remove the `(selective opt-in coming in 1.6)` qualifier — it shipped.
-- **Convert "Coming in the 1.6 release" callout** to present tense: the hidden-files and selective `.obsidian/` sync features are both live. Rewrite as "New in 1.6:" rather than "Coming in the 1.6 release:".
+- **Convert "Coming in the 1.6 release" callout** to present tense: the hidden-files, selective `.obsidian/` sync, and canvas auto-merge features are all live. Rewrite as "New in 1.6:" rather than "Coming in the 1.6 release:". Also move the canvas auto-merge bullet into the conflict handling section as a permanent feature description (remove the "coming in" framing).
 - **Retake the settings screenshot** (line ~39): the current screenshot predates 1.5 UI changes. Capture a fresh screenshot of the FIT settings panel and replace the image at that line.
 
 ---

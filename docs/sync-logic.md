@@ -680,6 +680,55 @@ flowchart TD
 - Subsequent syncs hold the file in pending state until resolved — see [Pending Clash State Machine](#pending-clash-state-machine)
 - Binary files (`.png`, `.jpg`, `.pdf`) saved as-is to 📁 `_fit/`
 
+## Semantic JSON Merge
+
+Some file types can be merged automatically even when both local and remote changed, avoiding a `_fit/` clash file. Canvas files (`.canvas`) are the first supported type.
+
+### Canvas files (`.canvas`)
+
+Canvas files are JSON with the schema `{ nodes: [{id, ...}], edges: [{id, ...}] }`. Both arrays are **id-keyed sets** — element order is not meaningful (position is encoded in `x`/`y` fields, not array index). Two devices editing the same canvas independently most often produce disjoint changes, and even overlapping changes on different fields of the same node can be resolved unambiguously with a merge base.
+
+**Three-way merge base:** Before running merges for confirmed-clashing canvas files, FIT fetches the base version — the content as of the last successful sync — directly from GitHub using `lastFetchedRemoteShas[path]` as the blob SHA. All base fetches run in parallel before any merges are attempted. If a fetch fails (network error, or path is in `pendingClashes` where the base semantics are ambiguous), the merge falls back gracefully to two-way behavior.
+
+**Merge semantics:**
+- Nodes/edges arrays: merged by `id`, order-agnostic (array reordering on one side doesn't cause spurious conflicts; remote item order is preserved, local-only additions appended)
+- Items with matching `id` and identical content on both sides → no conflict, taken as-is
+- Items with matching `id` but different content → three-way resolution using base item:
+  - Base matches remote → remote didn't change it; take local version
+  - Base matches local → local didn't change it; take remote version
+  - Base matches neither → both sides genuinely changed the same item → falls back to `_fit/` clash file
+  - Base unavailable → any same-id difference → falls back to `_fit/` clash file (two-way fallback)
+- Items only on one side → included from that side (set-union)
+- Other top-level keys present in both: equal values → included; different values → falls back to `_fit/` clash file (no silent data loss)
+- Keys present on only one side → included from that side
+- Parse failure or non-object root → falls back to `_fit/` clash file
+
+**Result:** merged content written to the local file, SHA stored in baseline, path excluded from `pendingClashes`. From the user's perspective, no clash ever occurred.
+
+**Implementation:** [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts) (merge engine + `CANVAS_MERGE_SPEC`), [`src/remoteGitHubVault.ts`](../src/remoteGitHubVault.ts) (`readFileBlobBySha` for base fetch), [`src/fitSync.ts`](../src/fitSync.ts) (parallel base pre-fetch + canvas auto-merge block before `clashFiles` computation)
+
+### Merge engine design (`JsonMergeSpec`)
+
+The merge engine is parameterized by a `JsonMergeSpec`:
+
+```typescript
+interface JsonMergeSpec {
+  keyedArrays: Record<string, string>; // dot-path → id key field
+}
+```
+
+`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
+
+### Future extension: `.fitattributes` (#337)
+
+Canvas merge is the first use of the merge engine. #337 will add a `.fitattributes` file (analogous to `.gitattributes`) where users can declare:
+- Additional paths to merge with keyed-array semantics
+- Order-significance selectors (opt arrays into index-based merge)
+- Field exclusion selectors (ignore specific JSON paths during comparison) — required for #67
+- Text-mode policies (`always-local`, `always-remote`) for non-JSON files
+
+Until #337 is implemented, only `.canvas` files use semantic merge.
+
 ## Explain Sync Status
 
 The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault's current sync state as a modal without running a sync. It reads already-cached state (no network calls) plus a local filesystem scan.

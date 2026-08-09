@@ -516,6 +516,32 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	// ===== GitHub Utility Operations (not part of IVault) =====
 
 	/**
+	 * Fetch file content by blob SHA, bypassing path lookup.
+	 * Use when you need a specific historical version (e.g. merge base from lastFetchedRemoteShas).
+	 */
+	async readFileBlobBySha(sha: BlobSha): Promise<FileContent> {
+		try {
+			const { data: blob } = await this.octokit.request(
+				`GET /repos/{owner}/{repo}/git/blobs/{file_sha}`, {
+					owner: this.owner,
+					repo: this.repo,
+					file_sha: sha,
+					headers: this.headers
+				});
+			if (typeof blob.content !== 'string') {
+				throw new Error(`Blob ${sha}: unexpected content type ${typeof blob.content}`);
+			}
+			let content = blob.content;
+			if (Encryption.isEnabled()) {
+				content = await Encryption.decryptContent(content);
+			}
+			return FileContent.fromBase64(content);
+		} catch (error) {
+			return await this.wrapOctokitError(error, 'ignore');
+		}
+	}
+
+	/**
 	 * Check if repository exists and is accessible
 	 * Result is cached to avoid repeated API calls during error handling.
 	 * @returns true if repository exists, false if 404 (not found)
