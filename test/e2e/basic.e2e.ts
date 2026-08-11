@@ -272,6 +272,30 @@ describe('FIT Plugin E2E Tests', function() {
 		});
 	});
 
+	describe('openWithDefaultApp availability', function() {
+		it('should exist on app and be callable', async () => {
+			const info = await browser.executeObsidian(({ app }) => {
+				const fn = (app as any).openWithDefaultApp;
+				const exists = typeof fn === 'function';
+				return {
+					exists,
+					// Where is it defined — own property or inherited?
+					ownProperty: Object.prototype.hasOwnProperty.call(app, 'openWithDefaultApp'),
+					onProto: Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(app), 'openWithDefaultApp'),
+					// Minified source — look for adapter.open / window.open calls
+					source: exists ? fn.toString() : null,
+					obsidianVersion: (app as any).appVersion ?? null,
+				};
+			});
+
+			console.log('openWithDefaultApp info:', JSON.stringify(info, null, 2));
+			await takeScreenshot('openWithDefaultApp-info');
+
+			// The assertion — this is what we want to know: does it exist?
+			expect(info.exists).toBe(true);
+		});
+	});
+
 	beforeEach(async function() {
 		// Clean up notices between tests
 		await browser.executeObsidian(() => {
