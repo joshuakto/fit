@@ -6,6 +6,7 @@
 
 import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
 import { ObsidianSyncRules } from "@/fitSettings";
+import { FITATTRIBUTES_PATH } from "@/fitAttributes";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
@@ -142,6 +143,10 @@ export class LocalVault implements IVault<"local"> {
 		//
 		// Obsidian vault paths always use forward slashes (even on Windows)
 		if (!this.syncHiddenFiles) {
+			// .fitattributes.json must propagate regardless of syncHiddenFiles, or it can't
+			// reach a device that has hidden-file sync off — defeating its own purpose.
+			if (filePath === FITATTRIBUTES_PATH) return true;
+
 			const parts = filePath.split('/');
 			if (parts.some(part => part.startsWith('.'))) {
 				// Explicitly opted-in obsidian paths are tracked regardless of syncHiddenFiles
@@ -190,7 +195,17 @@ export class LocalVault implements IVault<"local"> {
 			}
 		}
 
-		const allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		// .fitattributes.json is hidden (leading dot) so vault.getFiles() never returns
+		// it — must be discovered explicitly when the hidden-path scan above is skipped,
+		// or shouldTrackState's special-case for it (below) never gets a chance to run.
+		// Only add it if it actually exists locally: injecting a path that doesn't exist
+		// would make the SHA-computation step below fail it and abort the whole sync.
+		let allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		if (!this.syncHiddenFiles && !allPaths.includes(FITATTRIBUTES_PATH)) {
+			if (await this.vault.adapter.stat(FITATTRIBUTES_PATH)) {
+				allPaths = [...allPaths, FITATTRIBUTES_PATH];
+			}
+		}
 
 		// Filter to only tracked paths (excludes hidden files when syncHiddenFiles is off)
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));

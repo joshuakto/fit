@@ -33,7 +33,7 @@ export class FitStatusModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		const { title, commitUrl, statusNote, autoSyncNote, sections, scanNote } = this.renderable;
+		const { title, commitUrl, statusNote, autoSyncNote, sections, scanNote, fitAttributesNote } = this.renderable;
 
 		contentEl.createEl('h2', { text: title });
 
@@ -50,6 +50,10 @@ export class FitStatusModal extends Modal {
 
 		if (autoSyncNote) {
 			contentEl.createEl('p', { text: autoSyncNote, cls: 'fit-autosync-note' });
+		}
+
+		if (fitAttributesNote) {
+			contentEl.createEl('p', { text: fitAttributesNote, cls: 'fit-fitattributes-note' });
 		}
 
 		if (sections.length > 0) {

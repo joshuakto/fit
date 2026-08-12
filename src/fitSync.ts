@@ -813,7 +813,29 @@ export class FitSync implements IFitSync {
 			preReconcileLocalShas = {...this.fit.localShas};
 			preReconcileLastFetchedRemoteShas = {...this.fit.lastFetchedRemoteShas};
 
-			const reconcilePaths = Object.keys(this.fit.protectedPathShas)
+			// shouldSyncPath below may need current fitAttributes — only worth an eager refresh
+			// (extra stat/read outside the normal scan) when there's actually a candidate path
+			// that could be reconciled this sync.
+			const reconcileCandidates = Object.keys(this.fit.protectedPathShas);
+			if (reconcileCandidates.length > 0) {
+				await this.fit.refreshFitAttributesForReconcile();
+				// Forward-looking, informational only: this version's shouldSyncPath doesn't
+				// consult fitAttributes yet, so none of these actually reconcile below — but
+				// .fitattributes.json IS already parsed, so we can report which of these
+				// remote-only .obsidian/ paths are already configured for format:"text" (will
+				// start syncing once that gate lands) versus still unconfigured.
+				const configuredForFutureSync = reconcileCandidates.filter(
+					p => this.fit.fitAttributes[p]?.format === 'text'
+				);
+				const unconfigured = reconcileCandidates.filter(
+					p => this.fit.fitAttributes[p]?.format !== 'text'
+				);
+				fitLogger.log(
+					'[FitSync] .obsidian/ paths with remote content not synced in this version',
+					{ configuredForFutureSync, unconfigured }
+				);
+			}
+			const reconcilePaths = reconcileCandidates
 				.filter(p => this.fit.shouldSyncPath(p));
 			if (reconcilePaths.length > 0) {
 				fitLogger.log('[FitSync] Reconciling newly-tracked paths from protectedPathShas', { paths: reconcilePaths });
@@ -872,6 +894,24 @@ export class FitSync implements IFitSync {
 			const {changes: localChanges, state: currentLocalState} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
+
+			// .fitattributes.json is a load-bearing config file — a malformed file silently
+			// meaning "nothing configured" deserves a visible warning rather than only a
+			// debug-log line (getLocalChanges/refreshFitAttributesForReconcile already logged
+			// the parse error itself).
+			if (this.fit.fitAttributesWarning) {
+				const warningNotice = new FitNotice(this.fit, [], this.fit.fitAttributesWarning, 0);
+				warningNotice.show();
+			}
+
+			// Watermark: legacy obsidianSyncRules is being replaced by git-driven tracking
+			// (#337/#67) — logging when it actually drives an outcome makes future debug.log
+			// archaeology easier to place against a plugin version, and keeps this version's
+			// sync path self-explanatory once the replacement lands and this log disappears.
+			const legacyRulePaths = this.fit.activeObsidianSyncRulePaths(currentLocalState, remoteTreeSha);
+			if (legacyRulePaths.length > 0) {
+				fitLogger.log('[FitSync] .obsidian/ paths synced via legacy obsidianSyncRules (replaced by git-driven tracking in a later version)', { paths: legacyRulePaths });
+			}
 
 			// Phase 0: Resolve pending clashes
 			// For each path with an unresolved _fit/ copy, check if the user has resolved it.
@@ -1330,6 +1370,7 @@ export class FitSync implements IFitSync {
 			trackedFileCount: Object.keys(this.fit.localShas).length,
 			pendingClashes: [...this.fit.pendingClashes],
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
+			fitAttributesWarning: this.fit.fitAttributesWarning,
 		};
 
 		if (!snapshot.lastFetchedCommitSha) {
@@ -1342,6 +1383,9 @@ export class FitSync implements IFitSync {
 		try {
 			const result = await this.fit.getLocalChanges();
 			localChanges = result.changes;
+			// getLocalChanges() may have just refreshed fitAttributesWarning (lazy hook) —
+			// use the post-scan value so Explain reflects the current file, not last sync's.
+			snapshot.fitAttributesWarning = this.fit.fitAttributesWarning;
 		} catch (err) {
 			scanFailedPaths = err instanceof VaultError && err.details?.failedPaths
 				? err.details.failedPaths

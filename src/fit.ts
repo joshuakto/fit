@@ -7,6 +7,7 @@
 
 import { LocalStores } from "@/localStores";
 import { FitSettings, ObsidianSyncRules } from "@/fitSettings";
+import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes } from "@/fitAttributes";
 import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
@@ -53,6 +54,11 @@ export class Fit {
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
 	obsidianSyncRules: ObsidianSyncRules;
+	fitAttributes: FitAttributesFile = {};  // Parsed from local .fitattributes.json; refreshed each sync
+	// Set when the last .fitattributes.json parse attempt failed; null when it parsed fine or
+	// the file doesn't exist. FitSync surfaces this as a visible Notice — a malformed file
+	// would otherwise fail silently, which is worse than noisy for a config file this load-bearing.
+	fitAttributesWarning: string | null = null;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
@@ -182,6 +188,24 @@ export class Fit {
 	}
 
 	/**
+	 * `.obsidian/` paths seen this sync (local and/or remote) that are actively syncing
+	 * because of a legacy obsidianSyncRules opt-in — for a once-per-sync watermark log, not
+	 * a per-call one, since shouldSyncPath itself is called many times per path per sync.
+	 * obsidianSyncRules is retired entirely in the git-driven tracking replacement, so this
+	 * (and its only caller) disappears with it — no future cleanup needed here.
+	 */
+	activeObsidianSyncRulePaths(currentLocalState: FileStates, remoteTreeSha: FileStates): string[] {
+		const candidates = new Set<string>();
+		for (const path of Object.keys(currentLocalState)) {
+			if (path.startsWith(".obsidian/")) candidates.add(path);
+		}
+		for (const path of Object.keys(remoteTreeSha)) {
+			if (path.startsWith(".obsidian/")) candidates.add(path);
+		}
+		return [...candidates].filter(path => this.shouldSyncPath(path)).sort();
+	}
+
+	/**
 	 * Filter a FileState to include only paths that should be synced.
 	 * Used when updating LocalStores to ensure excluded paths (like _fit/) aren't tracked.
 	 *
@@ -198,10 +222,74 @@ export class Fit {
 		return filtered;
 	}
 
+	/**
+	 * Reads and parses local .fitattributes.json content (already known to exist), updating
+	 * this.fitAttributes and this.fitAttributesWarning. Shared by the eager (reconcile) and
+	 * lazy (getLocalChanges) refresh paths below.
+	 */
+	private async readAndApplyFitAttributes(): Promise<void> {
+		try {
+			const fitAttributesContent = await this.localVault.readFileContent(FITATTRIBUTES_PATH);
+			const parsed = parseFitAttributes(fitAttributesContent.toPlainText());
+			if (parsed.ok) {
+				this.setFitAttributes(parsed.value);
+				this.fitAttributesWarning = null;
+			} else {
+				const message = `.fitattributes.json is malformed (${parsed.error}) — will affect correctness of sync in future versions`;
+				fitLogger.log(`[Fit] ${message}`);
+				this.setFitAttributes({});
+				this.fitAttributesWarning = message;
+			}
+		} catch {
+			// Exists but unreadable — treat as unconfigured rather than aborting the sync.
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+		}
+	}
+
+	/** Replaces the parsed .fitattributes.json content. */
+	setFitAttributes(attributes: FitAttributesFile): void {
+		this.fitAttributes = attributes;
+	}
+
+	/**
+	 * Eagerly re-parses local .fitattributes.json content into this.fitAttributes, ahead of
+	 * the normal per-sync local scan. Only worth calling when there's something that could
+	 * actually be reconciled this sync (see FitSync's pre-sync reconcile block) — a local
+	 * edit to .fitattributes.json needs to be visible the SAME sync it was made, not delayed
+	 * a sync like the general lazy update in getLocalChanges (which only updates fitAttributes
+	 * from data the scan already touched). Checks existence via statPaths first so a call
+	 * where the file doesn't exist touches nothing further.
+	 */
+	async refreshFitAttributesForReconcile(): Promise<void> {
+		const stats = await this.localVault.statPaths([FITATTRIBUTES_PATH]);
+		if (stats.get(FITATTRIBUTES_PATH) !== 'file') {
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+			return;
+		}
+		await this.readAndApplyFitAttributes();
+	}
+
 	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
+
+		// Re-parse .fitattributes.json content from this scan's own knowledge of whether the
+		// file exists — never a separate stat/read probe, so a sync where it simply doesn't
+		// exist touches it zero times. Note: this makes this.fitAttributes reflect the
+		// *previous* completed scan by the time the pre-sync reconcile block (FitSync) reads
+		// it at the start of the *next* sync — a local edit to .fitattributes.json needs one
+		// sync to be observed (like any other tracked file's content) before reconciliation
+		// can act on it; not a correctness gap, just the same one-sync convergence lag already
+		// inherent to this feature.
+		if (currentState[FITATTRIBUTES_PATH] !== undefined) {
+			await this.readAndApplyFitAttributes();
+		} else {
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+		}
 
 		// Clean up orphaned legacy entries for files no longer present locally.
 		for (const path of Object.keys(this.localSha)) {

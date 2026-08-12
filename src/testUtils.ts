@@ -11,6 +11,7 @@ import { FilePath } from './util/filePath';
 import { BlobSha, CommitSha, computeGitBlobSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
+import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -768,9 +769,10 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	shouldTrackState(path: string): boolean {
-		// Same single criterion as real LocalVault: hidden paths are excluded only
-		// when syncHiddenFiles is off.
+		// Mirrors real LocalVault: hidden paths are excluded when syncHiddenFiles is off,
+		// except .fitattributes.json (always tracked).
 		if (!this.syncHiddenFiles) {
+			if (path === FITATTRIBUTES_PATH) return true;
 			const parts = path.split('/');
 			if (parts.some(part => part.startsWith('.'))) return false;
 		}
