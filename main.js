@@ -1429,6 +1429,30 @@ function getDiffText(oldContent, newContent) {
 
 // src/fit.ts
 var import_obsidian2 = require("obsidian");
+async function obsidianFetch(url, init = {}) {
+  const headers = {};
+  new Headers(init.headers).forEach((value, key) => {
+    headers[key] = value;
+  });
+  const body = init.body;
+  if (body != null && typeof body !== "string" && !(body instanceof ArrayBuffer)) {
+    throw new TypeError("Unsupported GitHub request body");
+  }
+  const response = await (0, import_obsidian2.requestUrl)({
+    url,
+    method: init.method,
+    headers,
+    body: body != null ? body : void 0,
+    throw: false
+  });
+  const responseBody = [204, 205, 304].includes(response.status) ? null : response.arrayBuffer;
+  const fetchResponse = new Response(responseBody, {
+    status: response.status,
+    headers: response.headers
+  });
+  Object.defineProperty(fetchResponse, "url", { value: url });
+  return fetchResponse;
+}
 var OctokitHttpError = class extends Error {
   constructor(message, status, source) {
     super(message);
@@ -1456,7 +1480,10 @@ var Fit = class {
     this.excludes = settings.excludes;
     this.syncPath = settings.syncPath;
     this.deviceName = settings.deviceName;
-    this.octokit = new Octokit({ auth: settings.pat });
+    this.octokit = new Octokit({
+      auth: settings.pat,
+      request: { fetch: obsidianFetch }
+    });
     this.localSha = localStore.localSha;
     this.lastFetchedCommitSha = localStore.lastFetchedCommitSha;
     this.lastFetchedRemoteSha = localStore.lastFetchedRemoteSha;

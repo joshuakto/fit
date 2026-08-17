@@ -3,12 +3,42 @@ import { Octokit } from "@octokit/core"
 import { RECOGNIZED_TXT_EXT, compareSha, extractExtension } from "./utils"
 import { VaultOperations } from "./vaultOps"
 import { LocalChange, LocalFileStatus, RemoteChange, RemoteChangeType } from "./fitTypes"
-import { arrayBufferToBase64 } from "obsidian"
+import { arrayBufferToBase64, requestUrl } from "obsidian"
 import { conflictResolutionFolder, rootFitFolder } from "./const"
 
 type AddToLocal = {
     path: string;
     content: string;
+}
+
+async function obsidianFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const headers: Record<string, string> = {}
+    new Headers(init.headers).forEach((value, key) => {
+        headers[key] = value
+    })
+
+    const body = init.body
+    if (body != null && typeof body !== "string" && !(body instanceof ArrayBuffer)) {
+        throw new TypeError("Unsupported GitHub request body")
+    }
+
+    const response = await requestUrl({
+        url,
+        method: init.method,
+        headers,
+        body: body ?? undefined,
+        throw: false
+    })
+    const responseBody = [204, 205, 304].includes(response.status)
+        ? null
+        : response.arrayBuffer
+    const fetchResponse = new Response(responseBody, {
+        status: response.status,
+        headers: response.headers
+    })
+
+    Object.defineProperty(fetchResponse, "url", {value: url})
+    return fetchResponse
 }
 
 export type TreeNode = {
@@ -94,7 +124,10 @@ export class Fit implements IFit {
         this.syncPath = settings.syncPath
         this.deviceName = settings.deviceName
 
-        this.octokit = new Octokit({auth: settings.pat})
+        this.octokit = new Octokit({
+            auth: settings.pat,
+            request: {fetch: obsidianFetch}
+        })
 
         // Также нужно сохранить другие поля если они используются в классе Fit
         // this.pat = setting.pat;
