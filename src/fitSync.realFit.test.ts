@@ -2626,6 +2626,23 @@ describe('FitSync', () => {
 			expect(local.nodes[0]).toMatchObject({ id: 'a', x: 100, y: 100 });
 		});
 
+		it('invalid-UTF8 local content: falls back to _fit/ clash instead of aborting sync', async () => {
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a')]);
+			await setupSyncedCanvas(fitSync, base);
+
+			const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0xfd]).buffer;
+			localVault.setFile('board.canvas', FileContent.fromArrayBuffer(invalidUtf8, 'base64'));
+			await remoteVault.setFile('board.canvas', canvasJson([node('a'), node('remote')]));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).toHaveProperty('_fit/board.canvas');
+			expect(localStoreState.pendingClashes).toContain('board.canvas');
+		});
+
 		it('edge additions from both sides auto-merge', async () => {
 			const fitSync = createFitSync();
 			const base = canvasJson([node('a'), node('b'), node('c')], []);

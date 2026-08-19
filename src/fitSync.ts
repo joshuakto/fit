@@ -11,7 +11,7 @@ import { BlobSha, CommitSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
 import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
-import { CANVAS_MERGE_SPEC, mergeJson, serialiseMerged } from './util/jsonMerge';
+import { CANVAS_MERGE_SPEC, mergeJson, serialiseMerged, MergeResult } from './util/jsonMerge';
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -519,7 +519,16 @@ export class FitSync implements IFitSync {
 					return;
 				}
 				const baseText = canvasBaseTexts.get(clash.path) ?? null;
-				const result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+				let result: MergeResult;
+				try {
+					result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+				} catch (e) {
+					fitLogger.log('.. [FitSync] Canvas auto-merge threw, falling back to clash', {
+						path: clash.path, error: String(e),
+					});
+					autoMergeFailedClashPaths.add(clash.path);
+					return;
+				}
 				if (!result.merged) {
 					fitLogger.log('.. [FitSync] Canvas auto-merge failed, falling back to clash', {
 						path: clash.path, reason: result.reason,
