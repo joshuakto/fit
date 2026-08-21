@@ -1213,7 +1213,19 @@ export class FitSync implements IFitSync {
 					baseMessage = `${syncError.message}. Please check your internet connection.`;
 					break;
 				case 'authentication':
-					baseMessage = `${syncError.message}. Check your GitHub personal access token.`;
+					switch (syncError.details?.authSubtype) {
+						case 'rate_limited': {
+							const resetAt = syncError.details?.rateLimitResetAt;
+							const resetNote = resetAt ? ` Try again after ${new Date(resetAt).toLocaleTimeString()}.` : ' Try again shortly.';
+							baseMessage = `${syncError.message}.${resetNote}`;
+							break;
+						}
+						case 'sso_required':
+							baseMessage = `${syncError.message}. Authorize your token for SSO, then try again.`;
+							break;
+						default:
+							baseMessage = `${syncError.message}. Check your GitHub personal access token.`;
+					}
 					break;
 				case 'remote_not_found':
 					baseMessage = `${syncError.message}. Check your repo and branch settings.`;

@@ -1598,6 +1598,43 @@ describe('FitSync', () => {
 			]);
 		});
 
+		it.each([
+			{
+				name: 'rate-limited 403',
+				error: VaultError.authentication('API rate limit exceeded', {
+					authSubtype: 'rate_limited',
+					rateLimitResetAt: new Date('2026-01-01T00:00:00Z').getTime(),
+				}),
+				expectedMessage:
+					`Sync failed: API rate limit exceeded. Try again after ${new Date('2026-01-01T00:00:00Z').toLocaleTimeString()}.`,
+			},
+			{
+				name: 'org SSO enforcement',
+				error: VaultError.authentication('Resource protected by organization SAML enforcement', {
+					authSubtype: 'sso_required',
+					ssoUrl: 'https://github.com/orgs/acme/sso?authorization_request=abc123',
+				}),
+				expectedMessage:
+					'Sync failed: Resource protected by organization SAML enforcement. Authorize your token for SSO, then try again.',
+			},
+		])('should not blame the token for $name', async ({ error, expectedMessage }) => {
+			// Arrange
+			const fitSync = createFitSync();
+			localVault.setFile('test.md', 'content');
+			remoteVault.setFailure(error);
+
+			const mockNotice = createMockNotice();
+
+			// Act
+			await syncAndHandleResult(fitSync, mockNotice);
+
+			// Assert - subtype-specific message replaces the generic "check your token" wording
+			expect(mockNotice._calls).toEqual([
+				{ method: 'setMessage', args: ['Checking for changes...'] },
+				{ method: 'setMessage', args: [expectedMessage, true] }
+			]);
+		});
+
 		it('should handle remote not found errors with user-friendly message', async () => {
 			// Arrange
 			const fitSync = createFitSync();

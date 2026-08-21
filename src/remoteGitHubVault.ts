@@ -171,8 +171,31 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			throw VaultError.remoteNotFound(detailMessage, { originalError: error });
 		}
 
-		// 401/403: Authentication/authorization failures
+		// 401/403: Authentication/authorization failures. A 403 in particular can mean
+		// several unrelated things (rate limiting, org SSO enforcement, or an actual
+		// permission/token problem) — GitHub already tells us which via response headers,
+		// so check those for a narrower cause before defaulting to "check your token".
 		if (errorObj.status === 401 || errorObj.status === 403) {
+			const headers = (errorObj.response as { headers?: Record<string, string> } | undefined)?.headers ?? {};
+
+			if (errorObj.status === 403 && headers['x-ratelimit-remaining'] === '0') {
+				const resetHeader = headers['x-ratelimit-reset'];
+				const resetAt = resetHeader ? Number(resetHeader) * 1000 : undefined;
+				throw VaultError.authentication(
+					errorObj.message || 'GitHub API rate limit exceeded',
+					{ originalError: error, authSubtype: 'rate_limited', rateLimitResetAt: resetAt }
+				);
+			}
+
+			const ssoHeader = errorObj.status === 403 ? headers['x-github-sso'] : undefined;
+			const ssoUrlMatch = ssoHeader?.match(/url=(\S+)/);
+			if (ssoUrlMatch) {
+				throw VaultError.authentication(
+					errorObj.message || 'Organization requires SSO authorization for this token',
+					{ originalError: error, authSubtype: 'sso_required', ssoUrl: ssoUrlMatch[1] }
+				);
+			}
+
 			throw VaultError.authentication(
 				errorObj.message || 'Authentication failed',
 				{ originalError: error }

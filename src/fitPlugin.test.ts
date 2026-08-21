@@ -287,3 +287,40 @@ describe('FitPlugin sync-success notice duration wiring', () => {
 		expect(NoticeCtor).not.toHaveBeenCalledWith('', expect.anything());
 	});
 });
+
+describe('FitPlugin sync-error notice content (#214)', () => {
+	// A plain authentication failure (bad/revoked/expired token — indistinguishable from
+	// the response) is the one case worth making actionable: settings link + new-token link.
+	// rate_limited/sso_required aren't fixed by touching the token, so getSyncErrorMessage's
+	// own message text is trusted as-is there — no separate check needed here.
+	function makeConfiguredPlugin() {
+		const plugin = makePlugin();
+		plugin.settings = {
+			...DEFAULT_SETTINGS,
+			pat: 'token', owner: 'alice', repo: 'notes', branch: 'main',
+		};
+		plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+		plugin.fitSyncRibbonIconEl = { addClass: vi.fn(), removeClass: vi.fn() } as any;
+		return plugin;
+	}
+
+	it('adds a settings link (wired to openPluginSettings) and a create-token link for a plain authentication failure', async () => {
+		const plugin = makeConfiguredPlugin();
+		const openSettingsSpy = vi.spyOn(plugin, 'openPluginSettings').mockImplementation(() => {});
+		const stub = plugin.fitSync as unknown as StubFitSync;
+		stub.sync.mockResolvedValue({ success: false, error: { type: 'authentication', details: {} } });
+		stub.getSyncErrorMessage.mockReturnValue('Bad credentials. Check your GitHub personal access token.');
+
+		await (plugin as any).executeSyncWithUICoordination('manual');
+
+		const errorNotice = (plugin as any).currentSyncNotice.notice;
+		const [message] = errorNotice.setMessage.mock.calls.at(-1);
+		const links = Array.from((message as DocumentFragment).querySelectorAll('a'));
+
+		expect(links.find(a => a.textContent === 'create a new token')?.href)
+			.toBe('https://github.com/settings/tokens/new');
+
+		links.find(a => a.textContent === 'Open plugin settings')!.dispatchEvent(new MouseEvent('click'));
+		expect(openSettingsSpy).toHaveBeenCalled();
+	});
+});

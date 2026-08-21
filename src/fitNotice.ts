@@ -57,7 +57,7 @@ export default class FitNotice {
 	}
 
 	// allows error display to override muted
-	setMessage(message: string, isError?: boolean): void {
+	setMessage(message: string | DocumentFragment, isError?: boolean): void {
 		if (isError) {
 			if (!this.notice) {
 				this.notice = new Notice(message, 0);

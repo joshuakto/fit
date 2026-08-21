@@ -596,6 +596,63 @@ describe("RemoteGitHubVault", () => {
 			});
 		});
 
+		describe("403 subtypes", () => {
+			it("should distinguish rate limiting from a real credentials problem", async () => {
+				// Arrange - 403 with rate-limit headers exhausted
+				const rateLimitError: any = new Error("API rate limit exceeded");
+				rateLimitError.status = 403;
+				rateLimitError.response = {
+					headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000000' },
+				};
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/commits/{ref}", rateLimitError);
+
+				// Act
+				const error = await vault.readFromSource().catch(e => e);
+
+				// Assert - not misreported as a token problem
+				expect(error.type).toBe('authentication');
+				expect(error.details).toMatchObject({
+					authSubtype: 'rate_limited',
+					rateLimitResetAt: 1700000000 * 1000,
+				});
+			});
+
+			it("should distinguish org SSO enforcement from a real credentials problem", async () => {
+				// Arrange - 403 with an SSO authorization header
+				const ssoError: any = new Error("Resource protected by organization SAML enforcement");
+				ssoError.status = 403;
+				ssoError.response = {
+					headers: { 'x-github-sso': 'required; url=https://github.com/orgs/acme/sso?authorization_request=abc123' },
+				};
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/commits/{ref}", ssoError);
+
+				// Act
+				const error = await vault.readFromSource().catch(e => e);
+
+				// Assert - not misreported as "check your token"
+				expect(error.type).toBe('authentication');
+				expect(error.details).toMatchObject({
+					authSubtype: 'sso_required',
+					ssoUrl: 'https://github.com/orgs/acme/sso?authorization_request=abc123',
+				});
+			});
+
+			it("should fall back to a generic authentication error when 403 has no distinguishing header", async () => {
+				// Arrange - 403 with no rate-limit or SSO signal
+				const genericError: any = new Error("Resource not accessible by personal access token");
+				genericError.status = 403;
+				genericError.response = { headers: {} };
+				fakeOctokit.simulateError("GET /repos/{owner}/{repo}/commits/{ref}", genericError);
+
+				// Act
+				const error = await vault.readFromSource().catch(e => e);
+
+				// Assert
+				expect(error.type).toBe('authentication');
+				expect(error.details?.authSubtype).toBeUndefined();
+			});
+		});
+
 		it("should log status and endpoint for every failed GitHub API request", async () => {
 			// Arrange - repo exists but branch ref doesn't, so getRef fails with 404
 			fakeOctokit.setRepoExists(true);

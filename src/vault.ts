@@ -82,6 +82,15 @@ export type VaultErrorType =
   | 'filesystem';       // Local file system errors
 
 /**
+ * Narrower cause within an 'authentication' VaultError, when GitHub's response gives us
+ * a specific enough signal to say more than "check your token" (e.g. it isn't a token
+ * problem at all). Absent when the response didn't distinguish — the generic message applies.
+ */
+export type AuthErrorSubtype =
+  | 'rate_limited'  // 403 + x-ratelimit-remaining: 0 — not a credentials problem
+  | 'sso_required'; // 403 + x-github-sso header — org requires SAML SSO authorization for this token
+
+/**
  * Vault-layer error with categorized error types.
  * Use static factory methods (VaultError.network(), VaultError.remoteNotFound(), etc.) to construct.
  *
@@ -98,6 +107,12 @@ export class VaultError extends Error {
 			originalError?: unknown;
 			failedPaths?: string[];
 			errors?: Array<{ path: string; error: unknown }>;
+			/** authentication only, when distinguishable — see AuthErrorSubtype */
+			authSubtype?: AuthErrorSubtype;
+			/** authSubtype 'rate_limited' only: when the rate limit resets, as epoch milliseconds */
+			rateLimitResetAt?: number;
+			/** authSubtype 'sso_required' only: the org's SSO authorization URL, from the x-github-sso response header */
+			ssoUrl?: string;
 		}
 	) {
 		super(message);
@@ -106,11 +121,7 @@ export class VaultError extends Error {
 
 	// Generic factory helper
 	private static create(type: VaultErrorType) {
-		return (message: string, details?: {
-			originalError?: unknown;
-			failedPaths?: string[];
-			errors?: Array<{ path: string; error: unknown }>;
-		}) =>
+		return (message: string, details?: VaultError['details']) =>
 			new VaultError(type, message, details);
 	}
 
@@ -120,7 +131,7 @@ export class VaultError extends Error {
 	/** Remote resource not found (404 - repository, branch, etc.) */
 	static remoteNotFound = VaultError.create('remote_not_found');
 
-	/** Authentication/authorization failure (401, 403) */
+	/** Authentication/authorization failure (401, 403). See `details.authSubtype` for a narrower cause. */
 	static authentication = VaultError.create('authentication');
 
 	/** Local file system error (EACCES, ENOENT, etc.) */

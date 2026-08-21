@@ -74,6 +74,53 @@ export default class FitPlugin extends Plugin {
 		appWithSetting.setting.openTabById("fit");
 	}
 
+	/**
+	 * Build the sync-failure notice content. Plain authentication failures (bad/revoked/expired
+	 * token — GitHub's response doesn't distinguish which) get actionable links; rate-limit and
+	 * SSO subtypes aren't fixed by touching the token, so they stay plain text (see #214).
+	 */
+	private buildSyncErrorNoticeMessage(error: { type: string; message: string; details?: Record<string, unknown> }): string | DocumentFragment {
+		const baseText = `Sync failed: ${error.message}`;
+		if (error.type !== 'authentication') {
+			return baseText;
+		}
+		const authSubtype = error.details?.authSubtype;
+		if (authSubtype === 'rate_limited') {
+			return baseText;
+		}
+
+		const fragment = document.createDocumentFragment();
+		fragment.appendChild(document.createTextNode(baseText + ' '));
+
+		if (authSubtype === 'sso_required') {
+			const ssoUrl = error.details?.ssoUrl;
+			if (typeof ssoUrl === 'string') {
+				const link = document.createElement('a');
+				link.href = ssoUrl;
+				link.textContent = 'Authorize SSO';
+				fragment.appendChild(link);
+			}
+			return fragment;
+		}
+
+		// No subtype — an actual credentials problem. Offer next steps rather than
+		// just saying "check your token" with no way to act on it.
+		const settingsLink = document.createElement('a');
+		settingsLink.textContent = 'Open plugin settings';
+		settingsLink.style.cursor = 'pointer';
+		settingsLink.addEventListener('click', () => this.openPluginSettings());
+		fragment.appendChild(settingsLink);
+
+		fragment.appendChild(document.createTextNode(' or '));
+
+		const createTokenLink = document.createElement('a');
+		createTokenLink.href = 'https://github.com/settings/tokens/new';
+		createTokenLink.textContent = 'create a new token';
+		fragment.appendChild(createTokenLink);
+
+		return fragment;
+	}
+
 	checkSettingsConfigured(): boolean {
 		const actionItems: Array<string> = [];
 		if (this.settings.pat === "") {
@@ -351,7 +398,7 @@ export default class FitPlugin extends Plugin {
 
 			case 'error':
 				// Show sticky error notice
-				this.currentSyncNotice!.setMessage(`Sync failed: ${outcome.error.message}`, true);
+				this.currentSyncNotice!.setMessage(this.buildSyncErrorNoticeMessage(outcome.error), true);
 
 				// Clean up state WITHOUT nullifying the error notice reference
 				this.onSyncError(triggerType);
