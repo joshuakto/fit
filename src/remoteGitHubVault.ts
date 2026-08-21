@@ -125,7 +125,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		error: unknown,
 		notFoundStrategy: 'repo' | 'repo-or-branch' | 'ignore'
 	): Promise<never> {
-		const errorObj = error as { status?: number | null; response?: unknown; message?: string; request?: unknown };
+		const errorObj = error as { status?: number | null; response?: unknown; message?: string; request?: { method?: string; url?: string } };
 
 		// Non-Octokit errors (plugin bugs, ReferenceErrors, etc.) — re-throw without misclassifying as network.
 		// Octokit errors always have a numeric status (HTTP errors) or a 'request' property (network failures).
@@ -134,6 +134,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		if (!hasNumericStatus && !hasOctokitRequest) {
 			throw error;
 		}
+
+		fitLogger.log('.. ❌ [RemoteVault] GitHub API request failed', {
+			status: errorObj.status ?? null,
+			method: errorObj.request?.method,
+			url: errorObj.request?.url,
+			message: errorObj.message,
+		});
 
 		// No status or no response indicates network/connectivity issue
 		if (errorObj.status === null || errorObj.status === undefined || !errorObj.response) {

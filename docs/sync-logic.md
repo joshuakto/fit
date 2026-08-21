@@ -1389,6 +1389,23 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 }
 ```
 
+**Example log trace with a GitHub API failure (e.g. an outage returning 4xx/5xx):**
+
+Every failed GitHub API request logs its status, method, and endpoint at the
+point `wrapOctokitError` reclassifies it, and every sync that ends in failure
+logs an explicit `❌ [FitSync] Sync failed` line — so debug.log always shows
+both *what HTTP call failed* and *that the sync as a whole failed*, even on
+mobile where there's no other error surface.
+```
+🔄 [Sync] Checking local and remote changes (parallel)...
+.. ☁️ [RemoteVault] Fetching from GitHub...
+.. ❌ [RemoteVault] GitHub API request failed: {
+  "status": 503, "method": "GET", "url": "/repos/{owner}/{repo}/git/trees/{tree_sha}",
+  "message": "Service Unavailable"
+}
+❌ [FitSync] Sync failed: { "errorType": "network", "message": "Couldn't reach GitHub API" }
+```
+
 ## Further Reading
 
 - [Architecture Overview](./architecture.md) - High-level system design

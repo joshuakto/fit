@@ -1095,6 +1095,7 @@ export class FitSync implements IFitSync {
 
 			// VaultError from vault operations (both LocalVault and RemoteGitHubVault)
 			if (error instanceof VaultError) {
+				fitLogger.log('❌ [FitSync] Sync failed', { errorType: error.type, message: error.message });
 				return { success: false, error };
 			}
 
@@ -1104,6 +1105,7 @@ export class FitSync implements IFitSync {
 				: (error && typeof error === 'object' && 'message' in error)
 					? String((error as { message: unknown }).message)
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
+			fitLogger.log('❌ [FitSync] Sync failed', { errorType: 'unknown', message: errorMessage });
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
 		}
 	}

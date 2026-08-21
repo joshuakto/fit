@@ -595,5 +595,22 @@ describe("RemoteGitHubVault", () => {
 				);
 			});
 		});
+
+		it("should log status and endpoint for every failed GitHub API request", async () => {
+			// Arrange - repo exists but branch ref doesn't, so getRef fails with 404
+			fakeOctokit.setRepoExists(true);
+			const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+
+			// Act
+			await expect(vault.readFromSource()).rejects.toThrow();
+
+			// Assert - the raw status/endpoint is captured before the error is
+			// reclassified into a VaultError, so it's not lost by the time the
+			// sync-level catch block logs the final failure.
+			expect(logSpy).toHaveBeenCalledWith(
+				'.. ❌ [RemoteVault] GitHub API request failed',
+				expect.objectContaining({ status: 404 })
+			);
+		});
 	});
 });

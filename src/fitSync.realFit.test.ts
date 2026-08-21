@@ -1568,8 +1568,11 @@ describe('FitSync', () => {
 				]}
 			]);
 
-			// Verify: Logger was called even during failed sync
-			expect(fitLoggerLogSpy).toHaveBeenCalled();
+			// Verify: failure itself is explicitly logged, not just earlier in-flight steps
+			expectLoggerCalledWith('❌ [FitSync] Sync failed', {
+				errorType: 'network',
+				message: "Couldn't reach GitHub API",
+			});
 			expect(consoleLogSpy).toHaveBeenCalled();
 		});
 
