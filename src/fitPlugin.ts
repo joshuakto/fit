@@ -76,8 +76,9 @@ export default class FitPlugin extends Plugin {
 
 	/**
 	 * Build the sync-failure notice content. Plain authentication failures (bad/revoked/expired
-	 * token — GitHub's response doesn't distinguish which) get actionable links; rate-limit and
-	 * SSO subtypes aren't fixed by touching the token, so they stay plain text (see #214).
+	 * token — GitHub's response doesn't distinguish which) get an actionable settings link;
+	 * rate-limit and SSO subtypes aren't fixed by touching the token, so they stay plain text
+	 * (see #214).
 	 */
 	private buildSyncErrorNoticeMessage(error: { type: string; message: string; details?: Record<string, unknown> }): string | DocumentFragment {
 		const baseText = `Sync failed: ${error.message}`;
@@ -103,20 +104,13 @@ export default class FitPlugin extends Plugin {
 			return fragment;
 		}
 
-		// No subtype — an actual credentials problem. Offer next steps rather than
+		// No subtype — an actual credentials problem. Offer a next step rather than
 		// just saying "check your token" with no way to act on it.
 		const settingsLink = document.createElement('a');
 		settingsLink.textContent = 'Open plugin settings';
 		settingsLink.style.cursor = 'pointer';
 		settingsLink.addEventListener('click', () => this.openPluginSettings());
 		fragment.appendChild(settingsLink);
-
-		fragment.appendChild(document.createTextNode(' or '));
-
-		const createTokenLink = document.createElement('a');
-		createTokenLink.href = 'https://github.com/settings/tokens/new';
-		createTokenLink.textContent = 'create a new token';
-		fragment.appendChild(createTokenLink);
 
 		return fragment;
 	}

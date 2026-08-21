@@ -290,7 +290,7 @@ describe('FitPlugin sync-success notice duration wiring', () => {
 
 describe('FitPlugin sync-error notice content (#214)', () => {
 	// A plain authentication failure (bad/revoked/expired token — indistinguishable from
-	// the response) is the one case worth making actionable: settings link + new-token link.
+	// the response) is the one case worth making actionable: a settings link.
 	// rate_limited/sso_required aren't fixed by touching the token, so getSyncErrorMessage's
 	// own message text is trusted as-is there — no separate check needed here.
 	function makeConfiguredPlugin() {
@@ -304,7 +304,7 @@ describe('FitPlugin sync-error notice content (#214)', () => {
 		return plugin;
 	}
 
-	it('adds a settings link (wired to openPluginSettings) and a create-token link for a plain authentication failure', async () => {
+	it('adds a settings link (wired to openPluginSettings) for a plain authentication failure', async () => {
 		const plugin = makeConfiguredPlugin();
 		const openSettingsSpy = vi.spyOn(plugin, 'openPluginSettings').mockImplementation(() => {});
 		const stub = plugin.fitSync as unknown as StubFitSync;
@@ -316,9 +316,6 @@ describe('FitPlugin sync-error notice content (#214)', () => {
 		const errorNotice = (plugin as any).currentSyncNotice.notice;
 		const [message] = errorNotice.setMessage.mock.calls.at(-1);
 		const links = Array.from((message as DocumentFragment).querySelectorAll('a'));
-
-		expect(links.find(a => a.textContent === 'create a new token')?.href)
-			.toBe('https://github.com/settings/tokens/new');
 
 		links.find(a => a.textContent === 'Open plugin settings')!.dispatchEvent(new MouseEvent('click'));
 		expect(openSettingsSpy).toHaveBeenCalled();
