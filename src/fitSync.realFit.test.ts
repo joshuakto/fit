@@ -1751,8 +1751,7 @@ describe('FitSync', () => {
 			]);
 		});
 
-		it('should handle per-file write failures to local vault with detailed error message', async () => {
-			// Arrange
+		it('should write successful files despite other per-file local write failures, and retry the failed ones next sync', async () => {
 			const fitSync = createFitSync();
 
 			// Set up remote files that will need to be written locally
@@ -1772,20 +1771,33 @@ describe('FitSync', () => {
 
 			const mockNotice = createMockNotice();
 
-			// Act
-			await syncAndHandleResult(fitSync, mockNotice);
+			const result = await fitSync.sync(mockNotice as any);
 
-			// Assert - Verify error message shows which file failed to write (both files should be mentioned)
+			expect(result.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()['good-file.md']).toBeDefined();
+			expect(localStoreState.localShas['good-file.md']).toBeDefined();
+			expect(localStoreState.localShas['readonly-file.md']).toBeUndefined();
+			expect(localStoreState.localShas['another-readonly.md']).toBeUndefined();
+			expect(localStoreState.lastFetchedRemoteShas['readonly-file.md']).toBeUndefined();
+			expect(localStoreState.lastFetchedRemoteShas['another-readonly.md']).toBeUndefined();
+
 			expect(mockNotice._calls).toEqual([
 				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: ['Uploading local changes'] },
 				{ method: 'setMessage', args: ['Writing remote changes to local'] },
 				{
 					method: 'setMessage', args: [
-						expect.stringMatching(/Sync failed:[\s\S]*(readonly-file\.md[\s\S]*another-readonly\.md|another-readonly\.md[\s\S]*readonly-file\.md)/),
-						true]
+						expect.stringMatching(/Sync incomplete[\s\S]*(readonly-file\.md[\s\S]*another-readonly\.md|another-readonly\.md[\s\S]*readonly-file\.md)/)
+					]
 				}
 			]);
+
+			localVault.setMockWriteFile(null);
+			const mockNotice2 = createMockNotice();
+			const result2 = await fitSync.sync(mockNotice2 as any);
+			expect(result2.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()['readonly-file.md']).toBeDefined();
+			expect(localVault.getAllFilesAsRaw()['another-readonly.md']).toBeDefined();
 		});
 
 		it('should handle remote write failures with file path in error message', async () => {

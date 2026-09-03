@@ -626,7 +626,7 @@ export class LocalVault implements IVault<"local"> {
 		);
 
 		// Collect successful operations and failures
-		const writeResults: Array<{change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
+		const writeResults: Array<{index: number, change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
 		const writeFailures = collectSettledFailures(writeSettledResults, filesToWrite.map(f => f.path));
 
 		for (let i = 0; i < writeSettledResults.length; i++) {
@@ -635,7 +635,7 @@ export class LocalVault implements IVault<"local"> {
 
 			if (result.status === 'fulfilled') {
 				const {change, shaPromise} = result.value;
-				writeResults.push({ change, shaPromise: shaPromise ?? undefined });
+				writeResults.push({ index: i, change, shaPromise: shaPromise ?? undefined });
 			} else {
 				const failure = writeFailures.find(f => f.path === path);
 				fitLogger.log(`❌ [LocalVault] Failed to write file: ${path}`, failure?.error);
@@ -657,22 +657,7 @@ export class LocalVault implements IVault<"local"> {
 			}
 		}
 
-		// If any operations failed, throw VaultError with details
-		if (writeFailures.length > 0 || deleteFailures.length > 0) {
-			const allFailures = [...writeFailures, ...deleteFailures];
-			const failedPaths = allFailures.map(f => f.path);
-			const primaryPath = failedPaths[0];
-			const primaryError = allFailures[0].error;
-			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
-
-			throw VaultError.filesystem(
-				`Failed to write to ${primaryPath}: ${primaryMessage}`,
-				{
-					failedPaths,
-					errors: allFailures
-				}
-			);
-		}
+		const failedPaths = [...writeFailures, ...deleteFailures].map(f => f.path);
 
 		// Extract file operations for return value
 		const writeOps = writeResults.map(r => r.change);
@@ -683,11 +668,10 @@ export class LocalVault implements IVault<"local"> {
 		// Only includes files with SHA computations (direct writes + untracked clashes) (#169)
 		// Tracked clash files are excluded (null shaPromise) as they self-heal via local scan
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
-		for (let i = 0; i < writeResults.length; i++) {
-			const result = writeResults[i];
+		for (const result of writeResults) {
 			if (result.shaPromise) {
 				// Key by original path from filesToWrite, not the write path (which may be _fit/...)
-				const originalPath = filesToWrite[i].path;
+				const originalPath = filesToWrite[result.index].path;
 				shaPromiseMap[originalPath] = result.shaPromise;
 			}
 		}
@@ -704,7 +688,8 @@ export class LocalVault implements IVault<"local"> {
 		return {
 			changes,
 			newBaselineStates,
-			userWarning
+			userWarning,
+			...(failedPaths.length > 0 && { failedPaths })
 		};
 	}
 }

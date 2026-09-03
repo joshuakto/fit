@@ -689,31 +689,19 @@ export class FakeLocalVault implements IVault<"local"> {
 			}
 		}
 
-		// If any operations failed, throw VaultError with details
-		if (writeFailures.length > 0) {
-			const failedPaths = writeFailures.map(f => f.path);
-			const primaryPath = failedPaths[0];
-			const primaryError = writeFailures[0].error;
-			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
-
-			throw VaultError.filesystem(
-				`Failed to write to ${primaryPath}: ${primaryMessage}`,
-				{
-					failedPaths,
-					errors: writeFailures
-				}
-			);
-		}
+		const failedPaths = writeFailures.map(f => f.path);
+		const succeededWrites = filesToWrite.filter(f => !failedPaths.includes(f.path));
 
 		const changes = [...writeResults, ...deletionResults];
 
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans
-		const newBaselineStates = this.computeWrittenFileShas(filesToWrite, clashPaths);
+		const newBaselineStates = this.computeWrittenFileShas(succeededWrites, clashPaths);
 
 		return {
 			changes,
-			newBaselineStates
+			newBaselineStates,
+			...(failedPaths.length > 0 && { failedPaths })
 		};
 	}
 

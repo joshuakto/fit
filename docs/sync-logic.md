@@ -1086,7 +1086,17 @@ This confusing message comes from Obsidian's Vault API when `createBinary()` fin
 **Fix:**
 `ensureFolderExists()` now validates type with `instanceof TFile` / `instanceof TFolder` checks, explicitly failing fast with clear error message when a file blocks folder creation.
 
+**Failure isolation:** `LocalVault.applyChanges()` writes files concurrently via `Promise.allSettled` and does not abort the batch when one file fails — the failing path is reported via `failedPaths` (excluded from the sync baseline so it's retried next sync) while every other file in the batch still lands normally. This also covers the more common trigger of this class of error: two files landing in the same not-yet-created folder race to create it, and one loses. Before this, `applyChanges()` treated any single per-file failure as cause to throw for the entire batch, discarding already-successful writes and — because nothing gets persisted on a thrown/failed sync — leaving the whole batch stuck retrying forever if the failure was deterministic (see "First sync downloads nothing" below).
+
 **Related:** PR #108 (race condition fix)
+
+### First sync downloads nothing beyond later edits
+
+**Scenario:** A brand-new (empty) local vault connects to an existing, populated remote repo. The first sync correctly detects every remote file as `ADDED` (see [Initial Sync](#initial-sync)), but none of them appear locally — only files edited by another client *after* that point ever show up.
+
+**Root cause:** `LocalVault.applyChanges()` used to throw a single `VaultError` for the *entire* write batch whenever any one file failed to write (see `ensureFolderExists()` race above) — even though writes run concurrently via `Promise.allSettled` specifically to isolate per-file failures. That throw aborted `FitSync._doSync()` before the sync-state persistence step, so nothing was saved — not even the files that wrote successfully moments earlier. Since a failed sync leaves the baseline untouched, every retry re-detected the exact same file set and was liable to hit the exact same race again, appearing to "never" download the pre-existing content. A later edit from another client syncs a single file in isolation, well clear of any folder-creation race, and goes through — which is why edits appear to work while the original bulk content never does.
+
+**Fix:** local write/delete failures are now reported per-file via `failedPaths` instead of throwing (see above). `FitSync.executeSync()` excludes `failedPaths` from the persisted baseline (`lastFetchedRemoteShas` for write failures; the file's existing `localShas` entry is preserved, not deleted, for delete failures) so those specific paths are re-detected as changed and retried on the next sync, while every other file in the batch is written and tracked normally in the same sync. A "Sync incomplete — N file(s) couldn't be written locally... They will be retried automatically on the next sync" notice surfaces this instead of it failing silently.
 
 ### Encoding Corruption (Issue #51)
 

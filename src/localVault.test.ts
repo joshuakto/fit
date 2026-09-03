@@ -524,13 +524,12 @@ describe('LocalVault', () => {
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 
-			// Should throw error detecting file at folder path
-			await expect(
-				localVault.applyChanges(
-					[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
-					[]
-				)
-			).rejects.toThrow(/file already exists at this path/);
+			const result = await localVault.applyChanges(
+				[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+				[]
+			);
+			expect(result.changes).toEqual([]);
+			expect(result.failedPaths).toEqual(['_fit/.obsidian/workspace.json']);
 		});
 
 		it('should succeed when parent folder already exists as a folder (issue #153)', async () => {

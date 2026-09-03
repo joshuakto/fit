@@ -88,6 +88,7 @@ type SyncExecutionResult = {
 	skippedWarning?: string;
 	/** Paths not uploaded due to a transient failure (localShas cleared so they retry next sync) */
 	rateLimitedPaths: string[];
+	localFailedPaths: string[];
 };
 
 export type ConflictResolutionResult = {
@@ -624,6 +625,14 @@ export class FitSync implements IFitSync {
 			});
 		}
 
+		const localFailedPaths = localFileOpsRecord.failedPaths ?? [];
+		const localFailedPathsSet = new Set(localFailedPaths);
+		if (localFailedPathsSet.size > 0) {
+			fitLogger.log(`⚠️ [FitSync] ${localFailedPathsSet.size} file(s) failed to apply locally — will retry next sync`, {
+				paths: localFailedPaths
+			});
+		}
+
 		// 3b'. Track protected path SHA arrivals for opt-in reconciliation.
 		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
 		// Only the remote SHA is recorded — no content download, no _fit/ write.
@@ -636,6 +645,13 @@ export class FitSync implements IFitSync {
 			}
 			const remoteSha = remoteUpdate.remoteTreeSha[change.path];
 			if (remoteSha) this.fit.protectedPathShas[change.path] = remoteSha;
+		}
+
+		if (localFailedPathsSet.size > 0) {
+			latestRemoteTreeSha = { ...latestRemoteTreeSha };
+			for (const path of localFailedPathsSet) {
+				delete latestRemoteTreeSha[path];
+			}
 		}
 
 		// 3c. Update local state using SHAs computed by LocalVault (performance optimization)
@@ -653,7 +669,9 @@ export class FitSync implements IFitSync {
 
 		// Remove deleted files from state
 		for (const path of deleteFromLocalNonClashed) {
-			delete newLocalState[path];
+			if (!localFailedPathsSet.has(path)) {
+				delete newLocalState[path];
+			}
 		}
 
 		// Update pendingClashes: newly-clashed tracked files enter pending state.
@@ -748,6 +766,7 @@ export class FitSync implements IFitSync {
 			newlySkippedPaths,
 			skippedWarning: pushResult?.skippedWarning,
 			rateLimitedPaths,
+			localFailedPaths,
 		};
 	}
 
@@ -1005,7 +1024,7 @@ export class FitSync implements IFitSync {
 			];
 
 			// Phase 3: Execute - push, pull, persist (atomic operation)
-			const { localOps, remoteOps, conflicts: executedConflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths } = await this.executeSync(
+			const { localOps, remoteOps, conflicts: executedConflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths, localFailedPaths } = await this.executeSync(
 				currentLocalState,
 				{
 					remoteChanges,
@@ -1063,9 +1082,18 @@ export class FitSync implements IFitSync {
 				);
 			}
 
+			if (localFailedPaths.length > 0) {
+				const fileList = localFailedPaths.map(p => `• ${p}`).join('\n');
+				syncNotice.setMessage(
+					`Sync incomplete — ${localFailedPaths.length} file(s) couldn't be written locally, ` +
+					`possibly due to a filesystem error or a temporary conflict. ` +
+					`They will be retried automatically on the next sync.\n${fileList}`
+				);
+			}
+
 			// Set success message (only when not already replaced by the unpushed-files reminder
 			// or the partial-sync notice above)
-			if (rateLimitedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
+			if (rateLimitedPaths.length === 0 && localFailedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
 				if (executedConflicts.length === 0) {
 					syncNotice.setMessage(`Sync successful`);
 				} else if (executedConflicts.some(f => f.remoteOp !== "REMOVED")) {
