@@ -654,6 +654,8 @@ export class FitSync implements IFitSync {
 					const previousSha = this.fit.lastFetchedRemoteShas[path];
 					if (previousSha !== undefined) {
 						latestRemoteTreeSha[path] = previousSha;
+					} else {
+						fitLogger.log('⚠️ [FitSync] Delete-failed path missing expected baseline SHA — retry may not be detected', { path });
 					}
 				} else {
 					delete latestRemoteTreeSha[path];
