@@ -650,7 +650,14 @@ export class FitSync implements IFitSync {
 		if (localFailedPathsSet.size > 0) {
 			latestRemoteTreeSha = { ...latestRemoteTreeSha };
 			for (const path of localFailedPathsSet) {
-				delete latestRemoteTreeSha[path];
+				if (deleteFromLocalNonClashed.includes(path)) {
+					const previousSha = this.fit.lastFetchedRemoteShas[path];
+					if (previousSha !== undefined) {
+						latestRemoteTreeSha[path] = previousSha;
+					}
+				} else {
+					delete latestRemoteTreeSha[path];
+				}
 			}
 		}
 

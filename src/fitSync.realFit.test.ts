@@ -1774,12 +1774,9 @@ describe('FitSync', () => {
 			const result = await fitSync.sync(mockNotice as any);
 
 			expect(result.success).toBe(true);
-			expect(localVault.getAllFilesAsRaw()['good-file.md']).toBeDefined();
-			expect(localStoreState.localShas['good-file.md']).toBeDefined();
-			expect(localStoreState.localShas['readonly-file.md']).toBeUndefined();
-			expect(localStoreState.localShas['another-readonly.md']).toBeUndefined();
-			expect(localStoreState.lastFetchedRemoteShas['readonly-file.md']).toBeUndefined();
-			expect(localStoreState.lastFetchedRemoteShas['another-readonly.md']).toBeUndefined();
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('good-file.md');
+			expect(localStoreState.localShas).toEqual({ 'good-file.md': expect.any(String) });
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({ 'good-file.md': expect.any(String) });
 
 			expect(mockNotice._calls).toEqual([
 				{ method: 'setMessage', args: ['Checking for changes...'] },
@@ -1796,8 +1793,39 @@ describe('FitSync', () => {
 			const mockNotice2 = createMockNotice();
 			const result2 = await fitSync.sync(mockNotice2 as any);
 			expect(result2.success).toBe(true);
-			expect(localVault.getAllFilesAsRaw()['readonly-file.md']).toBeDefined();
-			expect(localVault.getAllFilesAsRaw()['another-readonly.md']).toBeDefined();
+			expect(localVault.getAllFilesAsRaw()).toEqual(expect.objectContaining({
+				'readonly-file.md': expect.anything(),
+				'another-readonly.md': expect.anything(),
+			}));
+		});
+
+		it('should retry a failed local delete next sync instead of losing track of the file', async () => {
+			const fitSync = createFitSync();
+
+			remoteVault.setFile('doomed.md', 'content');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			await remoteVault.applyChanges([], ['doomed.md']);
+			localVault.setMockDeleteFile(async (path) => {
+				if (path === 'doomed.md') {
+					throw new Error('EBUSY: resource busy');
+				}
+			});
+
+			const result = await fitSync.sync(createMockNotice() as any);
+
+			expect(result.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('doomed.md');
+			expect(localStoreState.localShas).toEqual({ 'doomed.md': expect.any(String) });
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({ 'doomed.md': expect.any(String) });
+
+			localVault.setMockDeleteFile(null);
+			const result2 = await fitSync.sync(createMockNotice() as any);
+
+			expect(result2.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('doomed.md');
+			expect(localStoreState.localShas).toEqual({});
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({});
 		});
 
 		it('should handle remote write failures with file path in error message', async () => {
