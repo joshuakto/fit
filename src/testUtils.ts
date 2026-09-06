@@ -411,6 +411,16 @@ export class FakeLocalVault implements IVault<"local"> {
 	private statLog: string[] = []; // Track all stat operations for performance testing
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
 	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
+	private syncHiddenFiles = false;
+
+	/**
+	 * Mirrors LocalVault's syncHiddenFiles toggle exactly — a single global flag, not
+	 * a per-path allowlist. Defaults to false, matching this fake's pre-existing
+	 * behavior, so tests not calling this are unaffected.
+	 */
+	setSyncHiddenFiles(enabled: boolean): void {
+		this.syncHiddenFiles = enabled;
+	}
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -758,9 +768,13 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	shouldTrackState(path: string): boolean {
-		// Exclude hidden files (same as LocalVault)
-		const parts = path.split('/');
-		return !parts.some(part => part.startsWith('.'));
+		// Same single criterion as real LocalVault: hidden paths are excluded only
+		// when syncHiddenFiles is off.
+		if (!this.syncHiddenFiles) {
+			const parts = path.split('/');
+			if (parts.some(part => part.startsWith('.'))) return false;
+		}
+		return true;
 	}
 }
 
