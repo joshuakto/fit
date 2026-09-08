@@ -79,14 +79,19 @@ jobs:
           VERSION_BUMPED=true
         fi
 
+        ANY_VERSION_TOUCHED=false
+        if echo "$CHANGED" | grep -qE '^(manifest\.json|package\.json|versions\.json)$'; then
+          ANY_VERSION_TOUCHED=true
+        fi
+
         FAILED=false
 
-        if $VERSION_BUMPED; then
-          if [ -n "$CODE_FILES" ]; then
-            echo "::error::Version bump alongside code files. Version bumps must be in dedicated commits/PRs — see docs/CONTRIBUTING.md for the release process."
-            FAILED=true
-          fi
+        if $VERSION_BUMPED && [ -n "$CODE_FILES" ]; then
+          echo "::error::Version bump alongside code files. Version bumps must be in dedicated commits/PRs — see docs/CONTRIBUTING.md for the release process."
+          FAILED=true
+        fi
 
+        if $ANY_VERSION_TOUCHED; then
           if [ "$NEW_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::manifest.json version (${NEW_VERSION}) does not match package.json version (${PKG_VERSION})."
             FAILED=true
