@@ -66,19 +66,26 @@ jobs:
         BASE="origin/${{ github.base_ref }}"
 
         CHANGED=$(git diff --name-only "${BASE}" HEAD)
-        VERSION_FILES=$(echo "$CHANGED" | grep -E '^(manifest\.json|package\.json|versions\.json)$' || true)
         CODE_FILES=$(echo "$CHANGED" | grep -vE '^(manifest\.json|package\.json|versions\.json)$' | grep -E '\.(ts|js|css|mjs)$' || true)
+
+        NEW_VERSION=$(jq -r '.version' manifest.json)
+        BASE_VERSION=$(git show "${BASE}:manifest.json" | jq -r '.version')
+        PKG_VERSION=$(jq -r '.version' package.json)
+        BASE_PKG_VERSION=$(git show "${BASE}:package.json" | jq -r '.version')
+
+        VERSION_BUMPED=false
+        if [ "$NEW_VERSION" != "$BASE_VERSION" ] || [ "$PKG_VERSION" != "$BASE_PKG_VERSION" ] \
+          || echo "$CHANGED" | grep -qx 'versions.json'; then
+          VERSION_BUMPED=true
+        fi
 
         FAILED=false
 
-        if [ -n "$VERSION_FILES" ]; then
+        if $VERSION_BUMPED; then
           if [ -n "$CODE_FILES" ]; then
-            echo "::error::Version files changed alongside code files. Version bumps must be in dedicated commits/PRs — see docs/CONTRIBUTING.md for the release process."
+            echo "::error::Version bump alongside code files. Version bumps must be in dedicated commits/PRs — see docs/CONTRIBUTING.md for the release process."
             FAILED=true
           fi
-
-          NEW_VERSION=$(jq -r '.version' manifest.json)
-          PKG_VERSION=$(jq -r '.version' package.json)
 
           if [ "$NEW_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::manifest.json version (${NEW_VERSION}) does not match package.json version (${PKG_VERSION})."
@@ -90,7 +97,6 @@ jobs:
             FAILED=true
           fi
 
-          BASE_VERSION=$(git show "${BASE}:manifest.json" | jq -r '.version')
           if [ "${{ github.base_ref }}" = "main" ] && [ "$NEW_VERSION" != "$BASE_VERSION" ] && ! echo "$NEW_VERSION" | grep -q -- '-'; then
             echo "Checking GitHub Release exists for ${NEW_VERSION}..."
             if ! gh release view "$NEW_VERSION" > /dev/null 2>&1; then
