@@ -413,6 +413,7 @@ export class FakeLocalVault implements IVault<"local"> {
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
 	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
 	private syncHiddenFiles = false;
+	private trackedHiddenPaths: string[] = [];
 
 	/**
 	 * Mirrors LocalVault's syncHiddenFiles toggle exactly — a single global flag, not
@@ -421,6 +422,12 @@ export class FakeLocalVault implements IVault<"local"> {
 	 */
 	setSyncHiddenFiles(enabled: boolean): void {
 		this.syncHiddenFiles = enabled;
+	}
+
+	/** Mirrors LocalVault.configure() — Fit calls this every sync. */
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
+		if (opts.syncHiddenFiles !== undefined) this.syncHiddenFiles = opts.syncHiddenFiles;
+		if (opts.trackedHiddenPaths !== undefined) this.trackedHiddenPaths = opts.trackedHiddenPaths;
 	}
 
 	/**
@@ -770,11 +777,13 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	shouldTrackState(path: string): boolean {
 		// Mirrors real LocalVault: hidden paths are excluded when syncHiddenFiles is off,
-		// except .fitattributes.json (always tracked).
+		// except .fitattributes.json (always tracked) and explicitly tracked .obsidian/ paths.
 		if (!this.syncHiddenFiles) {
 			if (path === FITATTRIBUTES_PATH) return true;
 			const parts = path.split('/');
-			if (parts.some(part => part.startsWith('.'))) return false;
+			if (parts.some(part => part.startsWith('.'))) {
+				return this.trackedHiddenPaths.includes(path);
+			}
 		}
 		return true;
 	}

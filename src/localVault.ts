@@ -5,7 +5,6 @@
  */
 
 import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
-import { ObsidianSyncRules } from "@/fitSettings";
 import { FITATTRIBUTES_PATH } from "@/fitAttributes";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
@@ -99,18 +98,23 @@ async function collectHiddenInDir(
 export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
 	private syncHiddenFiles = true;
-	private obsidianSyncRules: ObsidianSyncRules = {};
+	// Paths known to be git-tracked (per Fit.trackedObsidianPaths()) — recomputed by the
+	// caller every sync from localShas/lastFetchedRemoteShas. Lets readFromSource()
+	// proactively probe these specific paths for local discovery even when the broader
+	// recursive hidden-path scan is skipped (syncHiddenFiles = false), same pattern
+	// already used for .fitattributes.json itself below.
+	private trackedHiddenPaths: string[] = [];
 
 	constructor(vault: Vault) {
 		this.vault = vault;
 	}
 
-	configure(opts: { syncHiddenFiles?: boolean; obsidianSyncRules?: ObsidianSyncRules }): void {
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
 		if (opts.syncHiddenFiles !== undefined) {
 			this.syncHiddenFiles = opts.syncHiddenFiles;
 		}
-		if (opts.obsidianSyncRules !== undefined) {
-			this.obsidianSyncRules = opts.obsidianSyncRules;
+		if (opts.trackedHiddenPaths !== undefined) {
+			this.trackedHiddenPaths = opts.trackedHiddenPaths;
 		}
 	}
 
@@ -149,8 +153,8 @@ export class LocalVault implements IVault<"local"> {
 
 			const parts = filePath.split('/');
 			if (parts.some(part => part.startsWith('.'))) {
-				// Explicitly opted-in obsidian paths are tracked regardless of syncHiddenFiles
-				return filePath in this.obsidianSyncRules;
+				// Git-tracked obsidian paths are tracked regardless of syncHiddenFiles
+				return this.trackedHiddenPaths.includes(filePath);
 			}
 		}
 
@@ -204,6 +208,20 @@ export class LocalVault implements IVault<"local"> {
 		if (!this.syncHiddenFiles && !allPaths.includes(FITATTRIBUTES_PATH)) {
 			if (await this.vault.adapter.stat(FITATTRIBUTES_PATH)) {
 				allPaths = [...allPaths, FITATTRIBUTES_PATH];
+			}
+		}
+
+		// Same reasoning as the .fitattributes.json probe above, generalized: a git-tracked
+		// .obsidian/ path won't be found by vault.getFiles() (hidden) or by the recursive
+		// scan (skipped when syncHiddenFiles = false) unless probed explicitly. Without this,
+		// local edits to a tracked path go undetected — and therefore unpushed — whenever
+		// syncHiddenFiles is off.
+		if (!this.syncHiddenFiles) {
+			for (const path of this.trackedHiddenPaths) {
+				if (allPaths.includes(path)) continue;
+				if (await this.vault.adapter.stat(path)) {
+					allPaths = [...allPaths, path];
+				}
 			}
 		}
 
