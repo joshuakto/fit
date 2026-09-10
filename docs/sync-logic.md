@@ -122,6 +122,7 @@ Each file path has a **baseline** SHA in `localShas` (local) and `lastFetchedRem
 
 - Baselines are updated only on successful sync completion. A failed sync leaves them unchanged, so the next sync re-detects all accumulated changes.
 - A path **absent** from `localShas` has no confirmed local baseline — either it was never synced, or a clash removed the entry (see [Pending](#pending) below).
+- **A value only counts as a baseline if it was established by an actual confirmed sync under the *current* sync scope.** A value merely observed while a path was out of scope (excluded, ignored, not yet opted in) never counts, and doesn't become valid just because scope later changes to include it. Before any mechanism could move a path from out-of-scope to in-scope, this was true but vacuous — nothing could populate a baseline out-of-band. `obsidianSyncRules`' opt-in transition was the first such mechanism (see below) and is what made the out-of-band case reachable in practice. Any future mechanism with the same shape (a new selective-sync design, a settings change that widens what's tracked) needs the same guarantee: never auto-resolve using a baseline that predates the scope change.
 
 ### `_fit/` as scratchpad
 
@@ -276,10 +277,10 @@ A "conflict" requires two parties with competing claims to the same file. A prot
 `LocalStores.protectedPathShas` maps `path → last-seen remote SHA`. Enables the opt-in transition without a junk clash (see below). Entries are cleared when the path becomes opted in.
 
 **Opt-in transition:**
-When `obsidianSyncRules` gains a new entry, at the start of the next sync FIT reconciles `protectedPathShas` entries for newly-tracked paths:
-- If local file exists and matches cached remote SHA: set baseline in `localShas` and `lastFetchedRemoteShas` — sync is a no-op.
-- If local file exists but differs: set baseline in `localShas` (local will be pushed); `lastFetchedRemoteShas` not set so remote appears ADDED → remote applied (overwrite).
-- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path.
+When `obsidianSyncRules` gains a new entry, at the start of the next sync FIT reconciles `protectedPathShas` entries for newly-tracked paths. `protectedPathShas[path]` is only ever a *passively observed* remote SHA, so per the [Baseline](#baseline) invariant it cannot be trusted the moment local turns out to disagree with it:
+- If local file exists and matches the cached remote SHA: this is genuinely safe — set baseline in `localShas` and `lastFetchedRemoteShas` — sync is a no-op.
+- If local file exists but differs: neither `localShas` nor `lastFetchedRemoteShas` is set for this path. Both sides then show as newly ADDED, which the normal pipeline resolves as an ordinary clash (written to `_fit/`) — never an automatic direction. This is what the [Baseline](#baseline) invariant above requires: a passively-observed SHA cannot short-circuit into an automatic overwrite.
+- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path. (Local has nothing to lose here, so this direction is unambiguous — matches the "one side empty" case above.)
 
 In all cases the `protectedPathShas` entry is deleted (path is now tracked normally).
 
@@ -343,12 +344,14 @@ When a path is opted in via `obsidianSyncRules`, two additional rules apply:
 
 **Result for non-opted-in `.obsidian/` paths:**
 - Never synced in either direction
-- Remote copies saved to `_fit/.obsidian/` for transparency
+- Remote SHA passively recorded in `protectedPathShas` (see above) — no content download, no `_fit/` write
 - Excluded from `lastFetchedRemoteShas`; present in local scan but filtered before change detection
 
 **Result for opted-in `.obsidian/` paths:**
 - Tracked in `localShas` and synced bidirectionally like any regular file
-- `syncHiddenFiles = false` does not suppress them (explicit opt-in overrides the hidden-file default)
+- `syncHiddenFiles = false` does not suppress them (explicit opt-in overrides the hidden-file default) —
+  except that this "not suppressed" guarantee only holds for remote→local; for local→remote, an opted-in
+  path is only picked up if hidden-path discovery actually runs, which itself depends on `syncHiddenFiles`.
 
 ### Implementation Locations
 

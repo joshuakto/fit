@@ -527,6 +527,87 @@ describe('FitSync', () => {
 			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
 		});
 
+		it('should surface a clash (not silently apply remote) when opting in a path whose local content differs from the last-glimpsed remote SHA', async () => {
+			// protectedPathShas is only ever passively observed while a path is excluded —
+			// it was never established by an actual sync, so it must not be trusted as a
+			// baseline the moment local turns out to differ from it.
+			const fitSync = createFitSync();
+			const remoteContent = FileContent.fromPlainText('{"colorGroups":[]}');
+			const remoteSha = await LocalVault.fileSha1('.obsidian/graph.json', remoteContent);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: remoteContent }
+			], []);
+
+			// First sync without opt-in: caches SHA in protectedPathShas, no download.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(remoteSha);
+
+			// Local independently has different content for this path (e.g. edited by Obsidian
+			// itself while sync was off for it).
+			localVault.setFile('.obsidian/graph.json', '{"colorGroups":["different"]}');
+
+			// User opts in the path (sync policy) and the vault can now read hidden
+			// paths (readability) — two independent axes, both need setting.
+			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+			localVault.setSyncHiddenFiles(true);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Must be a genuine clash, not a silent remote-wins overwrite. toEqual(objectContaining())
+			// rather than toMatchObject so a failure here (e.g. success:false) still surfaces the
+			// sibling `error` field instead of being hidden by a truncated diff.
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/graph.json' })])
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":["different"]}',
+				'_fit/.obsidian/graph.json': '{"colorGroups":[]}'
+			});
+		});
+
+		it('should treat opt-in as a clean no-op when local content already matches the last-glimpsed remote SHA', async () => {
+			const fitSync = createFitSync();
+			const sharedContent = FileContent.fromPlainText('{"colorGroups":[]}');
+			const sharedSha = await LocalVault.fileSha1('.obsidian/graph.json', sharedContent);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: sharedContent }
+			], []);
+
+			// First sync without opt-in: caches SHA in protectedPathShas.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(sharedSha);
+
+			// Local independently already has the exact same content (e.g. two devices
+			// converged, or the user copied it manually).
+			localVault.setFile('.obsidian/graph.json', '{"colorGroups":[]}');
+
+			// User opts in the path (sync policy) and the vault can now read hidden
+			// paths (readability) — two independent axes, both need setting.
+			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+			localVault.setSyncHiddenFiles(true);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			// No _fit/ write — this was a genuine no-op, not a resolved clash.
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":[]}'
+			});
+
+			// "Clean no-op" means a real baseline was established, not just a lucky first
+			// pass — prove it behaviorally: a follow-up sync with nothing further changed
+			// also reports nothing to do, rather than asserting the internal
+			// localShas/protectedPathShas bookkeeping directly.
+			const followUp = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(followUp).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":[]}'
+			});
+		});
+
 		it('should sync opted-in .obsidian/ file directly (not to _fit/)', async () => {
 			const fitSync = createFitSync();
 			fitSync.fit.obsidianSyncRules = { '.obsidian/appearance.json': {} };
