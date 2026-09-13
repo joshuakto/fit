@@ -195,7 +195,12 @@ export function resolveUntrackedState(
  * @param localShas - Current local blob SHAs, keyed by path — used to detect that a local change
  *   and a remote change independently produced identical content (no real clash)
  * @param remoteShas - Incoming remote blob SHAs, keyed by path
- * @returns Final categorization into safe changes, clashes, and protected remote arrivals
+ * @param gitMaskTrackedPaths - `.obsidian/` paths currently tracked + format-eligible
+ *   (Fit.isGitMaskTrackedPath). A REMOVED remote change with no local edit for one of these
+ *   paths is ambiguous (real deletion vs. "stop syncing this path") — routed to
+ *   untrackNotices instead of safeRemote so the local file is never auto-deleted.
+ * @returns Final categorization into safe changes, clashes, protected remote arrivals, and
+ *   ambiguous git-mask untrack notices
  */
 export function resolveAllChanges(
 	localChanges: FileChange[],
@@ -203,13 +208,20 @@ export function resolveAllChanges(
 	protectedPaths: Set<string>,
 	untrackedPaths: Set<string>,
 	localShas: FileStates = {},
-	remoteShas: FileStates = {}
+	remoteShas: FileStates = {},
+	gitMaskTrackedPaths: Set<string> = new Set()
 ): {
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
 	clashes: FileClash[];
 	/** Remote changes to paths excluded by shouldSyncPath — not clashes, handled separately */
 	protectedRemote: FileChange[];
+	/**
+	 * REMOVED remote changes for a git-mask-tracked `.obsidian/` path with no local edit —
+	 * ambiguous between "file deleted" and "stop tracking this path". Not applied locally;
+	 * surfaced via Fit.pendingUntrackedPaths / Explain instead.
+	 */
+	untrackNotices: FileChange[];
 } {
 	const localChangePaths = new Set(localChanges.map(c => c.path));
 
@@ -217,6 +229,7 @@ export function resolveAllChanges(
 	const safeRemote: FileChange[] = [];
 	const clashes: FileClash[] = [];
 	const protectedRemote: FileChange[] = [];
+	const untrackNotices: FileChange[] = [];
 
 	// Process all local changes
 	for (const localChange of localChanges) {
@@ -264,13 +277,17 @@ export function resolveAllChanges(
 				localState: 'untracked',
 				remoteOp: remoteChange.type
 			});
+		} else if (remoteChange.type === 'REMOVED' && gitMaskTrackedPaths.has(remoteChange.path)) {
+			// No local edit, but this REMOVED is ambiguous for a git-mask-tracked path —
+			// don't auto-delete, surface it as a notice instead.
+			untrackNotices.push(remoteChange);
 		} else {
 			// No local change, not blocked - safe to apply
 			safeRemote.push(remoteChange);
 		}
 	}
 
-	return { safeLocal, safeRemote, clashes, protectedRemote };
+	return { safeLocal, safeRemote, clashes, protectedRemote, untrackNotices };
 }
 
 /**
