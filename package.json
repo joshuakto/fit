@@ -48,15 +48,16 @@
 		"obsidian": "^1.8.7",
 		"tslib": "^2.8.1",
 		"typescript": "^5.9.2",
-		"vitest": "^4.0.8",
 		"unicorn-magic": "^0.4.0",
+		"vitest": "^4.0.8",
 		"wdio-obsidian-reporter": "^2.4.0",
 		"wdio-obsidian-service": "^2.4.0"
 	},
 	"dependencies": {
 		"@octokit/core": "^7.0.6",
 		"@octokit/plugin-retry": "^8.0.3",
-		"ignore": "^7.0.5"
+		"ignore": "^7.0.5",
+		"node-diff3": "^3.2.1"
 	},
 	"optionalDependencies": {
 		"@wdio/appium-service": "^9.23.0",

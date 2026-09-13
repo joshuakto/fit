@@ -738,7 +738,36 @@ interface FitAttributeRule {
 
 **Also new in this groundwork:** `.fitattributes.json` itself always syncs regardless of `syncHiddenFiles`, since it has to propagate for the eventual feature to work at all.
 
-A later change adds the actual sync-decision wiring (git-driven tracking + format gate) this groundwork is preparing for — see #67/#337.
+Until #337 is implemented, `.canvas` is the only file type with structure-aware semantic merge. All other clashing files (including plain text and non-canvas JSON) are eligible for the line-based merge below. A later change adds the actual sync-decision wiring (git-driven tracking + format gate) this groundwork is preparing for — see #67/#337.
+
+## Line-Based Text Merge
+
+A three-way line-level merge for everything else, using [`node-diff3`](https://github.com/bhousel/node-diff3): auto-merges a clash when local and remote changed different, non-adjacent lines. This covers edits anywhere in the file — different paragraphs, list insertions, unrelated sections — not just appends at the end. Anything that region-based diff3 can't cleanly separate (see below) falls back to the standard `_fit/` clash file, unchanged from before this feature existed.
+
+**Merge rule:** given `base` (fetched the same way as the canvas merge base — `lastFetchedRemoteShas[path]` blob SHA, though lazily per-candidate here, only after the binary check below passes, to avoid a wasted GitHub API call for paths that were never going to merge anyway), `local`, and `remote`, split into lines and run `diff3Merge`:
+
+```typescript
+function tryLineMerge(base: string, local: string, remote: string): string | null {
+  if (local === remote) return local;
+  const regions = diff3Merge(local.split('\n'), base.split('\n'), remote.split('\n'), { excludeFalseConflicts: true });
+  if (regions.some(r => 'conflict' in r)) return null;
+  return regions.flatMap(r => r.ok ?? []).join('\n');
+}
+```
+
+Any conflicting region at all (even one, anywhere in the file) → the whole file falls back to `_fit/`, same policy as canvas's two-way fallback — there's no partial merge with inline `<<<<<<<`-style conflict markers written into the note; that would change Obsidian's editing UX and risk breaking embeds/links mid-file. `excludeFalseConflicts: true` (a `node-diff3` option) treats "both sides independently made the identical edit" as resolved rather than a conflict.
+
+**Adjacent-line limitation:** region-based diff3 groups *touching* changes (no unchanged line between them in `base`) into a single region. If local and remote each changed one of two directly adjacent lines, that counts as one region, and since its local/remote content differ, it's reported as a conflict — even though each side's edit is, on its own, independent. This matches standard `diff3`/`git merge-file` behavior; splitting a paragraph across more lines (or leaving a blank line between distinct edits) avoids it. Non-adjacent changes anywhere else in the file merge cleanly regardless of distance.
+
+**Binary files:** never merged, checked via `hasNullByte()` ([`src/util/obsidianHelpers.ts`](../src/util/obsidianHelpers.ts) — the same git-style heuristic used elsewhere, scanning the first ~8KB) before either side's content is passed to `tryLineMerge`. This can't be an encoding-tag check, since remote content always arrives base64-encoded regardless of underlying type (matching GitHub's blob API). It also can't be *only* "does `.toPlainText()` throw" — a null byte (U+0000) is itself valid UTF-8, so binary content containing one can still decode successfully if the rest of the bytes happen to form valid UTF-8, which would let it through to be line-spliced and corrupted. `.toPlainText()`'s fatal-decode throw remains as a second layer (still caught per-file, same `_fit/` fallback) for binary content the null-byte scan misses (rare — most binary formats contain a null byte within the first 8KB, but none of this is a 100% guarantee, matching git's own accepted limitation here).
+
+The scan itself uses `FileContent.prefixBytes(8192)` rather than `.toBytes()` — for remote content (always base64-string-backed), `.toBytes()` decodes the *entire* file before a caller can slice it, so checking only the leading 8KB would still pay to decode a multi-MB attachment in full. `prefixBytes()` decodes only enough base64 characters to cover the requested byte count.
+
+**No base available:** (fetch failure, or first clash for a path with no prior sync) → not eligible, falls back to `_fit/`, same as canvas's two-way fallback.
+
+**Result:** merged content written to the local file, SHA stored in baseline, path excluded from `pendingClashes` — same observable behavior as a successful canvas merge.
+
+**Implementation:** [`src/util/lineMerge.ts`](../src/util/lineMerge.ts) (`tryLineMerge`), [`src/util/obsidianHelpers.ts`](../src/util/obsidianHelpers.ts) (`hasNullByte`), [`src/fitSync.ts`](../src/fitSync.ts) (lazy base fetch + auto-merge block, alongside the canvas merge block, before `clashFiles` computation — also caches each candidate's fetched remote content so `clashFiles` doesn't re-fetch it for paths that don't end up merging)
 
 ## Explain Sync Status
 
