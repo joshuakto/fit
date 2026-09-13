@@ -704,6 +704,59 @@ describe('FitSync', () => {
 			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
 		});
 
+		it('leaves an unedited .obsidian/ file on disk (and records pendingUntrackedPaths) when remote removes it, instead of deleting it', async () => {
+			// Remote deletion is the only "stop syncing this path" signal git-mask tracking
+			// has, so it's ambiguous with "the file was actually deleted". Resolve
+			// conservatively: never auto-delete a locally-unedited .obsidian/ file just
+			// because it's gone from the repo.
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			// Two syncs to establish tracking (same two-sync shape as the opt-in tests above).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': '{"theme":"dark"}',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+
+			// Untrack via remote removal, with no local edit in between.
+			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': '{"theme":"dark"}',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
+
+			// Local file untouched by a further no-op sync — the notice sticks around.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': '{"theme":"dark"}',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
+
+			// Deleting the file locally completes the untrack: cleared from pendingUntrackedPaths,
+			// and — since remote has nothing for this path either — nothing is pushed.
+			await localVault.applyChanges([], ['.obsidian/appearance.json']);
+			const finalResult = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(finalResult).toEqual(expect.objectContaining({ success: true }));
+			expect(localStoreState.pendingUntrackedPaths).toEqual([]);
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+		});
+
 		it('pushes local edits to an already-tracked .obsidian/ path even when syncHiddenFiles is off', async () => {
 			// Discovery-gap fix: shouldTrackState alone isn't enough — LocalVault's recursive
 			// hidden-path scan (which is what normally makes a path a discovery *candidate* in

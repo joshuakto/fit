@@ -370,14 +370,26 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 2c: Simple clash detection
-		const { safeLocal, safeRemote, clashes, protectedRemote } = resolveAllChanges(
+		const gitMaskTrackedPaths = new Set(
+			remoteChanges
+				.filter(c => c.type === 'REMOVED' && this.fit.isGitMaskTrackedPath(c.path))
+				.map(c => c.path)
+		);
+		const { safeLocal, safeRemote, clashes, protectedRemote, untrackNotices } = resolveAllChanges(
 			localChanges,
 			remoteChanges,
 			protectedPaths,
 			untrackedPaths,
 			identityLocalShas,
-			identityRemoteShas
+			identityRemoteShas,
+			gitMaskTrackedPaths
 		);
+
+		if (untrackNotices.length > 0) {
+			fitLogger.log('[FitSync] .obsidian/ path(s) removed from remote while locally unedited — leaving local file(s) in place', {
+				paths: untrackNotices.map(c => c.path)
+			});
+		}
 
 		// Track stat failures for logging
 		const filesMovedToFitDueToStatFailure: string[] = [];
@@ -414,7 +426,7 @@ export class FitSync implements IFitSync {
 		});
 
 		return {
-			safeLocal, safeRemote, clashes, protectedRemote, statError, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure, existenceMap
+			safeLocal, safeRemote, clashes, protectedRemote, untrackNotices, statError, filesMovedToFitDueToStatFailure, deletionsSkippedDueToStatFailure, existenceMap
 		};
 	}
 
@@ -436,6 +448,7 @@ export class FitSync implements IFitSync {
 		safeRemote: FileChange[],
 		clashes: FileClash[],
 		protectedRemote: FileChange[],
+		untrackNotices: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
@@ -750,6 +763,23 @@ export class FitSync implements IFitSync {
 			}
 		}
 
+		// Update pendingUntrackedPaths: a git-mask-tracked .obsidian/ path just removed from
+		// remote (with no local edit) is left on disk but flagged as ambiguous — see
+		// resolveAllChanges's untrackNotices and Fit.isGitMaskTrackedPath. Cleared once the
+		// local file is gone (user deleted it, completing the untrack) or the path is
+		// receiving remote content again (back to ordinary tracked flow).
+		const remoteChangesThisSync = remoteUpdate.remoteChanges ?? [];
+		this.fit.pendingUntrackedPaths = this.fit.pendingUntrackedPaths.filter(path => {
+			const stillLocal = path in newLocalState;
+			const remoteReappeared = remoteChangesThisSync.some(c => c.path === path && c.type !== 'REMOVED');
+			return stillLocal && !remoteReappeared;
+		});
+		for (const change of untrackNotices) {
+			if (!this.fit.pendingUntrackedPaths.includes(change.path)) {
+				this.fit.pendingUntrackedPaths.push(change.path);
+			}
+		}
+
 		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
 		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
 		// where the user deletes the file before the retry — without a baseline, the deletion would
@@ -815,6 +845,7 @@ export class FitSync implements IFitSync {
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
 			protectedPathShas: this.fit.protectedPathShas,
+			pendingUntrackedPaths: this.fit.pendingUntrackedPaths,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
@@ -1117,7 +1148,7 @@ export class FitSync implements IFitSync {
 			// Phase 2: Compare & Resolve - determine safe vs clashed changes
 			const localScanPaths = new Set(Object.keys(currentLocalState));
 			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
-			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, protectedRemote, existenceMap } = await this.compareAndResolveChanges(
+			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, protectedRemote, untrackNotices, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
 				remoteChanges,
 				localScanPaths,
@@ -1164,6 +1195,7 @@ export class FitSync implements IFitSync {
 				safeRemote,
 				clashes,
 				protectedRemote,
+				untrackNotices,
 				pendingReminderPaths,
 				existenceMap,
 				syncNotice
@@ -1435,6 +1467,7 @@ export class FitSync implements IFitSync {
 			trackedFileCount: Object.keys(this.fit.localShas).length,
 			pendingClashes: [...this.fit.pendingClashes],
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
+			pendingUntrackedPaths: [...this.fit.pendingUntrackedPaths],
 			fitAttributesWarning: this.fit.fitAttributesWarning,
 		};
 
