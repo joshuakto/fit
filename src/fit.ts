@@ -7,7 +7,7 @@
 
 import { LocalStores } from "@/localStores";
 import { FitSettings } from "@/fitSettings";
-import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes } from "@/fitAttributes";
+import { FitAttributesFile, FITATTRIBUTES_PATH, detectSyncFormat, parseFitAttributes } from "@/fitAttributes";
 import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
@@ -182,9 +182,14 @@ export class Fit {
 	isEligibleForTracking(path: string): boolean {
 		if (this.isHardDenylistedPath(path)) return false;
 
-		// Format:"json" is reserved (field-level masking, not built yet); an unconfigured
-		// tracked path is detection-only regardless of JSON-shape.
-		return this.fitAttributes[path]?.format === "text";
+		// Explicit .fitattributes.json config always wins over the filetype heuristic
+		// below — including to opt a path back OUT of a heuristic-implied format.
+		const configuredFormat = this.fitAttributes[path]?.format;
+		const format = configuredFormat ?? detectSyncFormat(path);
+
+		// format:"json" is reserved (field-level masking, not built yet); a path with no
+		// known/configured text format is detection-only.
+		return format === "text";
 	}
 
 	/**

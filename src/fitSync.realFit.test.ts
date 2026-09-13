@@ -892,6 +892,65 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeUndefined();
 		});
 
+		it.each(['.css', '.md', '.txt'])('syncs a tracked %s path as format:"text" with no .fitattributes.json entry', async (ext) => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			const path = `.obsidian/snippets/custom${ext}`;
+
+			await remoteVault.applyChanges([
+				{ path, content: FileContent.fromPlainText('content') },
+			], []);
+
+			// Two syncs to establish tracking (same two-sync shape as other opt-in tests).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// Synced via the filetype heuristic alone — no .fitattributes.json entry exists.
+				[path]: 'content'
+				// No _fit/ clash copy: nothing local to conflict with on first sync.
+			});
+		});
+
+		it('leaves a .obsidian/ path with no known format detection-only, with no .fitattributes.json entry', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				// .json has no filetype heuristic — format:"json" masking isn't built, so an
+				// unconfigured JSON path stays detection-only, unlike .css/.md/.txt above.
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({});
+		});
+
+		it('lets an explicit .fitattributes.json entry override the .css heuristic', async () => {
+			// format:"json" isn't built yet, so this only proves override direction, not that
+			// json masking actually applies — same as the reserved-format assertion elsewhere.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/snippets/custom.css': { format: 'json' } }));
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/snippets/custom.css', content: FileContent.fromPlainText('.tag { color: red; }') },
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// .fitattributes.json itself always syncs regardless of what it configures.
+				[FITATTRIBUTES_PATH]: JSON.stringify({ '.obsidian/snippets/custom.css': { format: 'json' } })
+				// custom.css absent: format:"json" is reserved/not yet eligible, and explicit
+				// config overrides the .css heuristic's format:"text" default rather than
+				// stacking with it — so this path stays detection-only, never written.
+			});
+		});
+
 		it('should block .obsidian/plugins/fit/data.json even with a .fitattributes.json entry (hard denylist)', async () => {
 			const fitSync = createFitSync();
 			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/plugins/fit/data.json': { format: 'text' } }));
