@@ -34,11 +34,12 @@ function explain(
 	);
 }
 
-// ─── renderExplanation snapshot tests ────────────────────────────────────────
-
 describe('renderExplanation', () => {
 	describe('never-synced', () => {
-		it('notice — no commit to link', () => {
+		it('notice — no commit to link (also: the full RenderableExplanation shape)', () => {
+			// The one full-object snapshot in this file — kept as a concrete reference for
+			// the complete shape, since every other test below only asserts the field(s) it
+			// actually cares about.
 			expect(explain(snapshot({ lastFetchedCommitSha: null }), [])).toMatchInlineSnapshot(`
 				{
 				  "autoSyncNote": null,
@@ -55,388 +56,163 @@ describe('renderExplanation', () => {
 
 	describe('all synced (ok)', () => {
 		it('notice — without commit URL', () => {
-			expect(explain(snapshot({ trackedFileCount: 5, lastFetchedCommitSha: 'abcdef1234567' }), [])).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [],
-				  "statusNote": "All 5 files synced (commit abcdef1)",
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot({ trackedFileCount: 5, lastFetchedCommitSha: 'abcdef1234567' }), []);
+			expect(result).toEqual(expect.objectContaining({
+				statusNote: 'All 5 files synced (commit abcdef1)',
+				commitUrl: null,
+			}));
 		});
 
 		it('notice — with commit URL appended', () => {
-			expect(explain(
+			const result = explain(
 				snapshot({ trackedFileCount: 5, lastFetchedCommitSha: '2e39870bfd4e1715222800d62947222c76def787' }),
 				[],
 				{ commitUrl: COMMIT_URL },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [],
-				  "statusNote": "All 5 files synced (commit 2e39870)",
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				statusNote: 'All 5 files synced (commit 2e39870)',
+				commitUrl: COMMIT_URL,
+			}));
 		});
 
 		it('notice — singular file count', () => {
-			expect(explain(snapshot({ trackedFileCount: 1, lastFetchedCommitSha: 'abcdef1234567' }), [])).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [],
-				  "statusNote": "All 1 file synced (commit abcdef1)",
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot({ trackedFileCount: 1, lastFetchedCommitSha: 'abcdef1234567' }), []);
+			expect(result).toEqual(expect.objectContaining({ statusNote: 'All 1 file synced (commit abcdef1)' }));
 		});
 	});
 
 	describe('scan error', () => {
 		it('modal — with specific failed paths and commit URL', () => {
-			expect(explain(
+			const result = explain(
 				snapshot(),
 				null,
 				{ scanFailedPaths: ['ItsASecret.md', 'locked/private.md'], commitUrl: COMMIT_URL },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
-				  "fitAttributesNote": null,
-				  "scanNote": "Couldn't read: ItsASecret.md, locked/private.md — local changes may be incomplete",
-				  "sections": [],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				scanNote: "Couldn't read: ItsASecret.md, locked/private.md — local changes may be incomplete",
+				commitUrl: COMMIT_URL,
+			}));
 		});
 
 		it('modal — singular failed path', () => {
-			expect(explain(snapshot(), null, { scanFailedPaths: ['secret.md'] })).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": "Couldn't read: secret.md — local changes may be incomplete",
-				  "sections": [],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot(), null, { scanFailedPaths: ['secret.md'] });
+			expect(result).toEqual(expect.objectContaining({
+				scanNote: "Couldn't read: secret.md — local changes may be incomplete",
+			}));
 		});
 
 		it('modal — no path details available', () => {
-			expect(explain(snapshot(), null, { scanFailedPaths: [] })).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": "Couldn't scan all files — local changes may be incomplete",
-				  "sections": [],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot(), null, { scanFailedPaths: [] });
+			expect(result).toEqual(expect.objectContaining({
+				scanNote: "Couldn't scan all files — local changes may be incomplete",
+			}));
 		});
 	});
 
 	describe('pending clashes', () => {
 		it('modal — singular, with commit URL', () => {
-			expect(explain(
+			const result = explain(
 				snapshot({ pendingClashes: ['inbox.md'] }),
 				[],
 				{ commitUrl: COMMIT_URL },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.",
-				      "heading": "1 conflicted file need resolution",
-				      "items": [
-				        {
-				          "cls": "file-needs-resolution",
-				          "detail": "_fit/inbox.md",
-				          "path": "inbox.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				commitUrl: COMMIT_URL,
+				sections: [{
+					heading: '1 conflicted file need resolution',
+					description: 'Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.',
+					items: [{ cls: 'file-needs-resolution', detail: '_fit/inbox.md', path: 'inbox.md' }],
+				}],
+			}));
 		});
 
 		it('modal — plural', () => {
-			expect(explain(snapshot({ pendingClashes: ['notes/journal.md', 'inbox.md'] }), [])).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.",
-				      "heading": "2 conflicted files need resolution",
-				      "items": [
-				        {
-				          "cls": "file-needs-resolution",
-				          "detail": "_fit/notes/journal.md",
-				          "path": "notes/journal.md",
-				        },
-				        {
-				          "cls": "file-needs-resolution",
-				          "detail": "_fit/inbox.md",
-				          "path": "inbox.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot({ pendingClashes: ['notes/journal.md', 'inbox.md'] }), []);
+			expect(result).toEqual(expect.objectContaining({
+				sections: [expect.objectContaining({ heading: '2 conflicted files need resolution' })],
+			}));
 		});
 	});
 
 	describe('oversized files', () => {
 		it('modal — singular', () => {
-			expect(explain(snapshot({ oversizedFilePaths: ['big-video.mp4'] }), [])).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These files exceeded GitHub's file size limit and were skipped. They won't sync until reduced in size or removed.",
-				      "heading": "1 file too large to push",
-				      "items": [
-				        {
-				          "cls": "file-push-skipped",
-				          "path": "big-video.mp4",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot({ oversizedFilePaths: ['big-video.mp4'] }), []);
+			expect(result).toEqual(expect.objectContaining({
+				sections: [{
+					heading: '1 file too large to push',
+					description: "These files exceeded GitHub's file size limit and were skipped. They won't sync until reduced in size or removed.",
+					items: [{ cls: 'file-push-skipped', path: 'big-video.mp4' }],
+				}],
+			}));
 		});
 
 		it('modal — plural', () => {
-			expect(explain(snapshot({ oversizedFilePaths: ['big.pdf', 'huge.zip'] }), [])).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These files exceeded GitHub's file size limit and were skipped. They won't sync until reduced in size or removed.",
-				      "heading": "2 files too large to push",
-				      "items": [
-				        {
-				          "cls": "file-push-skipped",
-				          "path": "big.pdf",
-				        },
-				        {
-				          "cls": "file-push-skipped",
-				          "path": "huge.zip",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot({ oversizedFilePaths: ['big.pdf', 'huge.zip'] }), []);
+			expect(result).toEqual(expect.objectContaining({
+				sections: [expect.objectContaining({ heading: '2 files too large to push' })],
+			}));
 		});
 	});
 
 	describe('local changes', () => {
 		it('modal — mixed change types', () => {
-			expect(explain(
+			const result = explain(
 				snapshot(),
 				changes(['new-note.md', 'ADDED'], ['edited.md', 'MODIFIED'], ['old.md', 'REMOVED']),
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "3 local changes pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-ADDED",
-				          "path": "new-note.md",
-				        },
-				        {
-				          "cls": "file-MODIFIED",
-				          "path": "edited.md",
-				        },
-				        {
-				          "cls": "file-REMOVED",
-				          "path": "old.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				sections: [{
+					heading: '3 local changes pending next sync',
+					description: 'These local edits will be pushed the next time you run Fit Sync.',
+					items: [
+						{ cls: 'file-ADDED', path: 'new-note.md' },
+						{ cls: 'file-MODIFIED', path: 'edited.md' },
+						{ cls: 'file-REMOVED', path: 'old.md' },
+					],
+				}],
+			}));
 		});
 
 		it('modal — singular', () => {
-			expect(explain(snapshot(), changes(['new.md', 'ADDED']))).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-ADDED",
-				          "path": "new.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			const result = explain(snapshot(), changes(['new.md', 'ADDED']));
+			expect(result).toEqual(expect.objectContaining({
+				sections: [expect.objectContaining({ heading: '1 local change pending next sync' })],
+			}));
 		});
 
 		it('_fit/ paths excluded from local changes — never appear as pending sync', () => {
 			// _fit/ files are clash copies, not independently syncable
-			expect(explain(
+			const result = explain(
 				snapshot({ pendingClashes: ['file.md'] }),
 				changes(['_fit/file.md', 'ADDED'], ['other.md', 'MODIFIED']),
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.",
-				      "heading": "1 conflicted file need resolution",
-				      "items": [
-				        {
-				          "cls": "file-needs-resolution",
-				          "detail": "_fit/file.md",
-				          "path": "file.md",
-				        },
-				      ],
-				    },
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-MODIFIED",
-				          "path": "other.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			const localChangesSection = (result.sections as { heading: string }[]).find(s => s.heading.includes('pending next sync'));
+			expect(localChangesSection).toEqual(expect.objectContaining({
+				items: [{ cls: 'file-MODIFIED', path: 'other.md' }],
+			}));
 		});
 
 		it('_fit/ path with no clash entry still excluded', () => {
 			// Even if _fit/ file appears without a matching pendingClash (stale state),
 			// it must not surface as a pending local change
-			expect(explain(
+			const result = explain(
 				snapshot(),
 				changes(['_fit/orphan.md', 'ADDED'], ['clean.md', 'ADDED']),
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-ADDED",
-				          "path": "clean.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				sections: [expect.objectContaining({ items: [{ cls: 'file-ADDED', path: 'clean.md' }] })],
+			}));
 		});
 
 		it('clashes exclude those paths from local changes section', () => {
-			expect(explain(
+			const result = explain(
 				snapshot({ pendingClashes: ['clashed.md'] }),
 				changes(['clashed.md', 'MODIFIED'], ['clean.md', 'ADDED']),
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": null,
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "Fit saved conflicting copies in _fit/. Review each file there, then delete or apply it, and sync again.",
-				      "heading": "1 conflicted file need resolution",
-				      "items": [
-				        {
-				          "cls": "file-needs-resolution",
-				          "detail": "_fit/clashed.md",
-				          "path": "clashed.md",
-				        },
-				      ],
-				    },
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-ADDED",
-				          "path": "clean.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			const localChangesSection = (result.sections as { heading: string }[]).find(s => s.heading.includes('pending next sync'));
+			expect(localChangesSection).toEqual(expect.objectContaining({
+				items: [{ cls: 'file-ADDED', path: 'clean.md' }],
+			}));
 		});
 	});
 
@@ -459,6 +235,9 @@ describe('renderExplanation', () => {
 
 	describe('multiple issue types', () => {
 		it('all three sections — order: clashes, oversized, local changes', () => {
+			// Full structural snapshot kept deliberately here: this test exists specifically
+			// to prove composition/ordering across all three section types together, which a
+			// field-by-field assertion would obscure rather than clarify.
 			expect(explain(
 				snapshot({ pendingClashes: ['clash.md'], oversizedFilePaths: ['big.pdf'] }),
 				changes(['new.md', 'ADDED']),
@@ -515,147 +294,67 @@ describe('renderExplanation', () => {
 
 		it('ok notice — auto-sync off, no note appended', () => {
 			const info: AutoSyncInfo = { enabled: false, intervalMinutes: 30, lastSyncedAt: null, now: BASE_NOW };
-			expect(renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info }))
-				.toMatchInlineSnapshot(`
-					{
-					  "autoSyncNote": "Auto-sync: off",
-					  "commitUrl": null,
-					  "fitAttributesNote": null,
-					  "scanNote": null,
-					  "sections": [],
-					  "statusNote": "All 3 files synced (commit abcdef1)",
-					  "title": "Fit Sync Status",
-					}
-				`);
+			const result = renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info });
+			expect(result).toEqual(expect.objectContaining({ autoSyncNote: 'Auto-sync: off' }));
 		});
 
 		it('ok notice — auto-sync on, never synced in session', () => {
 			const info: AutoSyncInfo = { enabled: true, intervalMinutes: 30, lastSyncedAt: null, now: BASE_NOW };
-			expect(renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info }))
-				.toMatchInlineSnapshot(`
-					{
-					  "autoSyncNote": "Auto-sync: every 30 min (never synced in this session)",
-					  "commitUrl": null,
-					  "fitAttributesNote": null,
-					  "scanNote": null,
-					  "sections": [],
-					  "statusNote": "All 3 files synced (commit abcdef1)",
-					  "title": "Fit Sync Status",
-					}
-				`);
+			const result = renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info });
+			expect(result).toEqual(expect.objectContaining({
+				autoSyncNote: 'Auto-sync: every 30 min (never synced in this session)',
+			}));
 		});
 
 		it('ok notice — auto-sync on, synced 3 min ago', () => {
 			const lastSyncedAt = BASE_NOW - 3 * 60 * 1000;
 			const info: AutoSyncInfo = { enabled: true, intervalMinutes: 30, lastSyncedAt, now: BASE_NOW };
-			expect(renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info }))
-				.toMatchInlineSnapshot(`
-					{
-					  "autoSyncNote": "Auto-sync: every 30 min · last synced 3 min ago · next in ~27 min",
-					  "commitUrl": null,
-					  "fitAttributesNote": null,
-					  "scanNote": null,
-					  "sections": [],
-					  "statusNote": "All 3 files synced (commit abcdef1)",
-					  "title": "Fit Sync Status",
-					}
-				`);
+			const result = renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info });
+			expect(result).toEqual(expect.objectContaining({
+				autoSyncNote: 'Auto-sync: every 30 min · last synced 3 min ago · next in ~27 min',
+			}));
 		});
 
 		it('ok notice — synced just now (< 1 min)', () => {
 			const lastSyncedAt = BASE_NOW - 45 * 1000;
 			const info: AutoSyncInfo = { enabled: true, intervalMinutes: 30, lastSyncedAt, now: BASE_NOW };
-			expect(renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info }))
-				.toMatchInlineSnapshot(`
-					{
-					  "autoSyncNote": "Auto-sync: every 30 min · last synced just now · next in ~30 min",
-					  "commitUrl": null,
-					  "fitAttributesNote": null,
-					  "scanNote": null,
-					  "sections": [],
-					  "statusNote": "All 3 files synced (commit abcdef1)",
-					  "title": "Fit Sync Status",
-					}
-				`);
+			const result = renderExplanation({ kind: 'ok', fileCount: 3, shortSha: 'abcdef1' }, { autoSyncInfo: info });
+			expect(result).toEqual(expect.objectContaining({
+				autoSyncNote: 'Auto-sync: every 30 min · last synced just now · next in ~30 min',
+			}));
 		});
 
 		it('issues modal — autoSyncNote included when auto-sync enabled', () => {
 			const lastSyncedAt = BASE_NOW - 10 * 60 * 1000;
 			const info: AutoSyncInfo = { enabled: true, intervalMinutes: 15, lastSyncedAt, now: BASE_NOW };
-			expect(renderExplanation(
+			const result = renderExplanation(
 				buildStatusExplanation(BASE_SNAP, changes(['edit.md', 'MODIFIED']), undefined),
 				{ autoSyncInfo: info },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": "Auto-sync: every 15 min · last synced 10 min ago · next in ~5 min",
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-MODIFIED",
-				          "path": "edit.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				autoSyncNote: 'Auto-sync: every 15 min · last synced 10 min ago · next in ~5 min',
+			}));
 		});
 
 		it('issues modal — autoSyncNote included when auto-sync off', () => {
 			const info: AutoSyncInfo = { enabled: false, intervalMinutes: 30, lastSyncedAt: null, now: BASE_NOW };
-			expect(renderExplanation(
+			const result = renderExplanation(
 				buildStatusExplanation(BASE_SNAP, changes(['edit.md', 'MODIFIED']), undefined),
 				{ autoSyncInfo: info },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": "Auto-sync: off",
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": null,
-				  "sections": [
-				    {
-				      "description": "These local edits will be pushed the next time you run Fit Sync.",
-				      "heading": "1 local change pending next sync",
-				      "items": [
-				        {
-				          "cls": "file-MODIFIED",
-				          "path": "edit.md",
-				        },
-				      ],
-				    },
-				  ],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({ autoSyncNote: 'Auto-sync: off' }));
 		});
 
 		it('scan error modal — scanNote with autoSyncNote', () => {
 			const info: AutoSyncInfo = { enabled: true, intervalMinutes: 30, lastSyncedAt: BASE_NOW - 5 * 60000, now: BASE_NOW };
-			expect(renderExplanation(
+			const result = renderExplanation(
 				buildStatusExplanation(BASE_SNAP, null, ['ItsASecret.md']),
 				{ autoSyncInfo: info },
-			)).toMatchInlineSnapshot(`
-				{
-				  "autoSyncNote": "Auto-sync: every 30 min · last synced 5 min ago · next in ~25 min",
-				  "commitUrl": null,
-				  "fitAttributesNote": null,
-				  "scanNote": "Couldn't read: ItsASecret.md — local changes may be incomplete",
-				  "sections": [],
-				  "statusNote": null,
-				  "title": "Fit Sync Status",
-				}
-			`);
+			);
+			expect(result).toEqual(expect.objectContaining({
+				autoSyncNote: 'Auto-sync: every 30 min · last synced 5 min ago · next in ~25 min',
+				scanNote: "Couldn't read: ItsASecret.md — local changes may be incomplete",
+			}));
 		});
 	});
-
 });
-
