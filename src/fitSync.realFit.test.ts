@@ -13,7 +13,7 @@ import { Fit } from './fit';
 import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { LocalVault } from './localVault';
-import { FitSettings } from '@/fitSettings';
+import { DEFAULT_SETTINGS, FitSettings } from '@/fitSettings';
 import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import { LocalStores } from '@/localStores';
 import { VaultError } from './vault';
@@ -46,6 +46,7 @@ describe('FitSync', () => {
 	// Realistic settings that get passed through to RemoteGitHubVault
 	const testSettings = {
 		pat: 'fake-test-token',
+		githubHost: 'github.com',
 		owner: 'test-owner',
 		repo: 'test-repo',
 		branch: 'test-branch',
@@ -2446,7 +2447,7 @@ describe('FitSync', () => {
 
 			// Given: Stored settings as of v1.3
 			const fit = new Fit(
-				v13settings as FitSettings,
+				{ ...DEFAULT_SETTINGS, ...v13settings },
 				localStoreState,
 				{} as unknown as Vault
 			);

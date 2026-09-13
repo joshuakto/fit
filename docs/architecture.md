@@ -97,6 +97,7 @@ Both local and remote caches use the canonical Git blob SHA format: `SHA1("blob 
 - Current implementation: GitHub backend with two components:
   - `GitHubConnection`: PAT-based operations (authentication, repo/branch discovery) for settings UI
   - `RemoteGitHubVault`: Repository-specific sync operations using `@octokit/core` with automatic retry handling
+- Both derive their Octokit `baseUrl` from the `githubHost` setting via `apiBaseUrl()` (`src/remotes/githubHost.ts`), so github.com and GitHub Enterprise Server share one code path — they expose the same API
 - Architecture supports adding GitLab/Gitea backends via IVault interface (would require corresponding connection classes)
 
 ### Support Systems

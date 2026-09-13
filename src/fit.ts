@@ -90,7 +90,8 @@ export class Fit {
 			setting.owner,
 			setting.repo,
 			setting.branch,
-			setting.deviceName
+			setting.deviceName,
+			setting.githubHost
 		);
 	}
 

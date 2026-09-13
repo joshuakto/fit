@@ -145,7 +145,7 @@ describe('FitPlugin persistence lifecycle', () => {
 		it('saveSettings includes localStore fields so concurrent saveLocalStore cannot lose them', async () => {
 			const plugin = makePlugin();
 			plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
-			plugin.settings = { pat: 'token', owner: 'alice', repo: 'r', branch: 'main', checkEveryXMinutes: 5 } as any;
+			plugin.settings = { ...DEFAULT_SETTINGS, pat: 'token', owner: 'alice', repo: 'r', branch: 'main', checkEveryXMinutes: 5 };
 			plugin.localStore = { localShas: {}, pendingClashes: ['x.md'], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
 			plugin.startOrUpdateAutoSyncInterval = vi.fn() as any;
 
@@ -159,7 +159,7 @@ describe('FitPlugin persistence lifecycle', () => {
 		it('concurrent saveLocalStore + saveSettings both land in the final persisted state', async () => {
 			const plugin = makePlugin();
 			plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
-			plugin.settings = { pat: 'token' } as any;
+			plugin.settings = { ...DEFAULT_SETTINGS, pat: 'token' };
 			plugin.localStore = { localShas: {}, pendingClashes: ['x.md'], lastFetchedCommitSha: null, lastFetchedRemoteShas: {}, lastFetchedRemoteSha: undefined, unpushedFiles: {} };
 			plugin.startOrUpdateAutoSyncInterval = vi.fn() as any;
 
@@ -192,6 +192,22 @@ describe('FitPlugin persistence lifecycle', () => {
 			mockLoad(plugin, { lastFetchedRemoteSha: { 'file.md': sha('oldsha') } });
 			await plugin.loadLocalStore();
 			expect(plugin.localStore.lastFetchedRemoteShas).toEqual({ 'file.md': 'oldsha' });
+		});
+	});
+
+	describe('loadSettings from disk', () => {
+		it('defaults githubHost to github.com for vaults saved before enterprise host support', async () => {
+			const plugin = makePlugin();
+			mockLoad(plugin, { pat: 'token', owner: 'alice', repo: 'notes', branch: 'main' });
+			await plugin.loadSettings();
+			expect(plugin.settings.githubHost).toBe('github.com');
+		});
+
+		it('keeps a stored enterprise host', async () => {
+			const plugin = makePlugin();
+			mockLoad(plugin, { githubHost: 'github.example.com' });
+			await plugin.loadSettings();
+			expect(plugin.settings.githubHost).toBe('github.example.com');
 		});
 	});
 });

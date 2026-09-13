@@ -53,7 +53,7 @@ _These priorities operationalize the philosophy in [architecture.md § Design Pr
 
 **🚀 Platform Expansion**:
 - **Selective `.obsidian/` sync** - v1 shipped in 1.6 (replace-strategy + field tracking); v2: field-level exclusion (#67)
-- **Multi-platform backends** - GitLab, Gitea, self-hosted Git servers
+- **Multi-platform backends** - GitLab or Gitea
 - **Multi-repo sync** - Multiple vaults or vault partitions
 
 **🔒 Security & Privacy**:

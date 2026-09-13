@@ -2,6 +2,7 @@ import FitPlugin from "@/fitPlugin";
 import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
 import { setEqual } from "./utils";
 import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
+import { tokenCreationUrl, treeUrl, webBaseUrl } from "./remotes/githubHost";
 import { VaultError } from "./vault";
 import { fitLogger } from "./logger";
 import FitNotice from "./fitNotice";
@@ -177,9 +178,9 @@ export default class FitSettingTab extends PluginSettingTab {
 	};
 
 	getLatestLink = (): string => {
-		const {owner: owner, repo, branch} = this.plugin.settings;
+		const {owner, repo, branch, githubHost} = this.plugin.settings;
 		if (owner.length > 0 && repo.length > 0 && branch.length > 0) {
-			return `https://github.com/${owner}/${repo}/tree/${branch}`;
+			return treeUrl(githubHost, owner, repo, branch);
 		}
 		return "";
 	};
@@ -309,7 +310,7 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		this.patSetting = new Setting(containerEl)
 			.setName('Github personal access token')
-			.setDesc('Make sure Permissions has Contents: "Read and write". Recommended: Limit to selected repository, adjust expiration.')
+			.setDesc('Fine-grained token: Permissions needs Contents: "Read and write". Classic token: the "repo" scope. Recommended: Limit to selected repository, adjust expiration.')
 			.addText(text => text
 				.setPlaceholder('GitHub personal access token')
 				.setValue(this.plugin.settings.pat)
@@ -345,9 +346,23 @@ export default class FitSettingTab extends PluginSettingTab {
 				.setIcon('external-link')
 				.setTooltip("Create a token")
 				.onClick(async ()=>{
-					window.open(
-						"https://github.com/settings/personal-access-tokens/new?name=Obsidian%20FIT&description=Obsidian%20FIT%20plugin&contents=write",
-						'_blank');
+					// Resolved on click, not at render, so a host edit takes effect without reopening settings
+					window.open(tokenCreationUrl(this.plugin.settings.githubHost), '_blank');
+				}));
+
+		new Setting(containerEl)
+			.setName('GitHub host (advanced)')
+			.setDesc('Default: github.com')
+			.addText(text => text
+				.setPlaceholder('github.com')
+				.setValue(this.plugin.settings.githubHost)
+				.onChange((value) => {
+					this.plugin.settings.githubHost = value;
+					this.clearAuthState();
+					this.suggestedOwners = [];
+					this.ownerSuggest?.updateSuggestions([]);
+					this.repoSuggest?.updateSuggestions([]);
+					this.debouncedSaveSettings();
 				}));
 	};
 
@@ -375,7 +390,7 @@ export default class FitSettingTab extends PluginSettingTab {
 				.setIcon('github')
 				.setTooltip("Create a new repository")
 				.onClick(() => {
-					window.open(`https://github.com/new`, '_blank');
+					window.open(`${webBaseUrl(this.plugin.settings.githubHost)}/new`, '_blank');
 				}));
 
 		// Repository owner combo box (supports both dropdown suggestions and freeform text)
