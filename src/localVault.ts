@@ -5,7 +5,7 @@
  */
 
 import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
-import { ObsidianSyncRules } from "@/fitSettings";
+import { FITATTRIBUTES_PATH } from "@/fitAttributes";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
@@ -98,18 +98,23 @@ async function collectHiddenInDir(
 export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
 	private syncHiddenFiles = true;
-	private obsidianSyncRules: ObsidianSyncRules = {};
+	// Paths known to be git-tracked (per Fit.trackedObsidianPaths()) — recomputed by the
+	// caller every sync from localShas/lastFetchedRemoteShas. Lets readFromSource()
+	// proactively probe these specific paths for local discovery even when the broader
+	// recursive hidden-path scan is skipped (syncHiddenFiles = false), same pattern
+	// already used for .fitattributes.json itself below.
+	private trackedHiddenPaths: string[] = [];
 
 	constructor(vault: Vault) {
 		this.vault = vault;
 	}
 
-	configure(opts: { syncHiddenFiles?: boolean; obsidianSyncRules?: ObsidianSyncRules }): void {
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
 		if (opts.syncHiddenFiles !== undefined) {
 			this.syncHiddenFiles = opts.syncHiddenFiles;
 		}
-		if (opts.obsidianSyncRules !== undefined) {
-			this.obsidianSyncRules = opts.obsidianSyncRules;
+		if (opts.trackedHiddenPaths !== undefined) {
+			this.trackedHiddenPaths = opts.trackedHiddenPaths;
 		}
 	}
 
@@ -142,10 +147,14 @@ export class LocalVault implements IVault<"local"> {
 		//
 		// Obsidian vault paths always use forward slashes (even on Windows)
 		if (!this.syncHiddenFiles) {
+			// .fitattributes.json must propagate regardless of syncHiddenFiles, or it can't
+			// reach a device that has hidden-file sync off — defeating its own purpose.
+			if (filePath === FITATTRIBUTES_PATH) return true;
+
 			const parts = filePath.split('/');
 			if (parts.some(part => part.startsWith('.'))) {
-				// Explicitly opted-in obsidian paths are tracked regardless of syncHiddenFiles
-				return filePath in this.obsidianSyncRules;
+				// Git-tracked obsidian paths are tracked regardless of syncHiddenFiles
+				return this.trackedHiddenPaths.includes(filePath);
 			}
 		}
 
@@ -190,7 +199,38 @@ export class LocalVault implements IVault<"local"> {
 			}
 		}
 
-		const allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		// .fitattributes.json is hidden (leading dot) so vault.getFiles() never returns
+		// it — must be discovered explicitly when the hidden-path scan above is skipped,
+		// or shouldTrackState's special-case for it (below) never gets a chance to run.
+		// Only add it if it actually exists locally: injecting a path that doesn't exist
+		// would make the SHA-computation step below fail it and abort the whole sync.
+		let allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		if (!this.syncHiddenFiles && !allPaths.includes(FITATTRIBUTES_PATH)) {
+			if (await this.vault.adapter.stat(FITATTRIBUTES_PATH)) {
+				allPaths = [...allPaths, FITATTRIBUTES_PATH];
+			}
+		}
+
+		// Same reasoning as the .fitattributes.json probe above, generalized: a git-tracked
+		// .obsidian/ path won't be found by vault.getFiles() (hidden) or by the recursive
+		// scan (skipped when syncHiddenFiles = false) unless probed explicitly. Without this,
+		// local edits to a tracked path go undetected — and therefore unpushed — whenever
+		// syncHiddenFiles is off.
+		//
+		// Note: this list (Fit.trackedObsidianPaths()) can lag by one sync for a path just
+		// reconciled untracked→tracked — that's expected, not a correctness gap. A remote
+		// change for a path missing here still gets caught by FitSync's independent
+		// filesystem safety check (#169) rather than silently overwriting local content; see
+		// Fit.trackedObsidianPaths()'s own comment and docs/sync-logic.md § Baseline
+		// Recording for Untracked Files (#169).
+		if (!this.syncHiddenFiles) {
+			for (const path of this.trackedHiddenPaths) {
+				if (allPaths.includes(path)) continue;
+				if (await this.vault.adapter.stat(path)) {
+					allPaths = [...allPaths, path];
+				}
+			}
+		}
 
 		// Filter to only tracked paths (excludes hidden files when syncHiddenFiles is off)
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));
@@ -626,7 +666,7 @@ export class LocalVault implements IVault<"local"> {
 		);
 
 		// Collect successful operations and failures
-		const writeResults: Array<{change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
+		const writeResults: Array<{index: number, change: FileChange, shaPromise?: Promise<BlobSha>}> = [];
 		const writeFailures = collectSettledFailures(writeSettledResults, filesToWrite.map(f => f.path));
 
 		for (let i = 0; i < writeSettledResults.length; i++) {
@@ -635,7 +675,7 @@ export class LocalVault implements IVault<"local"> {
 
 			if (result.status === 'fulfilled') {
 				const {change, shaPromise} = result.value;
-				writeResults.push({ change, shaPromise: shaPromise ?? undefined });
+				writeResults.push({ index: i, change, shaPromise: shaPromise ?? undefined });
 			} else {
 				const failure = writeFailures.find(f => f.path === path);
 				fitLogger.log(`❌ [LocalVault] Failed to write file: ${path}`, failure?.error);
@@ -657,22 +697,7 @@ export class LocalVault implements IVault<"local"> {
 			}
 		}
 
-		// If any operations failed, throw VaultError with details
-		if (writeFailures.length > 0 || deleteFailures.length > 0) {
-			const allFailures = [...writeFailures, ...deleteFailures];
-			const failedPaths = allFailures.map(f => f.path);
-			const primaryPath = failedPaths[0];
-			const primaryError = allFailures[0].error;
-			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
-
-			throw VaultError.filesystem(
-				`Failed to write to ${primaryPath}: ${primaryMessage}`,
-				{
-					failedPaths,
-					errors: allFailures
-				}
-			);
-		}
+		const failedPaths = [...writeFailures, ...deleteFailures].map(f => f.path);
 
 		// Extract file operations for return value
 		const writeOps = writeResults.map(r => r.change);
@@ -683,11 +708,10 @@ export class LocalVault implements IVault<"local"> {
 		// Only includes files with SHA computations (direct writes + untracked clashes) (#169)
 		// Tracked clash files are excluded (null shaPromise) as they self-heal via local scan
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
-		for (let i = 0; i < writeResults.length; i++) {
-			const result = writeResults[i];
+		for (const result of writeResults) {
 			if (result.shaPromise) {
 				// Key by original path from filesToWrite, not the write path (which may be _fit/...)
-				const originalPath = filesToWrite[i].path;
+				const originalPath = filesToWrite[result.index].path;
 				shaPromiseMap[originalPath] = result.shaPromise;
 			}
 		}
@@ -704,7 +728,8 @@ export class LocalVault implements IVault<"local"> {
 		return {
 			changes,
 			newBaselineStates,
-			userWarning
+			userWarning,
+			...(failedPaths.length > 0 && { failedPaths })
 		};
 	}
 }

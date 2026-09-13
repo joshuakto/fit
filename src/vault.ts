@@ -44,6 +44,7 @@ type ApplyChangesResultMap = {
 		/** Promise for file SHAs (computed from in-memory content during writes).
 		 * Await when ready to update local state - allows parallelization on mobile. */
 		newBaselineStates: Promise<FileStates>;
+		failedPaths?: string[];
 	};
 	/** Remote vault result - includes commit metadata and new state */
 	"remote": {

@@ -123,6 +123,16 @@ describe('LocalVault', () => {
 			expect(localVault.shouldTrackState('notes/.gitignore')).toBe(true);
 			expect(localVault.shouldTrackState('normal/file.md')).toBe(true);
 		});
+
+		it('should track .fitattributes.json even when syncHiddenFiles is off (#337)', () => {
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: false });
+
+			expect(localVault.shouldTrackState('.fitattributes.json')).toBe(true);
+			// Unlike .fitattributes.json, .gitignore itself still follows normal hidden-file
+			// gating — only its content (read separately via GitignoreFilter) is unconditional.
+			expect(localVault.shouldTrackState('.gitignore')).toBe(false);
+		});
 	});
 
 	describe('readFromSource', () => {
@@ -524,13 +534,12 @@ describe('LocalVault', () => {
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 
-			// Should throw error detecting file at folder path
-			await expect(
-				localVault.applyChanges(
-					[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
-					[]
-				)
-			).rejects.toThrow(/file already exists at this path/);
+			const result = await localVault.applyChanges(
+				[{ path: '_fit/.obsidian/workspace.json', content: FileContent.fromPlainText('{}') }],
+				[]
+			);
+			expect(result.changes).toEqual([]);
+			expect(result.failedPaths).toEqual(['_fit/.obsidian/workspace.json']);
 		});
 
 		it('should succeed when parent folder already exists as a folder (issue #153)', async () => {
@@ -1029,6 +1038,33 @@ describe('LocalVault', () => {
 			const { state } = await localVault.readFromSource();
 
 			expect(Object.keys(state).sort()).toEqual(['file.log', 'file.md']);
+		});
+	});
+
+	describe('.fitattributes.json discovery in readFromSource (#337)', () => {
+		it('should include .fitattributes.json even when syncHiddenFiles is off', async () => {
+			const fakeVault = new FakeObsidianVault();
+
+			await fakeVault.adapter.write('.fitattributes.json', '{}');
+			await fakeVault.create('note.md', 'content');
+
+			const localVault = new LocalVault(fakeVault as any);
+			localVault.configure({ syncHiddenFiles: false });
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state).sort()).toEqual(['.fitattributes.json', 'note.md']);
+		});
+
+		it('should not fabricate a .fitattributes.json entry when it does not exist locally', async () => {
+			const fakeVault = new FakeObsidianVault();
+
+			await fakeVault.create('note.md', 'content');
+
+			const localVault = new LocalVault(fakeVault as any);
+			localVault.configure({ syncHiddenFiles: false });
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state).sort()).toEqual(['note.md']);
 		});
 	});
 });

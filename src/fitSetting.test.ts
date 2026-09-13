@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import FitSettingTab from './fitSettingTab';
 import { FitLogger } from './logger';
-import { DEFAULT_SETTINGS, findNewFields } from '@/fitSettings';
+import { DEFAULT_SETTINGS } from '@/fitSettings';
 
 const EMPTY_SETTINGS = { ...DEFAULT_SETTINGS };
 
@@ -419,29 +419,5 @@ describe('FitSettingTab - GitHub settings', () => {
 			// Then: Should fetch only once for "the"
 			expect(fetchCount).toBe(1);
 		});
-	});
-});
-
-describe('findNewFields', () => {
-	it.each([
-		{ name: 'new field added',
-			orig: ['theme', 'fontSize'],
-			current: ['theme', 'fontSize', 'newToken'],
-			expectedNew: ['newToken'] },
-		{ name: 'no new fields',
-			orig: ['a', 'b', 'c'],
-			current: ['a', 'b'],
-			expectedNew: [] },
-		{ name: 'empty known list',
-			orig: [],
-			current: ['x', 'y'],
-			expectedNew: ['x', 'y'] },
-		{ name: 'both empty', orig: [], current: [], expectedNew: [] },
-		{ name: 'field removed plus new added',
-			orig: ['a', 'old'],
-			current: ['a', 'new'],
-			expectedNew: ['new'] },
-	])('$name', ({ orig, current, expectedNew }) => {
-		expect(findNewFields(orig, current)).toEqual(expectedNew);
 	});
 });

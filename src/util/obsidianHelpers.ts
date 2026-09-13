@@ -10,6 +10,15 @@ export function arrayBufferToContent(buffer: ArrayBuffer): Base64Content {
 }
 
 /**
+ * Git's proven binary detection heuristic: null bytes (0x00) are valid UTF-8
+ * (U+0000) but reliably indicate binary content. Only the first ~8KB is checked.
+ */
+export function hasNullByte(bytes: Uint8Array): boolean {
+	const sample = bytes.subarray(0, Math.min(8192, bytes.length));
+	return sample.some(b => b === 0);
+}
+
+/**
  * Decode ArrayBuffer to FileContent with binary detection.
  *
  * Strategy:
@@ -25,12 +34,7 @@ export function arrayBufferToContent(buffer: ArrayBuffer): Base64Content {
  * @returns FileContent with appropriate encoding
  */
 export function decodeFileContent(arrayBuffer: ArrayBuffer): FileContent {
-	// Check first ~8KB for null bytes (0x00) - Git's proven binary detection heuristic
-	// Null bytes are valid UTF-8 (U+0000) but reliably indicate binary files
-	const bytes = new Uint8Array(arrayBuffer.slice(0, Math.min(8192, arrayBuffer.byteLength)));
-	const hasNullByte = bytes.some(b => b === 0);
-
-	if (hasNullByte) {
+	if (hasNullByte(new Uint8Array(arrayBuffer))) {
 		return FileContent.fromArrayBuffer(arrayBuffer, 'base64');
 	}
 
@@ -200,38 +204,6 @@ export class GitHubRepoSuggest extends AbstractInputSuggest<string> {
 	selectSuggestion(value: string, evt: MouseEvent | KeyboardEvent): void {
 		this.setValue(value);
 		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		this.close();
-	}
-}
-
-/**
- * Autocomplete for .obsidian/ sub-paths (shown without the .obsidian/ prefix).
- * Used in the Obsidian config sync settings UI.
- */
-export class ObsidianPathSuggest extends AbstractInputSuggest<string> {
-	private pathList: string[] = [];
-	private inputEl: HTMLInputElement;
-
-	constructor(app: App, inputEl: HTMLInputElement, suggestions: string[]) {
-		super(app, inputEl);
-		this.inputEl = inputEl;
-		this.pathList = suggestions;
-	}
-
-	getSuggestions(query: string): string[] {
-		const lowerQuery = query.toLowerCase();
-		return lowerQuery
-			? this.pathList.filter(s => s.toLowerCase().includes(lowerQuery))
-			: this.pathList;
-	}
-
-	renderSuggestion(value: string, el: HTMLElement): void {
-		el.setText(value);
-	}
-
-	selectSuggestion(value: string, _evt: MouseEvent | KeyboardEvent): void {
-		this.setValue(value);
-		this.inputEl.dispatchEvent(new Event('change', { bubbles: true }));
 		this.close();
 	}
 }

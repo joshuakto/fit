@@ -55,6 +55,13 @@ export type FileClash = {
  * Identifies remote changes that need local filesystem verification,
  * excluding protected paths (which are blocked by policy regardless of local state).
  *
+ * This is also what makes it safe for a `.obsidian/` path just reconciled
+ * untracked→tracked (Fit.trackedForCurrentSync) to be briefly missing from
+ * LocalVault's proactive hidden-path discovery list (Fit.trackedObsidianPaths()) — any
+ * remote change for a path this sync's local scan didn't cover still gets a direct
+ * filesystem check here, independent of that discovery list. See docs/sync-logic.md
+ * § Baseline Recording for Untracked Files (#169).
+ *
  * @param remoteChanges - Changes detected in remote vault scan
  * @param localScanPaths - Set of paths found in local scan (tracked files)
  * @param isProtectedPath - Function to check if path is protected by sync policy

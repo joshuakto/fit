@@ -14,6 +14,7 @@ import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { LocalVault } from './localVault';
 import { DEFAULT_SETTINGS, FitSettings } from '@/fitSettings';
+import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import { LocalStores } from '@/localStores';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
@@ -468,23 +469,82 @@ describe('FitSync', () => {
 			const uniquePaths = new Set(statLog);
 			expect(statLog.length).toBe(uniquePaths.size);
 		});
-		it('should not trigger junk clash when user opts in a previously-protected path', async () => {
-			// Simulate: remote has .obsidian/graph.json, client A synced without opt-in
-			// then user enables sync for that path
+		it('logs a protected-path detection breakdown covering all four buckets', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+			// Local-only, no remote content yet -> untracked.
+			localVault.setFile('.obsidian/hotkeys.json', '{}');
+
+			await remoteVault.applyChanges([
+				// Hard-denylisted regardless of remote content.
+				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{}') },
+				// Tracked (remote content exists) but no .fitattributes.json entry -> unconfigured.
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				// Tracked and format:"text" -> actually syncing.
+				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') },
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expectLoggerCalledWith('[FitSync] Protected-path detection', {
+				trackedTextMode: ['.obsidian/graph.json'],
+				hardDenylisted: ['.obsidian/plugins/fit/data.json'],
+				trackedUnconfigured: ['.obsidian/appearance.json'],
+				untracked: ['.obsidian/hotkeys.json'],
+				untrackedTotal: 1,
+			});
+			const hintCall = fitLoggerLogSpy.mock.calls.find(
+				(call) => typeof call[0] === 'string' && call[0].startsWith('[FitSync] Note: to stop syncing')
+			);
+			expect(hintCall).toBeDefined();
+		});
+
+		it('does not log the stop-syncing hint when no .obsidian/ path is actively syncing', async () => {
+			const fitSync = createFitSync();
+			// Tracked (remote content exists) but no .fitattributes.json entry -> unconfigured,
+			// never actually syncs -> no reason to hint "remove it to stop syncing".
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const hintCall = fitLoggerLogSpy.mock.calls.find(
+				(call) => typeof call[0] === 'string' && call[0].startsWith('[FitSync] Note: to stop syncing')
+			);
+			expect(hintCall).toBeUndefined();
+		});
+
+		it('does not log a protected-path detection line when there is no .obsidian/ activity', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('normal.md', 'Normal file content');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const detectionCall = fitLoggerLogSpy.mock.calls.find(
+				(call) => call[0] === '[FitSync] Protected-path detection'
+			);
+			expect(detectionCall).toBeUndefined();
+		});
+
+		it('should not trigger junk clash on the sync after a path becomes trackable and format-eligible', async () => {
+			// Simulate: remote has .obsidian/graph.json, client A synced before the path was
+			// tracked, then a .fitattributes.json entry appears (git-driven — not a local toggle)
 			const fitSync = createFitSync();
 
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
 			], []);
 
-			// First sync without opt-in: caches SHA in protectedPathShas (no _fit/ write)
+			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas (no _fit/ write)
 			await syncAndHandleResult(fitSync, createMockNotice());
 			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeTruthy();
 
-			// User opts in the path
-			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+			// .fitattributes.json now declares this path format:"text" (as if it appeared in git)
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
 
-			// First sync with opt-in: reconciliation should set baseline from protectedPathShas,
+			// Next sync: reconciliation should set baseline from protectedPathShas,
 			// no junk clash even though local doesn't have the file yet
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
 
@@ -506,13 +566,13 @@ describe('FitSync', () => {
 				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
 			], []);
 
-			// First sync without opt-in: caches SHA in protectedPathShas
+			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas
 			await syncAndHandleResult(fitSync, createMockNotice());
 			const cachedSha = localStoreState.protectedPathShas?.['.obsidian/graph.json'];
 			expect(cachedSha).toBeTruthy();
 
-			// User opts in the path
-			fitSync.fit.obsidianSyncRules = { '.obsidian/graph.json': {} };
+			// .fitattributes.json now declares this path format:"text"
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
 
 			// Second sync fails after reconciliation mutates state
 			remoteVault.setFailure(VaultError.network("Couldn't reach GitHub API"));
@@ -528,48 +588,177 @@ describe('FitSync', () => {
 			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
 		});
 
-		it('should sync opted-in .obsidian/ file directly (not to _fit/)', async () => {
+		it('should surface a clash (not silently apply remote) when opting in a path whose local content differs from the last-glimpsed remote SHA', async () => {
+			// protectedPathShas is only ever passively observed while a path is excluded —
+			// it was never established by an actual sync, so it must not be trusted as a
+			// baseline the moment local turns out to differ from it.
 			const fitSync = createFitSync();
-			fitSync.fit.obsidianSyncRules = { '.obsidian/appearance.json': {} };
+			const remoteContent = FileContent.fromPlainText('{"colorGroups":[]}');
+			const remoteSha = await LocalVault.fileSha1('.obsidian/graph.json', remoteContent);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: remoteContent }
+			], []);
+
+			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas, no download.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(remoteSha);
+
+			// Local independently has different content for this path (e.g. edited by Obsidian
+			// itself while sync was off for it).
+			localVault.setFile('.obsidian/graph.json', '{"colorGroups":["different"]}');
+
+			// .fitattributes.json now declares this path format:"text" (sync policy), and the
+			// vault can now read hidden paths (readability) — two independent axes, both need setting.
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+			localVault.setSyncHiddenFiles(true);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Must be a genuine clash, not a silent remote-wins overwrite. toEqual(objectContaining())
+			// rather than toMatchObject so a failure here (e.g. success:false) still surfaces the
+			// sibling `error` field instead of being hidden by a truncated diff.
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/graph.json' })])
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":["different"]}',
+				'_fit/.obsidian/graph.json': '{"colorGroups":[]}',
+				[FITATTRIBUTES_PATH]: JSON.stringify({ '.obsidian/graph.json': { format: 'text' } })
+			});
+		});
+
+		it('should treat opt-in as a clean no-op when local content already matches the last-glimpsed remote SHA', async () => {
+			const fitSync = createFitSync();
+			const sharedContent = FileContent.fromPlainText('{"colorGroups":[]}');
+			const sharedSha = await LocalVault.fileSha1('.obsidian/graph.json', sharedContent);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: sharedContent }
+			], []);
+
+			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(sharedSha);
+
+			// Local independently already has the exact same content (e.g. two devices
+			// converged, or the user copied it manually).
+			localVault.setFile('.obsidian/graph.json', '{"colorGroups":[]}');
+
+			// .fitattributes.json now declares this path format:"text" (sync policy), and the
+			// vault can now read hidden paths (readability) — two independent axes, both need setting.
+			const fitAttributesContent = JSON.stringify({ '.obsidian/graph.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			// No _fit/ write — this was a genuine no-op, not a resolved clash.
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":[]}',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+
+			// "Clean no-op" means a real baseline was established, not just a lucky first
+			// pass — prove it behaviorally: a follow-up sync with nothing further changed
+			// also reports nothing to do, rather than asserting the internal
+			// localShas/protectedPathShas bookkeeping directly.
+			const followUp = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(followUp).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/graph.json': '{"colorGroups":[]}',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+		});
+
+		it('syncs a previously-observed .obsidian/ file directly (not to _fit/) once tracked and format-eligible', async () => {
+			// Even with .fitattributes.json already configured, first-ever appearance of a
+			// path's remote content is only observed (protectedPathShas), not synced, this
+			// sync — the tracked-gate can't be satisfied within the very sync that first
+			// establishes it. Reconciliation on the next sync pulls it. This is the same
+			// two-sync shape as the opt-in tests above, just with format:"text" pre-configured
+			// from the start rather than added in between.
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
 
-			const mockNotice = createMockNotice();
-			const result = await syncAndHandleResult(fitSync, mockNotice);
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBeUndefined();
 
-			expect(result).toMatchObject({ success: true });
-			// Opted-in file synced directly; not saved to _fit/
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			// Synced directly; not saved to _fit/
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"dark"}',
-				'normal.md': 'Normal file'
+				'normal.md': 'Normal file',
+				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
 			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
 		});
 
-		it('should always exclude .obsidian/workspace.json even with a rule', async () => {
+		it('pushes local edits to an already-tracked .obsidian/ path even when syncHiddenFiles is off', async () => {
+			// Discovery-gap fix: shouldTrackState alone isn't enough — LocalVault's recursive
+			// hidden-path scan (which is what normally makes a path a discovery *candidate* in
+			// the first place) is skipped entirely when syncHiddenFiles is off. Without an
+			// explicit per-path probe for tracked paths, a local edit here would go silently
+			// undetected — not because it's excluded, but because it's never even looked at.
 			const fitSync = createFitSync();
-			// User mistakenly tries to sync workspace.json — denylist wins
-			fitSync.fit.obsidianSyncRules = { '.obsidian/workspace.json': {} };
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			// Two syncs to establish tracking (same two-sync shape as the opt-in tests above).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
+
+			// Now turn hidden-file scanning off — the setting this fix is specifically about —
+			// and edit the already-tracked path locally.
+			localVault.setSyncHiddenFiles(false);
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"light"}');
+		});
+
+		it('syncs .obsidian/workspace.json like any other path when explicitly opted in via .fitattributes.json', async () => {
+			// workspace.json/-mobile.json are not hard-denylisted or otherwise special-cased —
+			// they follow the ordinary git-presence + format:"text" rule. An explicit opt-in
+			// here must not be silently overridden.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/workspace.json': { format: 'text' } }));
 
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/workspace.json', content: FileContent.fromPlainText('{}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
 
-			const mockNotice = createMockNotice();
-			await syncAndHandleResult(fitSync, mockNotice);
+			// Two syncs to establish tracking (same two-sync shape as other opt-in tests).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
 
-			// workspace.json silently ignored — no _fit/ write, no direct sync
+			expect(localVault.getAllFilesAsRaw()['.obsidian/workspace.json']).toBe('{}');
 			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeUndefined();
-			expect(localVault.getAllFilesAsRaw()['.obsidian/workspace.json']).toBeUndefined();
 		});
 
-		it('should block .obsidian/plugins/fit/data.json even with a rule (needs field-level exclusion for PAT)', async () => {
+		it('should block .obsidian/plugins/fit/data.json even with a .fitattributes.json entry (hard denylist)', async () => {
 			const fitSync = createFitSync();
-			fitSync.fit.obsidianSyncRules = { '.obsidian/plugins/fit/data.json': {} };
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/plugins/fit/data.json': { format: 'text' } }));
 
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{"pat":"secret"}') },
@@ -578,7 +767,7 @@ describe('FitSync', () => {
 			const mockNotice = createMockNotice();
 			await syncAndHandleResult(fitSync, mockNotice);
 
-			// Blocked by OBSIDIAN_NEEDS_MERGE — PAT requires field-level exclusion (v2)
+			// Hard-denylisted — wins over any .fitattributes.json configuration, contains the PAT
 			expect(localVault.getAllFilesAsRaw()['.obsidian/plugins/fit/data.json']).toBeUndefined();
 		});
 
@@ -590,7 +779,7 @@ describe('FitSync', () => {
 					{} as unknown as Vault,
 					'.obsidian/plugins/fit-dev'
 				);
-				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/data.json': {} };
+				fit.localShas['.obsidian/plugins/fit-dev/data.json'] = 'some-sha' as BlobSha;
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/data.json')).toBe(false);
 			});
 
@@ -601,18 +790,19 @@ describe('FitSync', () => {
 					{} as unknown as Vault,
 					'.obsidian/plugins/fit-dev'
 				);
-				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/config.json': {} };
+				fit.localShas['.obsidian/plugins/fit-dev/config.json'] = 'some-sha' as BlobSha;
+				fit.setFitAttributes({ '.obsidian/plugins/fit-dev/config.json': { format: 'text' } });
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/config.json')).toBe(true);
 			});
 
-			it('still blocks standard plugins/fit/data.json via OBSIDIAN_NEEDS_MERGE even without pluginDir', () => {
+			it('still blocks standard plugins/fit/data.json even without pluginDir (hard denylist, path-literal branch)', () => {
 				const fit = new Fit(
 					testSettings as FitSettings,
 					makeLocalStore(),
 					{} as unknown as Vault
 					// no pluginDir
 				);
-				fit.obsidianSyncRules = { '.obsidian/plugins/fit/data.json': {} };
+				fit.localShas['.obsidian/plugins/fit/data.json'] = 'some-sha' as BlobSha;
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit/data.json')).toBe(false);
 			});
 
@@ -623,8 +813,9 @@ describe('FitSync', () => {
 					{} as unknown as Vault
 					// no pluginDir — simulates old construction path
 				);
-				fit.obsidianSyncRules = { '.obsidian/plugins/fit-dev/data.json': {} };
-				// Without pluginDir, fit-dev/data.json is not in OBSIDIAN_NEEDS_MERGE — would sync
+				fit.localShas['.obsidian/plugins/fit-dev/data.json'] = 'some-sha' as BlobSha;
+				fit.setFitAttributes({ '.obsidian/plugins/fit-dev/data.json': { format: 'text' } });
+				// Without pluginDir, fit-dev/data.json isn't hard-denylisted — would sync
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/data.json')).toBe(true);
 			});
 		});
@@ -1752,8 +1943,7 @@ describe('FitSync', () => {
 			]);
 		});
 
-		it('should handle per-file write failures to local vault with detailed error message', async () => {
-			// Arrange
+		it('should write successful files despite other per-file local write failures, and retry the failed ones next sync', async () => {
 			const fitSync = createFitSync();
 
 			// Set up remote files that will need to be written locally
@@ -1773,20 +1963,61 @@ describe('FitSync', () => {
 
 			const mockNotice = createMockNotice();
 
-			// Act
-			await syncAndHandleResult(fitSync, mockNotice);
+			const result = await fitSync.sync(mockNotice as any);
 
-			// Assert - Verify error message shows which file failed to write (both files should be mentioned)
+			expect(result.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('good-file.md');
+			expect(localStoreState.localShas).toEqual({ 'good-file.md': expect.any(String) });
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({ 'good-file.md': expect.any(String) });
+
 			expect(mockNotice._calls).toEqual([
 				{ method: 'setMessage', args: ['Checking for changes...'] },
 				{ method: 'setMessage', args: ['Uploading local changes'] },
 				{ method: 'setMessage', args: ['Writing remote changes to local'] },
 				{
 					method: 'setMessage', args: [
-						expect.stringMatching(/Sync failed:[\s\S]*(readonly-file\.md[\s\S]*another-readonly\.md|another-readonly\.md[\s\S]*readonly-file\.md)/),
-						true]
+						expect.stringMatching(/Sync incomplete[\s\S]*(readonly-file\.md[\s\S]*another-readonly\.md|another-readonly\.md[\s\S]*readonly-file\.md)/)
+					]
 				}
 			]);
+
+			localVault.setMockWriteFile(null);
+			const mockNotice2 = createMockNotice();
+			const result2 = await fitSync.sync(mockNotice2 as any);
+			expect(result2.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).toEqual(expect.objectContaining({
+				'readonly-file.md': expect.anything(),
+				'another-readonly.md': expect.anything(),
+			}));
+		});
+
+		it('should retry a failed local delete next sync instead of losing track of the file', async () => {
+			const fitSync = createFitSync();
+
+			remoteVault.setFile('doomed.md', 'content');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			await remoteVault.applyChanges([], ['doomed.md']);
+			localVault.setMockDeleteFile(async (path) => {
+				if (path === 'doomed.md') {
+					throw new Error('EBUSY: resource busy');
+				}
+			});
+
+			const result = await fitSync.sync(createMockNotice() as any);
+
+			expect(result.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('doomed.md');
+			expect(localStoreState.localShas).toEqual({ 'doomed.md': expect.any(String) });
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({ 'doomed.md': expect.any(String) });
+
+			localVault.setMockDeleteFile(null);
+			const result2 = await fitSync.sync(createMockNotice() as any);
+
+			expect(result2.success).toBe(true);
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('doomed.md');
+			expect(localStoreState.localShas).toEqual({});
+			expect(localStoreState.lastFetchedRemoteShas).toEqual({});
 		});
 
 		it('should handle remote write failures with file path in error message', async () => {
@@ -2754,6 +2985,178 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/note.md');
 			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+	});
+
+	describe('.fitattributes.json validation', () => {
+		it('surfaces a visible warning Notice when .fitattributes.json is malformed', async () => {
+			// .fitattributes.json is a load-bearing config file — a malformed file must not
+			// fail silently (log-only).
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, '{not valid json');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).toHaveBeenCalled();
+			fitNoticeSpy.mockRestore();
+		});
+
+		it('does not show the .fitattributes.json warning Notice once the file is fixed', async () => {
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).not.toHaveBeenCalled();
+			fitNoticeSpy.mockRestore();
+		});
+
+		it('explainStatus surfaces fitAttributesNote for a malformed .fitattributes.json, even with nothing else pending', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('note.md', 'content');
+			localVault.setFile(FITATTRIBUTES_PATH, '{not valid json');
+
+			// Establish a baseline sync (with the malformed file already in place) so
+			// explainStatus() reaches its normal issues/ok branches, not never-synced.
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				fitAttributesNote: expect.stringContaining('.fitattributes.json is malformed'),
+			}));
+		});
+	});
+
+	describe('Line-based text merge', () => {
+		async function setupSyncedNote(fitSync: FitSync, content: string) {
+			localVault.setFile('note.md', content);
+			await remoteVault.setFile('note.md', content);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+		}
+
+		it('merges edits to different, non-adjacent lines', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\nline3\nline4\nline5\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1\nline2-local\nline3\nline4\nline5\n');
+			await remoteVault.setFile('note.md', 'line1\nline2\nline3\nline4-remote\nline5\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('line1\nline2-local\nline3\nline4-remote\nline5\n');
+		});
+
+		it('merges a mid-list insertion on one side with an edit elsewhere on the other side', async () => {
+			// The scenario a pure append-only merge could not handle: the new item
+			// lands in the middle of the list, not at the end of the file.
+			const fitSync = createFitSync();
+			const base = '- item1\n- item2\n- item3\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', '- item1\n- item-inserted\n- item2\n- item3\n');
+			await remoteVault.setFile('note.md', '- item1\n- item2\n- item3-edited\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('- item1\n- item-inserted\n- item2\n- item3-edited\n');
+		});
+
+		it('merged note is not added to pendingClashes', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\nline3\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1-local\nline2\nline3\n');
+			await remoteVault.setFile('note.md', 'line1\nline2\nline3-remote\n');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.pendingClashes).not.toContain('note.md');
+		});
+
+		it('falls back to _fit/ clash file when both sides edit existing content', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1-local\nline2\n');
+			await remoteVault.setFile('note.md', 'line1-remote\nline2\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('line1-local\nline2\n');
+			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+
+		it('does not attempt to merge binary files, falling back to _fit/ as before', async () => {
+			const fitSync = createFitSync();
+			const base = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			const localEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]).buffer;
+			const remoteEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x03]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(localEdit, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(remoteEdit, 'base64'));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/image.png');
+			expect(localStoreState.pendingClashes).toContain('image.png');
+		});
+
+		it('does not merge binary content that happens to decode as valid UTF-8 (null byte present)', async () => {
+			// A null byte (U+0000) is itself valid UTF-8, so TextDecoder's fatal decode
+			// alone would NOT reject this content — the explicit null-byte check is what
+			// catches it. Regression test for the gap where relying solely on the
+			// decode-throw would have let this through to be line-spliced and corrupted.
+			const fitSync = createFitSync();
+			const base = new Uint8Array([0x00, 0x41, 0x42, 0x43]).buffer; // NUL + 'ABC'
+			localVault.setFile('data.bin', FileContent.fromArrayBuffer(base, 'base64'));
+			await remoteVault.setFile('data.bin', FileContent.fromArrayBuffer(base, 'base64'));
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			const localEdit = new Uint8Array([0x00, 0x41, 0x42, 0x44]).buffer; // NUL + 'ABD'
+			const remoteEdit = new Uint8Array([0x00, 0x41, 0x45, 0x43]).buffer; // NUL + 'AEC'
+			localVault.setFile('data.bin', FileContent.fromArrayBuffer(localEdit, 'base64'));
+			await remoteVault.setFile('data.bin', FileContent.fromArrayBuffer(remoteEdit, 'base64'));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/data.bin');
+			expect(localStoreState.pendingClashes).toContain('data.bin');
 		});
 	});
 });

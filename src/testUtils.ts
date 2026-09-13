@@ -11,6 +11,7 @@ import { FilePath } from './util/filePath';
 import { BlobSha, CommitSha, computeGitBlobSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
+import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 
 /**
  * Test stub for TFile that can be constructed with just a path.
@@ -410,6 +411,24 @@ export class FakeLocalVault implements IVault<"local"> {
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
+	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
+	private syncHiddenFiles = false;
+	private trackedHiddenPaths: string[] = [];
+
+	/**
+	 * Mirrors LocalVault's syncHiddenFiles toggle exactly — a single global flag, not
+	 * a per-path allowlist. Defaults to false, matching this fake's pre-existing
+	 * behavior, so tests not calling this are unaffected.
+	 */
+	setSyncHiddenFiles(enabled: boolean): void {
+		this.syncHiddenFiles = enabled;
+	}
+
+	/** Mirrors LocalVault.configure() — Fit calls this every sync. */
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
+		if (opts.syncHiddenFiles !== undefined) this.syncHiddenFiles = opts.syncHiddenFiles;
+		if (opts.trackedHiddenPaths !== undefined) this.trackedHiddenPaths = opts.trackedHiddenPaths;
+	}
 
 	/**
 	 * Configure the vault to fail on a specific operation.
@@ -438,6 +457,10 @@ export class FakeLocalVault implements IVault<"local"> {
 	 */
 	setMockWriteFile(mockFn: ((path: string) => Promise<void>) | null): void {
 		this.mockWriteFile = mockFn;
+	}
+
+	setMockDeleteFile(mockFn: ((path: string) => Promise<void>) | null): void {
+		this.mockDeleteFile = mockFn;
 	}
 
 	/**
@@ -681,39 +704,43 @@ export class FakeLocalVault implements IVault<"local"> {
 		}
 
 		// Process deletions
+		const deletionSettledResults = await Promise.allSettled(
+			filesToDelete.map(async (path) => {
+				if (this.mockDeleteFile) {
+					await this.mockDeleteFile(path);
+				}
+				const existed = this.files.has(path);
+				if (existed) {
+					this.files.delete(path);
+				}
+				return existed ? { path, type: 'REMOVED' as const } : null;
+			})
+		);
+
 		const deletionResults: FileChange[] = [];
-		for (const path of filesToDelete) {
-			if (this.files.has(path)) {
-				this.files.delete(path);
-				deletionResults.push({ path, type: 'REMOVED' });
+		const deleteFailures: Array<{path: string; error: unknown}> = [];
+		for (let i = 0; i < deletionSettledResults.length; i++) {
+			const result = deletionSettledResults[i];
+			if (result.status === 'fulfilled') {
+				if (result.value !== null) deletionResults.push(result.value);
+			} else {
+				deleteFailures.push({ path: filesToDelete[i], error: result.reason });
 			}
 		}
 
-		// If any operations failed, throw VaultError with details
-		if (writeFailures.length > 0) {
-			const failedPaths = writeFailures.map(f => f.path);
-			const primaryPath = failedPaths[0];
-			const primaryError = writeFailures[0].error;
-			const primaryMessage = primaryError instanceof Error ? primaryError.message : String(primaryError);
-
-			throw VaultError.filesystem(
-				`Failed to write to ${primaryPath}: ${primaryMessage}`,
-				{
-					failedPaths,
-					errors: writeFailures
-				}
-			);
-		}
+		const failedPaths = [...writeFailures, ...deleteFailures].map(f => f.path);
+		const succeededWrites = filesToWrite.filter(f => !failedPaths.includes(f.path));
 
 		const changes = [...writeResults, ...deletionResults];
 
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans
-		const newBaselineStates = this.computeWrittenFileShas(filesToWrite, clashPaths);
+		const newBaselineStates = this.computeWrittenFileShas(succeededWrites, clashPaths);
 
 		return {
 			changes,
-			newBaselineStates
+			newBaselineStates,
+			...(failedPaths.length > 0 && { failedPaths })
 		};
 	}
 
@@ -749,9 +776,16 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	shouldTrackState(path: string): boolean {
-		// Exclude hidden files (same as LocalVault)
-		const parts = path.split('/');
-		return !parts.some(part => part.startsWith('.'));
+		// Mirrors real LocalVault: hidden paths are excluded when syncHiddenFiles is off,
+		// except .fitattributes.json (always tracked) and explicitly tracked .obsidian/ paths.
+		if (!this.syncHiddenFiles) {
+			if (path === FITATTRIBUTES_PATH) return true;
+			const parts = path.split('/');
+			if (parts.some(part => part.startsWith('.'))) {
+				return this.trackedHiddenPaths.includes(path);
+			}
+		}
+		return true;
 	}
 }
 

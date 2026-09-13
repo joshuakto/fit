@@ -190,6 +190,28 @@ export class FileContent {
 	}
 
 	/**
+	 * Bytes from at most the first maxBytes of content, without decoding the
+	 * rest — for base64-string-backed content, toBytes() would decode the
+	 * entire file first. Used for bounded checks like binary detection.
+	 */
+	prefixBytes(maxBytes: number): Uint8Array {
+		if (this.rawBytes !== null) {
+			return this.rawBytes.subarray(0, maxBytes);
+		}
+		const { encoding, content } = this.content;
+		if (encoding === 'plaintext') {
+			return new TextEncoder().encode(content.slice(0, maxBytes));
+		}
+		// base64: decode only enough characters to cover maxBytes raw bytes.
+		// 4 base64 chars decode to 3 bytes; round up to a 4-char boundary.
+		const neededChars = Math.min(content.length, Math.ceil(maxBytes / 3) * 4);
+		const binStr = atob(content.slice(0, neededChars));
+		const bytes = new Uint8Array(Math.min(binStr.length, maxBytes));
+		for (let i = 0; i < bytes.length; i++) bytes[i] = binStr.charCodeAt(i);
+		return bytes;
+	}
+
+	/**
 	 * Get content as Base64Content, converting if needed. Result is cached.
 	 */
 	toBase64(): Base64Content {

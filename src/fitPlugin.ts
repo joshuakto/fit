@@ -1,4 +1,4 @@
-import { Plugin, SettingTab } from 'obsidian';
+import { Notice, Plugin, SettingTab } from 'obsidian';
 import { FitStatusModal } from '@/fitStatusModal';
 import { renderExplanation, type AutoSyncInfo } from '@/fitStatusExplainer';
 import { Fit } from '@/fit';
@@ -12,7 +12,8 @@ import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
 import { treeUrl } from '@/remotes/githubHost';
 import * as Encryption from "@/encryption";
-import { FitSettings, DEFAULT_SETTINGS, findNewFields } from '@/fitSettings';
+import { FitSettings, DEFAULT_SETTINGS } from '@/fitSettings';
+import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes } from '@/fitAttributes';
 
 /**
  * Discriminated union representing the outcome of a sync operation.
@@ -345,29 +346,17 @@ export default class FitPlugin extends Plugin {
 				this.localStore = { ...this.localStore, lastSyncedAt: Date.now() };
 				void this.saveLocalStore();
 
-				// Show optional notifications; field warnings computed async so they don't block UI teardown
+				// Show optional notifications
 				if (this.settings.notifyConflicts) {
 					showUnappliedConflicts(outcome.result.clash);
 				}
-				void (async () => {
-					const fieldWarnings = await this.computePostSyncFieldWarnings(outcome.result.changeGroups);
-					if (this.settings.notifyChanges) {
-						showFileChanges(
-							outcome.result.changeGroups,
-							fieldWarnings,
-							this.settings.fileChangesNoticeDurationSec * 1000
-						);
-					}
-					if (fieldWarnings.size > 0) {
-						for (const [path, newFields] of fieldWarnings) {
-							const rule = this.settings.obsidianSyncRules[path];
-							if (rule?.fields) {
-								rule.fields = [...new Set([...rule.fields, ...newFields])];
-							}
-						}
-						await this.saveSettings();
-					}
-				})();
+				if (this.settings.notifyChanges) {
+					showFileChanges(
+						outcome.result.changeGroups,
+						undefined,
+						this.settings.fileChangesNoticeDurationSec * 1000
+					);
+				}
 
 				// Show success completion state in notice
 				if (triggerType === 'auto') {
@@ -433,7 +422,7 @@ export default class FitPlugin extends Plugin {
 		};
 
 		const renderable = renderExplanation(explanation, { commitUrl, autoSyncInfo });
-		new FitStatusModal(this.app, renderable, this.settings.obsidianSyncRules).open();
+		new FitStatusModal(this.app, renderable).open();
 	}
 
 	loadRibbonIcons() {
@@ -554,6 +543,43 @@ export default class FitPlugin extends Plugin {
 				return obj;
 			}, {} as FitSettings);
 		this.settings = settingsObj;
+
+		await this.migrateObsidianSyncRules(userSetting);
+	}
+
+	/**
+	 * One-time migration from the retired 1.6.0-alpha.1 obsidianSyncRules settings toggle.
+	 * That mechanism had exactly one strategy ("replace" = whole-file byte sync), which is
+	 * exactly what .fitattributes.json's format:"text" is — so migration is mechanical:
+	 * write a format:"text" entry for every previously-toggled path. See docs/sync-logic.md
+	 * § Migrating from obsidianSyncRules.
+	 */
+	private async migrateObsidianSyncRules(userSetting: unknown): Promise<void> {
+		const legacyRules = (userSetting as { obsidianSyncRules?: Record<string, unknown> } | undefined)
+			?.obsidianSyncRules;
+		if (!legacyRules || Object.keys(legacyRules).length === 0) return;
+
+		let current: FitAttributesFile = {};
+		try {
+			const text = await this.app.vault.adapter.read(FITATTRIBUTES_PATH);
+			const parsed = parseFitAttributes(text);
+			if (parsed.ok) current = parsed.value;
+		} catch { /* .fitattributes.json doesn't exist locally yet */ }
+
+		let migratedAny = false;
+		for (const path of Object.keys(legacyRules)) {
+			if (current[path]) continue; // already configured — don't overwrite a deliberate choice
+			current[path] = { format: 'text' };
+			migratedAny = true;
+		}
+		if (!migratedAny) return;
+
+		await this.app.vault.adapter.write(FITATTRIBUTES_PATH, JSON.stringify(current, null, '\t'));
+		new Notice(
+			'FIT: your .obsidian/ sync settings moved to .fitattributes.json (format: "text"). ' +
+			'Review it at your vault root — this is a compatibility migration, not necessarily the ideal long-term config.',
+			0
+		);
 	}
 
 	// TODO: loadLocalStore and saveLocalStoreCallback are the persistence contract for all
@@ -570,28 +596,6 @@ export default class FitPlugin extends Plugin {
 		await this.saveData({...this.settings, ...this.localStore});
 		// sync local store to Fit class as well upon saving
 		this.fit.loadLocalStore(this.localStore);
-	}
-
-	private async computePostSyncFieldWarnings(
-		changeGroups: Array<{heading: string, changes: Array<{path: string, type: string}>}>
-	): Promise<Map<string, string[]>> {
-		const warnings = new Map<string, string[]>();
-		for (const group of changeGroups) {
-			for (const change of group.changes) {
-				if (change.type === 'REMOVED') continue;
-				const rule = this.settings.obsidianSyncRules[change.path];
-				if (!rule?.fields) continue;
-				try {
-					const text = await this.app.vault.adapter.read(change.path);
-					const parsed = JSON.parse(text);
-					if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-						const newFields = findNewFields(rule.fields, Object.keys(parsed));
-						if (newFields.length > 0) warnings.set(change.path, newFields);
-					}
-				} catch { /* file unreadable or not JSON */ }
-			}
-		}
-		return warnings;
 	}
 
 	async saveSettings() {

@@ -123,4 +123,42 @@ describe('FileContent', () => {
 
 		expect(fileContent.toBase64()).toBe(binaryBase64);
 	});
+
+	describe('prefixBytes', () => {
+		it('returns the requested prefix length from base64 content', () => {
+			const text = 'a'.repeat(20000);
+			const fileContent = FileContent.fromBase64(Buffer.from(text).toString('base64'));
+
+			const prefix = fileContent.prefixBytes(8192);
+
+			expect(prefix.length).toBe(8192);
+			expect(new TextDecoder().decode(prefix)).toBe('a'.repeat(8192));
+		});
+
+		it('matches toBytes() content for the overlapping range', () => {
+			const text = 'hello world, this is some sample content for prefix testing';
+			const fileContent = FileContent.fromBase64(Buffer.from(text).toString('base64'));
+
+			const prefix = fileContent.prefixBytes(10);
+			const full = fileContent.toBytes();
+
+			expect(Array.from(prefix)).toEqual(Array.from(full.subarray(0, 10)));
+		});
+
+		it('returns the whole content when it is shorter than maxBytes', () => {
+			const text = 'short';
+			const fileContent = FileContent.fromBase64(Buffer.from(text).toString('base64'));
+
+			const prefix = fileContent.prefixBytes(8192);
+
+			expect(new TextDecoder().decode(prefix)).toBe(text);
+		});
+
+		it('works for array-buffer-backed (local read) content without decoding', () => {
+			const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+			const fileContent = FileContent.fromArrayBuffer(bytes.buffer, 'base64');
+
+			expect(Array.from(fileContent.prefixBytes(3))).toEqual([1, 2, 3]);
+		});
+	});
 });
