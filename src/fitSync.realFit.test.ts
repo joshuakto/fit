@@ -488,7 +488,7 @@ describe('FitSync', () => {
 			await syncAndHandleResult(fitSync, createMockNotice());
 
 			expectLoggerCalledWith('[FitSync] Protected-path detection', {
-				trackedTextMode: ['.obsidian/graph.json'],
+				trackedSyncing: ['.obsidian/graph.json'],
 				hardDenylisted: ['.obsidian/plugins/fit/data.json'],
 				trackedUnconfigured: ['.obsidian/appearance.json'],
 				untracked: ['.obsidian/hotkeys.json'],
@@ -1080,11 +1080,10 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()).toEqual({});
 		});
 
-		it('lets an explicit .fitattributes.json entry override the .css heuristic', async () => {
-			// format:"json" isn't built yet, so this only proves override direction, not that
-			// json masking actually applies — same as the reserved-format assertion elsewhere.
+		it('an explicit format:"json" entry overrides the .css heuristic OUT of eligibility (incomplete without scope)', async () => {
 			const fitSync = createFitSync();
-			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/snippets/custom.css': { format: 'json' } }));
+			const fitAttributesContent = '{".obsidian/snippets/custom.css":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
 			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
@@ -1094,12 +1093,12 @@ describe('FitSync', () => {
 			await syncAndHandleResult(fitSync, createMockNotice());
 			await syncAndHandleResult(fitSync, createMockNotice());
 
+			// Explicit config always wins over the heuristic, including to opt OUT of the
+			// .css default's format:"text" eligibility — format:"json" alone is incomplete
+			// for a protected path (no scope yet), so it stays untracked, unlike the
+			// heuristic default which would have synced it.
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// .fitattributes.json itself always syncs regardless of what it configures.
-				[FITATTRIBUTES_PATH]: JSON.stringify({ '.obsidian/snippets/custom.css': { format: 'json' } })
-				// custom.css absent: format:"json" is reserved/not yet eligible, and explicit
-				// config overrides the .css heuristic's format:"text" default rather than
-				// stacking with it — so this path stays detection-only, never written.
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
 			});
 		});
 
@@ -3369,6 +3368,133 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/note.md');
 			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+
+		it('an ordinary vault .json file auto-merges non-overlapping key additions (generic format:"json" default, not .canvas)', async () => {
+			const fitSync = createFitSync();
+			const base = '{"a":1}';
+			localVault.setFile('data.json', base);
+			await remoteVault.setFile('data.json', base);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			// Each side adds a different new top-level key — no shared key touched, so the
+			// generic (no keyed-arrays) spec merges cleanly instead of clashing. (A same-key
+			// value edit on both sides, by contrast, is always a conflict — this engine only
+			// auto-resolves key-presence additions/removals and keyed-array elements, not
+			// scalar value differences on a key both sides already had.)
+			localVault.setFile('data.json', '{"a":1,"b":"local"}');
+			await remoteVault.setFile('data.json', '{"a":1,"c":"remote"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'data.json': expect.stringOfJson({ a: 1, b: 'local', c: 'remote' }),
+			});
+			expect(localStoreState.pendingClashes).not.toContain('data.json');
+		});
+
+		it('an explicit format:"text" override makes a .canvas clash go to _fit/ instead of auto-merging', async () => {
+			// Previously the .canvas → JSON-merge dispatch was hardcoded to `.endsWith('.canvas')`,
+			// so .fitattributes.json could never override it. Format resolution is now generic
+			// (Fit.resolveSyncFormat), so this override actually takes effect.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ 'board.canvas': { format: 'text' } }));
+			const base = canvasJson([node('a')]);
+			await setupSyncedCanvas(fitSync, base);
+
+			localVault.setFile('board.canvas', canvasJson([node('a'), node('local')]));
+			await remoteVault.setFile('board.canvas', canvasJson([node('a'), node('remote')]));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// No JSON auto-merge attempted — line-based diff3 merge runs instead, and since
+			// both sides changed the same line (the node array), it falls back to a clash.
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/board.canvas');
+			expect(localStoreState.pendingClashes).toContain('board.canvas');
+		});
+
+		it('format:"json" alone is NOT eligible for a protected .obsidian/ path (incomplete without scope, stays untracked)', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/graph.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.setFile('.obsidian/graph.json', '{"colorGroups":[],"zoom":1}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// format:"json" for a protected path only means anything once paired with an
+			// explicit scope:"full" — until then it's treated the same as unconfigured, not
+			// defaulted to whole-file sync. The remote file never gets pulled locally.
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+			});
+		});
+
+		it('format:"json" + explicit scope:"full" IS eligible for a protected .obsidian/ path (whole-file structural merge)', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/graph.json":{"format":"json","scope":"full"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			const base = '{"colorGroups":[]}';
+			localVault.setFile('.obsidian/graph.json', base);
+			await remoteVault.setFile('.obsidian/graph.json', base);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			// Each side adds a different new top-level key — merges instead of clashing.
+			localVault.setFile('.obsidian/graph.json', '{"colorGroups":[],"collapse":false}');
+			await remoteVault.setFile('.obsidian/graph.json', '{"colorGroups":[],"zoom":1}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/graph.json': expect.stringOfJson({ colorGroups: [], collapse: false, zoom: 1 }),
+			});
+		});
+
+		it('format:"json" works as a real eligible format for an ordinary (non-protected) vault path, explicit config not just the filetype default', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{"config.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			const base = '{"a":1}';
+			localVault.setFile('config.json', base);
+			await remoteVault.setFile('config.json', base);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			// Each side adds a different new top-level key — merges instead of clashing.
+			localVault.setFile('config.json', '{"a":1,"b":"local"}');
+			await remoteVault.setFile('config.json', '{"a":1,"c":"remote"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'config.json': expect.stringOfJson({ a: 1, b: 'local', c: 'remote' }),
+			});
 		});
 	});
 

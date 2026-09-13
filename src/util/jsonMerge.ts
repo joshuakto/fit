@@ -309,3 +309,23 @@ export const CANVAS_MERGE_SPEC: JsonMergeSpec = {
 		edges: 'id',
 	},
 };
+
+/**
+ * Default spec for a `format:"json"` path with no filetype-specific shape known —
+ * plain key-level 3-way merge, no keyed-array set-union. Still real merge value over
+ * opaque text replace: concurrent edits to different top-level keys merge instead of
+ * clashing, and formatting/key-order differences never cause a spurious clash.
+ */
+export const GENERIC_JSON_MERGE_SPEC: JsonMergeSpec = {
+	keyedArrays: {},
+};
+
+/**
+ * Which JsonMergeSpec to use for a path already known to be format:"json" — `.canvas`
+ * gets its id-keyed nodes/edges set-union, everything else gets the generic key-level
+ * spec. Filetype-specific specs beyond `.canvas` (e.g. per-file keyed-array config for
+ * particular `.obsidian/` JSON files) are future work, not yet needed.
+ */
+export function mergeSpecForPath(path: string): JsonMergeSpec {
+	return path.endsWith('.canvas') ? CANVAS_MERGE_SPEC : GENERIC_JSON_MERGE_SPEC;
+}
