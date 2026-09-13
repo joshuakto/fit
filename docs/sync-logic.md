@@ -732,7 +732,7 @@ interface FitAttributeRule {
 }
 ```
 
-**Malformed `.fitattributes.json`:** a parse failure (invalid JSON, non-object root, invalid rule shape) surfaces a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet.
+**Malformed or unreadable `.fitattributes.json`:** both a parse failure (invalid JSON, non-object root, invalid rule shape) and the file existing but failing to read (I/O error, permission issue) surface a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet.
 
 **Forward-looking diagnostic:** whenever a `.obsidian/` path has remote content this version doesn't sync (i.e. `protectedPathShas` has an entry for it), FIT logs which such paths already have a `format:"text"` entry in `.fitattributes.json` (will start syncing once a later change wires this gate up) versus which are still unconfigured. Purely informational — no effect on sync, see the Debug Logging example below.
 

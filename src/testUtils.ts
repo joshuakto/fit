@@ -410,6 +410,11 @@ export class FakeLocalVault implements IVault<"local"> {
 	private files: Map<string, FileContent> = new Map();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
+	// Per-path readFileContent failures — distinct from the blanket 'read' failureScenario
+	// (which also aborts readFromSource's whole-vault scan): lets a test simulate a single
+	// file existing but being unreadable (I/O error, permission issue) without breaking scan
+	// of every other file.
+	private readFileContentFailures: Map<string, Error> = new Map();
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
 	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
 	private syncHiddenFiles = false;
@@ -430,6 +435,11 @@ export class FakeLocalVault implements IVault<"local"> {
 	 */
 	seedFailureScenario(scenario: FailureScenario, error: Error): void {
 		this.failureScenarios.set(scenario, error);
+	}
+
+	/** One-shot: makes the next readFileContent(path) call throw, without affecting readFromSource. */
+	seedReadFileContentFailure(path: string, error: Error): void {
+		this.readFileContentFailures.set(path, error);
 	}
 
 	/**
@@ -562,6 +572,12 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
+		const pathError = this.readFileContentFailures.get(path);
+		if (pathError) {
+			this.readFileContentFailures.delete(path);
+			throw pathError;
+		}
+
 		const error = this.failureScenarios.get('read');
 		if (error) {
 			this.clearFailure('read');

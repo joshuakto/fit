@@ -63,8 +63,8 @@ function validateRule(path: string, rawRule: unknown): { ok: true; rule: FitAttr
 /**
  * Parses and validates .fitattributes.json content. Never throws — malformed
  * input (bad JSON, non-object root, invalid rule shape) is reported via the
- * `ok: false` branch so callers (settings UI, Explain) can surface it loudly
- * instead of silently treating it as "nothing configured".
+ * `ok: false` branch so the caller (Fit) can surface it loudly instead of
+ * silently treating it as "nothing configured".
  */
 export function parseFitAttributes(text: string): ParseFitAttributesResult {
 	let parsed: unknown;

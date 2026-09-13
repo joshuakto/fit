@@ -240,10 +240,15 @@ export class Fit {
 				this.setFitAttributes({});
 				this.fitAttributesWarning = message;
 			}
-		} catch {
-			// Exists but unreadable — treat as unconfigured rather than aborting the sync.
+		} catch (err) {
+			// Exists but unreadable (I/O error, permission issue, etc.) — distinct from a
+			// parse failure above, but equally worth surfacing rather than silently treating
+			// as unconfigured: a config file this load-bearing shouldn't fail silently.
+			const reason = err instanceof Error ? err.message : String(err);
+			const message = `.fitattributes.json exists but could not be read (${reason}) — will affect correctness of sync in future versions`;
+			fitLogger.log(`[Fit] ${message}`);
 			this.setFitAttributes({});
-			this.fitAttributesWarning = null;
+			this.fitAttributesWarning = message;
 		}
 	}
 
@@ -278,12 +283,12 @@ export class Fit {
 
 		// Re-parse .fitattributes.json content from this scan's own knowledge of whether the
 		// file exists — never a separate stat/read probe, so a sync where it simply doesn't
-		// exist touches it zero times. Note: this makes this.fitAttributes reflect the
-		// *previous* completed scan by the time the pre-sync reconcile block (FitSync) reads
-		// it at the start of the *next* sync — a local edit to .fitattributes.json needs one
-		// sync to be observed (like any other tracked file's content) before reconciliation
-		// can act on it; not a correctness gap, just the same one-sync convergence lag already
-		// inherent to this feature.
+		// exist touches it zero times. This runs before shouldSyncPath filtering below, so a
+		// local edit made just before running sync already gates this sync's own local
+		// push/pull decisions — no lag. The pre-sync reconcile block (FitSync) is a separate
+		// consumer of this.fitAttributes with its own eager refresh
+		// (refreshFitAttributesForReconcile), specifically so a tracking-transition decision
+		// doesn't have to wait on this lazy path either.
 		if (currentState[FITATTRIBUTES_PATH] !== undefined) {
 			await this.readAndApplyFitAttributes();
 		} else {

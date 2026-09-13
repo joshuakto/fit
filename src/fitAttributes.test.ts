@@ -21,7 +21,7 @@ describe('parseFitAttributes', () => {
 		});
 	});
 
-	it('treats an empty rule as simply "opted in" with default handling', () => {
+	it('accepts an empty rule object, with all fields left to their defaults', () => {
 		const text = JSON.stringify({ '.obsidian/appearance.json': {} });
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
