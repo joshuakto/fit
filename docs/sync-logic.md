@@ -732,7 +732,7 @@ interface FitAttributeRule {
 }
 ```
 
-**Malformed or unreadable `.fitattributes.json`:** both a parse failure (invalid JSON, non-object root, invalid rule shape) and the file existing but failing to read (I/O error, permission issue) surface a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet.
+**Malformed `.fitattributes.json`:** a parse failure (invalid JSON, non-object root, invalid rule shape) surfaces a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet. A separate failure mode — the file existing but failing to *read* (I/O error, permission issue) — is debug-logged only, not surfaced as a warning: `LocalVault.readFromSource()`'s own per-file scan reads this same file as part of its normal pass and aborts the whole sync on any unreadable tracked file before the warning-Notice code would run, so a dedicated warning here couldn't reliably appear anyway.
 
 **Forward-looking diagnostic:** whenever a `.obsidian/` path has remote content this version doesn't sync (i.e. `protectedPathShas` has an entry for it), FIT logs which such paths already have a `format:"text"` entry in `.fitattributes.json` (will start syncing once a later change wires this gate up) versus which are still unconfigured. Purely informational — no effect on sync, see the Debug Logging example below.
 

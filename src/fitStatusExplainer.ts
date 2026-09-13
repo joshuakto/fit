@@ -12,7 +12,7 @@ export interface SyncStatusSnapshot {
 	trackedFileCount: number;
 	pendingClashes: string[];
 	oversizedFilePaths: string[];
-	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed or unreadable. */
+	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape). */
 	fitAttributesWarning: string | null;
 }
 

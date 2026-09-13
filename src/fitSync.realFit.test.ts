@@ -2892,21 +2892,6 @@ describe('FitSync', () => {
 			fitNoticeSpy.mockRestore();
 		});
 
-		it('surfaces a visible warning Notice when .fitattributes.json exists but cannot be read', async () => {
-			// Distinct failure mode from malformed JSON above: the file stats as present but
-			// readFileContent itself throws (I/O error, permission issue). Must not be treated
-			// as silently unconfigured.
-			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
-			const fitSync = createFitSync();
-			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
-			localVault.seedReadFileContentFailure(FITATTRIBUTES_PATH, new Error('EACCES: permission denied'));
-
-			await syncAndHandleResult(fitSync, createMockNotice());
-
-			expect(fitNoticeSpy).toHaveBeenCalled();
-			fitNoticeSpy.mockRestore();
-		});
-
 		it('does not show the .fitattributes.json warning Notice once the file is fixed', async () => {
 			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
 			const fitSync = createFitSync();

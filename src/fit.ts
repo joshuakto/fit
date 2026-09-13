@@ -242,13 +242,21 @@ export class Fit {
 			}
 		} catch (err) {
 			// Exists but unreadable (I/O error, permission issue, etc.) — distinct from a
-			// parse failure above, but equally worth surfacing rather than silently treating
-			// as unconfigured: a config file this load-bearing shouldn't fail silently.
+			// parse failure above. Unlike that case, this one can't reliably surface as a
+			// visible Notice: the caller reached this catch either via getLocalChanges (whose
+			// own LocalVault.readFromSource() already reads this same file as part of its
+			// normal per-file scan, and throws/aborts the WHOLE sync on any unreadable tracked
+			// file before this code path would even run for a failing read) or via
+			// refreshFitAttributesForReconcile's eager path (which does reach here, but
+			// getLocalChanges's later readFromSource call re-attempts the same failing read
+			// and aborts the sync anyway, before the warning-Notice code downstream is
+			// reached). So: log for debugging, but don't claim a user-visible warning that
+			// can't actually appear — treat as unconfigured, matching the parse-failure case's
+			// "nothing configured" fallback without pretending it's equally visible.
 			const reason = err instanceof Error ? err.message : String(err);
-			const message = `.fitattributes.json exists but could not be read (${reason}) — will affect correctness of sync in future versions`;
-			fitLogger.log(`[Fit] ${message}`);
+			fitLogger.log(`[Fit] .fitattributes.json exists but could not be read (${reason})`);
 			this.setFitAttributes({});
-			this.fitAttributesWarning = message;
+			this.fitAttributesWarning = null;
 		}
 	}
 
