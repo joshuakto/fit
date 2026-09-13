@@ -12,6 +12,8 @@ export interface SyncStatusSnapshot {
 	trackedFileCount: number;
 	pendingClashes: string[];
 	oversizedFilePaths: string[];
+	/** .obsidian/ paths remote-removed while locally unedited — see Fit.pendingUntrackedPaths. */
+	pendingUntrackedPaths: string[];
 	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape). */
 	fitAttributesWarning: string | null;
 }
@@ -79,7 +81,7 @@ export function buildStatusExplanation(
 		return { kind: 'never-synced' };
 	}
 
-	const { pendingClashes, oversizedFilePaths } = snapshot;
+	const { pendingClashes, oversizedFilePaths, pendingUntrackedPaths } = snapshot;
 	const sections: StatusSection[] = [];
 
 	let scanNote: string | null = null;
@@ -106,6 +108,15 @@ export function buildStatusExplanation(
 				cls: 'file-needs-resolution',
 				detail: `_fit/${path}`,
 			})),
+		});
+	}
+
+	if (pendingUntrackedPaths.length > 0) {
+		const n = pendingUntrackedPaths.length;
+		sections.push({
+			heading: `${n} .obsidian/ path${n === 1 ? '' : 's'} no longer tracked remotely`,
+			description: `Removed from the repo since the last sync, so Fit stopped syncing ${n === 1 ? 'it' : 'them'} — but the local file is left in place in case that wasn't intentional. Delete it locally to finish untracking, or add it back to the repo to keep syncing it.`,
+			items: pendingUntrackedPaths.map(path => ({ path, cls: 'file-REMOVED' })),
 		});
 	}
 

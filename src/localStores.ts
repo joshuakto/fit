@@ -37,6 +37,16 @@ export interface LocalStores {
 	// (baseline reconciliation takes over).
 	// Downgrade-safe: absent field treated as empty object.
 	protectedPathShas?: FileStates
+	// .obsidian/ paths where a remote REMOVED was received for a path that was tracked and
+	// format-eligible, with no local edit pending. Remote deletion is the only "stop syncing
+	// this path" signal git-mask tracking has (see docs/sync-logic.md § Protected Paths), so
+	// it's ambiguous with "I actually deleted this file". FIT resolves the ambiguity
+	// conservatively: the local file is left on disk (never auto-deleted) and the path is
+	// recorded here so Explain can tell the user it's no longer tracked remotely and should be
+	// deleted manually if that was intended. Cleared once the local file is deleted, or once
+	// the path starts receiving remote content again.
+	// Downgrade-safe: absent field treated as empty array.
+	pendingUntrackedPaths?: string[]
 }
 
 /**
@@ -61,5 +71,6 @@ export function parseLocalStore(data: Record<string, unknown> | null | undefined
 		pendingClashes: (d.pendingClashes ?? []) as unknown as string[],
 		lastSyncedAt: (d.lastSyncedAt as number | undefined) ?? undefined,
 		protectedPathShas: (d.protectedPathShas ?? {}) as unknown as FileStates,
+		pendingUntrackedPaths: (d.pendingUntrackedPaths ?? []) as unknown as string[],
 	};
 }
