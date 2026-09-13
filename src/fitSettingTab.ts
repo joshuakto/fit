@@ -6,6 +6,7 @@ import { VaultError } from "./vault";
 import { fitLogger } from "./logger";
 import FitNotice from "./fitNotice";
 import * as Encryption from "./encryption";
+import { FITATTRIBUTES_PATH } from "@/fitAttributes";
 
 type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "withCache";
 
@@ -693,30 +694,60 @@ export default class FitSettingTab extends PluginSettingTab {
 	};
 
 	/**
-	 * Static info only — deliberately no live state (tracked paths, pending clashes, etc.);
-	 * that's what "Explain Sync Status" is for. Replaces the removed obsidianSyncRules
-	 * toggle UI so alpha users who had that don't lose all in-app explanation of how
-	 * .obsidian/ sync config now works. See docs/sync-logic.md § `.fitattributes.json`.
+	 * Config *status* summary, not a live candidate-file list — that's "Explain Sync
+	 * Status"'s job (linked below). Replaces the removed obsidianSyncRules toggle UI:
+	 * no per-path controls here since there's nothing to toggle (git presence + a
+	 * .fitattributes.json entry drive sync, not a setting). Derived entirely from
+	 * already-loaded in-memory state (this.plugin.fit's cached baselines/config) plus
+	 * one cheap existence check — no vault scan. See docs/sync-logic.md §
+	 * `.fitattributes.json`.
 	 */
-	obsidianSyncInfoBlock = () => {
+	obsidianSyncInfoBlock = async () => {
 		const {containerEl} = this;
+
+		const headingDesc = document.createDocumentFragment();
+		headingDesc.createSpan({ text: 'A protected .obsidian/ path only syncs if it is present in your remote repo, a supported file type, and not on the hard denylist. See ' });
+		headingDesc.createEl('a', {
+			text: 'Advanced sync configuration',
+			href: 'https://github.com/joshuakto/fit#advanced-sync-configuration'
+		});
+		headingDesc.createSpan({ text: ' in the README for details.' });
 
 		new Setting(containerEl)
 			.setHeading()
-			.setName("Obsidian config sync");
+			.setName("Obsidian config sync (advanced)")
+			.setDesc(headingDesc);
 
-		const desc = containerEl.createEl('p', { cls: 'setting-item-description' });
-		desc.createSpan({ text: 'Config sync toggles have been replaced by ' });
-		desc.createEl('code', { text: '.fitattributes.json' });
-		desc.createSpan({ text: ', a file at your vault root. A ' });
-		desc.createEl('code', { text: '.obsidian/' });
-		desc.createSpan({ text: ' path starts being tracked once its content exists in your GitHub repo (added there directly, or by another device already syncing it) — there is no toggle here for that. Add a ' });
-		desc.createEl('code', { text: '{ "format": "text" }' });
-		desc.createSpan({ text: ' entry for a tracked path to actually sync it as a whole file. ' });
-		desc.createEl('code', { text: 'format: "json"' });
-		desc.createSpan({ text: ' (field-level sync for a single JSON file, leaving unlisted fields alone) is planned but not yet available. ' });
-		desc.createEl('code', { text: '.canvas' });
-		desc.createSpan({ text: ' files merge automatically and need no configuration here. See "Explain Sync Status" for what is currently syncing.' });
+		const fitAttributesExists = !!(await this.plugin.app.vault.adapter.stat(FITATTRIBUTES_PATH));
+		const fit = this.plugin.fit;
+		const enabled = fit.trackedObsidianPaths().some(path => fit.isEligibleForTracking(path));
+
+		const statusDesc = document.createDocumentFragment();
+		statusDesc.createSpan({ text: enabled
+			? 'Enabled — at least one .obsidian/ path is tracked and configured to sync.'
+			: 'Disabled — no .obsidian/ path is currently both tracked and configured with format: "text".' });
+		statusDesc.createEl('br');
+		statusDesc.createSpan({ text: 'For details on what is or isn\'t syncing, run ' });
+		statusDesc.createEl('code', { text: 'Fit: Explain sync status' });
+		statusDesc.createSpan({ text: ' from the command palette.' });
+
+		new Setting(containerEl)
+			.setName('Status')
+			.setDesc(statusDesc);
+
+		const fitAttributesDesc = document.createDocumentFragment();
+		fitAttributesDesc.createEl('code', { text: FITATTRIBUTES_PATH });
+		fitAttributesDesc.createSpan({ text: ' is a vault-root file configuring per-path sync behavior such as the sync "format".' });
+
+		new Setting(containerEl)
+			.setName('.fitattributes.json')
+			.setDesc(fitAttributesDesc)
+			.addExtraButton(button => {
+				button
+					.setIcon(fitAttributesExists ? 'check-circle-2' : 'circle-alert')
+					.setTooltip(fitAttributesExists ? 'Found at your vault root' : 'Not found');
+				button.extraSettingsEl.addClass(fitAttributesExists ? 'fit-status-ok' : 'fit-status-missing');
+			});
 	};
 
 	noticeConfigBlock = () => {
@@ -999,7 +1030,7 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.githubUserInfoBlock();
 		this.repoInfoBlock();
 		this.localConfigBlock();
-		this.obsidianSyncInfoBlock();
+		await this.obsidianSyncInfoBlock();
 		this.noticeConfigBlock();
 		this.refreshFields("withCache");
 	}

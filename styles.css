@@ -387,6 +387,14 @@
     margin: 4px 0;
 }
 
+.fit-status-ok {
+    color: var(--text-success);
+}
+
+.fit-status-missing {
+    color: var(--text-warning);
+}
+
 .fit-fitattributes-note {
     font-size: 0.85em;
     margin: 4px 0;
