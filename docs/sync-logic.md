@@ -114,6 +114,8 @@ This enables future syncs to compare current local SHA vs baseline to determine 
 
 **Note:** Reading hidden files for baseline comparison requires using `vault.adapter` API instead of `vault.getAbstractFileByPath()`. See [docs/api-compatibility.md](./api-compatibility.md) "Reading Untracked Files".
 
+**Also covers git-as-mask reconciliation (#337/#67):** a `.obsidian/` path just reconciled untracked→tracked this same sync (`Fit.trackedForCurrentSync`) is deliberately not included in `Fit.trackedObsidianPaths()` (the list `LocalVault` proactively probes for hidden-path discovery) — it doesn't need to be. The reconcile block always either establishes a real baseline directly, or clears `lastFetchedRemoteShas[path]` to force that path to appear as a remote change this same sync; either way, this same #169 mechanism (`determineLocalChecksNeeded` in `src/util/changeTracking.ts`) independently stats and reads the path directly rather than trusting the local scan's discovery list, so a divergent local file still surfaces as an ordinary `_fit/` clash instead of being silently overwritten.
+
 ## Concepts and Invariants
 
 ### Baseline
@@ -249,40 +251,49 @@ FIT implements three layers of path filtering:
 
 - **Filtered by:** `Fit.shouldSyncPath()`
 - **Applied to:** Both ⬆️ local→remote and ⬇️ remote→local
-- **Reason:** Protect critical system directories by default; `.obsidian/` paths can be individually opted in
+- **Reason:** Protect critical system directories by default; other `.obsidian/` paths become tracked automatically once content for them exists in the remote git tree
 
-**Always-excluded paths (no opt-in):**
-- `.obsidian/workspace.json`, `.obsidian/workspace-mobile.json` — device-specific layout
-- `.obsidian/community-plugins.json`, `.obsidian/core-plugins.json` — need array-merge logic (v2)
-- `<pluginDir>/data.json` (e.g. `plugins/fit/data.json`) — contains PAT; needs field-level exclusion (v2)
-- `_fit/` — conflict resolution directory
+**The trigger is git, not FIT.** There is no settings toggle, no "start syncing this file" action, no local opt-in of any kind. A `.obsidian/` path becomes tracked purely because content for it exists in the remote git tree — added via the GitHub web UI, `git`/`gh` CLI, or another device that's already syncing it. The very next sync on any device sees that content and starts considering the path for sync in both directions from then on. Direct consequence, accepted rather than special-cased: adding a new tracked path is inherently clash-prone if the content you add doesn't match what's already on your other devices — there's no reconciliation smoothing beyond the ordinary [Baseline](#baseline)/clash machinery for that first sync.
 
-**Opt-in `.obsidian/` paths (`obsidianSyncRules`):**
-Individual `.obsidian/` files can be synced by adding an entry to `FitSettings.obsidianSyncRules`:
-```typescript
-// Opt in appearance.json for replace-strategy sync:
-obsidianSyncRules: { ".obsidian/appearance.json": {} }
+**Hard denylist, `Fit.isHardDenylistedPath()`** ([`src/util/protectedPaths.ts`](../src/util/protectedPaths.ts)) — checked before any tracked-content logic, wins unconditionally even for a path with matching remote git content and an explicit `.fitattributes.json` entry:
+- `<pluginDir>/data.json` for FIT's own plugin (e.g. `.obsidian/plugins/fit/data.json`) — mixes genuinely shareable preferences (`autoSync`, `notifyChanges`, `checkEveryXMinutes`) with per-device sync bookkeeping that would be destructive to sync (`localShas`, `lastFetchedCommitSha`, `pendingClashes`, ...) and a secret (`pat`, independently being moved out via #349 regardless). Blocked at the **whole-file** level here specifically because whole-file/text-mode sync has no field granularity to isolate the safe fields from the dangerous ones — not because nothing in the file is shareable. This entry is a candidate to become a narrow `format: "json"` opt-in later, once field-level masking exists — but even then, `pat`/`localShas`/etc. need a *field-level* denylist independent of whatever `.fitattributes.json` configures, since a user should not be able to opt into syncing those by mistake. Not built yet; noted for that later change.
+- Plugin-managed code assets — `main.js`, `manifest.json`, `styles.css` under any `.obsidian/plugins/<id>/`, including FIT's own — owned by Obsidian's plugin loader, not a preferences file at all; writing them via git-driven sync fights the plugin manager. This one *is* permanent — there's no "safe subset of fields" concept for a JS bundle, field-level masking doesn't change anything here.
+
+**`_fit/` is separately, unconditionally excluded** — a `path.startsWith("_fit/")` check in `shouldSyncPath` itself (`src/fit.ts`), not part of the hard denylist above (it's the conflict-resolution directory, not an `.obsidian/` path at all).
+
+**Note on `.obsidian/core-plugins.json` / `.obsidian/community-plugins.json`:** neither is on the hard denylist (unlike the old `obsidianSyncRules`-era `OBSIDIAN_NEEDS_MERGE` set, which lumped them in with FIT's own `data.json`) — that older grouping was itself based on a misunderstanding that both files were array-shaped. They're different cases:
+- `core-plugins.json` is a plain `{ pluginId: boolean }` map — it fits field-level masking cleanly once `format: "json"` exists: each plugin's enabled state is an ordinary trackable key, and any device-local entries not present in git simply stay untouched, no special handling needed. A good masking candidate, not just a loosened-but-risky one.
+- `community-plugins.json` is a bare array of plugin ids — it doesn't fit the flat key-masking model at all. Syncing *some* array entries via git while preserving other purely local-only entries needs real design work (a `.fitattributes.json` option for set-membership within an array, not just reordering) — deliberately not designed yet.
+
+Under the current whole-file-only scope, both are simply ordinary tracked JSON paths: detection-only unless a user explicitly sets `format: "text"` on one, which works crudely today (whole-file replace, no array-aware merge — real clash risk if two devices have different plugin sets installed at the same time). That's accepted as an explicit opt-in for now; the message to a user asking about either file today is "whole-file sync if you want it via `format: "text"`, otherwise wait for the more graceful field/array-aware mechanism."
+
+**Whole-file text-mode sync (`.fitattributes.json`, current scope):**
+A tracked non-JSON `.obsidian/` path (e.g. `.obsidian/snippets/custom.css`) only actually syncs — full content, either direction — when `.fitattributes.json` at the vault root explicitly declares it:
+```json
+{ ".obsidian/snippets/custom.css": { "format": "text" } }
 ```
-Paths not in `obsidianSyncRules` (or in the always-excluded set) remain blocked.
+Without that declaration, a tracked non-JSON path is detected and logged but never read or written — see [Explain Sync Status](#explain-sync-status). `.fitattributes.json`'s presence never causes tracking by itself; it only modulates how an already-tracked path (per git presence, above) is handled. See [`src/fitAttributes.ts`](../src/fitAttributes.ts) for the schema.
 
-**Behavior for blocked paths:**
+**A JSON `.obsidian/` path is not synced unless explicitly given `format: "text"`.** `format: "text"` treats content as opaque bytes regardless of shape — it works for JSON content the same as any other file, just with zero field awareness (whole file replace/clash, a device-local field mixed into an otherwise-shared file is not protected). Field-level masking — syncing only a configured subset of a JSON file's top-level keys, so device-local fields are never touched — is a later change (`format: "json"`, reserved, not built yet). A tracked JSON path with no `.fitattributes.json` entry at all is detection-only: logged, never read or written.
+
+**Behavior for untracked or unsynced-format paths:**
 - **⬆️ Local→Remote:** Never pushed
-- **⬇️ Remote→Local:** Silently tracked — no write, no notice. Remote SHA recorded in `protectedPathShas[path]` for use during opt-in transition (see below).
-- **📦 SHA Caches:** Excluded from `localShas`. Tracked in `protectedPathShas`.
+- **⬇️ Remote→Local:** Silently tracked — no write, no notice. Remote SHA recorded in `protectedPathShas[path]` (untracked paths) or in the ordinary baseline once the path is git-tracked but not yet format-eligible.
+- **📦 SHA Caches:** Excluded from `localShas` while blocked.
 
 **Why not treat as a clash?**
-A "conflict" requires two parties with competing claims to the same file. A protected path has no local ownership — remote is authoritative by definition. Showing a conflict notice for every sync where remote has a protected file the current client doesn't track is misleading and noisy.
+A "conflict" requires two parties with competing claims to the same file. A blocked path has no local ownership — remote is authoritative by definition, or the path isn't eligible for sync at all yet. Showing a conflict notice for every sync where remote has such a file is misleading and noisy.
 
 **protectedPathShas:**
-`LocalStores.protectedPathShas` maps `path → last-seen remote SHA`. Enables the opt-in transition without a junk clash (see below). Entries are cleared when the path becomes opted in.
+`LocalStores.protectedPathShas` maps `path → last-seen remote SHA`. Enables the transition from untracked (no remote content) to tracked (remote content appears) without a junk clash — see below. Entries are cleared once the path is git-tracked.
 
-**Opt-in transition:**
-When `obsidianSyncRules` gains a new entry, at the start of the next sync FIT reconciles `protectedPathShas` entries for newly-tracked paths. `protectedPathShas[path]` is only ever a *passively observed* remote SHA, so per the [Baseline](#baseline) invariant it cannot be trusted the moment local turns out to disagree with it:
+**Tracking transition (remote content appears for a previously-untracked path):**
+At the start of each sync FIT reconciles `protectedPathShas` entries for paths that now have remote content. `protectedPathShas[path]` is only ever a *passively observed* remote SHA, so per the [Baseline](#baseline) invariant it cannot be trusted the moment local turns out to disagree with it:
 - If local file exists and matches the cached remote SHA: this is genuinely safe — set baseline in `localShas` and `lastFetchedRemoteShas` — sync is a no-op.
 - If local file exists but differs: neither `localShas` nor `lastFetchedRemoteShas` is set for this path. Both sides then show as newly ADDED, which the normal pipeline resolves as an ordinary clash (written to `_fit/`) — never an automatic direction. This is what the [Baseline](#baseline) invariant above requires: a passively-observed SHA cannot short-circuit into an automatic overwrite.
-- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path. (Local has nothing to lose here, so this direction is unambiguous — matches the "one side empty" case above.)
+- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path (subject to the format gate above — only written if format-eligible). (Local has nothing to lose here, so this direction is unambiguous — matches the "one side empty" case above.)
 
-In all cases the `protectedPathShas` entry is deleted (path is now tracked normally).
+In all cases the `protectedPathShas` entry is deleted (path is now tracked normally). The reconciled path set is also recorded for the remainder of *this* sync via `Fit.markTrackedForCurrentSync()` — a same-sync-only, unpersisted signal — because the "local file absent" branch above clears `lastFetchedRemoteShas[path]`, which would otherwise make `shouldSyncPath` flip back to untracked for the rest of the same sync and undo the reconciliation.
 
 ### 2. Hidden Files (`shouldTrackState`) - Configurable
 
@@ -336,22 +347,30 @@ node_modules/
 ### Combined Filtering: `.obsidian/` Files
 
 By default, `.obsidian/` files are excluded by `shouldSyncPath` regardless of `syncHiddenFiles`.
-When a path is opted in via `obsidianSyncRules`, two additional rules apply:
+Once a path becomes git-tracked (see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded)
+above) and is format-eligible for sync (currently: `format: "text"` in `.fitattributes.json`), two
+additional rules apply:
 
-- `shouldTrackState` returns `true` for opted-in `.obsidian/` paths even when `syncHiddenFiles = false`,
+- `shouldTrackState` returns `true` for tracked `.obsidian/` paths even when `syncHiddenFiles = false`,
   so they are scanned and hashed like regular files.
-- `shouldSyncPath` returns `true` for opted-in paths not in the always-excluded set (see above).
+- `shouldSyncPath` returns `true` for tracked, format-eligible paths not in the hard denylist (see above).
 
-**Result for non-opted-in `.obsidian/` paths:**
+**Result for untracked (no remote content) `.obsidian/` paths:**
 - Never synced in either direction
 - Remote SHA passively recorded in `protectedPathShas` (see above) — no content download, no `_fit/` write
 - Excluded from `lastFetchedRemoteShas`; present in local scan but filtered before change detection
 
-**Result for opted-in `.obsidian/` paths:**
-- Tracked in `localShas` and synced bidirectionally like any regular file
-- `syncHiddenFiles = false` does not suppress them (explicit opt-in overrides the hidden-file default) —
-  except that this "not suppressed" guarantee only holds for remote→local; for local→remote, an opted-in
-  path is only picked up if hidden-path discovery actually runs, which itself depends on `syncHiddenFiles`.
+**Result for tracked paths with no `.fitattributes.json` `format: "text"` entry** (JSON or not):
+detection-only — logged, never read or written. See [Explain Sync Status](#explain-sync-status).
+
+**Result for tracked, format-eligible (`format: "text"`) `.obsidian/` paths:**
+- Tracked in `localShas` and synced bidirectionally like any regular file (whole-file replace,
+  `_fit/` clash on both-sides-changed — no merge attempted yet)
+- `syncHiddenFiles = false` does not suppress them once tracked (tracking overrides the hidden-file
+  default) via `Fit.trackedObsidianPaths()` feeding `LocalVault.configure({trackedHiddenPaths})` —
+  the local hidden-path scan proactively probes the known tracked set directly, the same pattern
+  `.fitattributes.json` itself already uses to guarantee its own discovery, so local edits to a
+  tracked path are picked up for push even when the broader recursive hidden-file scan is off.
 
 ### Implementation Locations
 
@@ -720,11 +739,11 @@ interface JsonMergeSpec {
 }
 ```
 
-`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
+`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes.json`-driven parameterization (#337), not yet wired up.
 
-### `.fitattributes.json` (groundwork, #337)
+### `.fitattributes.json` (#337, #67, #358)
 
-`.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file that will eventually configure per-path sync behavior for `.obsidian/` files. **Not yet wired into any sync decision** — `shouldSyncPath` doesn't consult it; `obsidianSyncRules` (Settings-driven) is still the only thing controlling `.obsidian/` sync. This groundwork covers schema, parsing, and validation only:
+`.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file, always synced regardless of `syncHiddenFiles` (it has to propagate for the feature to work at all). It maps `.obsidian/` paths to a rule object. **Its presence never triggers tracking** — see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded) above for what does (git content presence). It only modulates how an already-tracked path is handled:
 
 ```typescript
 interface FitAttributeRule {
@@ -732,13 +751,21 @@ interface FitAttributeRule {
 }
 ```
 
-**Malformed `.fitattributes.json`:** a parse failure (invalid JSON, non-object root, invalid rule shape) surfaces a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet. A separate failure mode — the file existing but failing to *read* (I/O error, permission issue) — is debug-logged only, not surfaced as a warning: `LocalVault.readFromSource()`'s own per-file scan reads this same file as part of its normal pass and aborts the whole sync on any unreadable tracked file before the warning-Notice code would run, so a dedicated warning here couldn't reliably appear anyway.
+**Currently implemented:** `format: "text"` — opts a tracked path into whole-file sync, treating its content as opaque bytes regardless of whether it happens to be JSON-shaped (full-content replace, `_fit/` clash on both-sides-changed, no merge). Not restricted to non-JSON paths — a JSON file with `format: "text"` syncs exactly like any other text file, with no field awareness at all; this is deliberately identical to what `obsidianSyncRules`'s `"replace"` strategy always did for any path, JSON included, since that mechanism never had field-level masking either. This is the mechanism `.obsidian/snippets/*.css` files (#358) use today — manual, per-path, explicit — and also how alpha users who had a JSON path opted in via `obsidianSyncRules` keep syncing after migration (below).
 
-**Forward-looking diagnostic:** whenever a `.obsidian/` path has remote content this version doesn't sync (i.e. `protectedPathShas` has an entry for it), FIT logs which such paths already have a `format:"text"` entry in `.fitattributes.json` (will start syncing once a later change wires this gate up) versus which are still unconfigured. Purely informational — no effect on sync, see the Debug Logging example below.
+**Malformed `.fitattributes.json`:** since this file is the sole enable-switch for any `.obsidian/` sync in this version, a parse failure (invalid JSON, non-object root, invalid rule shape) degrades to "treat as empty — nothing syncs" rather than aborting the sync, but is surfaced two ways rather than just a debug-log line — a config file this load-bearing shouldn't fail silently: a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) at sync time, and a persistent entry in [Explain Sync Status](#explain-sync-status) (`fitAttributesNote`) so the problem stays visible between syncs without needing to trigger one. A separate failure mode — the file existing but failing to *read* (I/O error, permission issue) — is debug-logged only, not surfaced as a warning: `LocalVault.readFromSource()`'s own per-file scan reads this same file as part of its normal pass and aborts the whole sync on any unreadable tracked file before the warning-Notice code would run, so a dedicated warning here couldn't reliably appear anyway.
 
-**Also new in this groundwork:** `.fitattributes.json` itself always syncs regardless of `syncHiddenFiles`, since it has to propagate for the eventual feature to work at all.
+**Not yet implemented:**
+- `format: "json"` (reserved) — will opt a tracked JSON path into field-level masking once that engine exists: syncing only the top-level keys actually present in the tracked (masked) copy, leaving every other local key — including ones this device has no opinion on — untouched. Needed because most `.obsidian/` JSON files mix genuinely shared settings with device-local state (window layout, etc.) at no fixed nesting depth; whole-file replace on such a file would clobber the device-local parts.
+- Array-valued field handling (set-union merge instead of clash, e.g. a plugin-list array) once JSON masking exists — not yet in the schema at all. Deliberately not speccing a shape yet (a flat top-level-only `unordered: string[]` field was tried and removed before this landed — nested field targeting needs real design, not a placeholder). Left undecided rather than shipping a shape now; revisit when `format: "json"` is actually designed.
+- diff3/linewise merge for text-mode paths (#359's engine) — text mode today is detect + replace + clash only. When wired up, protected-path merges must be **all-or-nothing**: a partial hunk-level merge that leaves syntax broken (mismatched braces in a CSS file) can break Obsidian's ability to load config/styling for the whole vault, a much higher blast radius than a broken note — so any changed hunk failing to merge cleanly falls the whole file back to an ordinary `_fit/` clash, never a partial write. This is stricter than #359's own default for ordinary files, and #359 itself stays scoped to non-protected files.
+- Auto-defaulting `.obsidian/snippets/*.css` to `format: "text"` without an explicit `.fitattributes.json` entry — deferred; would be a no-op for anyone who already configured it explicitly.
 
-Until #337 is implemented, `.canvas` is the only file type with structure-aware semantic merge. All other clashing files (including plain text and non-canvas JSON) are eligible for the line-based merge below. A later change adds the actual sync-decision wiring (git-driven tracking + format gate) this groundwork is preparing for — see #67/#337.
+### Migrating from `obsidianSyncRules` (alpha)
+
+`1.6.0-alpha.1` shipped a settings-UI toggle (`obsidianSyncRules`, per-path `{ sync: "replace" }`) that this version retires. A toggled entry is exactly equivalent to "path has remote content" + `.fitattributes.json` `{ "format": "text" }` for that path — `"replace"` never did anything but whole-file byte-level sync, identical to text mode today. Migration is therefore mechanical and lossless for continued syncing: on first load after upgrade, for every path present in the old `obsidianSyncRules` setting, FIT writes a `{ "format": "text" }` entry into `.fitattributes.json` (creating the file if absent) and shows a one-time Notice telling the user their `.obsidian/` sync config moved to `.fitattributes.json` and is worth reviewing.
+
+This is deliberately **not** the ideal end state for a JSON path — `format: "text"` on JSON content has none of the field-level safety masking is meant to provide, it's just what keeps existing alpha users syncing without an unannounced behavior change or data loss at upgrade time. A later change, once field-level JSON masking exists, can offer a further migration from `format: "text"` to `format: "json"` for paths that are JSON-shaped — a strict improvement, and a no-op for anyone who's already reviewed and reconfigured manually.
 
 ## Line-Based Text Merge
 
@@ -790,6 +817,12 @@ The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault
 When `array-merge` (or any future auto-resolving strategy) resolves a conflict silently, no entry is added to `pendingClashes` — the merged content is written locally and the push deferred. This means **Explain will not surface auto-merged files as conflicts**. If a user asks "why did my plugin list change?", the answer is in the sync log, not the status modal. This is intentional: the file is not in a broken state.
 
 If `autoMerge: false` is set on a rule, the clash file IS written to `_fit/` and the path IS added to `pendingClashes`, so it will appear in the Explain modal under "conflicted files".
+
+### Protected-path detection (not yet in the modal)
+
+Every sync logs a dry-run classification of `.obsidian/` paths seen this sync (local scan and/or remote tree) that aren't actively syncing — hard-denylisted, tracked-but-not-format-eligible, or genuinely untracked — via `Fit.classifyObsidianPathsForLog()` (called from `FitSync`). Sync-log-only (`fitLogger`), read-only, no extra network calls or I/O — derived entirely from state this sync already fetched. Skipped entirely when there's no `.obsidian/` activity to report. It does not yet appear in the Explain Sync Status modal itself — surfacing it there (so a user can see *why* a given `.obsidian/` path isn't syncing without digging through the log) is a separately-scoped follow-up.
+
+Whenever any `.obsidian/` path is actively syncing (`trackedTextMode` non-empty), a second log line follows with a hint: to stop syncing it, remove it from the GitHub repo — `.fitattributes.json` only controls *how* a tracked path syncs, not *whether* it's tracked, so it can't be used as an off-switch.
 
 ### Keeping Explain accurate
 
@@ -1374,27 +1407,43 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 - Push operation: ~577ms (GitHub API to create commit)
 - Total sync: ~1 second
 
-**Example** — `.obsidian/app.json` syncs via the still-live legacy `obsidianSyncRules` (watermarked, since that mechanism is being retired); `.obsidian/graph.json` and `.obsidian/plugins/obsidian42-brat/data.json` already have remote content but aren't wired into any sync decision yet, so they only show up in a forward-looking, informational log:
+**Example** — sync with `.obsidian/` protected-path detection (hard-denylisted, tracked-but-unconfigured, and text-mode-tracked paths present). Continues the same vault as the earlier `.fitattributes.json` groundwork example above: `.obsidian/graph.json` was already `format:"text"`-configured there and now actually syncs since the format gate has landed; `.obsidian/plugins/obsidian42-brat/data.json` is still unconfigured, unchanged; `.obsidian/app.json` is the file that used to sync via the now-retired `obsidianSyncRules` (see [Migrating from obsidianSyncRules](#migrating-from-obsidiansyncrules-alpha) above) and continues syncing here because it was migrated to a `format:"text"` entry:
 ```
-[timestamp] [FitSync] .obsidian/ paths with remote content not synced in this version: {
-  "configuredForFutureSync": [".obsidian/graph.json"],
-  "unconfigured": [".obsidian/plugins/obsidian42-brat/data.json"]
-}
 [timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
 [timestamp] .. 💾 [LocalVault] Scanning files...
 [timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
 [timestamp] ... 💾 [LocalVault] Scanned 7 files
 [timestamp] ... ☁️ [RemoteVault] Fetched 9 files
 [timestamp] .. ✅ [Sync] Change detection complete
-[timestamp] [FitSync] .obsidian/ paths synced via legacy obsidianSyncRules (replaced by git-driven tracking in a later version): {
-  "paths": [".obsidian/app.json"]
+[timestamp] [FitSync] Protected-path detection: {
+  "trackedTextMode": [".obsidian/app.json", ".obsidian/graph.json"],
+  "hardDenylisted": [".obsidian/plugins/fit/data.json"],
+  "trackedUnconfigured": [".obsidian/plugins/obsidian42-brat/data.json"],
+  "untracked": [".obsidian/hotkeys.json"],
+  "untrackedTotal": 1
 }
+[timestamp] [FitSync] Note: to stop syncing any of the above trackedTextMode paths, remove them from your GitHub repo — .fitattributes.json only changes how a tracked path syncs, not whether it is tracked.
 [timestamp] 🔄 [FitSync] Syncing changes (1 local, 1 remote): {
   "local": { "MODIFIED": [".obsidian/app.json"] },
   "remote": { "MODIFIED": ["note.md"] }
 }
+[timestamp] [FitSync] Conflict detection complete: {
+  "safeLocal": 1, "safeRemote": 1, "clashes": 0
+}
+[timestamp] .. ⬆️ [Push] Pushed 1 changes to remote
+[timestamp] .. ⬇️ [Pull] Applied remote changes to local: {
+  "filesWritten": 1, "filesDeleted": 0, "clashesWrittenToFit": 0
+}
 ```
-The forward-looking log runs pre-sync (reporting on `protectedPathShas` from a previous sync); the watermark log runs post-scan, only when `obsidianSyncRules` actually drove an outcome this sync. Neither `.obsidian/graph.json` nor `.obsidian/plugins/obsidian42-brat/data.json` appear in the change sets above — only `.obsidian/app.json` (via the legacy rule) does.
+`.obsidian/plugins/fit/data.json` and `.obsidian/plugins/obsidian42-brat/data.json` never appear in the
+local/remote change sets above regardless of their remote content — `shouldSyncPath` filters them out
+before change detection runs. `.obsidian/app.json` and `.obsidian/graph.json` (both `format: "text"` in
+`.fitattributes.json`) are the only `.obsidian/` paths treated as ordinary files. `.obsidian/hotkeys.json`
+has no remote content yet, so it's plain "untracked" — not distinguished from any other file FIT has
+simply never seen, no `protectedPathShas` entry exists for it.
+
+`untracked` can be long (full local `.obsidian/` scan), so the logged array is capped at 30
+entries; `untrackedTotal` always carries the real count regardless of truncation.
 
 **Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
 ```

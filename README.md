@@ -64,7 +64,7 @@ NOTE: For security, it's recommended to limit the token scope to only the necess
 
 > **Coming in the 1.6 release:**
 > - Hidden files (`.gitignore`, `.env`, etc.) will sync by default. `.gitignore` **rules** are already respected — files matched by your patterns are excluded from sync.
-> - Selective `.obsidian/` sync — opt individual config files (appearance, hotkeys, graph settings, plugin data) in via Settings. Workspace layout files and plugin installer files are always excluded regardless.
+> - Selective `.obsidian/` sync — a config file starts syncing once it exists in your GitHub repo (added there directly, or from another already-syncing device), and a `.fitattributes.json` at your vault root controls how it's handled. Some files (FIT's own settings, plugin installer files) are always excluded regardless. See [Advanced sync configuration](#advanced-sync-configuration) below.
 > - **Canvas auto-merge** — when two devices independently add nodes or edges to the same `.canvas` file, FIT will auto-merge the changes without producing a `_fit/` clash file. Only true conflicts (the same node or edge edited differently on both devices) still require manual resolution.
 
 ### Conflict handling
@@ -96,6 +96,31 @@ set of procedures are:
 
 Alternative: "Fit Sync" can be pinned to the ribbon menu from "Setting >
 Appearance > Interface > Ribbon menu configuration"
+
+### Advanced sync configuration
+
+<details>
+<summary><b>Git-driven <code>.obsidian/</code> tracking and <code>.fitattributes.json</code></b> (coming in 1.6)</summary>
+
+**Git-driven tracking.** A protected `.obsidian/` path (see [What gets synced](#what-gets-synced) above) starts being tracked purely because content for it exists in your GitHub repo — added there directly (GitHub web UI, `git` CLI) or by another device that's already syncing it. There's no in-app opt-in step, but files only actually sync if they find a supported sync "format" via filetype heuristics or .fitattributes.json config (see below).
+
+NOTE: A few denylisted paths are always excluded regardless (FIT's own settings file, plugin installer files like `main.js`/`manifest.json`), to avoid fighting Obsidian's own plugin manager or double-versioning FIT's sync bookkeeping.
+
+**Checking current state.** Run the "Explain Sync Status" command from the command palette anytime to see what's currently tracked and syncing, without needing to read this file yourself.
+
+**`.fitattributes.json`.** This vault-root JSON file configures per-path sync behavior. It can explicitly configure a sync "format" if the default isn't good for your file (or if heuristics aren't working for the filetype yet):
+
+```json
+{
+  ".obsidian/appearance.json": { "format": "text" },
+  ".obsidian/snippets/foo.css": { "format": "text" }
+}
+```
+
+- `"format": "text"` — syncs the file as opaque whole-file content, with an ordinary conflict file on both-sides-changed. The only mode available today.
+- `"format": "json"` — field-level sync for a single JSON file, leaving fields you don't list alone. Reserved for a future release, not usable yet.
+
+</details>
 
 
 ## 🔒 Security

@@ -851,8 +851,10 @@ export class FitSync implements IFitSync {
 		try {
 			syncNotice.setMessage("Checking for changes...");
 
-			// Pre-sync: reconcile paths that became tracked since last sync (e.g. user opted in via obsidianSyncRules).
-			// Without this, a path with no localShas entry but an existing local file → untrackedPaths → junk clash.
+			// Pre-sync: reconcile paths that became tracked since last sync — remote git content
+			// appearing for a previously-untracked .obsidian/ path is the only trigger, no local
+			// opt-in exists. Without this, a path with no localShas entry but an existing local
+			// file → untrackedPaths → junk clash.
 			// protectedPathShas is a SHA passively observed while the path was excluded — it was never
 			// established by an actual sync, so it can only be trusted as a real baseline when it turns
 			// out to exactly match local's current content. Any other case must surface as a normal
@@ -864,31 +866,20 @@ export class FitSync implements IFitSync {
 			preReconcileLocalShas = {...this.fit.localShas};
 			preReconcileLastFetchedRemoteShas = {...this.fit.lastFetchedRemoteShas};
 
-			// shouldSyncPath below may need current fitAttributes — only worth an eager refresh
-			// (extra stat/read outside the normal scan) when there's actually a candidate path
-			// that could be reconciled this sync.
+			// isEligibleForTracking below needs current fitAttributes — only worth an eager
+			// refresh (extra stat/read outside the normal scan) when there's actually a
+			// candidate path that could be reconciled this sync.
 			const reconcileCandidates = Object.keys(this.fit.protectedPathShas);
 			if (reconcileCandidates.length > 0) {
 				await this.fit.refreshFitAttributesForReconcile();
-				// Forward-looking, informational only: this version's shouldSyncPath doesn't
-				// consult fitAttributes yet, so none of these actually reconcile below — but
-				// .fitattributes.json IS already parsed, so we can report which of these
-				// remote-only .obsidian/ paths are already configured for format:"text" (will
-				// start syncing once that gate lands) versus still unconfigured.
-				const configuredForFutureSync = reconcileCandidates.filter(
-					p => this.fit.fitAttributes[p]?.format === 'text'
-				);
-				const unconfigured = reconcileCandidates.filter(
-					p => this.fit.fitAttributes[p]?.format !== 'text'
-				);
-				fitLogger.log(
-					'[FitSync] .obsidian/ paths with remote content not synced in this version',
-					{ configuredForFutureSync, unconfigured }
-				);
 			}
-			const reconcilePaths = reconcileCandidates
-				.filter(p => this.fit.shouldSyncPath(p));
+			const reconcilePaths = reconcileCandidates.filter(p => this.fit.isEligibleForTracking(p));
 			if (reconcilePaths.length > 0) {
+				// Same-sync-only signal: without this, the "file absent locally" branch below
+				// (which clears lastFetchedRemoteShas[path]) would make shouldSyncPath's tracked
+				// check flip back to false for the rest of this sync, undoing the reconciliation
+				// before it's even used. See Fit.trackedForCurrentSync's own comment.
+				this.fit.markTrackedForCurrentSync(reconcilePaths);
 				fitLogger.log('[FitSync] Reconciling newly-tracked paths from protectedPathShas', { paths: reconcilePaths });
 				for (const path of reconcilePaths) {
 					const cachedRemoteSha = this.fit.protectedPathShas[path];
@@ -955,13 +946,36 @@ export class FitSync implements IFitSync {
 				warningNotice.show();
 			}
 
-			// Watermark: legacy obsidianSyncRules is being replaced by git-driven tracking
-			// (#337/#67) — logging when it actually drives an outcome makes future debug.log
-			// archaeology easier to place against a plugin version, and keeps this version's
-			// sync path self-explanatory once the replacement lands and this log disappears.
-			const legacyRulePaths = this.fit.activeObsidianSyncRulePaths(currentLocalState, remoteTreeSha);
-			if (legacyRulePaths.length > 0) {
-				fitLogger.log('[FitSync] .obsidian/ paths synced via legacy obsidianSyncRules (replaced by git-driven tracking in a later version)', { paths: legacyRulePaths });
+			// Diagnostic-only: classify .obsidian/ paths seen this sync that aren't actively
+			// syncing (and the one bucket that is), so a user asking "why didn't X sync" has an
+			// answer without needing code knowledge. No effect on sync behavior itself — see
+			// docs/sync-logic.md § Protected-path detection. Skipped entirely when there's
+			// nothing to report (no .obsidian/ activity at all this sync).
+			const protectedPathDetection = this.fit.classifyObsidianPathsForLog(currentLocalState, remoteTreeSha);
+			const hasProtectedPathActivity = protectedPathDetection.trackedTextMode.length > 0
+				|| protectedPathDetection.hardDenylisted.length > 0
+				|| protectedPathDetection.trackedUnconfigured.length > 0
+				|| protectedPathDetection.untracked.length > 0;
+			if (hasProtectedPathActivity) {
+				// untracked can be long on a vault with many local-only .obsidian/ files — cap it,
+				// same rationale as the known unbounded-array-log gap tracked for LocalVault's
+				// hidden-path dumps (src/logger.ts's sanitizeForLogging truncates strings, not
+				// array length).
+				const UNTRACKED_LOG_CAP = 30;
+				fitLogger.log('[FitSync] Protected-path detection', {
+					trackedTextMode: protectedPathDetection.trackedTextMode,
+					hardDenylisted: protectedPathDetection.hardDenylisted,
+					trackedUnconfigured: protectedPathDetection.trackedUnconfigured,
+					untracked: protectedPathDetection.untracked.slice(0, UNTRACKED_LOG_CAP),
+					untrackedTotal: protectedPathDetection.untracked.length,
+				});
+				if (protectedPathDetection.trackedTextMode.length > 0) {
+					fitLogger.log(
+						'[FitSync] Note: to stop syncing any of the above trackedTextMode paths, ' +
+						'remove them from your GitHub repo — .fitattributes.json only changes how a ' +
+						'tracked path syncs, not whether it is tracked.'
+					);
+				}
 			}
 
 			// Phase 0: Resolve pending clashes

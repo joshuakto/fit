@@ -30,10 +30,11 @@ export interface LocalStores {
 	// false-positive re-push on old clients (overhead only, not data loss).
 	pendingClashes?: string[]
 	lastSyncedAt?: number  // Unix ms timestamp of last successful sync completion
-	// Remote SHA cache for paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
-	// Enables junk-clash-free opt-in: when the user adds a path to obsidianSyncRules, the
-	// reconciliation pre-sync step uses this SHA to establish a baseline without re-downloading.
-	// Entries are cleared when a path becomes opted in (baseline reconciliation takes over).
+	// Remote SHA cache for paths excluded by shouldSyncPath (e.g. .obsidian/ untracked or not
+	// format-eligible). Enables junk-clash-free tracking transitions: when remote content
+	// appears for a previously-untracked path, the reconciliation pre-sync step uses this SHA
+	// to establish a baseline without re-downloading. Entries are cleared once tracked
+	// (baseline reconciliation takes over).
 	// Downgrade-safe: absent field treated as empty object.
 	protectedPathShas?: FileStates
 }

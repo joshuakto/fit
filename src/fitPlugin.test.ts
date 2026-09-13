@@ -7,6 +7,7 @@ import { describe, it, expect, vi, type Mock, beforeEach } from 'vitest';
 import FitPlugin from '@/fitPlugin';
 import { FitStatusModal } from '@/fitStatusModal';
 import { DEFAULT_SETTINGS } from '@/fitSettings';
+import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import type { LocalStores } from '@/localStores';
 import type { BlobSha } from '@/util/hashing';
 
@@ -319,5 +320,89 @@ describe('FitPlugin sync-error notice content (#214)', () => {
 
 		links.find(a => a.textContent === 'Open plugin settings')!.dispatchEvent(new MouseEvent('click'));
 		expect(openSettingsSpy).toHaveBeenCalled();
+	});
+});
+
+// Covers FitPlugin.loadSettings' one-time migration from the retired 1.6.0-alpha.1
+// obsidianSyncRules toggle to .fitattributes.json (format:"text") — see
+// docs/sync-logic.md § Migrating from obsidianSyncRules. Not covered elsewhere: this is
+// plugin-lifecycle wiring (raw loadData() + vault.adapter read/write + Notice), not
+// fitAttributes.ts's own parse/validate logic (see fitAttributes.test.ts for that).
+describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
+	function makePluginWithAdapter(reads: Record<string, string> = {}) {
+		const plugin = makePlugin();
+		const writes: Record<string, string> = {};
+		plugin.app.vault = {
+			adapter: {
+				read: vi.fn(async (path: string) => {
+					if (path in reads) return reads[path];
+					throw new Error(`ENOENT: ${path}`);
+				}),
+				write: vi.fn(async (path: string, content: string) => { writes[path] = content; }),
+			}
+		} as any;
+		return { plugin, writes };
+	}
+
+	it('writes a format:"text" entry for each legacy obsidianSyncRules path and shows a Notice', async () => {
+		const { plugin, writes } = makePluginWithAdapter();
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: {
+				'.obsidian/appearance.json': { sync: 'replace' },
+				'.obsidian/hotkeys.json': { sync: 'replace' },
+			}
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect(JSON.parse(writes[FITATTRIBUTES_PATH])).toEqual({
+			'.obsidian/appearance.json': { format: 'text' },
+			'.obsidian/hotkeys.json': { format: 'text' },
+		});
+		expect(NoticeCtor).toHaveBeenCalledWith(expect.stringContaining('.fitattributes.json'), 0);
+	});
+
+	it('does not overwrite an existing .fitattributes.json entry for the same path', async () => {
+		const existing = JSON.stringify({ '.obsidian/appearance.json': { format: 'json' } });
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		// Deliberate choice already present — migration must not clobber it, and since
+		// there's nothing left to migrate, no write happens at all.
+		expect(writes[FITATTRIBUTES_PATH]).toBeUndefined();
+	});
+
+	it('merges into an existing .fitattributes.json rather than overwriting unrelated entries', async () => {
+		const existing = JSON.stringify({ '.obsidian/snippets/custom.css': { format: 'text' } });
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		expect(JSON.parse(writes[FITATTRIBUTES_PATH])).toEqual({
+			'.obsidian/snippets/custom.css': { format: 'text' },
+			'.obsidian/appearance.json': { format: 'text' },
+		});
+	});
+
+	it('is a no-op when there is no legacy obsidianSyncRules setting', async () => {
+		const { plugin, writes } = makePluginWithAdapter();
+		mockLoad(plugin, { pat: 'token', owner: 'alice', repo: 'notes' });
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect(writes[FITATTRIBUTES_PATH]).toBeUndefined();
+		expect(NoticeCtor).not.toHaveBeenCalled();
 	});
 });
