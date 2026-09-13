@@ -787,6 +787,34 @@ describe('FitSync', () => {
 			expect(localStoreState.pendingUntrackedPaths).toEqual([]);
 		});
 
+		it('keeps pendingUntrackedPaths when a re-push attempt is rate-limited, not actually landed', async () => {
+			// safeLocal only reflects what was *classified* as safe to push, not what actually
+			// reached remote — a rate-limited (or size-skipped) attempt must not be treated as
+			// a real re-adoption, or the notice disappears while the path is still exactly as
+			// untracked as before.
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
+
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			remoteVault.setRateLimitedPaths(['.obsidian/appearance.json']);
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(remoteVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBeUndefined();
+			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
+		});
+
 		it('clears pendingUntrackedPaths in the same sync a local edit re-pushes the path', async () => {
 			// Without this, a local edit made after the untrack notice fires still pushes
 			// (correct — an active edit is an unambiguous re-adoption signal), but the notice

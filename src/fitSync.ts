@@ -768,12 +768,19 @@ export class FitSync implements IFitSync {
 		// resolveAllChanges's untrackNotices and Fit.isGitMaskTrackedPath. Cleared once the
 		// local file is gone (user deleted it, completing the untrack), the path is
 		// receiving remote content again (back to ordinary tracked flow), or a local edit
-		// just re-pushed it (also re-tracking it, from the other direction).
+		// just re-pushed it (also re-tracking it, from the other direction) — but only once
+		// that push actually landed; a rate-limited or size-skipped attempt never reached
+		// remote, so the path is still exactly as untracked as before.
 		const remoteChangesThisSync = remoteUpdate.remoteChanges ?? [];
+		const pushFailedPaths = new Set([
+			...(pushResult?.rateLimitedPaths ?? []),
+			...(pushResult?.skippedPaths ?? [])
+		]);
 		this.fit.pendingUntrackedPaths = this.fit.pendingUntrackedPaths.filter(path => {
 			const stillLocal = path in newLocalState;
 			const remoteReappeared = remoteChangesThisSync.some(c => c.path === path && c.type !== 'REMOVED');
-			const rePushedByLocalEdit = safeLocal.some(c => c.path === path && c.type !== 'REMOVED');
+			const rePushedByLocalEdit = safeLocal.some(c => c.path === path && c.type !== 'REMOVED')
+				&& !pushFailedPaths.has(path);
 			return stillLocal && !remoteReappeared && !rePushedByLocalEdit;
 		});
 		for (const change of untrackNotices) {
