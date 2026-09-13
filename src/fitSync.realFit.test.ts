@@ -892,7 +892,7 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeUndefined();
 		});
 
-		it.each(['.css', '.md', '.txt'])('syncs a tracked %s path as format:"text" with no .fitattributes.json entry', async (ext) => {
+		it.each(['.css', '.md', '.txt', '.CSS', '.Md'])('syncs a tracked %s path as format:"text" with no .fitattributes.json entry', async (ext) => {
 			const fitSync = createFitSync();
 			localVault.setSyncHiddenFiles(true);
 			const path = `.obsidian/snippets/custom${ext}`;

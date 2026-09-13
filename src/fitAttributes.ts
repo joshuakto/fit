@@ -54,7 +54,8 @@ const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt'];
  * paths gate on it via `Fit.isEligibleForTracking`).
  */
 export function detectSyncFormat(path: string): FitAttributeRule['format'] | null {
-	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => path.endsWith(ext))) return 'text';
+	const lowerPath = path.toLowerCase();
+	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext))) return 'text';
 	return null;
 }
 
