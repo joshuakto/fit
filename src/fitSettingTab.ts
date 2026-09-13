@@ -692,6 +692,33 @@ export default class FitSettingTab extends PluginSettingTab {
 				}));
 	};
 
+	/**
+	 * Static info only — deliberately no live state (tracked paths, pending clashes, etc.);
+	 * that's what "Explain Sync Status" is for. Replaces the removed obsidianSyncRules
+	 * toggle UI so alpha users who had that don't lose all in-app explanation of how
+	 * .obsidian/ sync config now works. See docs/sync-logic.md § `.fitattributes.json`.
+	 */
+	obsidianSyncInfoBlock = () => {
+		const {containerEl} = this;
+
+		new Setting(containerEl)
+			.setHeading()
+			.setName("Obsidian config sync");
+
+		const desc = containerEl.createEl('p', { cls: 'setting-item-description' });
+		desc.createSpan({ text: 'Config sync toggles have been replaced by ' });
+		desc.createEl('code', { text: '.fitattributes.json' });
+		desc.createSpan({ text: ', a file at your vault root. A ' });
+		desc.createEl('code', { text: '.obsidian/' });
+		desc.createSpan({ text: ' path starts being tracked once its content exists in your GitHub repo (added there directly, or by another device already syncing it) — there is no toggle here for that. Add a ' });
+		desc.createEl('code', { text: '{ "format": "text" }' });
+		desc.createSpan({ text: ' entry for a tracked path to actually sync it as a whole file. ' });
+		desc.createEl('code', { text: 'format: "json"' });
+		desc.createSpan({ text: ' (field-level sync for a single JSON file, leaving unlisted fields alone) is planned but not yet available. ' });
+		desc.createEl('code', { text: '.canvas' });
+		desc.createSpan({ text: ' files merge automatically and need no configuration here. See "Explain Sync Status" for what is currently syncing.' });
+	};
+
 	noticeConfigBlock = () => {
 		const {containerEl} = this;
 		const groupEl = containerEl.createDiv({cls: "fit-notice-group"});
@@ -972,6 +999,7 @@ export default class FitSettingTab extends PluginSettingTab {
 		this.githubUserInfoBlock();
 		this.repoInfoBlock();
 		this.localConfigBlock();
+		this.obsidianSyncInfoBlock();
 		this.noticeConfigBlock();
 		this.refreshFields("withCache");
 	}
