@@ -25,16 +25,19 @@ export interface FitAttributeRule {
 	 * instead of whole-file opaque replace — concurrent edits to different keys (or,
 	 * for `.canvas`, different id-keyed array elements) merge automatically instead of
 	 * clashing to `_fit/`. For a protected `.obsidian/` path, `format: "json"` alone is
-	 * incomplete — pair it with `scope: "full"` (see below) to actually activate it.
+	 * incomplete — pair it with an explicit `scope` (see below) to actually activate it.
 	 */
 	format?: 'json' | 'text';
 	/**
-	 * "full": every key syncs, no field-level masking. Only value accepted today;
-	 * "subset" (field-level masking, docs/sync-logic.md § `.fitattributes.json` (#337))
-	 * is planned but not yet implemented — any other value fails validation rather
-	 * than being silently ignored.
+	 * "full": every key syncs, no field-level masking.
+	 * "subset": syncs only the top-level keys currently present in the tracked git blob
+	 * at this path — every other local key (device-local state) is left untouched,
+	 * never read for push, never overwritten by pull. The tracked field set comes purely
+	 * from remote git content — a device can't add a newly-tracked field on its own,
+	 * only pick up one that already exists in git. Default for a protected `.obsidian/`
+	 * json path when unspecified.
 	 */
-	scope?: 'full';
+	scope?: 'full' | 'subset';
 }
 
 /**
@@ -77,6 +80,29 @@ export function detectSyncFormat(path: string): FitAttributeRule['format'] | nul
 	return null;
 }
 
+/**
+ * Pure form of Fit.resolveSyncFormat/resolveScope — takes a rule set instead of
+ * reading `this.fitAttributes`, so the same resolution logic applies to a rule
+ * set parsed from *either* side of a sync (local's live config, or remote's
+ * currently-fetched .fitattributes.json blob). See docs/sync-logic.md §
+ * Cross-device rule disagreement.
+ */
+export function resolveSyncFormat(path: string, rules: FitAttributesFile): FitAttributeRule['format'] | null {
+	const configuredFormat = rules[path]?.format;
+	return configuredFormat ?? detectSyncFormat(path);
+}
+
+/** Pure form of Fit.resolveScope — see resolveSyncFormat above. */
+export function resolveScope(path: string, rules: FitAttributesFile): FitAttributeRule['scope'] | null {
+	const configuredScope = rules[path]?.scope;
+	if (configuredScope) return configuredScope;
+	if (!path.startsWith(".obsidian/")) return "full";
+	const format = resolveSyncFormat(path, rules);
+	if (format === "text") return "full";
+	if (format === "json") return "subset";
+	return null;
+}
+
 export type ParseFitAttributesResult =
 	| { ok: true; value: FitAttributesFile }
 	| { ok: false; error: string };
@@ -98,10 +124,10 @@ function validateRule(path: string, rawRule: unknown): { ok: true; rule: FitAttr
 		format = rawRule.format;
 	}
 
-	let scope: 'full' | undefined;
+	let scope: 'full' | 'subset' | undefined;
 	if ('scope' in rawRule && rawRule.scope !== undefined) {
-		if (rawRule.scope !== 'full') {
-			return { ok: false, error: `rule for "${path}": "scope" must be "full" if present (other values not yet supported)` };
+		if (rawRule.scope !== 'full' && rawRule.scope !== 'subset') {
+			return { ok: false, error: `rule for "${path}": "scope" must be "full" or "subset" if present` };
 		}
 		scope = rawRule.scope;
 	}

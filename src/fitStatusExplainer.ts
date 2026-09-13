@@ -14,6 +14,14 @@ export interface SyncStatusSnapshot {
 	oversizedFilePaths: string[];
 	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape). */
 	fitAttributesWarning: string | null;
+	/**
+	 * scope:"subset" `.obsidian/` paths whose raw whole-file content has changed since the
+	 * last sync touched them (FitSync.explainStatus, comparing the local scan's raw SHA
+	 * against localShas[path]). Deliberately coarse — it can't tell whether the change
+	 * landed in a tracked field or a device-local one, only a real sync (live remote fetch)
+	 * can — so it's reported separately from ordinary pending local changes, not merged in.
+	 */
+	possiblyChangedSubsetScopePaths: FileChange[];
 }
 
 export interface FileStatusItem {
@@ -129,6 +137,18 @@ export function buildStatusExplanation(
 			heading: `${n} local change${n === 1 ? '' : 's'} pending next sync`,
 			description: 'These local edits will be pushed the next time you run Fit Sync.',
 			items: pendingLocalChanges.map(c => ({
+				path: c.path,
+				cls: CHANGE_CLS[c.type] ?? 'file-MODIFIED',
+			})),
+		});
+	}
+
+	if (snapshot.possiblyChangedSubsetScopePaths.length > 0) {
+		const n = snapshot.possiblyChangedSubsetScopePaths.length;
+		sections.push({
+			heading: `${n} .obsidian/ config path${n === 1 ? '' : 's'} changed since last sync (unconfirmed)`,
+			description: "Fit can't tell without syncing whether the change is in a synced field or a device-local one only. Run Fit Sync to check.",
+			items: snapshot.possiblyChangedSubsetScopePaths.map(c => ({
 				path: c.path,
 				cls: CHANGE_CLS[c.type] ?? 'file-MODIFIED',
 			})),

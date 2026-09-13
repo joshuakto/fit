@@ -8,27 +8,64 @@
 
 const PLUGIN_MANAGED_ASSET = /^\.obsidian\/plugins\/[^/]+\/(main\.js|manifest\.json|styles\.css)$/;
 
+// A plugin dev's own node_modules/ checked into their plugin dir — never something anyone
+// intends to track/push, scoped to plugin dirs specifically (not a blanket anywhere-in-vault
+// match, which would misfire on a legitimately-named vault folder or note).
+const PLUGIN_NODE_MODULES = /^\.obsidian\/plugins\/[^/]+\/node_modules\//;
+
 /**
- * Hard, git-content-independent denylist. A denylisted path's content is never
- * fetched or inspected — enforced independently of `Fit.shouldSyncPath`, belt and
- * suspenders for the one invariant that must never regress.
- *
- * FIT's own data.json and plugin-managed code assets are denylisted for different
- * reasons, not the same one:
- * - Plugin-managed assets (main.js/manifest.json/styles.css) are permanent — owned by
- *   Obsidian's plugin loader, not a preferences file, no "safe subset of fields"
- *   concept ever applies.
- * - FIT's own data.json mixes genuinely shareable preferences (autoSync,
- *   notifyChanges, ...) with per-device sync bookkeeping that would be destructive to
- *   sync (localShas, lastFetchedCommitSha, pendingClashes, ...) and a secret (pat).
- *   It's blocked at the whole-file level here only because whole-file/text-mode sync
- *   has no field granularity to isolate the two — a candidate to become a narrow
- *   format:"json" opt-in later once field-level masking exists, at which point pat/
- *   localShas/etc still need their own field-level denylist independent of whatever
- *   .fitattributes.json configures.
+ * Hard, git-content-independent denylist — content never fetched or inspected,
+ * enforced independently of `Fit.shouldSyncPath`. Plugin-managed assets
+ * (main.js/manifest.json/styles.css) are permanent: owned by Obsidian's plugin loader,
+ * no "safe subset of fields" concept applies. FIT's own data.json is NOT here — see
+ * `FIT_OWN_SETTINGS_DENYLIST` below, its field denylist instead.
  */
-export function isHardDenylistedObsidianPath(path: string, ownDataPath: string | null): boolean {
-	if (ownDataPath && path === ownDataPath) return true;
-	if (path === ".obsidian/plugins/fit/data.json") return true;
-	return PLUGIN_MANAGED_ASSET.test(path);
+export function isHardDenylistedObsidianPath(path: string): boolean {
+	return PLUGIN_MANAGED_ASSET.test(path) || PLUGIN_NODE_MODULES.test(path);
 }
+
+/**
+ * Field names denylisted on every `scope: "subset"` path, not just FIT's own data.json
+ * — applied by `FitSync.resolveSubsetScopePath` before anything downstream can see them.
+ * A field literally named `pat` turning up in some other tracked `.obsidian/*.json` file
+ * (typo, copy-paste) is worth stripping unconditionally, regardless of which file it's in.
+ */
+export const UNIVERSAL_SECRET_FIELD_DENYLIST = [
+	"pat",
+	"encryptionPassword",
+] as const;
+
+/**
+ * Additional unsafe-to-sync fields for FIT's own data.json specifically (`Fit.ownDataPath`
+ * — resolved dynamically from the plugin's actual install dir, e.g.
+ * `.obsidian/plugins/fit-dev/data.json`). Unioned with `UNIVERSAL_SECRET_FIELD_DENYLIST`
+ * at the filtering site (`pat` isn't repeated here). Two reasons these are unsafe:
+ * - Connection/device identity (`githubHost`, `owner`, `avatarUrl`, `repo`, `branch`,
+ *   `deviceName`) — owner/repo/branch identify the sync target itself (see
+ *   docs/sync-logic.md § Protected Paths). Plausible opt-in candidate later, no such
+ *   mechanism exists today.
+ * - All of `LocalStores` (`localShas`, `pendingClashes`, ...) — per-device sync state,
+ *   meaningless (corrupting) on any other device by construction. Never an opt-in candidate.
+ *
+ * Keep in sync with `FitSettings` (src/fitSettings.ts) and `LocalStores` (src/localStores.ts).
+ */
+export const FIT_OWN_SETTINGS_DENYLIST = [
+	// FitSettings — connection/device identity
+	"githubHost",
+	"owner",
+	"avatarUrl",
+	"repo",
+	"branch",
+	"deviceName",
+	// LocalStores — per-device sync bookkeeping
+	"localShas",
+	"localSha",
+	"lastFetchedCommitSha",
+	"lastFetchedRemoteShas",
+	"lastFetchedRemoteSha",
+	"unpushedFiles",
+	"pendingClashes",
+	"lastSyncedAt",
+	"protectedPathShas",
+	"pendingUntrackedPaths",
+] as const;

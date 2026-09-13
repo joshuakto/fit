@@ -83,11 +83,12 @@ describe('parseFitAttributes', () => {
 		});
 	});
 
-	it('rejects scope: "subset" (planned, not yet implemented)', () => {
+	it('accepts scope: "subset"', () => {
 		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'subset' } });
-		expect(parseFitAttributes(text)).toEqual(
-			expect.objectContaining({ ok: false }),
-		);
+		expect(parseFitAttributes(text)).toEqual({
+			ok: true,
+			value: { '.obsidian/graph.json': { format: 'json', scope: 'subset' } },
+		});
 	});
 
 	it('rejects an unrecognized scope value', () => {
