@@ -34,6 +34,31 @@ export type FitAttributesFile = Record<string, FitAttributeRule>;
 
 export const FITATTRIBUTES_PATH = '.fitattributes.json';
 
+/**
+ * Filetype extensions whose sync format is detectable without an explicit
+ * .fitattributes.json entry — a tracked `.obsidian/` path with no explicit config
+ * falls back to this instead of staying detection-only. .css is the original
+ * motivating case (#358, CSS snippets); .md/.txt are the same "plainly plaintext,
+ * no reason to require boilerplate config" reasoning, same as how ordinary
+ * (non-`.obsidian/`) files of these types are already always treated as text.
+ */
+const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt'];
+
+/**
+ * The sync format a path's filetype implies on its own, with no `.fitattributes.json`
+ * entry — `null` if unknown (stays detection-only until explicitly configured).
+ * Mirrors how ordinary (non-`.obsidian/`) files are handled implicitly today: plain
+ * text by default, `.canvas` a JSON-shaped special case (though that one is handled
+ * entirely by its own merge-spec selection in fitSync.ts, not through this function —
+ * ordinary files are always eligible regardless of detected format, only `.obsidian/`
+ * paths gate on it via `Fit.isEligibleForTracking`).
+ */
+export function detectSyncFormat(path: string): FitAttributeRule['format'] | null {
+	const lowerPath = path.toLowerCase();
+	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext))) return 'text';
+	return null;
+}
+
 export type ParseFitAttributesResult =
 	| { ok: true; value: FitAttributesFile }
 	| { ok: false; error: string };
