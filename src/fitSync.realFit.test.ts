@@ -14,6 +14,7 @@ import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeRemoteVault } from './testUtils';
 import { LocalVault } from './localVault';
 import { FitSettings } from '@/fitSettings';
+import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import { LocalStores } from '@/localStores';
 import { VaultError } from './vault';
 import { fitLogger } from './logger';
@@ -2874,6 +2875,71 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/note.md');
 			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+	});
+
+	describe('.fitattributes.json validation', () => {
+		it('surfaces a visible warning Notice when .fitattributes.json is malformed', async () => {
+			// .fitattributes.json is a load-bearing config file — a malformed file must not
+			// fail silently (log-only).
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, '{not valid json');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).toHaveBeenCalled();
+			fitNoticeSpy.mockRestore();
+		});
+
+		it('does not show the .fitattributes.json warning Notice once the file is fixed', async () => {
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).not.toHaveBeenCalled();
+			fitNoticeSpy.mockRestore();
+		});
+
+		it('logs configured-vs-unconfigured buckets for remote .obsidian/ content this version does not sync', async () => {
+			// Neither path actually syncs in this version (shouldSyncPath doesn't consult
+			// fitAttributes yet) — this is a forward-looking, informational-only log.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') },
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			// First sync: observes remote content into protectedPathShas (silent, pre-existing).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			// Second sync: protectedPathShas is now non-empty, triggering the forward-looking log.
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expectLoggerCalledWith('[FitSync] .obsidian/ paths with remote content not synced in this version', {
+				configuredForFutureSync: ['.obsidian/graph.json'],
+				unconfigured: ['.obsidian/appearance.json'],
+			});
+		});
+
+		it('explainStatus surfaces fitAttributesNote for a malformed .fitattributes.json, even with nothing else pending', async () => {
+			const fitSync = createFitSync();
+			localVault.setFile('note.md', 'content');
+			localVault.setFile(FITATTRIBUTES_PATH, '{not valid json');
+
+			// Establish a baseline sync (with the malformed file already in place) so
+			// explainStatus() reaches its normal issues/ok branches, not never-synced.
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				fitAttributesNote: expect.stringContaining('.fitattributes.json is malformed'),
+			}));
 		});
 	});
 

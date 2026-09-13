@@ -722,15 +722,23 @@ interface JsonMergeSpec {
 
 `mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes` parameterization (#337).
 
-### Future extension: `.fitattributes` (#337)
+### `.fitattributes.json` (groundwork, #337)
 
-Canvas merge is the first use of the merge engine. #337 will add a `.fitattributes` file (analogous to `.gitattributes`) where users can declare:
-- Additional paths to merge with keyed-array semantics
-- Order-significance selectors (opt arrays into index-based merge)
-- Field exclusion selectors (ignore specific JSON paths during comparison) — required for #67
-- Text-mode policies (`always-local`, `always-remote`) for non-JSON files
+`.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file that will eventually configure per-path sync behavior for `.obsidian/` files. **Not yet wired into any sync decision** — `shouldSyncPath` doesn't consult it; `obsidianSyncRules` (Settings-driven) is still the only thing controlling `.obsidian/` sync. This groundwork covers schema, parsing, and validation only:
 
-Until #337 is implemented, `.canvas` is the only file type with structure-aware semantic merge. All other clashing files (including plain text and non-canvas JSON) are eligible for the line-based merge below.
+```typescript
+interface FitAttributeRule {
+  format?: 'json' | 'text';
+}
+```
+
+**Malformed `.fitattributes.json`:** a parse failure (invalid JSON, non-object root, invalid rule shape) surfaces a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) and a persistent entry in [Explain Sync Status](#explain-sync-status) — not just a debug-log line, even though nothing downstream acts on the parsed content yet. A separate failure mode — the file existing but failing to *read* (I/O error, permission issue) — is debug-logged only, not surfaced as a warning: `LocalVault.readFromSource()`'s own per-file scan reads this same file as part of its normal pass and aborts the whole sync on any unreadable tracked file before the warning-Notice code would run, so a dedicated warning here couldn't reliably appear anyway.
+
+**Forward-looking diagnostic:** whenever a `.obsidian/` path has remote content this version doesn't sync (i.e. `protectedPathShas` has an entry for it), FIT logs which such paths already have a `format:"text"` entry in `.fitattributes.json` (will start syncing once a later change wires this gate up) versus which are still unconfigured. Purely informational — no effect on sync, see the Debug Logging example below.
+
+**Also new in this groundwork:** `.fitattributes.json` itself always syncs regardless of `syncHiddenFiles`, since it has to propagate for the eventual feature to work at all.
+
+Until #337 is implemented, `.canvas` is the only file type with structure-aware semantic merge. All other clashing files (including plain text and non-canvas JSON) are eligible for the line-based merge below. A later change adds the actual sync-decision wiring (git-driven tracking + format gate) this groundwork is preparing for — see #67/#337.
 
 ## Line-Based Text Merge
 
@@ -1365,6 +1373,28 @@ When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugi
 - Parallel execution visible: both operations start at :543ms
 - Push operation: ~577ms (GitHub API to create commit)
 - Total sync: ~1 second
+
+**Example** — `.obsidian/app.json` syncs via the still-live legacy `obsidianSyncRules` (watermarked, since that mechanism is being retired); `.obsidian/graph.json` and `.obsidian/plugins/obsidian42-brat/data.json` already have remote content but aren't wired into any sync decision yet, so they only show up in a forward-looking, informational log:
+```
+[timestamp] [FitSync] .obsidian/ paths with remote content not synced in this version: {
+  "configuredForFutureSync": [".obsidian/graph.json"],
+  "unconfigured": [".obsidian/plugins/obsidian42-brat/data.json"]
+}
+[timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
+[timestamp] .. 💾 [LocalVault] Scanning files...
+[timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
+[timestamp] ... 💾 [LocalVault] Scanned 7 files
+[timestamp] ... ☁️ [RemoteVault] Fetched 9 files
+[timestamp] .. ✅ [Sync] Change detection complete
+[timestamp] [FitSync] .obsidian/ paths synced via legacy obsidianSyncRules (replaced by git-driven tracking in a later version): {
+  "paths": [".obsidian/app.json"]
+}
+[timestamp] 🔄 [FitSync] Syncing changes (1 local, 1 remote): {
+  "local": { "MODIFIED": [".obsidian/app.json"] },
+  "remote": { "MODIFIED": ["note.md"] }
+}
+```
+The forward-looking log runs pre-sync (reporting on `protectedPathShas` from a previous sync); the watermark log runs post-scan, only when `obsidianSyncRules` actually drove an outcome this sync. Neither `.obsidian/graph.json` nor `.obsidian/plugins/obsidian42-brat/data.json` appear in the change sets above — only `.obsidian/app.json` (via the legacy rule) does.
 
 **Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
 ```

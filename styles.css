@@ -387,6 +387,13 @@
     margin: 4px 0;
 }
 
+.fit-fitattributes-note {
+    font-size: 0.85em;
+    margin: 4px 0;
+    padding: 4px 8px;
+    border-left: 3px solid var(--color-orange, #e8a020);
+}
+
 .fit-field-warning-section {
     margin-top: 12px;
     padding: 8px 10px;

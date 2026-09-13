@@ -10,6 +10,7 @@ function snapshot(overrides: Partial<SyncStatusSnapshot> = {}): SyncStatusSnapsh
 		trackedFileCount: 3,
 		pendingClashes: [],
 		oversizedFilePaths: [],
+		fitAttributesWarning: null,
 		...overrides,
 	};
 }
@@ -41,6 +42,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [],
 				  "statusNote": "Never synced — run Fit Sync to connect to your remote.",
@@ -56,6 +58,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [],
 				  "statusNote": "All 5 files synced (commit abcdef1)",
@@ -73,6 +76,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [],
 				  "statusNote": "All 5 files synced (commit 2e39870)",
@@ -86,6 +90,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [],
 				  "statusNote": "All 1 file synced (commit abcdef1)",
@@ -105,6 +110,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
+				  "fitAttributesNote": null,
 				  "scanNote": "Couldn't read: ItsASecret.md, locked/private.md — local changes may be incomplete",
 				  "sections": [],
 				  "statusNote": null,
@@ -118,6 +124,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": "Couldn't read: secret.md — local changes may be incomplete",
 				  "sections": [],
 				  "statusNote": null,
@@ -131,6 +138,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": "Couldn't scan all files — local changes may be incomplete",
 				  "sections": [],
 				  "statusNote": null,
@@ -150,6 +158,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -175,6 +184,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -207,6 +217,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -231,6 +242,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -264,6 +276,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -296,6 +309,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -324,6 +338,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -364,6 +379,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -391,6 +407,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -422,6 +439,23 @@ describe('renderExplanation', () => {
 		});
 	});
 
+	describe('malformed .fitattributes.json', () => {
+		it('reports issues, not ok, when only fitAttributesWarning is set', () => {
+			const explanation = buildStatusExplanation(snapshot({ fitAttributesWarning: 'boom' }), []);
+			expect(explanation).toEqual(expect.objectContaining({ kind: 'issues' }));
+		});
+
+		it('surfaces the warning text as fitAttributesNote', () => {
+			const result = explain(snapshot({ fitAttributesWarning: 'boom' }), []);
+			expect(result).toEqual(expect.objectContaining({ fitAttributesNote: 'boom' }));
+		});
+
+		it('does not surface a note when .fitattributes.json is valid or absent', () => {
+			const result = explain(snapshot({ fitAttributesWarning: null }), []);
+			expect(result).toEqual(expect.objectContaining({ fitAttributesNote: null }));
+		});
+	});
+
 	describe('multiple issue types', () => {
 		it('all three sections — order: clashes, oversized, local changes', () => {
 			expect(explain(
@@ -432,6 +466,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": null,
 				  "commitUrl": "https://github.com/dbarnett/myvault/tree/2e39870bfd4e1715222800d62947222c76def787",
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -484,6 +519,7 @@ describe('renderExplanation', () => {
 					{
 					  "autoSyncNote": "Auto-sync: off",
 					  "commitUrl": null,
+					  "fitAttributesNote": null,
 					  "scanNote": null,
 					  "sections": [],
 					  "statusNote": "All 3 files synced (commit abcdef1)",
@@ -499,6 +535,7 @@ describe('renderExplanation', () => {
 					{
 					  "autoSyncNote": "Auto-sync: every 30 min (never synced in this session)",
 					  "commitUrl": null,
+					  "fitAttributesNote": null,
 					  "scanNote": null,
 					  "sections": [],
 					  "statusNote": "All 3 files synced (commit abcdef1)",
@@ -515,6 +552,7 @@ describe('renderExplanation', () => {
 					{
 					  "autoSyncNote": "Auto-sync: every 30 min · last synced 3 min ago · next in ~27 min",
 					  "commitUrl": null,
+					  "fitAttributesNote": null,
 					  "scanNote": null,
 					  "sections": [],
 					  "statusNote": "All 3 files synced (commit abcdef1)",
@@ -531,6 +569,7 @@ describe('renderExplanation', () => {
 					{
 					  "autoSyncNote": "Auto-sync: every 30 min · last synced just now · next in ~30 min",
 					  "commitUrl": null,
+					  "fitAttributesNote": null,
 					  "scanNote": null,
 					  "sections": [],
 					  "statusNote": "All 3 files synced (commit abcdef1)",
@@ -549,6 +588,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": "Auto-sync: every 15 min · last synced 10 min ago · next in ~5 min",
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -577,6 +617,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": "Auto-sync: off",
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": null,
 				  "sections": [
 				    {
@@ -605,6 +646,7 @@ describe('renderExplanation', () => {
 				{
 				  "autoSyncNote": "Auto-sync: every 30 min · last synced 5 min ago · next in ~25 min",
 				  "commitUrl": null,
+				  "fitAttributesNote": null,
 				  "scanNote": "Couldn't read: ItsASecret.md — local changes may be incomplete",
 				  "sections": [],
 				  "statusNote": null,
