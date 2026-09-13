@@ -242,6 +242,15 @@ export class Fit {
 	 * path always has a known SHA by construction, so this needs no separate storage.
 	 * Feeds LocalVault.configure({trackedHiddenPaths}) so local discovery can proactively
 	 * probe these specific paths even when the broader hidden-file scan is off.
+	 *
+	 * Deliberately does NOT include trackedForCurrentSync (a path reconciled untracked→
+	 * tracked earlier this same sync, before either baseline map is populated) — this is
+	 * safe, not an oversight: FitSync's pre-sync reconcile block always either establishes
+	 * a real baseline directly, or deletes lastFetchedRemoteShas[path] to force a remote
+	 * change this sync, and any remote change for a path the local scan doesn't cover gets
+	 * an independent direct filesystem check (util/changeTracking.ts's
+	 * determineLocalChecksNeeded, #169) regardless of this list's contents. See
+	 * docs/sync-logic.md § Baseline Recording for Untracked Files (#169).
 	 */
 	trackedObsidianPaths(): string[] {
 		const paths = new Set<string>();

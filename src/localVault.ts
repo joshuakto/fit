@@ -216,6 +216,13 @@ export class LocalVault implements IVault<"local"> {
 		// scan (skipped when syncHiddenFiles = false) unless probed explicitly. Without this,
 		// local edits to a tracked path go undetected — and therefore unpushed — whenever
 		// syncHiddenFiles is off.
+		//
+		// Note: this list (Fit.trackedObsidianPaths()) can lag by one sync for a path just
+		// reconciled untracked→tracked — that's expected, not a correctness gap. A remote
+		// change for a path missing here still gets caught by FitSync's independent
+		// filesystem safety check (#169) rather than silently overwriting local content; see
+		// Fit.trackedObsidianPaths()'s own comment and docs/sync-logic.md § Baseline
+		// Recording for Untracked Files (#169).
 		if (!this.syncHiddenFiles) {
 			for (const path of this.trackedHiddenPaths) {
 				if (allPaths.includes(path)) continue;
