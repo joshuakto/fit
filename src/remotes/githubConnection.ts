@@ -14,6 +14,7 @@
 
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
+import { apiBaseUrl } from "./githubHost";
 import { VaultError } from "../vault";
 
 /**
@@ -39,7 +40,7 @@ export class ConnectionConfigError extends Error {
  * Handles authentication, repository discovery, and Octokit instance management.
  *
  * Usage:
- *   const conn = new GitHubConnection(pat);
+ *   const conn = new GitHubConnection(pat, githubHost);
  *   const user = await conn.getAuthenticatedUser();
  *   const repos = await conn.getReposForOwner(user.owner);
  */
@@ -51,11 +52,12 @@ export class GitHubConnection {
 	// Cached authenticated user info (populated on first getAuthenticatedUser call)
 	private cachedAuthUser: AuthenticatedUser | null = null;
 
-	constructor(pat: string) {
+	constructor(pat: string, githubHost: string) {
 		this.pat = pat;
 		const OctokitWithRetry = Octokit.plugin(retry);
 		this.octokit = new OctokitWithRetry({
 			auth: pat,
+			baseUrl: apiBaseUrl(githubHost),
 			request: {
 				retries: 3,
 				doNotRetry: [400, 401, 403, 404, 422]

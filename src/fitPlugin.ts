@@ -10,6 +10,7 @@ import { fitLogger } from '@/logger';
 import { LocalStores, parseLocalStore } from '@/localStores';
 import { handleCriticalError } from '@/util/errorHandling';
 import { GitHubConnection } from '@/remotes/githubConnection';
+import { treeUrl } from '@/remotes/githubHost';
 import * as Encryption from "@/encryption";
 import { FitSettings, DEFAULT_SETTINGS } from '@/fitSettings';
 import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes } from '@/fitAttributes';
@@ -58,6 +59,7 @@ export default class FitPlugin extends Plugin {
 	logger = fitLogger; // Explicit reference to singleton for future refactoring
 	private activeSyncRequests = 0; // Track number of active sync attempts
 	private lastGithubConnectionPat: string | null = null; // Track PAT changes
+	private lastGithubConnectionHost: string | null = null; // Track host changes (cached auth user is per-host)
 	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
 	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
 
@@ -408,10 +410,10 @@ export default class FitPlugin extends Plugin {
 
 		const explanation = await this.fitSync.explainStatus();
 
-		const { owner, repo, autoSync, checkEveryXMinutes } = this.settings;
+		const { owner, repo, autoSync, checkEveryXMinutes, githubHost } = this.settings;
 		const sha = this.localStore.lastFetchedCommitSha;
 		const commitUrl = (owner && repo && sha)
-			? `https://github.com/${owner}/${repo}/tree/${sha}`
+			? treeUrl(githubHost, owner, repo, sha)
 			: null;
 		const autoSyncInfo: AutoSyncInfo = {
 			enabled: autoSync !== 'off',
@@ -479,7 +481,7 @@ export default class FitPlugin extends Plugin {
 			Encryption.init(this);
 
 			this.githubConnection = this.settings.pat
-				? new GitHubConnection(this.settings.pat)
+				? new GitHubConnection(this.settings.pat, this.settings.githubHost)
 				: null;
 			this.fit = new Fit(this.settings, this.localStore, this.app.vault, this.manifest.dir ?? undefined);
 			this.fitSync = new FitSync(this.fit, this.saveLocalStoreCallback);
@@ -603,14 +605,17 @@ export default class FitPlugin extends Plugin {
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings);
 
-		// Update GitHubConnection only when PAT changes
-		if (this.settings.pat !== this.lastGithubConnectionPat) {
+		// Update GitHubConnection only when PAT or host changes
+		if (this.settings.pat !== this.lastGithubConnectionPat
+			|| this.settings.githubHost !== this.lastGithubConnectionHost) {
 			if (this.settings.pat) {
-				this.githubConnection = new GitHubConnection(this.settings.pat);
+				this.githubConnection = new GitHubConnection(this.settings.pat, this.settings.githubHost);
 				this.lastGithubConnectionPat = this.settings.pat;
+				this.lastGithubConnectionHost = this.settings.githubHost;
 			} else {
 				this.githubConnection = null;
 				this.lastGithubConnectionPat = null;
+				this.lastGithubConnectionHost = null;
 			}
 		}
 	}

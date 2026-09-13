@@ -49,6 +49,8 @@ See [docs/architecture.md § Design Principles](docs/architecture.md#design-prin
 
 NOTE: For security, it's recommended to limit the token scope to only the necessary repository for your vault and avoid sharing your entire plugin settings file that contains this token.
 
+The plugin defaults to github.com. GitHub Enterprise Server support is coming soon.
+
 ## How Sync Works
 
 ### What gets synced

@@ -53,7 +53,7 @@ _These priorities operationalize the philosophy in [architecture.md § Design Pr
 
 **🚀 Platform Expansion**:
 - **Selective `.obsidian/` sync** - v1 shipped in 1.6 (replace-strategy + field tracking); v2: field-level exclusion (#67)
-- **Multi-platform backends** - GitLab, Gitea, self-hosted Git servers
+- **Multi-platform backends** - GitLab or Gitea
 - **Multi-repo sync** - Multiple vaults or vault partitions
 
 **🔒 Security & Privacy**:
@@ -186,6 +186,7 @@ Apply these manually when cutting stable, then clear the list. Add to this list 
 - **Update `.obsidian/` bullet** (under "NOT synced"): remove the `(selective opt-in coming in 1.6)` qualifier — it shipped.
 - **Convert "Coming in the 1.6 release" callout** to present tense: the hidden-files, selective `.obsidian/` sync, and canvas auto-merge features are all live. Rewrite as "New in 1.6:" rather than "Coming in the 1.6 release:". Also move the canvas auto-merge bullet into the conflict handling section as a permanent feature description (remove the "coming in" framing).
 - **Retake the settings screenshot** (line ~39): the current screenshot predates 1.5 UI changes. Capture a fresh screenshot of the FIT settings panel and replace the image at that line.
+- **Update GitHub Enterprise Server note** (Setup section): once GHE support ships in stable, reword "The plugin defaults to github.com. GitHub Enterprise Server support is coming soon." to state it's supported (e.g. "The plugin defaults to github.com, but also supports GitHub Enterprise Server hosts.").
 
 ---
 
