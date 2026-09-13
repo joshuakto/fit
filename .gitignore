@@ -30,6 +30,9 @@ coverage/
 
 # Test results and screenshots
 /test-results/
+/allure-results/
+/allure-history/
+/allure-results-raw/
 
 # Local agent instructions (personal workflow details, overrides AGENTS.md)
 AGENTS.local.md
