@@ -12,6 +12,8 @@ import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
 import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
 import { CANVAS_MERGE_SPEC, mergeJson, serialiseMerged, MergeResult } from './util/jsonMerge';
+import { tryLineMerge } from './util/lineMerge';
+import { hasNullByte } from './util/obsidianHelpers';
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -509,16 +511,12 @@ export class FitSync implements IFitSync {
 		}));
 
 		const autoMergedCanvasClashes: Array<{path: string, content: FileContent}> = [];
-		const autoMergeFailedClashPaths = new Set<string>();
 
 		await Promise.all(
 			canvasClashCandidates.map(async (clash) => {
 				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
 				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
-				if (remoteContent === null || localContent === null) {
-					autoMergeFailedClashPaths.add(clash.path);
-					return;
-				}
+				if (remoteContent === null || localContent === null) return;
 				const baseText = canvasBaseTexts.get(clash.path) ?? null;
 				let result: MergeResult;
 				try {
@@ -527,14 +525,12 @@ export class FitSync implements IFitSync {
 					fitLogger.log('.. [FitSync] Canvas auto-merge threw, falling back to clash', {
 						path: clash.path, error: String(e),
 					});
-					autoMergeFailedClashPaths.add(clash.path);
 					return;
 				}
 				if (!result.merged) {
 					fitLogger.log('.. [FitSync] Canvas auto-merge failed, falling back to clash', {
 						path: clash.path, reason: result.reason,
 					});
-					autoMergeFailedClashPaths.add(clash.path);
 					return;
 				}
 				fitLogger.log('.. [FitSync] Canvas auto-merge succeeded', {
@@ -547,13 +543,68 @@ export class FitSync implements IFitSync {
 			})
 		);
 
+		const textClashCandidates = clashes
+			.filter(c => c.remoteOp !== 'REMOVED')
+			.filter(c => !pendingReminderPaths.has(c.path))
+			.filter(c => !c.path.endsWith('.canvas'));
+
+		const autoMergedTextClashes: Array<{path: string, content: FileContent}> = [];
+		// Cache remote content read here so clashFiles (below) doesn't re-fetch it
+		// for candidates that don't end up merging.
+		const textRemoteContents = new Map<string, FileContent>();
+
+		await Promise.all(
+			textClashCandidates.map(async (clash) => {
+				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
+				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
+				if (remoteContent === null || localContent === null) return;
+				textRemoteContents.set(clash.path, remoteContent);
+
+				// Null-byte check first: encoding tags can't be trusted here (remote
+				// content always arrives base64-tagged regardless of underlying type),
+				// and toPlainText()'s fatal UTF-8 decode alone isn't a strong enough
+				// binary signal — some binary content can coincidentally decode as
+				// valid UTF-8, which would let it through to be line-spliced and corrupted.
+				if (hasNullByte(remoteContent.prefixBytes(8192)) || hasNullByte(localContent.prefixBytes(8192))) return;
+
+				// Base fetch happens here (lazily, per candidate that passed the checks
+				// above) rather than upfront for every candidate, to avoid a wasted
+				// GitHub API call for paths that were never going to merge anyway.
+				const baseSha = this.fit.lastFetchedRemoteShas[clash.path];
+				if (!baseSha) return;
+				let baseText: string;
+				try {
+					const baseContent = await this.fit.remoteVault.readFileBlobBySha(baseSha);
+					baseText = baseContent.toPlainText();
+				} catch (e) {
+					fitLogger.log('... [FitSync] Base blob fetch failed for text merge, falling back to clash', { path: clash.path, sha: baseSha, error: String(e) });
+					return;
+				}
+
+				let merged: string | null;
+				try {
+					merged = tryLineMerge(baseText, localContent.toPlainText(), remoteContent.toPlainText());
+				} catch (e) {
+					fitLogger.log('.. [FitSync] Line merge threw (likely binary content), falling back to clash', {
+						path: clash.path, error: String(e),
+					});
+					return;
+				}
+				if (merged === null) return;
+				fitLogger.log('.. [FitSync] Line merge succeeded', { path: clash.path });
+				autoMergedTextClashes.push({ path: clash.path, content: FileContent.fromPlainText(merged) });
+			})
+		);
+
+		const mergedPaths = new Set([...autoMergedCanvasClashes, ...autoMergedTextClashes].map(c => c.path));
+
 		const clashFiles = await Promise.all(
 			clashes
 				.filter(c => c.remoteOp !== 'REMOVED')
 				.filter(c => !pendingReminderPaths.has(c.path))
-				.filter(c => !c.path.endsWith('.canvas') || autoMergeFailedClashPaths.has(c.path))
+				.filter(c => !mergedPaths.has(c.path))
 				.map(async (clash) => {
-					const content = await this.fit.remoteVault.readFileContent(clash.path);
+					const content = textRemoteContents.get(clash.path) ?? await this.fit.remoteVault.readFileContent(clash.path);
 					return this.prepareConflictFile(clash.path, content.toBase64());
 				})
 		);
@@ -605,8 +656,7 @@ export class FitSync implements IFitSync {
 		// 3b. Pull remote changes to local (with safety checks and clash resolution)
 		// autoMergedCanvasClashes are written as normal files (not to _fit/), deferred push on next sync.
 		// mergedPaths bypasses the untracked-file safety redirect — content already merged from local.
-		const allAddToLocal = [...addToLocalNonClashed, ...autoMergedCanvasClashes];
-		const mergedPaths = new Set(autoMergedCanvasClashes.map(c => c.path));
+		const allAddToLocal = [...addToLocalNonClashed, ...autoMergedCanvasClashes, ...autoMergedTextClashes];
 		const localFileOpsRecord = await this.applyRemoteChanges(
 			allAddToLocal,
 			deleteFromLocalNonClashed,
@@ -622,6 +672,7 @@ export class FitSync implements IFitSync {
 				filesDeleted: deleteFromLocalNonClashed.length,
 				clashesWrittenToFit: clashFiles.length,
 				...(autoMergedCanvasClashes.length > 0 && { canvasAutoMerged: autoMergedCanvasClashes.length }),
+				...(autoMergedTextClashes.length > 0 && { textAutoMerged: autoMergedTextClashes.length }),
 			});
 		}
 

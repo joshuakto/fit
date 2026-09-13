@@ -2876,4 +2876,133 @@ describe('FitSync', () => {
 			expect(localStoreState.pendingClashes).toContain('note.md');
 		});
 	});
+
+	describe('Line-based text merge', () => {
+		async function setupSyncedNote(fitSync: FitSync, content: string) {
+			localVault.setFile('note.md', content);
+			await remoteVault.setFile('note.md', content);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+		}
+
+		it('merges edits to different, non-adjacent lines', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\nline3\nline4\nline5\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1\nline2-local\nline3\nline4\nline5\n');
+			await remoteVault.setFile('note.md', 'line1\nline2\nline3\nline4-remote\nline5\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('line1\nline2-local\nline3\nline4-remote\nline5\n');
+		});
+
+		it('merges a mid-list insertion on one side with an edit elsewhere on the other side', async () => {
+			// The scenario a pure append-only merge could not handle: the new item
+			// lands in the middle of the list, not at the end of the file.
+			const fitSync = createFitSync();
+			const base = '- item1\n- item2\n- item3\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', '- item1\n- item-inserted\n- item2\n- item3\n');
+			await remoteVault.setFile('note.md', '- item1\n- item2\n- item3-edited\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('- item1\n- item-inserted\n- item2\n- item3-edited\n');
+		});
+
+		it('merged note is not added to pendingClashes', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\nline3\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1-local\nline2\nline3\n');
+			await remoteVault.setFile('note.md', 'line1\nline2\nline3-remote\n');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.pendingClashes).not.toContain('note.md');
+		});
+
+		it('falls back to _fit/ clash file when both sides edit existing content', async () => {
+			const fitSync = createFitSync();
+			const base = 'line1\nline2\n';
+			await setupSyncedNote(fitSync, base);
+
+			localVault.setFile('note.md', 'line1-local\nline2\n');
+			await remoteVault.setFile('note.md', 'line1-remote\nline2\n');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).toHaveProperty('_fit/note.md');
+			expect(files['note.md']).toBe('line1-local\nline2\n');
+			expect(localStoreState.pendingClashes).toContain('note.md');
+		});
+
+		it('does not attempt to merge binary files, falling back to _fit/ as before', async () => {
+			const fitSync = createFitSync();
+			const base = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			const localEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]).buffer;
+			const remoteEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x03]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(localEdit, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(remoteEdit, 'base64'));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/image.png');
+			expect(localStoreState.pendingClashes).toContain('image.png');
+		});
+
+		it('does not merge binary content that happens to decode as valid UTF-8 (null byte present)', async () => {
+			// A null byte (U+0000) is itself valid UTF-8, so TextDecoder's fatal decode
+			// alone would NOT reject this content — the explicit null-byte check is what
+			// catches it. Regression test for the gap where relying solely on the
+			// decode-throw would have let this through to be line-spliced and corrupted.
+			const fitSync = createFitSync();
+			const base = new Uint8Array([0x00, 0x41, 0x42, 0x43]).buffer; // NUL + 'ABC'
+			localVault.setFile('data.bin', FileContent.fromArrayBuffer(base, 'base64'));
+			await remoteVault.setFile('data.bin', FileContent.fromArrayBuffer(base, 'base64'));
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			const localEdit = new Uint8Array([0x00, 0x41, 0x42, 0x44]).buffer; // NUL + 'ABD'
+			const remoteEdit = new Uint8Array([0x00, 0x41, 0x45, 0x43]).buffer; // NUL + 'AEC'
+			localVault.setFile('data.bin', FileContent.fromArrayBuffer(localEdit, 'base64'));
+			await remoteVault.setFile('data.bin', FileContent.fromArrayBuffer(remoteEdit, 'base64'));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toHaveProperty('_fit/data.bin');
+			expect(localStoreState.pendingClashes).toContain('data.bin');
+		});
+	});
 });
