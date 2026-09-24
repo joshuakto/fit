@@ -62,7 +62,7 @@ _These priorities operationalize the philosophy in [architecture.md § Design Pr
 
 **💡 User Experience**:
 - **Conflict resolution UX** - Auto-merge, resolution strategies, better workflows
-- **Auto-sync triggers** - On save, on open, configurable intervals
+- **Auto-sync triggers** - On save / on open (shipped, #65); remaining: per-trigger tuning
 - **Settings UI improvements** - Visual examples, notification customization
 
 **🔧 Developer Experience**:

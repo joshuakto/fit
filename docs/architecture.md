@@ -25,7 +25,7 @@ graph TB
 
 ### FitPlugin (src/fitPlugin.ts)
 **Purpose**: Plugin orchestrator and lifecycle manager (interfaces with 👤 user)
-- Manages plugin loading, settings persistence, auto-sync scheduling
+- Manages plugin loading, settings persistence, auto-sync scheduling (interval timer plus opt-in event triggers: sync on file save, sync on app open)
 - Coordinates between sync engine and Obsidian UI
 - Handles error recovery and user notifications
 

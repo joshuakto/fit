@@ -693,6 +693,26 @@ export default class FitSettingTab extends PluginSettingTab {
 			checkIntervalSlider.settingEl.addClass("clear");
 		}
 
+		new Setting(containerEl)
+			.setName("Sync on save")
+			.setDesc("Wait 30 seconds after a vault file is saved, then run a full sync. Saves made in quick succession trigger a single sync.")
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncOnSave)
+				.onChange(async (value) => {
+					this.plugin.settings.syncOnSave = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName("Sync on open")
+			.setDesc("Run a full sync when Obsidian launches, so remote changes from your other devices are pulled in immediately.")
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncOnOpen)
+				.onChange(async (value) => {
+					this.plugin.settings.syncOnOpen = value;
+					await this.plugin.saveSettings();
+				}));
+
 		// Hidden files setting
 		new Setting(containerEl)
 			.setName("Sync hidden files")

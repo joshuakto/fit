@@ -33,6 +33,8 @@ See [docs/architecture.md § Design Principles](docs/architecture.md#design-prin
 
 <img alt="Fit Sync Status modal preview showing conflict, oversized file, and sync scope note" src="docs/assets/fit-status-modal-preview.png" width="500">
 
+**Sync on save / sync on open** — opt-in toggles (off by default): a full sync 30 seconds after you save a file, and a full sync when Obsidian launches, so changes from your other devices are pulled in immediately. Independent of the periodic auto-sync interval.
+
 
 # Quick demo
 

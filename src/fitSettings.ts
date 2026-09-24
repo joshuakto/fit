@@ -21,6 +21,9 @@ export interface FitSettings {
 	notifyConflicts: boolean
 	enableDebugLogging: boolean
 	syncHiddenFiles: boolean
+	// opt-in auto-sync triggers (#65); both off by default
+	syncOnSave: boolean
+	syncOnOpen: boolean
 }
 
 export const DEFAULT_SETTINGS: FitSettings = {
@@ -39,4 +42,6 @@ export const DEFAULT_SETTINGS: FitSettings = {
 	notifyConflicts: true,
 	enableDebugLogging: true,
 	syncHiddenFiles: true,
+	syncOnSave: false,
+	syncOnOpen: false,
 };

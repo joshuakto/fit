@@ -1,4 +1,4 @@
-import { Notice, Plugin, SettingTab } from 'obsidian';
+import { Notice, Plugin, SettingTab, TFile } from 'obsidian';
 import { FitStatusModal } from '@/fitStatusModal';
 import { renderExplanation, type AutoSyncInfo } from '@/fitStatusExplainer';
 import { Fit } from '@/fit';
@@ -45,6 +45,8 @@ type SyncOutcome =
  * @see FitSync - The sync orchestrator (contains business logic)
  * @see Fit - Data access layer for local/remote storage
  */
+const SAVE_SYNC_DEBOUNCE_MS = 30000;
+
 export default class FitPlugin extends Plugin {
 	settings: FitSettings;
 	settingTab: FitSettingTab;
@@ -62,6 +64,7 @@ export default class FitPlugin extends Plugin {
 	private lastGithubConnectionHost: string | null = null; // Track host changes (cached auth user is per-host)
 	private activeManualSyncRequests = 0; // Track number of active manual sync attempts
 	private currentSyncNotice: FitNotice | null = null; // The active sync notice (shared by concurrent requests)
+	private saveSyncDebounceTimer: number | null = null; // Pending debounced sync after a file save
 
 	// if settings not configured, open settings to let user quickly setup
 	// Note: this is not a stable feature and might be disabled at any point in the future
@@ -450,6 +453,51 @@ export default class FitPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Entry point: app launch — one-shot full sync when the user opted in
+	 * ("Sync on open", #65). Independent of the autoSync interval setting.
+	 * Mirrors handleAutoSyncTimer's guard structure, including the
+	 * not-configured prompt.
+	 */
+	async handleSyncOnOpen(): Promise<void> {
+		if (!this.settings?.syncOnOpen) return;
+		if (this.checkSettingsConfigured()) {
+			await this.executeSyncWithUICoordination('auto');
+		}
+	}
+
+	/**
+	 * Register vault event listeners driving the auto-sync triggers.
+	 * registerEvent() auto-unregisters them on plugin unload.
+	 */
+	registerVaultEvents(): void {
+		this.registerEvent(this.app.vault.on('modify', this.onVaultFileSaved));
+	}
+
+	/**
+	 * Entry point: a vault file was written to disk (Ctrl+S, vim :w, editor
+	 * autosave on blur, or a mobile save). Debounced so a burst of saves
+	 * coalesces into one full auto sync. The isActive guard is load-bearing:
+	 * FIT's own pull writes fire 'modify' too (LocalVault.applyChanges uses
+	 * vault.modify/create), so without it every sync would re-arm a redundant
+	 * no-op sync 30 seconds later.
+	 */
+	onVaultFileSaved = (_file: TFile): void => {
+		if (!this.settings?.syncOnSave || this.fitSync?.isActive) return;
+
+		if (this.saveSyncDebounceTimer !== null) {
+			window.clearTimeout(this.saveSyncDebounceTimer);
+		}
+		this.saveSyncDebounceTimer = window.setTimeout(() => {
+			this.saveSyncDebounceTimer = null;
+			// Re-check at fire time: settings can be toggled off (or a sync
+			// started) during the debounce window; the entry-time guard above
+			// only covered the moment the save landed.
+			if (!this.settings?.syncOnSave || this.fitSync?.isActive) return;
+			void this.executeSyncWithUICoordination('auto');
+		}, SAVE_SYNC_DEBOUNCE_MS);
+	};
+
 	async startOrUpdateAutoSyncInterval() {
 		// Clear existing interval if it exists
 		if (this.autoSyncIntervalId !== null) {
@@ -507,6 +555,12 @@ export default class FitPlugin extends Plugin {
 			// register interval to repeat auto check
 			await this.startOrUpdateAutoSyncInterval();
 
+			this.registerVaultEvents();
+
+			// One-shot sync at launch when opted in; not awaited so a slow
+			// network never delays vault load.
+			void this.handleSyncOnOpen();
+
 			fitLogger.log('[Plugin] Plugin initialization completed successfully');
 		} catch (error) {
 			handleCriticalError('Plugin failed to load', error, {
@@ -518,6 +572,10 @@ export default class FitPlugin extends Plugin {
 	}
 
 	onunload() {
+		if (this.saveSyncDebounceTimer !== null) {
+			window.clearTimeout(this.saveSyncDebounceTimer);
+			this.saveSyncDebounceTimer = null;
+		}
 		if (this.autoSyncIntervalId !== null) {
 			window.clearInterval(this.autoSyncIntervalId);
 			this.autoSyncIntervalId = null;
@@ -533,7 +591,7 @@ export default class FitPlugin extends Plugin {
 					if (key == "checkEveryXMinutes" || key == "fileChangesNoticeDurationSec") {
 						obj[key] = Number(settings[key]);
 					}
-					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging" || key === "syncHiddenFiles") {
+					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging" || key === "syncHiddenFiles" || key === "syncOnSave" || key === "syncOnOpen") {
 						obj[key] = Boolean(settings[key]);
 					}
 					else {

@@ -421,3 +421,42 @@ describe('FitSettingTab - GitHub settings', () => {
 		});
 	});
 });
+
+describe('FitSettingTab - auto-sync triggers (#65)', () => {
+	it('renders sync-on-save/sync-on-open toggles that persist on change', async () => {
+		const mockLogger = new FitLogger({ adapter: null });
+		const fakePlugin: any = {
+			settings: { ...DEFAULT_SETTINGS, syncOnSave: false, syncOnOpen: false },
+			saveSettings: vi.fn().mockResolvedValue(undefined),
+			logger: mockLogger,
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+		settingTab.localConfigBlock();
+
+		const findToggleByLabel = (labelText: string): HTMLInputElement | null => {
+			const settings = Array.from(settingTab.containerEl.querySelectorAll('.setting-item'));
+			for (const setting of settings) {
+				const nameEl = setting.querySelector('.setting-item-name');
+				if (nameEl?.textContent === labelText) {
+					return setting.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+				}
+			}
+			return null;
+		};
+
+		const saveToggle = findToggleByLabel('Sync on save')!;
+		const openToggle = findToggleByLabel('Sync on open')!;
+		expect(saveToggle.checked).toBe(false);
+		expect(openToggle.checked).toBe(false);
+
+		saveToggle.checked = true;
+		saveToggle.dispatchEvent(new Event('change'));
+		openToggle.checked = true;
+		openToggle.dispatchEvent(new Event('change'));
+
+		await vi.waitFor(() => expect(fakePlugin.saveSettings).toHaveBeenCalledTimes(2));
+		expect(fakePlugin.settings.syncOnSave).toBe(true);
+		expect(fakePlugin.settings.syncOnOpen).toBe(true);
+	});
+});

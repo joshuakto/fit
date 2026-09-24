@@ -58,6 +58,7 @@ export class Plugin extends Component {
 	addRibbonIcon = vi.fn().mockReturnValue({ addClass: vi.fn() });
 	registerInterval = vi.fn().mockReturnValue(1);
 	registerDomEvent = vi.fn();
+	registerEvent = vi.fn();
 }
 
 export class Notice {
@@ -266,6 +267,33 @@ export class TextAreaComponent {
 }
 
 /**
+ * Minimal SliderComponent that wraps a real range input.
+ */
+export class SliderComponent {
+	inputEl: HTMLInputElement;
+
+	constructor(containerEl: HTMLElement) {
+		this.inputEl = document.createElement('input');
+		this.inputEl.type = 'range';
+		containerEl.appendChild(this.inputEl);
+	}
+
+	setLimits(min: number, max: number, step?: number) {
+		this.inputEl.min = String(min);
+		this.inputEl.max = String(max);
+		if (step !== undefined) this.inputEl.step = String(step);
+		return this;
+	}
+	setValue(value: number) { this.inputEl.value = String(value); return this; }
+	setDynamicTooltip() { return this; }
+	setDisabled(disabled: boolean) { this.inputEl.disabled = disabled; return this; }
+	onChange(cb: (value: number) => void) {
+		this.inputEl.addEventListener('change', () => cb(Number(this.inputEl.value)));
+		return this;
+	}
+}
+
+/**
  * Setting class that creates real DOM elements and invokes callbacks.
  * This enables behavior-driven testing via actual DOM events.
  */
@@ -316,6 +344,11 @@ export class Setting {
 
 	addToggle(cb: (toggle: ToggleComponent) => void) {
 		cb(new ToggleComponent(this.controlEl));
+		return this;
+	}
+
+	addSlider(cb: (slider: SliderComponent) => void) {
+		cb(new SliderComponent(this.controlEl));
 		return this;
 	}
 

@@ -3,7 +3,7 @@
 // Notice/Modal/Plugin API via src/__mocks__/obsidian.ts); internal collaborators like
 // src/utils.ts's showFileChanges run for real so their own logic stays covered here.
 // See src/fitStatusExplainer.test.ts for the status-explanation formatting itself.
-import { describe, it, expect, vi, type Mock, beforeEach } from 'vitest';
+import { describe, it, expect, vi, type Mock, beforeEach, afterEach } from 'vitest';
 import FitPlugin from '@/fitPlugin';
 import { FitStatusModal } from '@/fitStatusModal';
 import { DEFAULT_SETTINGS } from '@/fitSettings';
@@ -208,6 +208,22 @@ describe('FitPlugin persistence lifecycle', () => {
 			mockLoad(plugin, { githubHost: 'github.example.com' });
 			await plugin.loadSettings();
 			expect(plugin.settings.githubHost).toBe('github.example.com');
+		});
+
+		it('defaults syncOnSave and syncOnOpen to false', async () => {
+			const plugin = makePlugin();
+			mockLoad(plugin, {});
+			await plugin.loadSettings();
+			expect(plugin.settings.syncOnSave).toBe(false);
+			expect(plugin.settings.syncOnOpen).toBe(false);
+		});
+
+		it('keeps stored syncOnSave/syncOnOpen values', async () => {
+			const plugin = makePlugin();
+			mockLoad(plugin, { syncOnSave: true, syncOnOpen: true });
+			await plugin.loadSettings();
+			expect(plugin.settings.syncOnSave).toBe(true);
+			expect(plugin.settings.syncOnOpen).toBe(true);
 		});
 	});
 });
@@ -420,5 +436,181 @@ describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
 
 		expect(writes[FITATTRIBUTES_PATH]).toBeUndefined();
 		expect(NoticeCtor).not.toHaveBeenCalled();
+	});
+});
+
+describe('FitPlugin sync-on-save trigger', () => {
+	// Vault 'modify' events are debounced: back-to-back saves coalesce into one
+	// full auto sync. FIT's own pull writes also fire 'modify' (LocalVault uses
+	// vault.modify/create), so the isActive guard must prevent re-triggering.
+	const SAVE_DEBOUNCE_MS = 30000; // must match SAVE_SYNC_DEBOUNCE_MS in fitPlugin.ts
+
+	function makeSaveTriggerPlugin(settingsOverride: Partial<typeof DEFAULT_SETTINGS> = {}) {
+		const plugin = makePlugin();
+		plugin.settings = {
+			...DEFAULT_SETTINGS,
+			pat: 'token', owner: 'alice', repo: 'notes', branch: 'main',
+			notifyChanges: false,
+			notifyConflicts: false,
+			...settingsOverride,
+		};
+		plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+		plugin.fitSyncRibbonIconEl = { addClass: vi.fn(), removeClass: vi.fn() } as any;
+		(plugin.fitSync as unknown as StubFitSync).sync.mockResolvedValue({
+			success: true, changeGroups: [], clash: [],
+		});
+		return plugin;
+	}
+
+	const fakeFile = { path: 'notes/a.md' };
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('triggers a full auto sync after the debounce window', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS - 1);
+		expect(stub.sync).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(stub.sync).toHaveBeenCalledTimes(1);
+		expect(stub.sync).toHaveBeenCalledWith(expect.anything(), { isAutoSync: true });
+	});
+
+	it('is a no-op when syncOnSave is disabled', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: false });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('is a no-op while a sync is already in progress', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+		stub.isActive = true;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('is a no-op when syncOnSave is disabled during the debounce window', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		plugin.settings.syncOnSave = false;
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('is a no-op when a sync starts during the debounce window', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		stub.isActive = true;
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('coalesces rapid successive saves into a single sync', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		await vi.advanceTimersByTimeAsync(1000);
+		(plugin as any).onVaultFileSaved(fakeFile);
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).toHaveBeenCalledTimes(1);
+	});
+
+	it('onunload clears a pending debounce timer', async () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		(plugin as any).onVaultFileSaved(fakeFile);
+		plugin.onunload();
+		await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('registerVaultEvents subscribes the save handler to vault modify events', () => {
+		const plugin = makeSaveTriggerPlugin({ syncOnSave: true });
+		plugin.app.vault = { on: vi.fn().mockReturnValue({}) } as any;
+
+		(plugin as any).registerVaultEvents();
+
+		expect(plugin.app.vault.on).toHaveBeenCalledWith('modify', expect.any(Function));
+		expect(plugin.registerEvent).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('FitPlugin sync-on-open trigger', () => {
+	// One-shot full sync at app launch when the user opted in. Mirrors
+	// handleAutoSyncTimer's guard structure (independent of the autoSync
+	// dropdown; unconfigured vaults get the standard settings prompt).
+	function makeOpenTriggerPlugin(settingsOverride: Partial<typeof DEFAULT_SETTINGS> = {}) {
+		const plugin = makePlugin();
+		plugin.settings = {
+			...DEFAULT_SETTINGS,
+			notifyChanges: false,
+			notifyConflicts: false,
+			...settingsOverride,
+		};
+		plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
+		plugin.fitSyncRibbonIconEl = { addClass: vi.fn(), removeClass: vi.fn() } as any;
+		(plugin.fitSync as unknown as StubFitSync).sync.mockResolvedValue({
+			success: true, changeGroups: [], clash: [],
+		});
+		return plugin;
+	}
+
+	const configured = { pat: 'token', owner: 'alice', repo: 'notes', branch: 'main' };
+
+	it('runs a full auto sync at open when enabled and configured', async () => {
+		const plugin = makeOpenTriggerPlugin({ ...configured, syncOnOpen: true });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		await (plugin as any).handleSyncOnOpen();
+
+		expect(stub.sync).toHaveBeenCalledTimes(1);
+		expect(stub.sync).toHaveBeenCalledWith(expect.anything(), { isAutoSync: true });
+	});
+
+	it('does nothing when syncOnOpen is disabled', async () => {
+		const plugin = makeOpenTriggerPlugin({ ...configured, syncOnOpen: false });
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		await (plugin as any).handleSyncOnOpen();
+
+		expect(stub.sync).not.toHaveBeenCalled();
+	});
+
+	it('does nothing when settings are not configured', async () => {
+		const plugin = makeOpenTriggerPlugin({ syncOnOpen: true }); // no pat/owner/repo/branch
+		// `setting` is not in obsidian's App typings (see openPluginSettings' cast)
+		(plugin.app as any).setting = { open: vi.fn(), openTabById: vi.fn() };
+		const stub = plugin.fitSync as unknown as StubFitSync;
+
+		await (plugin as any).handleSyncOnOpen();
+
+		expect(stub.sync).not.toHaveBeenCalled();
 	});
 });
