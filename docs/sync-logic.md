@@ -297,8 +297,9 @@ In all cases the `protectedPathShas` entry is deleted (path is now tracked norma
 
 **Untracking (remote removes a previously-tracked git-mask path):** a REMOVED remote change with
 no local edit is ambiguous (deletion vs. "stop syncing this path"), so `resolveAllChanges` leaves
-the local file in place instead of auto-deleting it, and reports it as a one-time `changeGroups`
-entry in that sync's result (`untrackNotices`).
+the local file in place instead of auto-deleting it. Reported once, tagged MODIFIED with an
+explanatory `note` (not REMOVED, since nothing was deleted), folded into the ordinary
+`changeGroups` report (`showFileChanges`) rather than a separate sync-status notice.
 
 ### 2. Hidden Files (`shouldTrackState`) - Configurable
 

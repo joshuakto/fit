@@ -1199,69 +1199,55 @@ export class FitSync implements IFitSync {
 			const remainingUnpushed = Object.keys(this.fit.unpushedFiles);
 			if (remainingUnpushed.length > 0) {
 				if (newlySkippedPaths.length > 0 && skippedWarning) {
-					// First encounter: full sticky notice with git CLI instructions
+					// First encounter: full sticky notice with git CLI instructions, separate from syncNotice
 					new FitNotice(this.fit, [], skippedWarning, 0).show();
-				} else if (!isAutoSync) {
-					// Subsequent manual sync: brief reminder in the success message
-					const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
-					syncNotice.setMessage(
-						`Sync successful — ${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`
-					);
 				}
-				// Auto-sync with no new skips: log only, no notice
+				// Auto-sync with no new skips, or a repeat manual sync: logged only, no sticky notice —
+				// the brief reminder below (added to syncNotice) covers the manual-sync case.
 				fitLogger.log('[FitSync] Files still awaiting manual sync', { paths: remainingUnpushed });
 			}
 
-			// Partial sync due to transient upload failure — show regardless of isAutoSync,
-			// overrides any earlier success/reminder message already set on syncNotice.
+			// One headline plus independent detail blocks, set via a single setMessage call below —
+			// not one setMessage per condition, since those silently clobber each other.
+			const headline = rateLimitedPaths.length > 0 || localFailedPaths.length > 0
+				? `Sync incomplete`
+				: executedConflicts.length === 0
+					? `Sync successful`
+					: executedConflicts.some(f => f.remoteOp !== "REMOVED")
+						? `Synced with remote, unresolved conflicts written to _fit`
+						: `Synced with remote, ignored remote deletion of locally changed files`;
+
+			const detailBlocks: string[] = [];
+
+			if (remainingUnpushed.length > 0 && !isAutoSync && !(newlySkippedPaths.length > 0 && skippedWarning)) {
+				const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
+				detailBlocks.push(`${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`);
+			}
+
 			if (rateLimitedPaths.length > 0) {
 				const fileList = rateLimitedPaths.map(p => `• ${p}`).join('\n');
-				syncNotice.setMessage(
-					`Sync incomplete — ${rateLimitedPaths.length} file(s) not uploaded, ` +
-					`possibly due to rate limiting or a transient error. ` +
-					`They will be retried automatically on the next sync.\n${fileList}`
+				detailBlocks.push(
+					`${rateLimitedPaths.length} file(s) not uploaded, possibly due to rate limiting or a ` +
+					`transient error. They will be retried automatically on the next sync.\n${fileList}`
 				);
 			}
 
 			if (localFailedPaths.length > 0) {
 				const fileList = localFailedPaths.map(p => `• ${p}`).join('\n');
-				syncNotice.setMessage(
-					`Sync incomplete — ${localFailedPaths.length} file(s) couldn't be written locally, ` +
-					`possibly due to a filesystem error or a temporary conflict. ` +
-					`They will be retried automatically on the next sync.\n${fileList}`
+				detailBlocks.push(
+					`${localFailedPaths.length} file(s) couldn't be written locally, possibly due to a ` +
+					`filesystem error or a temporary conflict. They will be retried automatically on the next sync.\n${fileList}`
 				);
 			}
 
-			// Set success message (only when not already replaced by the unpushed-files reminder
-			// or the partial-sync notice above)
-			if (rateLimitedPaths.length === 0 && localFailedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
-				if (executedConflicts.length === 0) {
-					syncNotice.setMessage(`Sync successful`);
-				} else if (executedConflicts.some(f => f.remoteOp !== "REMOVED")) {
-					syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
-				} else {
-					syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
-				}
-			}
-
-			// One-time, this-sync-only fact — takes priority over the plain "Sync successful"
-			// message above (same last-write-wins pattern the rateLimited/localFailed blocks
-			// use). Not routed through showFileChanges/changeGroups: that renderer's
-			// ADDED/MODIFIED/REMOVED styling (red, trash icon) is for operations actually
-			// performed, and would misleadingly show "Removed" for a path that was explicitly
-			// left in place (see resolveAllChanges's untrackNotices doc comment).
-			if (untrackNotices.length > 0 && rateLimitedPaths.length === 0 && localFailedPaths.length === 0) {
-				const fileList = untrackNotices.map(c => `• ${c.path}`).join('\n');
-				const n = untrackNotices.length;
-				syncNotice.setMessage(
-					`Synced — ${n} .obsidian/ path${n === 1 ? '' : 's'} no longer tracked remotely, left in place locally:\n${fileList}`
-				);
-			}
+			syncNotice.setMessage([headline, ...detailBlocks].join('\n\n'));
 
 			return {
 				success: true,
 				changeGroups: [
-					{heading: "Local file updates:", changes: localOps},
+					// untrackNotices are pre-tagged MODIFIED with a note (see resolveAllChanges) so
+					// they render as an ordinary file change, not a real REMOVED.
+					{heading: "Local file updates:", changes: [...localOps, ...untrackNotices]},
 					{heading: "Remote file updates:", changes: remoteOps},
 				],
 				clash: conflicts

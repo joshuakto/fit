@@ -324,6 +324,13 @@
     background-image: var(--file-change);
 }
 
+/* MODIFIED subcategory: nothing was edited, e.g. an untrack notice left the file in place.
+   Same background/icon as MODIFIED, note text muted to read as informational, not an edit. */
+.file-change-note-text {
+    opacity: 0.7;
+    font-style: italic;
+}
+
 .file-REMOVED {
     background-color: rgba(255, 99, 71, 0.3);
     background-image: var(--file-delete);
