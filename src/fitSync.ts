@@ -867,10 +867,6 @@ export class FitSync implements IFitSync {
 			// appearing for a previously-untracked .obsidian/ path is the only trigger, no local
 			// opt-in exists. Without this, a path with no localShas entry but an existing local
 			// file → untrackedPaths → junk clash.
-			// protectedPathShas is a SHA passively observed while the path was excluded — it was never
-			// established by an actual sync, so it can only be trusted as a real baseline when it turns
-			// out to exactly match local's current content. Any other case must surface as a normal
-			// clash rather than silently picking a direction (see below).
 			// Snapshot the three stores mutated here so we can restore them if the sync subsequently fails.
 			// saveLocalStoreCallback only runs on success, so in-memory mutations would otherwise leak
 			// into the next sync attempt and cause junk clashes or missed reconciliation.
@@ -878,10 +874,19 @@ export class FitSync implements IFitSync {
 			preReconcileLocalShas = {...this.fit.localShas};
 			preReconcileLastFetchedRemoteShas = {...this.fit.lastFetchedRemoteShas};
 
+			// Candidates: currently-eligible .obsidian/ paths with a known remote SHA (from
+			// lastFetchedRemoteShas, always current) but no local baseline yet — excluding
+			// pendingClashes paths, whose missing baseline is a deliberate mid-clash state, not
+			// "never synced". See docs/sync-logic.md § Tracking transition for the full reasoning.
+			const pendingClashSet = new Set(this.fit.pendingClashes);
+			const reconcileCandidates = Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
+				path.startsWith(".obsidian/") &&
+				!(path in this.fit.localShas) &&
+				!pendingClashSet.has(path)
+			);
 			// isEligibleForTracking below needs current fitAttributes — only worth an eager
 			// refresh (extra stat/read outside the normal scan) when there's actually a
 			// candidate path that could be reconciled this sync.
-			const reconcileCandidates = Object.keys(this.fit.protectedPathShas);
 			if (reconcileCandidates.length > 0) {
 				await this.fit.refreshFitAttributesForReconcile();
 			}
@@ -892,35 +897,33 @@ export class FitSync implements IFitSync {
 				// check flip back to false for the rest of this sync, undoing the reconciliation
 				// before it's even used. See Fit.trackedForCurrentSync's own comment.
 				this.fit.markTrackedForCurrentSync(reconcilePaths);
-				fitLogger.log('[FitSync] Reconciling newly-tracked paths from protectedPathShas', { paths: reconcilePaths });
+				fitLogger.log('[FitSync] Reconciling newly-tracked paths', { paths: reconcilePaths });
 				for (const path of reconcilePaths) {
-					const cachedRemoteSha = this.fit.protectedPathShas[path];
-					delete this.fit.protectedPathShas[path];
+					const cachedRemoteSha = this.fit.lastFetchedRemoteShas[path];
+					delete this.fit.protectedPathShas[path]; // stale once reconciled here
 					try {
 						const content = await this.fit.localVault.readFileContent(path);
 						const currentSha = await LocalVault.fileSha1(path, content);
 						if (currentSha === cachedRemoteSha) {
 							// Genuinely safe: local already matches what was last seen on remote.
-							// Establish both baselines so this shows as a full no-op (no download).
+							// lastFetchedRemoteShas[path] already holds cachedRemoteSha — only
+							// localShas needs setting to make this a full no-op (no download).
 							this.fit.localShas[path] = currentSha;
-							this.fit.lastFetchedRemoteShas[path] = cachedRemoteSha;
 						} else {
 							// Local differs from the cached remote SHA. That SHA was only ever
 							// passively observed while this path was excluded, never established by an
 							// actual sync — it doesn't count as a baseline. Leave localShas unset so
-							// local shows as ADDED, and explicitly clear lastFetchedRemoteShas (which
-							// may already hold this path from the general remote-tree cache — see
-							// catch branch below) so remote also shows as ADDED. Without clearing it,
-							// remote would show as unchanged and local's ADDED would go straight to
-							// safeLocal, silently pushing local's content over remote's — the same
-							// bug in the opposite direction. Both sides showing changed is what makes
-							// the normal pipeline resolve this as a genuine clash.
+							// local shows as ADDED, and explicitly clear lastFetchedRemoteShas so
+							// remote also shows as ADDED. Without clearing it, remote would show as
+							// unchanged and local's ADDED would go straight to safeLocal, silently
+							// pushing local's content over remote's — the same bug in the opposite
+							// direction. Both sides showing changed is what makes the normal
+							// pipeline resolve this as a genuine clash.
 							delete this.fit.lastFetchedRemoteShas[path];
 						}
 					} catch {
-						// File absent locally. lastFetchedRemoteShas may already have this path from prior
-						// syncs (it stores the full remote tree including protected paths). Clear it so
-						// remote appears as ADDED and gets applied this sync.
+						// File absent locally. Clear the cached remote SHA so remote appears as
+						// ADDED and gets pulled this sync.
 						delete this.fit.lastFetchedRemoteShas[path];
 					}
 				}

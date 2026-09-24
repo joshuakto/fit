@@ -284,16 +284,15 @@ Without that declaration, a tracked non-JSON path is detected and logged but nev
 **Why not treat as a clash?**
 A "conflict" requires two parties with competing claims to the same file. A blocked path has no local ownership — remote is authoritative by definition, or the path isn't eligible for sync at all yet. Showing a conflict notice for every sync where remote has such a file is misleading and noisy.
 
-**protectedPathShas:**
-`LocalStores.protectedPathShas` maps `path → last-seen remote SHA`. Enables the transition from untracked (no remote content) to tracked (remote content appears) without a junk clash — see below. Entries are cleared once the path is git-tracked.
+**protectedPathShas:** `LocalStores.protectedPathShas` maps `path → last-seen remote SHA`, populated when a path shows up as a change while excluded. Cleared once reconciled below; otherwise passive/diagnostic only, not read by the reconcile step.
 
 **Tracking transition (remote content appears for a previously-untracked path):**
-At the start of each sync FIT reconciles `protectedPathShas` entries for paths that now have remote content. `protectedPathShas[path]` is only ever a *passively observed* remote SHA, so per the [Baseline](#baseline) invariant it cannot be trusted the moment local turns out to disagree with it:
-- If local file exists and matches the cached remote SHA: this is genuinely safe — set baseline in `localShas` and `lastFetchedRemoteShas` — sync is a no-op.
-- If local file exists but differs: neither `localShas` nor `lastFetchedRemoteShas` is set for this path. Both sides then show as newly ADDED, which the normal pipeline resolves as an ordinary clash (written to `_fit/`) — never an automatic direction. This is what the [Baseline](#baseline) invariant above requires: a passively-observed SHA cannot short-circuit into an automatic overwrite.
-- If local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written to the live path (subject to the format gate above — only written if format-eligible). (Local has nothing to lose here, so this direction is unambiguous — matches the "one side empty" case above.)
+At the start of each sync, FIT reconciles paths that are currently eligible (`Fit.isEligibleForTracking`), have no `localShas` baseline yet, have a known remote SHA (`lastFetchedRemoteShas`, rebuilt from the live remote tree every sync regardless of eligibility, so always current), and have no unresolved clash (`pendingClashes` — excluded since their missing baseline is deliberate, not "never synced"). That cached remote SHA is only ever *passively observed*, so per the [Baseline](#baseline) invariant it cannot be trusted the moment local turns out to disagree with it:
+- Local file exists and matches: genuinely safe — set `localShas` (`lastFetchedRemoteShas` already matches) — no-op.
+- Local file exists but differs: leave `localShas` unset, clear `lastFetchedRemoteShas`. Both sides show as newly ADDED, resolved as an ordinary clash (`_fit/`) — never an automatic direction.
+- Local file absent: clear `lastFetchedRemoteShas[path]` so remote appears ADDED → downloaded and written (subject to the format gate — only if format-eligible).
 
-In all cases the `protectedPathShas` entry is deleted (path is now tracked normally). The reconciled path set is also recorded for the remainder of *this* sync via `Fit.markTrackedForCurrentSync()` — a same-sync-only, unpersisted signal — because the "local file absent" branch above clears `lastFetchedRemoteShas[path]`, which would otherwise make `shouldSyncPath` flip back to untracked for the rest of the same sync and undo the reconciliation.
+The reconciled path set is also recorded for the remainder of *this* sync via `Fit.markTrackedForCurrentSync()` — a same-sync-only, unpersisted signal — because the "local file absent" branch above clears `lastFetchedRemoteShas[path]`, which would otherwise make `shouldSyncPath` flip back to untracked for the rest of the same sync and undo the reconciliation.
 
 **Untracking (remote removes a previously-tracked git-mask path):** a REMOVED remote change with
 no local edit is ambiguous (deletion vs. "stop syncing this path"), so `resolveAllChanges` leaves
