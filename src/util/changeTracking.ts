@@ -219,7 +219,7 @@ export function resolveAllChanges(
 	/**
 	 * REMOVED remote changes for a git-mask-tracked `.obsidian/` path with no local edit —
 	 * ambiguous between "file deleted" and "stop tracking this path". Not applied locally;
-	 * surfaced via Fit.pendingUntrackedPaths / Explain instead.
+	 * surfaced as a one-time, this-sync-only changeGroups entry instead (see FitSync.sync).
 	 */
 	untrackNotices: FileChange[];
 } {

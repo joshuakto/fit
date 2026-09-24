@@ -448,7 +448,6 @@ export class FitSync implements IFitSync {
 		safeRemote: FileChange[],
 		clashes: FileClash[],
 		protectedRemote: FileChange[],
-		untrackNotices: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
@@ -763,32 +762,6 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Update pendingUntrackedPaths: a git-mask-tracked .obsidian/ path just removed from
-		// remote (with no local edit) is left on disk but flagged as ambiguous — see
-		// resolveAllChanges's untrackNotices and Fit.isGitMaskTrackedPath. Cleared once the
-		// local file is gone (user deleted it, completing the untrack), the path is
-		// receiving remote content again (back to ordinary tracked flow), or a local edit
-		// just re-pushed it (also re-tracking it, from the other direction) — but only once
-		// that push actually landed; a rate-limited or size-skipped attempt never reached
-		// remote, so the path is still exactly as untracked as before.
-		const remoteChangesThisSync = remoteUpdate.remoteChanges ?? [];
-		const pushFailedPaths = new Set([
-			...(pushResult?.rateLimitedPaths ?? []),
-			...(pushResult?.skippedPaths ?? [])
-		]);
-		this.fit.pendingUntrackedPaths = this.fit.pendingUntrackedPaths.filter(path => {
-			const stillLocal = path in newLocalState;
-			const remoteReappeared = remoteChangesThisSync.some(c => c.path === path && c.type !== 'REMOVED');
-			const rePushedByLocalEdit = safeLocal.some(c => c.path === path && c.type !== 'REMOVED')
-				&& !pushFailedPaths.has(path);
-			return stillLocal && !remoteReappeared && !rePushedByLocalEdit;
-		});
-		for (const change of untrackNotices) {
-			if (!this.fit.pendingUntrackedPaths.includes(change.path)) {
-				this.fit.pendingUntrackedPaths.push(change.path);
-			}
-		}
-
 		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
 		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
 		// where the user deletes the file before the retry — without a baseline, the deletion would
@@ -854,7 +827,6 @@ export class FitSync implements IFitSync {
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
 			protectedPathShas: this.fit.protectedPathShas,
-			pendingUntrackedPaths: this.fit.pendingUntrackedPaths,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
@@ -1204,7 +1176,6 @@ export class FitSync implements IFitSync {
 				safeRemote,
 				clashes,
 				protectedRemote,
-				untrackNotices,
 				pendingReminderPaths,
 				existenceMap,
 				syncNotice
@@ -1271,6 +1242,20 @@ export class FitSync implements IFitSync {
 				} else {
 					syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
 				}
+			}
+
+			// One-time, this-sync-only fact — takes priority over the plain "Sync successful"
+			// message above (same last-write-wins pattern the rateLimited/localFailed blocks
+			// use). Not routed through showFileChanges/changeGroups: that renderer's
+			// ADDED/MODIFIED/REMOVED styling (red, trash icon) is for operations actually
+			// performed, and would misleadingly show "Removed" for a path that was explicitly
+			// left in place (see resolveAllChanges's untrackNotices doc comment).
+			if (untrackNotices.length > 0 && rateLimitedPaths.length === 0 && localFailedPaths.length === 0) {
+				const fileList = untrackNotices.map(c => `• ${c.path}`).join('\n');
+				const n = untrackNotices.length;
+				syncNotice.setMessage(
+					`Synced — ${n} .obsidian/ path${n === 1 ? '' : 's'} no longer tracked remotely, left in place locally:\n${fileList}`
+				);
 			}
 
 			return {
@@ -1476,7 +1461,6 @@ export class FitSync implements IFitSync {
 			trackedFileCount: Object.keys(this.fit.localShas).length,
 			pendingClashes: [...this.fit.pendingClashes],
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
-			pendingUntrackedPaths: [...this.fit.pendingUntrackedPaths],
 			fitAttributesWarning: this.fit.fitAttributesWarning,
 		};
 
