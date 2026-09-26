@@ -1,6 +1,7 @@
 # Sync Logic Deep Dive
 
 **For high-level architecture, see [Architecture Overview](./architecture.md)**
+**For a scenario-by-scenario correctness decision table (what's tested, what's a known gap), see [Sync Scenario Matrix](./sync-scenario-matrix.md)**
 
 This document explains the detailed sync logic in FIT - the nuts and bolts of how decisions are made. Use this guide when:
 - 🐛 Debugging sync issues (e.g., "file recreated instead of deleted")
@@ -459,6 +460,9 @@ for (const change of safeLocal) {
 
 **Implementation:** [src/fitSync.ts:387-396](../src/fitSync.ts#L387-L396) (path collection), [src/fitSync.ts:726-743](../src/fitSync.ts#L726-L743) (safeguard check)
 
+Test coverage and related compatibility factors (legacy SHA migration, `obsidianSyncRules`
+migration): [Sync Scenario Matrix](./sync-scenario-matrix.md), § Known compatibility factors.
+
 ## Sync Decision Tree
 
 ### Unified Sync Flow
@@ -571,6 +575,9 @@ flowchart TD
 | E | Edited to match local (or vice versa) | Matches `_fit/` | Resolved; canonical version pushed or no-op |
 
 ### Sync Operation Types
+
+For the coverage table tracking which of these get real test coverage vs.
+known gaps, see [Sync Scenario Matrix](./sync-scenario-matrix.md).
 
 #### 1. In Sync
 - No local or remote changes detected
@@ -1142,6 +1149,9 @@ lastFetchedRemoteShas = {
 
 **Recovery:** All operations are idempotent, safe to retry
 
+The "before commit created" case is covered by a real regression test - see
+[Sync Scenario Matrix, exceptional path table](./sync-scenario-matrix.md).
+
 ### File-at-Folder-Path Conflicts
 
 **Scenario:** A file exists where a folder is needed for nested path creation
@@ -1360,6 +1370,9 @@ sequenceDiagram
    - GitHub API calls taking > 10 seconds
    - Local SHA computation taking > 10 seconds (hundreds of files on mobile)
 
+Conditional extra-cost mechanisms beyond this general model (per-clash base-blob fetches, the
+uncapped debug-log path-array dumps): [Sync Performance Inventory](./sync-performance-inventory.md).
+
 ### Optimizations
 
 - ✅ **Remote vault caching** - Returns cached state if commit SHA unchanged
@@ -1372,6 +1385,8 @@ sequenceDiagram
 ## Debug Logging
 
 When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugins/fit/debug.log`.
+Known real issue with this: some log call sites dump full, uncapped path arrays - see
+[Sync Performance Inventory](./sync-performance-inventory.md).
 
 **Example sync with 5 local files, cache hit (fast ~500ms):**
 ```

@@ -83,6 +83,35 @@ describe('mergeJson', () => {
 			expect(result).toMatchObject({ merged: false, reason: expect.stringContaining('a') });
 		});
 
+		it('remote deletion of an item local left unchanged doesn\'t yet reconcile as deleted (TODO)', () => {
+			const itemA = { id: 'a', val: 'base' };
+			const itemB = { id: 'b', val: 'base' };
+			const base = JSON.stringify({ items: [itemA, itemB] });
+			const local = base; // unchanged from base
+			const remote = JSON.stringify({ items: [itemA] }); // remote deleted 'b'
+			const result = mergeJson(base, local, remote, spec);
+			// mergeKeyedArrays never consults base for an id missing from one side, so it
+			// resurrects 'b' from local's copy instead of reconciling the deletion.
+			// TODO: should be { merged: true, value: { items: [itemA] } } - the deletion is
+			// unambiguous here (local never touched 'b'), same as mergeObjects' scalar-key
+			// branch already does for a plain key missing on one side.
+			expect(result).toEqual({ merged: true, value: { items: [itemA, itemB] } });
+		});
+
+		it('remote deletion against a local edit of same item doesn\'t yet conflict (TODO)', () => {
+			const itemA = { id: 'a', val: 'base' };
+			const itemB = { id: 'b', val: 'base' };
+			const base = JSON.stringify({ items: [itemA, itemB] });
+			const local = JSON.stringify({ items: [itemA, { ...itemB, val: 'local-edit' }] });
+			const remote = JSON.stringify({ items: [itemA] }); // remote deleted 'b'
+			const result = mergeJson(base, local, remote, spec);
+			// Same root cause: base is never consulted, so this silently keeps local's edit
+			// as if remote had simply never touched 'b', instead of flagging a real conflict
+			// (one side deleted, the other edited the same item).
+			// TODO: should be { merged: false, reason: expect.stringContaining('b') }.
+			expect(result).toEqual({ merged: true, value: { items: [itemA, { id: 'b', val: 'local-edit' }] } });
+		});
+
 		it('same-id with identical content is not a conflict', () => {
 			const local = JSON.stringify({ items: [{ id: 'a', val: 'same' }] });
 			const remote = JSON.stringify({ items: [{ id: 'a', val: 'same' }] });
