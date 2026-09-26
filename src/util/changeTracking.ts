@@ -19,6 +19,11 @@ export type ChangeOperation = "ADDED" | "MODIFIED" | "REMOVED";
 export type FileChange = {
 	path: string;
 	type: ChangeOperation;
+	/**
+	 * Optional annotation shown alongside the path in showFileChanges — e.g. distinguishing
+	 * an untrack notice (git-mask tracking stopped, file left in place) from a real MODIFIED.
+	 */
+	note?: string;
 };
 
 /**
@@ -219,7 +224,8 @@ export function resolveAllChanges(
 	/**
 	 * REMOVED remote changes for a git-mask-tracked `.obsidian/` path with no local edit —
 	 * ambiguous between "file deleted" and "stop tracking this path". Not applied locally;
-	 * surfaced via Fit.pendingUntrackedPaths / Explain instead.
+	 * re-tagged as MODIFIED with a `note` and folded into the ordinary changeGroups report
+	 * (see showFileChanges) instead of shown as a real REMOVED.
 	 */
 	untrackNotices: FileChange[];
 } {
@@ -279,8 +285,14 @@ export function resolveAllChanges(
 			});
 		} else if (remoteChange.type === 'REMOVED' && gitMaskTrackedPaths.has(remoteChange.path)) {
 			// No local edit, but this REMOVED is ambiguous for a git-mask-tracked path —
-			// don't auto-delete, surface it as a notice instead.
-			untrackNotices.push(remoteChange);
+			// don't auto-delete. Re-tagged as MODIFIED (not a real removal, nothing deleted)
+			// with a note — a change worth reporting, not a sync concern, so it renders
+			// alongside ordinary file changes rather than as a status-notice sentence.
+			untrackNotices.push({
+				path: remoteChange.path,
+				type: 'MODIFIED',
+				note: 'no longer tracked remotely, left in place'
+			});
 		} else {
 			// No local change, not blocked - safe to apply
 			safeRemote.push(remoteChange);

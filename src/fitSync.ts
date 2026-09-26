@@ -448,7 +448,6 @@ export class FitSync implements IFitSync {
 		safeRemote: FileChange[],
 		clashes: FileClash[],
 		protectedRemote: FileChange[],
-		untrackNotices: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
 		syncNotice: FitNotice
@@ -763,32 +762,6 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		// Update pendingUntrackedPaths: a git-mask-tracked .obsidian/ path just removed from
-		// remote (with no local edit) is left on disk but flagged as ambiguous — see
-		// resolveAllChanges's untrackNotices and Fit.isGitMaskTrackedPath. Cleared once the
-		// local file is gone (user deleted it, completing the untrack), the path is
-		// receiving remote content again (back to ordinary tracked flow), or a local edit
-		// just re-pushed it (also re-tracking it, from the other direction) — but only once
-		// that push actually landed; a rate-limited or size-skipped attempt never reached
-		// remote, so the path is still exactly as untracked as before.
-		const remoteChangesThisSync = remoteUpdate.remoteChanges ?? [];
-		const pushFailedPaths = new Set([
-			...(pushResult?.rateLimitedPaths ?? []),
-			...(pushResult?.skippedPaths ?? [])
-		]);
-		this.fit.pendingUntrackedPaths = this.fit.pendingUntrackedPaths.filter(path => {
-			const stillLocal = path in newLocalState;
-			const remoteReappeared = remoteChangesThisSync.some(c => c.path === path && c.type !== 'REMOVED');
-			const rePushedByLocalEdit = safeLocal.some(c => c.path === path && c.type !== 'REMOVED')
-				&& !pushFailedPaths.has(path);
-			return stillLocal && !remoteReappeared && !rePushedByLocalEdit;
-		});
-		for (const change of untrackNotices) {
-			if (!this.fit.pendingUntrackedPaths.includes(change.path)) {
-				this.fit.pendingUntrackedPaths.push(change.path);
-			}
-		}
-
 		// Retriable paths: revert to the pre-sync baseline SHA so the file is re-detected as changed
 		// on the next sync. Using the previous baseline (not delete) preserves tracking for the case
 		// where the user deletes the file before the retry — without a baseline, the deletion would
@@ -854,7 +827,6 @@ export class FitSync implements IFitSync {
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
 			protectedPathShas: this.fit.protectedPathShas,
-			pendingUntrackedPaths: this.fit.pendingUntrackedPaths,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 		});
@@ -1204,7 +1176,6 @@ export class FitSync implements IFitSync {
 				safeRemote,
 				clashes,
 				protectedRemote,
-				untrackNotices,
 				pendingReminderPaths,
 				existenceMap,
 				syncNotice
@@ -1228,55 +1199,55 @@ export class FitSync implements IFitSync {
 			const remainingUnpushed = Object.keys(this.fit.unpushedFiles);
 			if (remainingUnpushed.length > 0) {
 				if (newlySkippedPaths.length > 0 && skippedWarning) {
-					// First encounter: full sticky notice with git CLI instructions
+					// First encounter: full sticky notice with git CLI instructions, separate from syncNotice
 					new FitNotice(this.fit, [], skippedWarning, 0).show();
-				} else if (!isAutoSync) {
-					// Subsequent manual sync: brief reminder in the success message
-					const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
-					syncNotice.setMessage(
-						`Sync successful — ${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`
-					);
 				}
-				// Auto-sync with no new skips: log only, no notice
+				// Auto-sync with no new skips, or a repeat manual sync: logged only, no sticky notice —
+				// the brief reminder below (added to syncNotice) covers the manual-sync case.
 				fitLogger.log('[FitSync] Files still awaiting manual sync', { paths: remainingUnpushed });
 			}
 
-			// Partial sync due to transient upload failure — show regardless of isAutoSync,
-			// overrides any earlier success/reminder message already set on syncNotice.
+			// One headline plus independent detail blocks, set via a single setMessage call below —
+			// not one setMessage per condition, since those silently clobber each other.
+			const headline = rateLimitedPaths.length > 0 || localFailedPaths.length > 0
+				? `Sync incomplete`
+				: executedConflicts.length === 0
+					? `Sync successful`
+					: executedConflicts.some(f => f.remoteOp !== "REMOVED")
+						? `Synced with remote, unresolved conflicts written to _fit`
+						: `Synced with remote, ignored remote deletion of locally changed files`;
+
+			const detailBlocks: string[] = [];
+
+			if (remainingUnpushed.length > 0 && !isAutoSync && !(newlySkippedPaths.length > 0 && skippedWarning)) {
+				const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
+				detailBlocks.push(`${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`);
+			}
+
 			if (rateLimitedPaths.length > 0) {
 				const fileList = rateLimitedPaths.map(p => `• ${p}`).join('\n');
-				syncNotice.setMessage(
-					`Sync incomplete — ${rateLimitedPaths.length} file(s) not uploaded, ` +
-					`possibly due to rate limiting or a transient error. ` +
-					`They will be retried automatically on the next sync.\n${fileList}`
+				detailBlocks.push(
+					`${rateLimitedPaths.length} file(s) not uploaded, possibly due to rate limiting or a ` +
+					`transient error. They will be retried automatically on the next sync.\n${fileList}`
 				);
 			}
 
 			if (localFailedPaths.length > 0) {
 				const fileList = localFailedPaths.map(p => `• ${p}`).join('\n');
-				syncNotice.setMessage(
-					`Sync incomplete — ${localFailedPaths.length} file(s) couldn't be written locally, ` +
-					`possibly due to a filesystem error or a temporary conflict. ` +
-					`They will be retried automatically on the next sync.\n${fileList}`
+				detailBlocks.push(
+					`${localFailedPaths.length} file(s) couldn't be written locally, possibly due to a ` +
+					`filesystem error or a temporary conflict. They will be retried automatically on the next sync.\n${fileList}`
 				);
 			}
 
-			// Set success message (only when not already replaced by the unpushed-files reminder
-			// or the partial-sync notice above)
-			if (rateLimitedPaths.length === 0 && localFailedPaths.length === 0 && (remainingUnpushed.length === 0 || isAutoSync || newlySkippedPaths.length > 0)) {
-				if (executedConflicts.length === 0) {
-					syncNotice.setMessage(`Sync successful`);
-				} else if (executedConflicts.some(f => f.remoteOp !== "REMOVED")) {
-					syncNotice.setMessage(`Synced with remote, unresolved conflicts written to _fit`);
-				} else {
-					syncNotice.setMessage(`Synced with remote, ignored remote deletion of locally changed files`);
-				}
-			}
+			syncNotice.setMessage([headline, ...detailBlocks].join('\n\n'));
 
 			return {
 				success: true,
 				changeGroups: [
-					{heading: "Local file updates:", changes: localOps},
+					// untrackNotices are pre-tagged MODIFIED with a note (see resolveAllChanges) so
+					// they render as an ordinary file change, not a real REMOVED.
+					{heading: "Local file updates:", changes: [...localOps, ...untrackNotices]},
 					{heading: "Remote file updates:", changes: remoteOps},
 				],
 				clash: conflicts
@@ -1476,7 +1447,6 @@ export class FitSync implements IFitSync {
 			trackedFileCount: Object.keys(this.fit.localShas).length,
 			pendingClashes: [...this.fit.pendingClashes],
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
-			pendingUntrackedPaths: [...this.fit.pendingUntrackedPaths],
 			fitAttributesWarning: this.fit.fitAttributesWarning,
 		};
 

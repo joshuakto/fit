@@ -705,11 +705,15 @@ describe('FitSync', () => {
 			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
 		});
 
-		it('leaves an unedited .obsidian/ file on disk (and records pendingUntrackedPaths) when remote removes it, instead of deleting it', async () => {
+		it('leaves an unedited .obsidian/ file on disk when remote removes it, instead of deleting it, and reports it once as a change', async () => {
 			// Remote deletion is the only "stop syncing this path" signal git-mask tracking
 			// has, so it's ambiguous with "the file was actually deleted". Resolve
 			// conservatively: never auto-delete a locally-unedited .obsidian/ file just
-			// because it's gone from the repo.
+			// because it's gone from the repo. Reported once, this sync only, in the ordinary
+			// changeGroups report (not persisted state — see docs/sync-logic.md; a prior
+			// persisted-list design, pendingUntrackedPaths, was removed as unnecessary). Tagged
+			// MODIFIED with a note rather than REMOVED: nothing was deleted, and REMOVED's
+			// styling (red, trash icon) would misrepresent a path explicitly left in place.
 			const fitSync = createFitSync();
 			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
 			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
@@ -720,8 +724,8 @@ describe('FitSync', () => {
 			], []);
 
 			// Two syncs to establish tracking (same two-sync shape as the opt-in tests above).
-			await syncAndHandleResult(fitSync, createMockNotice());
-			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only, no local write yet
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, writes file locally, establishes tracked baseline
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"dark"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
@@ -729,30 +733,49 @@ describe('FitSync', () => {
 
 			// Untrack via remote removal, with no local edit in between.
 			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
-			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			const notice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, notice);
 
-			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: expect.arrayContaining([
+					expect.objectContaining({
+						heading: expect.stringContaining('Local file updates'),
+						changes: expect.arrayContaining([
+							expect.objectContaining({
+								path: '.obsidian/appearance.json',
+								type: 'MODIFIED',
+								note: expect.stringContaining('no longer tracked remotely')
+							})
+						])
+					})
+				])
+			}));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"dark"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
-			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
 
-			// Local file untouched by a further no-op sync — the notice sticks around.
-			await syncAndHandleResult(fitSync, createMockNotice());
+			// A further no-op sync doesn't re-report it — it was a one-time fact about the
+			// transition, not an ongoing status.
+			const secondResult = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(secondResult).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: [
+					{ heading: expect.stringContaining('Local file updates'), changes: [] },
+					{ heading: expect.stringContaining('Remote file updates'), changes: [] }
+				]
+			}));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"dark"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
-			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
 
-			// Deleting the file locally completes the untrack: cleared from pendingUntrackedPaths,
-			// and — since remote has nothing for this path either — nothing is pushed.
+			// Deleting the file locally: since remote has nothing for this path either, nothing is pushed.
 			await localVault.applyChanges([], ['.obsidian/appearance.json']);
 			const finalResult = await syncAndHandleResult(fitSync, createMockNotice());
 
 			expect(finalResult).toEqual(expect.objectContaining({ success: true }));
-			expect(localStoreState.pendingUntrackedPaths).toEqual([]);
 			expect(remoteVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
@@ -772,27 +795,31 @@ describe('FitSync', () => {
 				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
 			], []);
 
-			await syncAndHandleResult(fitSync, createMockNotice());
-			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, writes file locally, establishes tracked baseline
 
 			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
 			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
 
-			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: [
+					{ heading: expect.stringContaining('Local file updates'), changes: [] },
+					{ heading: expect.stringContaining('Remote file updates'), changes: [] }
+				]
+			}));
 			// Local edit preserved, not silently deleted or re-baselined without record.
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"light"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
-			expect(localStoreState.pendingUntrackedPaths).toEqual([]);
 		});
 
-		it('keeps pendingUntrackedPaths when a re-push attempt is rate-limited, not actually landed', async () => {
-			// safeLocal only reflects what was *classified* as safe to push, not what actually
-			// reached remote — a rate-limited (or size-skipped) attempt must not be treated as
-			// a real re-adoption, or the notice disappears while the path is still exactly as
-			// untracked as before.
+		it('a local edit after an untrack announcement re-pushes the path normally', async () => {
+			// The announcement is one-time and non-blocking — an active local edit after it
+			// fires is an unambiguous re-adoption signal and pushes normally, same as any other
+			// tracked path. Nothing to "clear" since nothing was persisted in the first place.
 			const fitSync = createFitSync();
 			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
 			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
@@ -801,45 +828,59 @@ describe('FitSync', () => {
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
 			], []);
-			await syncAndHandleResult(fitSync, createMockNotice());
-			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, writes file locally, establishes tracked baseline
 
 			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
-			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
+			await syncAndHandleResult(fitSync, createMockNotice()); // untrack sync: file left in place, reported once
 
 			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
-			remoteVault.setRateLimitedPaths(['.obsidian/appearance.json']);
-			await syncAndHandleResult(fitSync, createMockNotice());
-
-			expect(remoteVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBeUndefined();
-			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
-		});
-
-		it('clears pendingUntrackedPaths in the same sync a local edit re-pushes the path', async () => {
-			// Without this, a local edit made after the untrack notice fires still pushes
-			// (correct — an active edit is an unambiguous re-adoption signal), but the notice
-			// itself lingered stale for one extra sync, wrongly implying the path was still
-			// only-locally-present when it had in fact already round-tripped back to remote.
-			const fitSync = createFitSync();
-			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
-			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
-			localVault.setSyncHiddenFiles(true);
-
-			await remoteVault.applyChanges([
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
-			], []);
-			await syncAndHandleResult(fitSync, createMockNotice());
-			await syncAndHandleResult(fitSync, createMockNotice());
-
-			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
-			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.pendingUntrackedPaths).toEqual(['.obsidian/appearance.json']);
-
-			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
-			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.pendingUntrackedPaths).toEqual([]);
+			await syncAndHandleResult(fitSync, createMockNotice()); // local edit after the notice: re-adopts, pushes normally
 			expect(remoteVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"light"}');
+		});
+
+		it('an untrack notice (changeGroups) and an unrelated rate-limited push (syncNotice) both surface from the same sync', async () => {
+			// syncNotice.setMessage used to be called once per condition, last-write-wins, so a
+			// rate-limited retry warning could be silently discarded by an untrack-notice call
+			// set later (or vice versa). Fixed two ways: syncNotice's own conditions are now
+			// composed into one message instead of clobbering each other, and the untrack notice
+			// moved to changeGroups entirely (a change report, not a sync concern) so it no
+			// longer competes with syncNotice's text at all.
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, writes file locally, establishes tracked baseline
+
+			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
+			localVault.setFile('blocked.md', 'blocked content');
+			remoteVault.setRateLimitedPaths(['blocked.md']);
+
+			const notice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, notice);
+
+			const finalMessage = notice.setMessage.mock.calls.at(-1)?.[0] as string;
+			expect(finalMessage).toEqual(expect.stringContaining('blocked.md'));
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: expect.arrayContaining([
+					expect.objectContaining({
+						heading: expect.stringContaining('Local file updates'),
+						changes: expect.arrayContaining([
+							expect.objectContaining({
+								path: '.obsidian/appearance.json',
+								type: 'MODIFIED',
+								note: expect.stringContaining('no longer tracked remotely')
+							})
+						])
+					})
+				])
+			}));
 		});
 
 		it('pushes local edits to an already-tracked .obsidian/ path even when syncHiddenFiles is off', async () => {

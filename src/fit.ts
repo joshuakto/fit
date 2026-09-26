@@ -38,7 +38,6 @@ export class Fit {
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
-	pendingUntrackedPaths: string[];        // .obsidian/ paths remote-removed while locally unedited — see LocalStores
 	fitAttributes: FitAttributesFile = {};  // Parsed from local .fitattributes.json; refreshed each sync
 	// Set when the last .fitattributes.json parse attempt failed; null when it parsed fine or
 	// the file doesn't exist. FitSync surfaces this as a visible Notice — a malformed file
@@ -112,7 +111,6 @@ export class Fit {
 		this.unpushedFiles = localStore.unpushedFiles ?? {};
 		this.pendingClashes = localStore.pendingClashes ?? [];
 		this.protectedPathShas = localStore.protectedPathShas ?? {};
-		this.pendingUntrackedPaths = localStore.pendingUntrackedPaths ?? [];
 
 		const localCount = Object.keys(this.localShas).length;
 		const legacyCount = Object.keys(this.localSha).length;
@@ -198,8 +196,9 @@ export class Fit {
 	 * For these paths, a remote REMOVED is ambiguous between "the file was actually
 	 * deleted" and "someone removed it from the repo to stop syncing it" — the latter is
 	 * the documented way to untrack a git-mask path (see docs/sync-logic.md § Protected
-	 * Paths). resolveAllChanges uses this to route such removals to pendingUntrackedPaths
-	 * instead of auto-deleting the local file. Non-`.obsidian/` paths are always false —
+	 * Paths). resolveAllChanges uses this to route such removals to untrackNotices (a
+	 * one-time, this-sync-only Notice item — see FitSync.sync) instead of auto-deleting
+	 * the local file. Non-`.obsidian/` paths are always false —
 	 * ordinary tracked files have no such ambiguity, remote deletion just means deletion.
 	 */
 	isGitMaskTrackedPath(path: string): boolean {

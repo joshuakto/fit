@@ -10,7 +10,6 @@ function snapshot(overrides: Partial<SyncStatusSnapshot> = {}): SyncStatusSnapsh
 		trackedFileCount: 3,
 		pendingClashes: [],
 		oversizedFilePaths: [],
-		pendingUntrackedPaths: [],
 		fitAttributesWarning: null,
 		...overrides,
 	};

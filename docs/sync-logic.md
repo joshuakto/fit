@@ -295,6 +295,12 @@ At the start of each sync FIT reconciles `protectedPathShas` entries for paths t
 
 In all cases the `protectedPathShas` entry is deleted (path is now tracked normally). The reconciled path set is also recorded for the remainder of *this* sync via `Fit.markTrackedForCurrentSync()` — a same-sync-only, unpersisted signal — because the "local file absent" branch above clears `lastFetchedRemoteShas[path]`, which would otherwise make `shouldSyncPath` flip back to untracked for the rest of the same sync and undo the reconciliation.
 
+**Untracking (remote removes a previously-tracked git-mask path):** a REMOVED remote change with
+no local edit is ambiguous (deletion vs. "stop syncing this path"), so `resolveAllChanges` leaves
+the local file in place instead of auto-deleting it. Reported once, tagged MODIFIED with an
+explanatory `note` (not REMOVED, since nothing was deleted), folded into the ordinary
+`changeGroups` report (`showFileChanges`) rather than a separate sync-status notice.
+
 ### 2. Hidden Files (`shouldTrackState`) - Configurable
 
 - **Filtered by:** `LocalVault.shouldTrackState()` (respects `syncHiddenFiles` setting)
