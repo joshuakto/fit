@@ -844,22 +844,22 @@ describe('FitSync', () => {
 			// the "genuinely safe" no-op path, not the "stuck forever" bug itself (see next test
 			// and docs/sync-logic.md § Tracking transition).
 			const fitSync = createFitSync();
-			const textRule = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
 			localVault.setFile(FITATTRIBUTES_PATH, textRule);
 			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
 			], []);
 			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
 			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
-			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
+			expect(localStoreState.localShas['.obsidian/foo']).toBeDefined();
 
 			// Rule removed: path ineligible, localShas dropped, lastFetchedRemoteShas untouched.
 			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
 			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeUndefined();
-			expect(localStoreState.lastFetchedRemoteShas['.obsidian/appearance.json']).toBeDefined();
+			expect(localStoreState.localShas['.obsidian/foo']).toBeUndefined();
+			expect(localStoreState.lastFetchedRemoteShas['.obsidian/foo']).toBeDefined();
 
 			// Rule re-added; remote content never changed. (This sync also pushes the
 			// .fitattributes.json edit itself — unrelated; assertion below is scoped to
@@ -874,32 +874,32 @@ describe('FitSync', () => {
 					expect.objectContaining({
 						heading: expect.stringContaining('Remote file updates'),
 						changes: expect.not.arrayContaining([
-							expect.objectContaining({ path: '.obsidian/appearance.json' })
+							expect.objectContaining({ path: '.obsidian/foo' })
 						])
 					})
 				])
 			}));
-			expect(localVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"dark"}');
-			expect(localStoreState.localShas['.obsidian/appearance.json']).toBeDefined();
+			expect(localVault.getAllFilesAsRaw()['.obsidian/foo']).toBe('{"theme":"dark"}');
+			expect(localStoreState.localShas['.obsidian/foo']).toBeDefined();
 		});
 
 		it('pulls fresh content for a re-eligible path whose local file was deleted while ineligible', async () => {
 			// The actual stuck-forever bug: local file absent when the path becomes eligible
 			// again, remote content never changed (see docs/sync-logic.md § Tracking transition).
 			const fitSync = createFitSync();
-			const textRule = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
 			localVault.setFile(FITATTRIBUTES_PATH, textRule);
 			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
 			], []);
 			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
 			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
 
 			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
 			await syncAndHandleResult(fitSync, createMockNotice()); // path goes ineligible
-			await localVault.applyChanges([], ['.obsidian/appearance.json']); // local file deleted while ineligible
+			await localVault.applyChanges([], ['.obsidian/foo']); // local file deleted while ineligible
 
 			localVault.setFile(FITATTRIBUTES_PATH, textRule);
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
@@ -910,12 +910,12 @@ describe('FitSync', () => {
 					expect.objectContaining({
 						heading: expect.stringContaining('Local file updates'),
 						changes: expect.arrayContaining([
-							expect.objectContaining({ path: '.obsidian/appearance.json', type: 'ADDED' })
+							expect.objectContaining({ path: '.obsidian/foo', type: 'ADDED' })
 						])
 					})
 				])
 			}));
-			expect(localVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"dark"}');
+			expect(localVault.getAllFilesAsRaw()['.obsidian/foo']).toBe('{"theme":"dark"}');
 		});
 
 		it('does not disturb an unresolved .obsidian/ clash even when the path also qualifies as a reconcile candidate', async () => {
