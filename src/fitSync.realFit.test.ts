@@ -839,6 +839,116 @@ describe('FitSync', () => {
 			expect(remoteVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"light"}');
 		});
 
+		it('re-establishes a baseline quietly (no push) for a re-eligible path whose local content already matches remote', async () => {
+			// Local file present throughout, matching remote when the rule comes back — asserts
+			// the "genuinely safe" no-op path, not the "stuck forever" bug itself (see next test
+			// and docs/sync-logic.md § Tracking transition).
+			const fitSync = createFitSync();
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
+			expect(localStoreState.localShas['.obsidian/foo']).toBeDefined();
+
+			// Rule removed: path ineligible, localShas dropped, lastFetchedRemoteShas untouched.
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.localShas['.obsidian/foo']).toBeUndefined();
+			expect(localStoreState.lastFetchedRemoteShas['.obsidian/foo']).toBeDefined();
+
+			// Rule re-added; remote content never changed. (This sync also pushes the
+			// .fitattributes.json edit itself — unrelated; assertion below is scoped to
+			// appearance.json.)
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Quiet baseline no-op, not a push (content already matched).
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: expect.arrayContaining([
+					expect.objectContaining({
+						heading: expect.stringContaining('Remote file updates'),
+						changes: expect.not.arrayContaining([
+							expect.objectContaining({ path: '.obsidian/foo' })
+						])
+					})
+				])
+			}));
+			expect(localVault.getAllFilesAsRaw()['.obsidian/foo']).toBe('{"theme":"dark"}');
+			expect(localStoreState.localShas['.obsidian/foo']).toBeDefined();
+		});
+
+		it('pulls fresh content for a re-eligible path whose local file was deleted while ineligible', async () => {
+			// The actual stuck-forever bug: local file absent when the path becomes eligible
+			// again, remote content never changed (see docs/sync-logic.md § Tracking transition).
+			const fitSync = createFitSync();
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
+
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
+			await syncAndHandleResult(fitSync, createMockNotice()); // path goes ineligible
+			await localVault.applyChanges([], ['.obsidian/foo']); // local file deleted while ineligible
+
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: expect.arrayContaining([
+					expect.objectContaining({
+						heading: expect.stringContaining('Local file updates'),
+						changes: expect.arrayContaining([
+							expect.objectContaining({ path: '.obsidian/foo', type: 'ADDED' })
+						])
+					})
+				])
+			}));
+			expect(localVault.getAllFilesAsRaw()['.obsidian/foo']).toBe('{"theme":"dark"}');
+		});
+
+		it('does not disturb an unresolved .obsidian/ clash even when the path also qualifies as a reconcile candidate', async () => {
+			// Guards the pendingClashes exclusion in the reconcile predicate — without it, an
+			// unresolved clash's cleared baseline looks identical to "never synced".
+			const fitSync = createFitSync();
+			const textRule = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
+
+			// Both sides change independently -> unresolved clash, localShas cleared.
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"solarized"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState).toEqual(expect.objectContaining({
+				pendingClashes: expect.arrayContaining(['.obsidian/appearance.json']),
+				localShas: expect.not.objectContaining({ '.obsidian/appearance.json': expect.anything() })
+			}));
+
+			// A further sync (still unresolved) must not silently re-baseline the path.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localStoreState.pendingClashes).toContain('.obsidian/appearance.json');
+			expect(localVault.getAllFilesAsRaw()['.obsidian/appearance.json']).toBe('{"theme":"light"}');
+		});
+
 		it('an untrack notice (changeGroups) and an unrelated rate-limited push (syncNotice) both surface from the same sync', async () => {
 			// syncNotice.setMessage used to be called once per condition, last-write-wins, so a
 			// rate-limited retry warning could be silently discarded by an untrack-notice call
