@@ -2256,6 +2256,43 @@ describe('FitSync', () => {
 		});
 	});
 
+	describe('Whole-sync fetch failure', () => {
+		it('a whole-sync remote fetch failure leaves localShas/lastFetchedRemoteShas/protectedPathShas untouched', async () => {
+			// Reconcile mutates these three stores in-memory before the parallel local/remote
+			// fetch runs (fitSync.ts's _doSync). If the fetch then fails, that mutation must
+			// roll back like any other failed sync, not just be left alone by a sync that never
+			// got far enough to reconcile. See docs/sync-logic.md § Network Interruption case 1.
+			const fitSync = createFitSync();
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({})); // ineligible: passive observe only
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const reconcileStateBefore = {
+				localShas: { ...fitSync.fit.localShas },
+				lastFetchedRemoteShas: { ...fitSync.fit.lastFetchedRemoteShas },
+				protectedPathShas: { ...fitSync.fit.protectedPathShas },
+			};
+
+			localVault.setFile(FITATTRIBUTES_PATH, textRule); // now eligible - this sync would reconcile
+			remoteVault.setFailure(VaultError.network("Couldn't reach GitHub API"));
+			const failedResult = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(failedResult).toEqual(expect.objectContaining({ success: false }));
+			expect(fitSync.fit).toEqual(expect.objectContaining(reconcileStateBefore));
+
+			// Retry succeeds once the network recovers - nothing was left half-applied.
+			remoteVault.clearFailure();
+			const retryResult = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(retryResult).toEqual(expect.objectContaining({ success: true }));
+			expect(fitSync.fit.localShas['.obsidian/foo']).toBeDefined();
+		});
+	});
+
 	describe('Per-File Error Handling', () => {
 		it('should handle per-file read failures from local vault with detailed error message', async () => {
 			// Arrange
