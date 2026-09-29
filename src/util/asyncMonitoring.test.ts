@@ -12,7 +12,9 @@ vi.mock('@/logger', () => ({
 describe('withSlowOperationMonitoring', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.useFakeTimers();
+		vi.useFakeTimers({
+			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+		});
 	});
 
 	afterEach(() => {

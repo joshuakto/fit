@@ -60,10 +60,13 @@ describe('FitSettingTab - GitHub settings', () => {
 		// Store captures for afterEach to access
 		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
 
-		vi.useFakeTimers();
+		vi.useFakeTimers({
+			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+		});
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.resetAllMocks();
 
 		// Check if test failed - if so, replay captured console output
