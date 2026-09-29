@@ -12,6 +12,16 @@ export interface SyncStatusSnapshot {
 	trackedFileCount: number;
 	pendingClashes: string[];
 	oversizedFilePaths: string[];
+	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape). */
+	fitAttributesWarning: string | null;
+	/**
+	 * scope:"subset" `.obsidian/` paths whose raw whole-file content has changed since the
+	 * last sync touched them (FitSync.explainStatus, comparing the local scan's raw SHA
+	 * against localShas[path]). Deliberately coarse — it can't tell whether the change
+	 * landed in a tracked field or a device-local one, only a real sync (live remote fetch)
+	 * can — so it's reported separately from ordinary pending local changes, not merged in.
+	 */
+	possiblyChangedSubsetScopePaths: FileChange[];
 }
 
 export interface FileStatusItem {
@@ -42,7 +52,7 @@ export interface AutoSyncInfo {
 export type StatusExplanation =
 	| { kind: 'never-synced' }
 	| { kind: 'ok'; fileCount: number; shortSha: string }
-	| { kind: 'issues'; sections: StatusSection[]; scanNote: string | null };
+	| { kind: 'issues'; sections: StatusSection[]; scanNote: string | null; fitAttributesNote: string | null };
 
 export interface RenderableExplanation {
 	title: string;
@@ -51,6 +61,7 @@ export interface RenderableExplanation {
 	autoSyncNote: string | null;
 	sections: StatusSection[];
 	scanNote: string | null;
+	fitAttributesNote: string | null;
 }
 
 const MODAL_TITLE = 'Fit Sync Status';
@@ -132,7 +143,19 @@ export function buildStatusExplanation(
 		});
 	}
 
-	if (sections.length === 0 && !scanNote) {
+	if (snapshot.possiblyChangedSubsetScopePaths.length > 0) {
+		const n = snapshot.possiblyChangedSubsetScopePaths.length;
+		sections.push({
+			heading: `${n} .obsidian/ config path${n === 1 ? '' : 's'} changed since last sync (unconfirmed)`,
+			description: "Fit can't tell without syncing whether the change is in a synced field or a device-local one only. Run Fit Sync to check.",
+			items: snapshot.possiblyChangedSubsetScopePaths.map(c => ({
+				path: c.path,
+				cls: CHANGE_CLS[c.type] ?? 'file-MODIFIED',
+			})),
+		});
+	}
+
+	if (sections.length === 0 && !scanNote && !snapshot.fitAttributesWarning) {
 		return {
 			kind: 'ok',
 			fileCount: snapshot.trackedFileCount,
@@ -140,7 +163,7 @@ export function buildStatusExplanation(
 		};
 	}
 
-	return { kind: 'issues', sections, scanNote };
+	return { kind: 'issues', sections, scanNote, fitAttributesNote: snapshot.fitAttributesWarning };
 }
 
 function formatAutoSyncNote(info: AutoSyncInfo): string {
@@ -181,6 +204,7 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: [],
 				scanNote: null,
+				fitAttributesNote: null,
 			};
 
 		case 'ok':
@@ -191,6 +215,7 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: [],
 				scanNote: null,
+				fitAttributesNote: null,
 			};
 
 		case 'issues':
@@ -201,6 +226,7 @@ export function renderExplanation(
 				autoSyncNote,
 				sections: explanation.sections,
 				scanNote: explanation.scanNote,
+				fitAttributesNote: explanation.fitAttributesNote,
 			};
 	}
 }

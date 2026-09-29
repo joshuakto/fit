@@ -19,6 +19,11 @@ export type ChangeOperation = "ADDED" | "MODIFIED" | "REMOVED";
 export type FileChange = {
 	path: string;
 	type: ChangeOperation;
+	/**
+	 * Optional annotation shown alongside the path in showFileChanges — e.g. distinguishing
+	 * an untrack notice (git-mask tracking stopped, file left in place) from a real MODIFIED.
+	 */
+	note?: string;
 };
 
 /**
@@ -54,6 +59,13 @@ export type FileClash = {
  *
  * Identifies remote changes that need local filesystem verification,
  * excluding protected paths (which are blocked by policy regardless of local state).
+ *
+ * This is also what makes it safe for a `.obsidian/` path just reconciled
+ * untracked→tracked (Fit.trackedForCurrentSync) to be briefly missing from
+ * LocalVault's proactive hidden-path discovery list (Fit.trackedObsidianPaths()) — any
+ * remote change for a path this sync's local scan didn't cover still gets a direct
+ * filesystem check here, independent of that discovery list. See docs/sync-logic.md
+ * § Baseline Recording for Untracked Files (#169).
  *
  * @param remoteChanges - Changes detected in remote vault scan
  * @param localScanPaths - Set of paths found in local scan (tracked files)
@@ -188,7 +200,12 @@ export function resolveUntrackedState(
  * @param localShas - Current local blob SHAs, keyed by path — used to detect that a local change
  *   and a remote change independently produced identical content (no real clash)
  * @param remoteShas - Incoming remote blob SHAs, keyed by path
- * @returns Final categorization into safe changes, clashes, and protected remote arrivals
+ * @param gitMaskTrackedPaths - `.obsidian/` paths currently tracked + format-eligible
+ *   (Fit.isGitMaskTrackedPath). A REMOVED remote change with no local edit for one of these
+ *   paths is ambiguous (real deletion vs. "stop syncing this path") — routed to
+ *   untrackNotices instead of safeRemote so the local file is never auto-deleted.
+ * @returns Final categorization into safe changes, clashes, protected remote arrivals, and
+ *   ambiguous git-mask untrack notices
  */
 export function resolveAllChanges(
 	localChanges: FileChange[],
@@ -196,13 +213,21 @@ export function resolveAllChanges(
 	protectedPaths: Set<string>,
 	untrackedPaths: Set<string>,
 	localShas: FileStates = {},
-	remoteShas: FileStates = {}
+	remoteShas: FileStates = {},
+	gitMaskTrackedPaths: Set<string> = new Set()
 ): {
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
 	clashes: FileClash[];
 	/** Remote changes to paths excluded by shouldSyncPath — not clashes, handled separately */
 	protectedRemote: FileChange[];
+	/**
+	 * REMOVED remote changes for a git-mask-tracked `.obsidian/` path with no local edit —
+	 * ambiguous between "file deleted" and "stop tracking this path". Not applied locally;
+	 * re-tagged as MODIFIED with a `note` and folded into the ordinary changeGroups report
+	 * (see showFileChanges) instead of shown as a real REMOVED.
+	 */
+	untrackNotices: FileChange[];
 } {
 	const localChangePaths = new Set(localChanges.map(c => c.path));
 
@@ -210,6 +235,7 @@ export function resolveAllChanges(
 	const safeRemote: FileChange[] = [];
 	const clashes: FileClash[] = [];
 	const protectedRemote: FileChange[] = [];
+	const untrackNotices: FileChange[] = [];
 
 	// Process all local changes
 	for (const localChange of localChanges) {
@@ -257,13 +283,23 @@ export function resolveAllChanges(
 				localState: 'untracked',
 				remoteOp: remoteChange.type
 			});
+		} else if (remoteChange.type === 'REMOVED' && gitMaskTrackedPaths.has(remoteChange.path)) {
+			// No local edit, but this REMOVED is ambiguous for a git-mask-tracked path —
+			// don't auto-delete. Re-tagged as MODIFIED (not a real removal, nothing deleted)
+			// with a note — a change worth reporting, not a sync concern, so it renders
+			// alongside ordinary file changes rather than as a status-notice sentence.
+			untrackNotices.push({
+				path: remoteChange.path,
+				type: 'MODIFIED',
+				note: 'no longer tracked remotely, left in place'
+			});
 		} else {
 			// No local change, not blocked - safe to apply
 			safeRemote.push(remoteChange);
 		}
 	}
 
-	return { safeLocal, safeRemote, clashes, protectedRemote };
+	return { safeLocal, safeRemote, clashes, protectedRemote, untrackNotices };
 }
 
 /**

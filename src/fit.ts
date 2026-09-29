@@ -6,29 +6,15 @@
  */
 
 import { LocalStores } from "@/localStores";
-import { FitSettings, ObsidianSyncRules } from "@/fitSettings";
+import { FitSettings } from "@/fitSettings";
+import { FitAttributeRule, FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes, resolveSyncFormat as resolveSyncFormatPure, resolveScope as resolveScopePure } from "@/fitAttributes";
 import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
-
-// .obsidian/ paths excluded from sync regardless of obsidianSyncRules.
-// workspace files are device-specific.
-export const OBSIDIAN_ALWAYS_EXCLUDED = new Set([
-	".obsidian/workspace.json",
-	".obsidian/workspace-mobile.json",
-]);
-
-// Paths blocked in v1 because safe sync requires v2 capabilities:
-// - community/core plugins: need array-merge to avoid install conflicts across devices
-// - plugins/fit/data.json: contains PAT — needs field-level exclusion before it can safely sync
-export const OBSIDIAN_NEEDS_MERGE = new Set([
-	".obsidian/community-plugins.json",
-	".obsidian/core-plugins.json",
-	".obsidian/plugins/fit/data.json",
-]);
+import { isHardDenylistedObsidianPath, FIT_OWN_SETTINGS_DENYLIST } from "./util/protectedPaths";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -52,10 +38,20 @@ export class Fit {
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
-	obsidianSyncRules: ObsidianSyncRules;
+	fitAttributes: FitAttributesFile = {};  // Parsed from local .fitattributes.json; refreshed each sync
+	// Set when the last .fitattributes.json parse attempt failed; null when it parsed fine or
+	// the file doesn't exist. FitSync surfaces this as a visible Notice — a malformed file
+	// silently means "no .obsidian/ path syncs", which is worse than noisy to leave log-only.
+	fitAttributesWarning: string | null = null;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: RemoteGitHubVault;
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
+	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
+	// current sync. Needed because the reconcile block's own "local absent" branch clears
+	// lastFetchedRemoteShas[path] (to force correct ADDED-detection downstream), which would
+	// otherwise make shouldSyncPath flip back to untracked for the rest of this same sync,
+	// undoing the reconciliation. Recomputed fresh every sync — not a cross-sync opt-in.
+	private trackedForCurrentSync: Set<string> = new Set();
 
 
 	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
@@ -71,10 +67,8 @@ export class Fit {
 		// TODO: Use DI to pass the right impl from FitSync caller.
 
 		// Apply local vault settings unconditionally (don't require PAT)
-		this.obsidianSyncRules = setting.obsidianSyncRules ?? {};
 		this.localVault.configure({
 			syncHiddenFiles: setting.syncHiddenFiles,
-			obsidianSyncRules: this.obsidianSyncRules,
 		});
 
 		// Skip if no PAT - no API access possible
@@ -96,7 +90,8 @@ export class Fit {
 			setting.owner,
 			setting.repo,
 			setting.branch,
-			setting.deviceName
+			setting.deviceName,
+			setting.githubHost
 		);
 	}
 
@@ -140,19 +135,14 @@ export class Fit {
 	}
 
 	/**
-	 * Check if a file path should be included in sync operations.
-	 *
-	 * Excludes paths based on sync policy:
-	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
-	 * - `.obsidian/`: Excluded by default; individual paths may be opted in via obsidianSyncRules
-	 *
-	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
-	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
-	 *
-	 * TODO: Rename to isProtectedPath() and invert logic (return true for protected paths)
+	 * Whether a path goes through the normal full-file SHA-diff pipeline. Not the same
+	 * as "does this path sync" — a `.obsidian/` path with `scope:"subset"` returns false
+	 * here but still syncs, through `FitSync.syncSubsetScopePaths` instead (its own lane,
+	 * masked field-level diffing instead of whole-file SHA comparison). See
+	 * docs/sync-logic.md § Protected Paths.
 	 *
 	 * @param path - File path to check
-	 * @returns true if path should be included in sync
+	 * @returns true if path should go through the normal pipeline
 	 */
 	shouldSyncPath(path: string): boolean {
 		// Exclude _fit/ directory (conflict resolution area)
@@ -161,24 +151,171 @@ export class Fit {
 		}
 
 		if (path.startsWith(".obsidian/")) {
-			// Always-excluded regardless of user rules
-			if (OBSIDIAN_ALWAYS_EXCLUDED.has(path)) return false;
-			if (OBSIDIAN_NEEDS_MERGE.has(path)) return false;
-			// Block own data.json dynamically — covers symlinked/alternate install dirs
-			if (this.ownDataPath && path === this.ownDataPath) return false;
+			// Tracked purely by git content presence, never a local toggle — orthogonal
+			// to isEligibleForTracking below (a path can be fully eligible and still not
+			// tracked yet).
+			const isTracked =
+				path in this.localShas ||
+				path in this.lastFetchedRemoteShas ||
+				this.trackedForCurrentSync.has(path);
+			if (!isTracked) return false;
 
-			const rule = this.obsidianSyncRules?.[path];
-			if (!rule) return false;
-
-			const strategy = rule.sync ?? "replace";
-			if (strategy !== "replace") {
-				fitLogger.log(`[Sync] WARNING: Unknown strategy "${strategy}" for ${path} — skipping (not supported in this version)`);
-				return false;
-			}
-			return true;
+			// scope:"subset" only ever comes from format:"json" (see resolveScope) — routed
+			// to FitSync.syncSubsetScopePaths instead, so excluded here.
+			if (this.resolveScope(path) === "subset") return false;
 		}
 
-		return true;
+		return this.isEligibleForTracking(path);
+	}
+
+	/**
+	 * Whether a path is allowed to sync at all: not hard-denylisted, and resolveScope
+	 * resolves to a non-null value.
+	 *
+	 * Split out from shouldSyncPath so the pre-sync reconcile block (FitSync) can ask this
+	 * about a `.obsidian/` path about to become tracked, without depending on
+	 * shouldSyncPath's own tracked-check.
+	 */
+	isEligibleForTracking(path: string): boolean {
+		if (this.isHardDenylistedPath(path)) return false;
+		return this.resolveScope(path) !== null;
+	}
+
+	/**
+	 * The sync format that governs how an already-tracked path is merged — whole-file
+	 * opaque replace ("text") vs structural JSON merge ("json", src/util/jsonMerge.ts).
+	 * Explicit config always wins over the filetype heuristic. `null`: no extension
+	 * match, unconfigured.
+	 */
+	resolveSyncFormat(path: string): FitAttributeRule['format'] | null {
+		return resolveSyncFormatPure(path, this.fitAttributes);
+	}
+
+	/**
+	 * How much of a tracked path syncs — "full" (whole file) or "subset" (field-level
+	 * masking, only tracked keys). Explicit config always wins. Default:
+	 * - Ordinary (non-`.obsidian/`) path: "full", unconditionally.
+	 * - Protected `.obsidian/` path: "full" for format:"text", "subset" for format:"json",
+	 *   `null` otherwise.
+	 */
+	resolveScope(path: string): FitAttributeRule['scope'] | null {
+		return resolveScopePure(path, this.fitAttributes);
+	}
+
+	/**
+	 * Path-specific unsafe-field denylist, on top of the universal one
+	 * (UNIVERSAL_SECRET_FIELD_DENYLIST, always applied by FitSync.resolveSubsetScopePath
+	 * to every scope:"subset" path regardless of this method). `null` for every path
+	 * except `ownDataPath` — FIT's own data.json, resolved dynamically from the plugin's
+	 * actual install dir (`.obsidian/plugins/<pluginDir>/data.json`, follows an alternate
+	 * install name like `fit-dev`).
+	 *
+	 * resolveSyncFormat/resolveScope never consult this — ownDataPath gets its "subset"
+	 * default the same way any other protected json path does. Consulted separately, where
+	 * content is actually applied: readAndApplyFitAttributes rejects a user config entry
+	 * targeting this path, and resolveSubsetScopePath strips these fields from content.
+	 */
+	safeFieldDenylist(path: string): readonly string[] | null {
+		return path === this.ownDataPath ? FIT_OWN_SETTINGS_DENYLIST : null;
+	}
+
+	/**
+	 * A `.obsidian/` path that is currently actively syncing (tracked + format-eligible).
+	 * For these paths, a remote REMOVED is ambiguous between "the file was actually
+	 * deleted" and "someone removed it from the repo to stop syncing it" — the latter is
+	 * the documented way to untrack a git-mask path (see docs/sync-logic.md § Protected
+	 * Paths). resolveAllChanges uses this to route such removals to untrackNotices (a
+	 * one-time, this-sync-only Notice item — see FitSync.sync) instead of auto-deleting
+	 * the local file. Non-`.obsidian/` paths are always false —
+	 * ordinary tracked files have no such ambiguity, remote deletion just means deletion.
+	 */
+	isGitMaskTrackedPath(path: string): boolean {
+		return path.startsWith(".obsidian/") && this.shouldSyncPath(path);
+	}
+
+	/** Path-level hard denylist — see src/util/protectedPaths.ts for the "why". */
+	isHardDenylistedPath(path: string): boolean {
+		return isHardDenylistedObsidianPath(path);
+	}
+
+	/** Replaces the parsed .fitattributes.json content used by shouldSyncPath's format gate. */
+	setFitAttributes(attributes: FitAttributesFile): void {
+		this.fitAttributes = attributes;
+	}
+
+	/**
+	 * Dry-run classification of `.obsidian/` paths found this sync (local scan and/or
+	 * remote tree) that are NOT actively syncing, plus the one bucket that is — purely
+	 * for diagnostic logging (FitSync logs the result, see docs/sync-logic.md § Protected
+	 * Paths). No extra I/O: derived entirely from this sync's already-fetched local/remote
+	 * state. "untracked" means no remote git content — the trigger this whole feature runs
+	 * on — not any other kind of exclusion.
+	 */
+	classifyObsidianPathsForLog(
+		currentLocalState: FileStates,
+		remoteState: FileStates
+	): { trackedSyncing: string[]; hardDenylisted: string[]; trackedUnconfigured: string[]; untracked: string[] } {
+		const candidates = new Set<string>();
+		for (const path of Object.keys(currentLocalState)) {
+			if (path.startsWith(".obsidian/")) candidates.add(path);
+		}
+		for (const path of Object.keys(remoteState)) {
+			if (path.startsWith(".obsidian/")) candidates.add(path);
+		}
+
+		const trackedSyncing: string[] = [];
+		const hardDenylisted: string[] = [];
+		const trackedUnconfigured: string[] = [];
+		const untracked: string[] = [];
+
+		for (const path of [...candidates].sort()) {
+			if (this.isHardDenylistedPath(path)) {
+				hardDenylisted.push(path);
+			} else if (path in remoteState) {
+				// format: "json" alone is incomplete for a protected path (see
+				// isEligibleForTracking) — bucketed with "unconfigured", not "syncing".
+				if (this.isEligibleForTracking(path)) {
+					trackedSyncing.push(path);
+				} else {
+					trackedUnconfigured.push(path);
+				}
+			} else {
+				untracked.push(path);
+			}
+		}
+
+		return { trackedSyncing, hardDenylisted, trackedUnconfigured, untracked };
+	}
+
+	/**
+	 * Known-tracked .obsidian/ paths, derived purely from existing baselines — a tracked
+	 * path always has a known SHA by construction, so this needs no separate storage.
+	 * Feeds LocalVault.configure({trackedHiddenPaths}) so local discovery can proactively
+	 * probe these specific paths even when the broader hidden-file scan is off.
+	 *
+	 * Deliberately does NOT include trackedForCurrentSync (a path reconciled untracked→
+	 * tracked earlier this same sync, before either baseline map is populated) — this is
+	 * safe, not an oversight: FitSync's pre-sync reconcile block always either establishes
+	 * a real baseline directly, or deletes lastFetchedRemoteShas[path] to force a remote
+	 * change this sync, and any remote change for a path the local scan doesn't cover gets
+	 * an independent direct filesystem check (util/changeTracking.ts's
+	 * determineLocalChecksNeeded, #169) regardless of this list's contents. See
+	 * docs/sync-logic.md § Baseline Recording for Untracked Files (#169).
+	 */
+	trackedObsidianPaths(): string[] {
+		const paths = new Set<string>();
+		for (const path of Object.keys(this.localShas)) {
+			if (path.startsWith(".obsidian/")) paths.add(path);
+		}
+		for (const path of Object.keys(this.lastFetchedRemoteShas)) {
+			if (path.startsWith(".obsidian/")) paths.add(path);
+		}
+		return [...paths];
+	}
+
+	/** Same-sync-only tracking override — see the trackedForCurrentSync field comment. */
+	markTrackedForCurrentSync(paths: string[]): void {
+		this.trackedForCurrentSync = new Set(paths);
 	}
 
 	/**
@@ -198,10 +335,99 @@ export class Fit {
 		return filtered;
 	}
 
+	/**
+	 * Reads and parses local .fitattributes.json content (already known to exist), updating
+	 * this.fitAttributes and this.fitAttributesWarning. Shared by the eager (reconcile) and
+	 * lazy (getLocalChanges) refresh paths below.
+	 */
+	// Known gap: always trusts local disk content, even if .fitattributes.json itself has
+	// an unresolved pending clash with remote — see docs/sync-logic.md § .fitattributes.json
+	// (#337) → "Known gap — self-clash not consulted".
+	private async readAndApplyFitAttributes(): Promise<void> {
+		try {
+			const fitAttributesContent = await this.localVault.readFileContent(FITATTRIBUTES_PATH);
+			const parsed = parseFitAttributes(fitAttributesContent.toPlainText());
+			if (parsed.ok) {
+				// A denylisted path's config has no effect either way (safeFieldDenylist),
+				// so drop it here just to avoid it silently looking "applied". Scoped to
+				// just that entry — every other rule here is independently valid.
+				const nonConfigurablePaths = Object.keys(parsed.value).filter(path => this.safeFieldDenylist(path));
+				if (nonConfigurablePaths.length > 0) {
+					for (const path of nonConfigurablePaths) delete parsed.value[path];
+					const message = `.fitattributes.json: ${nonConfigurablePaths.map(p => `"${p}"`).join(', ')} ${nonConfigurablePaths.length === 1 ? 'is' : 'are'} not configurable (sync behavior fixed internally) — ${nonConfigurablePaths.length === 1 ? 'this entry has' : 'these entries have'} no effect and should be removed`;
+					fitLogger.log(`[Fit] ${message}`);
+					this.fitAttributesWarning = message;
+				} else {
+					this.fitAttributesWarning = null;
+				}
+				this.setFitAttributes(parsed.value);
+			} else {
+				const message = `.fitattributes.json is malformed — no .obsidian/ paths will sync until it's fixed (${parsed.error})`;
+				fitLogger.log(`[Fit] ${message}`);
+				this.setFitAttributes({});
+				this.fitAttributesWarning = message;
+			}
+		} catch (err) {
+			// Exists but unreadable (I/O error, permission issue, etc.) — distinct from a
+			// parse failure above. Unlike that case, this one can't reliably surface as a
+			// visible Notice: the caller reached this catch either via getLocalChanges (whose
+			// own LocalVault.readFromSource() already reads this same file as part of its
+			// normal per-file scan, and throws/aborts the WHOLE sync on any unreadable tracked
+			// file before this code path would even run for a failing read) or via
+			// refreshFitAttributesForReconcile's eager path (which does reach here, but
+			// getLocalChanges's later readFromSource call re-attempts the same failing read
+			// and aborts the sync anyway, before the warning-Notice code downstream is
+			// reached). So: log for debugging, but don't claim a user-visible warning that
+			// can't actually appear — treat as unconfigured, matching the parse-failure case's
+			// "nothing configured" fallback without pretending it's equally visible.
+			const reason = err instanceof Error ? err.message : String(err);
+			fitLogger.log(`[Fit] .fitattributes.json exists but could not be read (${reason})`);
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+		}
+	}
+
+	/**
+	 * Eagerly re-parses local .fitattributes.json content into this.fitAttributes, ahead of
+	 * the normal per-sync local scan. Only worth calling when there's something that could
+	 * actually be reconciled this sync (see FitSync's pre-sync reconcile block) — a local
+	 * edit to .fitattributes.json needs to be visible to isEligibleForTracking() the SAME
+	 * sync it was made, not delayed a sync like the general lazy update in getLocalChanges
+	 * (which only updates fitAttributes from data the scan already touched). Checks existence
+	 * via statPaths first so a call where the file doesn't exist touches nothing further.
+	 */
+	async refreshFitAttributesForReconcile(): Promise<void> {
+		const stats = await this.localVault.statPaths([FITATTRIBUTES_PATH]);
+		if (stats.get(FITATTRIBUTES_PATH) !== 'file') {
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+			return;
+		}
+		await this.readAndApplyFitAttributes();
+	}
+
 	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
+		// Feed the tracked-path set to local hidden-path discovery before scanning.
+		this.localVault.configure({ trackedHiddenPaths: this.trackedObsidianPaths() });
+
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
+
+		// Re-parse .fitattributes.json content (feeds shouldSyncPath's format gate) from this
+		// scan's own knowledge of whether the file exists — never a separate stat/read probe,
+		// so a sync where it simply doesn't exist touches it zero times. This runs before
+		// shouldSyncPath filtering below, so a local edit made just before running sync
+		// already gates this sync's own local push/pull decisions — no lag. The pre-sync
+		// reconcile block (FitSync) is a separate consumer of this.fitAttributes with its own
+		// eager refresh (refreshFitAttributesForReconcile), specifically so a
+		// tracking-transition decision doesn't have to wait on this lazy path either.
+		if (currentState[FITATTRIBUTES_PATH] !== undefined) {
+			await this.readAndApplyFitAttributes();
+		} else {
+			this.setFitAttributes({});
+			this.fitAttributesWarning = null;
+		}
 
 		// Clean up orphaned legacy entries for files no longer present locally.
 		for (const path of Object.keys(this.localSha)) {

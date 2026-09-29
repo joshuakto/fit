@@ -15,9 +15,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import FitSettingTab from './fitSettingTab';
 import { FitLogger } from './logger';
-import { findNewFields } from '@/fitSettings';
+import { DEFAULT_SETTINGS } from '@/fitSettings';
 
-const EMPTY_SETTINGS = { pat: '', avatarUrl: '', owner: '', repo: '', branch: '' };
+const EMPTY_SETTINGS = { ...DEFAULT_SETTINGS };
 
 // Helper functions to find elements by their user-visible labels
 function findInputByLabel(container: HTMLElement, labelText: string): HTMLInputElement | null {
@@ -285,17 +285,20 @@ describe('FitSettingTab - GitHub settings', () => {
 		expect(branches).toEqual(['main', 'develop', 'feature-x']);
 	});
 
-	it('should generate correct GitHub link for owner/repo/branch', async () => {
+	it.each([
+		['github.com', 'https://github.com/bob/project-x/tree/feature-123'],
+		['github.example.com', 'https://github.example.com/bob/project-x/tree/feature-123'],
+	])('should generate correct GitHub link for owner/repo/branch on host %j', async (githubHost, expectedLink) => {
 		const fakePlugin: any = {
 			githubConnection: null,
-			settings: { owner: 'bob', repo: 'project-x', branch: 'feature-123' },
+			settings: { githubHost, owner: 'bob', repo: 'project-x', branch: 'feature-123' },
 			logger: mockLogger
 		};
 
 		const settingTab = new FitSettingTab({} as any, fakePlugin);
 
 		// Verify: Link uses settings values
-		expect(settingTab.getLatestLink()).toBe('https://github.com/bob/project-x/tree/feature-123');
+		expect(settingTab.getLatestLink()).toBe(expectedLink);
 	});
 
 	it('should clear branches when fetching fails (repo not found)', async () => {
@@ -422,26 +425,41 @@ describe('FitSettingTab - GitHub settings', () => {
 	});
 });
 
-describe('findNewFields', () => {
-	it.each([
-		{ name: 'new field added',
-			orig: ['theme', 'fontSize'],
-			current: ['theme', 'fontSize', 'newToken'],
-			expectedNew: ['newToken'] },
-		{ name: 'no new fields',
-			orig: ['a', 'b', 'c'],
-			current: ['a', 'b'],
-			expectedNew: [] },
-		{ name: 'empty known list',
-			orig: [],
-			current: ['x', 'y'],
-			expectedNew: ['x', 'y'] },
-		{ name: 'both empty', orig: [], current: [], expectedNew: [] },
-		{ name: 'field removed plus new added',
-			orig: ['a', 'old'],
-			current: ['a', 'new'],
-			expectedNew: ['new'] },
-	])('$name', ({ orig, current, expectedNew }) => {
-		expect(findNewFields(orig, current)).toEqual(expectedNew);
+describe('FitSettingTab - auto-sync triggers (#65)', () => {
+	it('renders sync-on-save/sync-on-open toggles that persist on change', async () => {
+		const mockLogger = new FitLogger({ adapter: null });
+		const fakePlugin: any = {
+			settings: { ...DEFAULT_SETTINGS, syncOnSave: false, syncOnOpen: false },
+			saveSettings: vi.fn().mockResolvedValue(undefined),
+			logger: mockLogger,
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+		settingTab.localConfigBlock();
+
+		const findToggleByLabel = (labelText: string): HTMLInputElement | null => {
+			const settings = Array.from(settingTab.containerEl.querySelectorAll('.setting-item'));
+			for (const setting of settings) {
+				const nameEl = setting.querySelector('.setting-item-name');
+				if (nameEl?.textContent === labelText) {
+					return setting.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+				}
+			}
+			return null;
+		};
+
+		const saveToggle = findToggleByLabel('Sync on save')!;
+		const openToggle = findToggleByLabel('Sync on open')!;
+		expect(saveToggle.checked).toBe(false);
+		expect(openToggle.checked).toBe(false);
+
+		saveToggle.checked = true;
+		saveToggle.dispatchEvent(new Event('change'));
+		openToggle.checked = true;
+		openToggle.dispatchEvent(new Event('change'));
+
+		await vi.waitFor(() => expect(fakePlugin.saveSettings).toHaveBeenCalledTimes(2));
+		expect(fakePlugin.settings.syncOnSave).toBe(true);
+		expect(fakePlugin.settings.syncOnOpen).toBe(true);
 	});
 });

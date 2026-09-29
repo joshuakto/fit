@@ -5,7 +5,7 @@
  */
 
 import { DataAdapter, ListedFiles, TFile, TFolder, Vault } from "obsidian";
-import { ObsidianSyncRules } from "@/fitSettings";
+import { FITATTRIBUTES_PATH } from "@/fitAttributes";
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange } from "./util/changeTracking";
 import { fitLogger } from "./logger";
@@ -98,18 +98,23 @@ async function collectHiddenInDir(
 export class LocalVault implements IVault<"local"> {
 	private vault: Vault;
 	private syncHiddenFiles = true;
-	private obsidianSyncRules: ObsidianSyncRules = {};
+	// Paths known to be git-tracked (per Fit.trackedObsidianPaths()) — recomputed by the
+	// caller every sync from localShas/lastFetchedRemoteShas. Lets readFromSource()
+	// proactively probe these specific paths for local discovery even when the broader
+	// recursive hidden-path scan is skipped (syncHiddenFiles = false), same pattern
+	// already used for .fitattributes.json itself below.
+	private trackedHiddenPaths: string[] = [];
 
 	constructor(vault: Vault) {
 		this.vault = vault;
 	}
 
-	configure(opts: { syncHiddenFiles?: boolean; obsidianSyncRules?: ObsidianSyncRules }): void {
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
 		if (opts.syncHiddenFiles !== undefined) {
 			this.syncHiddenFiles = opts.syncHiddenFiles;
 		}
-		if (opts.obsidianSyncRules !== undefined) {
-			this.obsidianSyncRules = opts.obsidianSyncRules;
+		if (opts.trackedHiddenPaths !== undefined) {
+			this.trackedHiddenPaths = opts.trackedHiddenPaths;
 		}
 	}
 
@@ -142,10 +147,14 @@ export class LocalVault implements IVault<"local"> {
 		//
 		// Obsidian vault paths always use forward slashes (even on Windows)
 		if (!this.syncHiddenFiles) {
+			// .fitattributes.json must propagate regardless of syncHiddenFiles, or it can't
+			// reach a device that has hidden-file sync off — defeating its own purpose.
+			if (filePath === FITATTRIBUTES_PATH) return true;
+
 			const parts = filePath.split('/');
 			if (parts.some(part => part.startsWith('.'))) {
-				// Explicitly opted-in obsidian paths are tracked regardless of syncHiddenFiles
-				return filePath in this.obsidianSyncRules;
+				// Git-tracked obsidian paths are tracked regardless of syncHiddenFiles
+				return this.trackedHiddenPaths.includes(filePath);
 			}
 		}
 
@@ -190,7 +199,38 @@ export class LocalVault implements IVault<"local"> {
 			}
 		}
 
-		const allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		// .fitattributes.json is hidden (leading dot) so vault.getFiles() never returns
+		// it — must be discovered explicitly when the hidden-path scan above is skipped,
+		// or shouldTrackState's special-case for it (below) never gets a chance to run.
+		// Only add it if it actually exists locally: injecting a path that doesn't exist
+		// would make the SHA-computation step below fail it and abort the whole sync.
+		let allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		if (!this.syncHiddenFiles && !allPaths.includes(FITATTRIBUTES_PATH)) {
+			if (await this.vault.adapter.stat(FITATTRIBUTES_PATH)) {
+				allPaths = [...allPaths, FITATTRIBUTES_PATH];
+			}
+		}
+
+		// Same reasoning as the .fitattributes.json probe above, generalized: a git-tracked
+		// .obsidian/ path won't be found by vault.getFiles() (hidden) or by the recursive
+		// scan (skipped when syncHiddenFiles = false) unless probed explicitly. Without this,
+		// local edits to a tracked path go undetected — and therefore unpushed — whenever
+		// syncHiddenFiles is off.
+		//
+		// Note: this list (Fit.trackedObsidianPaths()) can lag by one sync for a path just
+		// reconciled untracked→tracked — that's expected, not a correctness gap. A remote
+		// change for a path missing here still gets caught by FitSync's independent
+		// filesystem safety check (#169) rather than silently overwriting local content; see
+		// Fit.trackedObsidianPaths()'s own comment and docs/sync-logic.md § Baseline
+		// Recording for Untracked Files (#169).
+		if (!this.syncHiddenFiles) {
+			for (const path of this.trackedHiddenPaths) {
+				if (allPaths.includes(path)) continue;
+				if (await this.vault.adapter.stat(path)) {
+					allPaths = [...allPaths, path];
+				}
+			}
+		}
 
 		// Filter to only tracked paths (excludes hidden files when syncHiddenFiles is off)
 		const trackedPaths = allPaths.filter(path => this.shouldTrackState(path));

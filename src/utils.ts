@@ -27,20 +27,21 @@ export function showFileChanges(
 			cls: "file-changes-heading"
 		});
 		heading.setText(`${recordSet.heading}\n`);
-		const fileChanges: Record<ChangeOperation, string[]> = {
+		const fileChanges: Record<ChangeOperation, FileChange[]> = {
 			ADDED: [],
 			MODIFIED: [],
 			REMOVED: []
 		};
 		for (const op of recordSet.changes) {
-			fileChanges[op.type].push(op.path);
+			fileChanges[op.type].push(op);
 		}
-		for (const [changeType, paths] of Object.entries(fileChanges)) {
-			if (paths.length === 0) {continue;}
+		for (const [changeType, ops] of Object.entries(fileChanges)) {
+			if (ops.length === 0) {continue;}
 			const heading = fileOpsNotice.noticeEl.createEl("span");
 			heading.setText(`${changeType.charAt(0).toUpperCase() + changeType.slice(1).toLowerCase()}\n`);
 			heading.addClass(`file-changes-subheading`);
-			for (const path of paths) {
+			for (const op of ops) {
+				const path = op.path;
 				const listItem = fileOpsNotice.noticeEl.createEl("li", {
 					cls: "file-update-row"
 				});
@@ -53,6 +54,11 @@ export function showFileChanges(
 						if (i > 0) listItem.createSpan({ text: ', ' });
 						listItem.createEl('code', { text: f, cls: 'fit-field-warning-field' });
 					});
+				} else if (op.note) {
+					// Same MODIFIED styling, but the note distinguishes it from a real content
+					// change (e.g. an untrack notice: nothing was edited, just left in place).
+					listItem.createSpan({ text: path });
+					listItem.createSpan({ text: ` (${op.note})`, cls: 'file-change-note-text' });
 				} else {
 					listItem.setText(path);
 				}

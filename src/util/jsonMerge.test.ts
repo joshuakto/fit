@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeJson, serialiseMerged, CANVAS_MERGE_SPEC, type JsonMergeSpec } from './jsonMerge';
+import { mergeJson, serialiseMerged, mergeSpecForPath, CANVAS_MERGE_SPEC, GENERIC_JSON_MERGE_SPEC, type JsonMergeSpec } from './jsonMerge';
 
 describe('mergeJson', () => {
 	describe('error handling', () => {
@@ -81,6 +81,35 @@ describe('mergeJson', () => {
 			const remote = JSON.stringify({ items: [{ id: 'a', val: 'remote' }] });
 			const result = mergeJson(base, local, remote, spec);
 			expect(result).toMatchObject({ merged: false, reason: expect.stringContaining('a') });
+		});
+
+		it('remote deletion of an item local left unchanged doesn\'t yet reconcile as deleted (TODO)', () => {
+			const itemA = { id: 'a', val: 'base' };
+			const itemB = { id: 'b', val: 'base' };
+			const base = JSON.stringify({ items: [itemA, itemB] });
+			const local = base; // unchanged from base
+			const remote = JSON.stringify({ items: [itemA] }); // remote deleted 'b'
+			const result = mergeJson(base, local, remote, spec);
+			// mergeKeyedArrays never consults base for an id missing from one side, so it
+			// resurrects 'b' from local's copy instead of reconciling the deletion.
+			// TODO: should be { merged: true, value: { items: [itemA] } } - the deletion is
+			// unambiguous here (local never touched 'b'), same as mergeObjects' scalar-key
+			// branch already does for a plain key missing on one side.
+			expect(result).toEqual({ merged: true, value: { items: [itemA, itemB] } });
+		});
+
+		it('remote deletion against a local edit of same item doesn\'t yet conflict (TODO)', () => {
+			const itemA = { id: 'a', val: 'base' };
+			const itemB = { id: 'b', val: 'base' };
+			const base = JSON.stringify({ items: [itemA, itemB] });
+			const local = JSON.stringify({ items: [itemA, { ...itemB, val: 'local-edit' }] });
+			const remote = JSON.stringify({ items: [itemA] }); // remote deleted 'b'
+			const result = mergeJson(base, local, remote, spec);
+			// Same root cause: base is never consulted, so this silently keeps local's edit
+			// as if remote had simply never touched 'b', instead of flagging a real conflict
+			// (one side deleted, the other edited the same item).
+			// TODO: should be { merged: false, reason: expect.stringContaining('b') }.
+			expect(result).toEqual({ merged: true, value: { items: [itemA, { id: 'b', val: 'local-edit' }] } });
 		});
 
 		it('same-id with identical content is not a conflict', () => {
@@ -186,6 +215,34 @@ describe('mergeJson', () => {
 			const result = mergeJson(base, local, remote, spec);
 			expect(result).toMatchObject({ merged: false, reason: expect.stringContaining('key') });
 		});
+
+		it.each([
+			{ changedSide: 'local', local: 'light', remote: 'dark', expected: 'light' },
+			{ changedSide: 'remote', local: 'dark', remote: 'light', expected: 'light' },
+		])('a shared key edited on only the $changedSide side (other side left it matching base) merges instead of spuriously clashing', ({ local, remote, expected }) => {
+			// Regression test: mergeObjects' same-key branch used to ignore base entirely -
+			// ANY two files that both changed (even in unrelated ways) would clash on every
+			// key one side actually edited, since the untouched side's copy of that key was
+			// never recognized as "unchanged from base", only compared byte-for-byte against
+			// the other side's edit. Three-way resolution (already correct for keyed-array
+			// elements, see CANVAS_MERGE_SPEC tests below) now applies here too - both
+			// directions of the base-comparison exercised, since they're separate branches.
+			const base = JSON.stringify({ theme: 'dark' });
+			const result = mergeJson(base, JSON.stringify({ theme: local }), JSON.stringify({ theme: remote }), spec);
+			expect(result).toEqual({ merged: true, value: { theme: expected } });
+		});
+
+		it('local edits an existing key while remote adds a different, unrelated new key: both merge cleanly', () => {
+			// This is the actual scenario the format:"json" feature advertises ("concurrent
+			// edits to different top-level keys merge instead of clashing to _fit/") - not
+			// just two brand-new key additions on each side, which is all the pre-existing
+			// coverage exercised.
+			const base = JSON.stringify({ theme: 'dark' });
+			const local = JSON.stringify({ theme: 'light' });
+			const remote = JSON.stringify({ theme: 'dark', windowWidth: 1200 });
+			const result = mergeJson(base, local, remote, spec);
+			expect(result).toEqual({ merged: true, value: { theme: 'light', windowWidth: 1200 } });
+		});
 	});
 
 	describe('CANVAS_MERGE_SPEC', () => {
@@ -238,6 +295,22 @@ describe('mergeJson', () => {
 			expect(merged.nodes).toHaveLength(0);
 			expect(merged.edges).toHaveLength(0);
 		});
+	});
+});
+
+describe('mergeSpecForPath', () => {
+	it.each(['board.canvas', 'Board.Canvas', 'BOARD.CANVAS', 'board.CANVAS'])(
+		'%s resolves to CANVAS_MERGE_SPEC regardless of case', (path) => {
+			// Regression test: this used to be a case-sensitive path.endsWith('.canvas')
+			// check, disagreeing with detectSyncFormat's lowercased match - a file like
+			// Board.Canvas would be dispatched into the JSON-merge lane (detectSyncFormat
+			// says "json") but silently get GENERIC_JSON_MERGE_SPEC instead of
+			// CANVAS_MERGE_SPEC, losing the id-keyed nodes/edges union.
+			expect(mergeSpecForPath(path)).toBe(CANVAS_MERGE_SPEC);
+		});
+
+	it('a non-canvas .json path resolves to GENERIC_JSON_MERGE_SPEC', () => {
+		expect(mergeSpecForPath('config.json')).toBe(GENERIC_JSON_MERGE_SPEC);
 	});
 });
 

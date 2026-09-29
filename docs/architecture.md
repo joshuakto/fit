@@ -25,7 +25,7 @@ graph TB
 
 ### FitPlugin (src/fitPlugin.ts)
 **Purpose**: Plugin orchestrator and lifecycle manager (interfaces with 👤 user)
-- Manages plugin loading, settings persistence, auto-sync scheduling
+- Manages plugin loading, settings persistence, auto-sync scheduling (interval timer plus opt-in event triggers: sync on file save, sync on app open)
 - Coordinates between sync engine and Obsidian UI
 - Handles error recovery and user notifications
 
@@ -97,6 +97,7 @@ Both local and remote caches use the canonical Git blob SHA format: `SHA1("blob 
 - Current implementation: GitHub backend with two components:
   - `GitHubConnection`: PAT-based operations (authentication, repo/branch discovery) for settings UI
   - `RemoteGitHubVault`: Repository-specific sync operations using `@octokit/core` with automatic retry handling
+- Both derive their Octokit `baseUrl` from the `githubHost` setting via `apiBaseUrl()` (`src/remotes/githubHost.ts`), so github.com and GitHub Enterprise Server share one code path — they expose the same API
 - Architecture supports adding GitLab/Gitea backends via IVault interface (would require corresponding connection classes)
 
 ### Support Systems
