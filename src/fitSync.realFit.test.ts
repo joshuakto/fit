@@ -53,11 +53,12 @@ describe('FitSync', () => {
 		deviceName: 'test-device'
 	};
 
-	function createFit(initialLocalStoreState: LocalStores) : Fit {
+	function createFit(initialLocalStoreState: LocalStores, pluginDir?: string) : Fit {
 		const fit = new Fit(
 			testSettings as FitSettings,
 			initialLocalStoreState,
-			{} as unknown as Vault);
+			{} as unknown as Vault,
+			pluginDir);
 		// Replace with fake implementations for testing
 		fit.localVault = localVault as any;
 		fit.remoteVault = remoteVault as any;
@@ -65,8 +66,8 @@ describe('FitSync', () => {
 		return fit;
 	}
 
-	function createFitSync() : FitSync {
-		const fit = createFit(localStoreState);
+	function createFitSync(pluginDir?: string) : FitSync {
+		const fit = createFit(localStoreState, pluginDir);
 		const saveLocalStoreCallback = async (updates: Partial<LocalStores>) => {
 			// Update the shared state object so test assertions can verify the updates
 			Object.assign(localStoreState, updates);
@@ -349,7 +350,7 @@ describe('FitSync', () => {
 			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
-				{ path: '.obsidian/app.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('{"theme":"dark"}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
 
@@ -380,7 +381,7 @@ describe('FitSync', () => {
 					'normal.md': expect.any(String)  // Only normal file (protected paths filtered)
 				},
 				protectedPathShas: {
-					'.obsidian/app.json': expect.any(String),
+					'.obsidian/unconfigured': expect.any(String),
 					'.obsidian/plugins/plugin1/main.js': expect.any(String)
 				}
 			});
@@ -477,10 +478,12 @@ describe('FitSync', () => {
 			localVault.setFile('.obsidian/hotkeys.json', '{}');
 
 			await remoteVault.applyChanges([
-				// Hard-denylisted regardless of remote content.
-				{ path: '.obsidian/plugins/fit/data.json', content: FileContent.fromPlainText('{}') },
-				// Tracked (remote content exists) but no .fitattributes.json entry -> unconfigured.
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				// Hard-denylisted regardless of remote content — a plugin-managed code asset.
+				// FIT's own data.json is masked instead (format:"json" + scope:"subset" with
+				// a field denylist), not on this hard-denylist.
+				{ path: '.obsidian/plugins/some-plugin/main.js', content: FileContent.fromPlainText('console.log(1)') },
+				// Tracked, no .fitattributes.json entry, no extension so no filetype default -> unconfigured.
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('theme=dark') },
 				// Tracked and format:"text" -> actually syncing.
 				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') },
 			], []);
@@ -489,8 +492,8 @@ describe('FitSync', () => {
 
 			expectLoggerCalledWith('[FitSync] Protected-path detection', {
 				trackedSyncing: ['.obsidian/graph.json'],
-				hardDenylisted: ['.obsidian/plugins/fit/data.json'],
-				trackedUnconfigured: ['.obsidian/appearance.json'],
+				hardDenylisted: ['.obsidian/plugins/some-plugin/main.js'],
+				trackedUnconfigured: ['.obsidian/unconfigured'],
 				untracked: ['.obsidian/hotkeys.json'],
 				untrackedTotal: 1,
 			});
@@ -502,10 +505,10 @@ describe('FitSync', () => {
 
 		it('does not log the stop-syncing hint when no .obsidian/ path is actively syncing', async () => {
 			const fitSync = createFitSync();
-			// Tracked (remote content exists) but no .fitattributes.json entry -> unconfigured,
+			// Tracked, no .fitattributes.json entry, no extension so no filetype default -> unconfigured,
 			// never actually syncs -> no reason to hint "remove it to stop syncing".
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('theme=dark') },
 			], []);
 
 			await syncAndHandleResult(fitSync, createMockNotice());
@@ -529,20 +532,20 @@ describe('FitSync', () => {
 		});
 
 		it('should not trigger junk clash on the sync after a path becomes trackable and format-eligible', async () => {
-			// Simulate: remote has .obsidian/graph.json, client A synced before the path was
+			// Simulate: remote has .obsidian/unconfigured, client A synced before the path was
 			// tracked, then a .fitattributes.json entry appears (git-driven — not a local toggle)
 			const fitSync = createFitSync();
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('{"colorGroups":[]}') }
 			], []);
 
 			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas (no _fit/ write)
 			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeTruthy();
+			expect(localStoreState.protectedPathShas?.['.obsidian/unconfigured']).toBeTruthy();
 
 			// .fitattributes.json now declares this path format:"text" (as if it appeared in git)
-			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/unconfigured': { format: 'text' } }));
 
 			// Next sync: reconciliation should set baseline from protectedPathShas,
 			// no junk clash even though local doesn't have the file yet
@@ -551,9 +554,9 @@ describe('FitSync', () => {
 			// Should succeed with no conflicts — reconciliation handled it
 			expect(result).toMatchObject({ success: true, clash: [] });
 			// protectedPathShas entry should be cleared (path is now tracked)
-			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
+			expect(localStoreState.protectedPathShas?.['.obsidian/unconfigured']).toBeUndefined();
 			// File should now be in localShas (tracked)
-			expect(localStoreState.localShas?.['.obsidian/graph.json']).toBeTruthy();
+			expect(localStoreState.localShas?.['.obsidian/unconfigured']).toBeTruthy();
 		});
 
 		it('should restore pre-reconciliation state when sync fails after opt-in mutation', async () => {
@@ -563,16 +566,16 @@ describe('FitSync', () => {
 
 			// Remote has a .obsidian/ file that we'll opt in to
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/graph.json', content: FileContent.fromPlainText('{"colorGroups":[]}') }
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('{"colorGroups":[]}') }
 			], []);
 
 			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas
 			await syncAndHandleResult(fitSync, createMockNotice());
-			const cachedSha = localStoreState.protectedPathShas?.['.obsidian/graph.json'];
+			const cachedSha = localStoreState.protectedPathShas?.['.obsidian/unconfigured'];
 			expect(cachedSha).toBeTruthy();
 
 			// .fitattributes.json now declares this path format:"text"
-			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/unconfigured': { format: 'text' } }));
 
 			// Second sync fails after reconciliation mutates state
 			remoteVault.setFailure(VaultError.network("Couldn't reach GitHub API"));
@@ -580,12 +583,12 @@ describe('FitSync', () => {
 
 			// In-memory protectedPathShas must be restored to pre-reconciliation state
 			// so next sync attempt can re-run reconciliation from the correct baseline.
-			expect(fitSync.fit.protectedPathShas['.obsidian/graph.json']).toBe(cachedSha);
+			expect(fitSync.fit.protectedPathShas['.obsidian/unconfigured']).toBe(cachedSha);
 
 			// Third sync (succeeds): reconciliation re-runs, no junk clash
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
 			expect(result).toMatchObject({ success: true, clash: [] });
-			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBeUndefined();
+			expect(localStoreState.protectedPathShas?.['.obsidian/unconfigured']).toBeUndefined();
 		});
 
 		it('should surface a clash (not silently apply remote) when opting in a path whose local content differs from the last-glimpsed remote SHA', async () => {
@@ -594,23 +597,23 @@ describe('FitSync', () => {
 			// baseline the moment local turns out to differ from it.
 			const fitSync = createFitSync();
 			const remoteContent = FileContent.fromPlainText('{"colorGroups":[]}');
-			const remoteSha = await LocalVault.fileSha1('.obsidian/graph.json', remoteContent);
+			const remoteSha = await LocalVault.fileSha1('.obsidian/unconfigured', remoteContent);
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/graph.json', content: remoteContent }
+				{ path: '.obsidian/unconfigured', content: remoteContent }
 			], []);
 
 			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas, no download.
 			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(remoteSha);
+			expect(localStoreState.protectedPathShas?.['.obsidian/unconfigured']).toBe(remoteSha);
 
 			// Local independently has different content for this path (e.g. edited by Obsidian
 			// itself while sync was off for it).
-			localVault.setFile('.obsidian/graph.json', '{"colorGroups":["different"]}');
+			localVault.setFile('.obsidian/unconfigured', '{"colorGroups":["different"]}');
 
 			// .fitattributes.json now declares this path format:"text" (sync policy), and the
 			// vault can now read hidden paths (readability) — two independent axes, both need setting.
-			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/graph.json': { format: 'text' } }));
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/unconfigured': { format: 'text' } }));
 			localVault.setSyncHiddenFiles(true);
 
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
@@ -620,35 +623,35 @@ describe('FitSync', () => {
 			// sibling `error` field instead of being hidden by a truncated diff.
 			expect(result).toEqual(expect.objectContaining({
 				success: true,
-				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/graph.json' })])
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/unconfigured' })])
 			}));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.obsidian/graph.json': '{"colorGroups":["different"]}',
-				'_fit/.obsidian/graph.json': '{"colorGroups":[]}',
-				[FITATTRIBUTES_PATH]: JSON.stringify({ '.obsidian/graph.json': { format: 'text' } })
+				'.obsidian/unconfigured': '{"colorGroups":["different"]}',
+				'_fit/.obsidian/unconfigured': '{"colorGroups":[]}',
+				[FITATTRIBUTES_PATH]: JSON.stringify({ '.obsidian/unconfigured': { format: 'text' } })
 			});
 		});
 
 		it('should treat opt-in as a clean no-op when local content already matches the last-glimpsed remote SHA', async () => {
 			const fitSync = createFitSync();
 			const sharedContent = FileContent.fromPlainText('{"colorGroups":[]}');
-			const sharedSha = await LocalVault.fileSha1('.obsidian/graph.json', sharedContent);
+			const sharedSha = await LocalVault.fileSha1('.obsidian/unconfigured', sharedContent);
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/graph.json', content: sharedContent }
+				{ path: '.obsidian/unconfigured', content: sharedContent }
 			], []);
 
 			// First sync without a .fitattributes.json entry: caches SHA in protectedPathShas.
 			await syncAndHandleResult(fitSync, createMockNotice());
-			expect(localStoreState.protectedPathShas?.['.obsidian/graph.json']).toBe(sharedSha);
+			expect(localStoreState.protectedPathShas?.['.obsidian/unconfigured']).toBe(sharedSha);
 
 			// Local independently already has the exact same content (e.g. two devices
 			// converged, or the user copied it manually).
-			localVault.setFile('.obsidian/graph.json', '{"colorGroups":[]}');
+			localVault.setFile('.obsidian/unconfigured', '{"colorGroups":[]}');
 
 			// .fitattributes.json now declares this path format:"text" (sync policy), and the
 			// vault can now read hidden paths (readability) — two independent axes, both need setting.
-			const fitAttributesContent = JSON.stringify({ '.obsidian/graph.json': { format: 'text' } });
+			const fitAttributesContent = JSON.stringify({ '.obsidian/unconfigured': { format: 'text' } });
 			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
 			localVault.setSyncHiddenFiles(true);
 
@@ -657,7 +660,7 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
 			// No _fit/ write — this was a genuine no-op, not a resolved clash.
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.obsidian/graph.json': '{"colorGroups":[]}',
+				'.obsidian/unconfigured': '{"colorGroups":[]}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
 
@@ -668,7 +671,7 @@ describe('FitSync', () => {
 			const followUp = await syncAndHandleResult(fitSync, createMockNotice());
 			expect(followUp).toEqual(expect.objectContaining({ success: true, clash: [] }));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'.obsidian/graph.json': '{"colorGroups":[]}',
+				'.obsidian/unconfigured': '{"colorGroups":[]}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
 		});
@@ -814,6 +817,34 @@ describe('FitSync', () => {
 				'.obsidian/appearance.json': '{"theme":"light"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
 			});
+		});
+
+		it('deleting a tracked format:"text" .obsidian/ path locally pushes the deletion to remote', async () => {
+			// format:"text" paths go through the same compareFileStates REMOVED handling as any
+			// ordinary tracked file (baseline present + now absent -> push delete), so a local
+			// deletion here actually removes remote's copy - no resurrection on the next sync.
+			// See docs/sync-scenario-matrix.md's scope:"subset" self-heal row for the contrast.
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, writes file locally, establishes tracked baseline
+
+			localVault.deleteFile('.obsidian/appearance.json'); // user deletes the local file
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
+
+			// No resurrection on a further sync - remote's copy is really gone, not just observed absent.
+			const followUp = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(followUp).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
 		});
 
 		it('a local edit after an untrack announcement re-pushes the path normally', async () => {
@@ -1064,14 +1095,14 @@ describe('FitSync', () => {
 			});
 		});
 
-		it('leaves a .obsidian/ path with no known format detection-only, with no .fitattributes.json entry', async () => {
+		it('leaves a .obsidian/ path with no extension (no filetype default) detection-only, with no .fitattributes.json entry', async () => {
 			const fitSync = createFitSync();
 			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
-				// .json has no filetype heuristic — format:"json" masking isn't built, so an
-				// unconfigured JSON path stays detection-only, unlike .css/.md/.txt above.
-				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+				// No extension at all, so no filetype heuristic applies (unlike .css/.md/.txt
+				// above, or .json/.canvas below) — genuinely stays detection-only.
+				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('theme=dark') },
 			], []);
 
 			await syncAndHandleResult(fitSync, createMockNotice());
@@ -1080,25 +1111,50 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()).toEqual({});
 		});
 
-		it('an explicit format:"json" entry overrides the .css heuristic OUT of eligibility (incomplete without scope)', async () => {
+		it('syncs a tracked .json path via the scope:"subset" default with no .fitattributes.json entry', async () => {
 			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				// .json gets the same filetype default as .css/.md/.txt above — format:"json"
+				// — but for a protected path that alone resolves scope:"subset" too (the
+				// .obsidian/ default), which is a real, complete, sync-eligible config, not
+				// an incomplete one. No .fitattributes.json entry needed to activate it.
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+
+			// Two syncs: first records the remote SHA (protectedPathShas), second reconciles
+			// and actually pulls — same two-sync activation shape as any other .obsidian/ path.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "dark"}),
+			});
+		});
+
+		it('an explicit format:"json" entry overrides the .css heuristic, syncing via the scope:"subset" default instead of format:"text"', async () => {
+			const fitSync = createFitSync();
+			// Note: this path is named .css, but its content must actually be valid JSON —
+			// format:"json" runs it through the subset masking lane regardless of extension.
 			const fitAttributesContent = '{".obsidian/snippets/custom.css":{"format":"json"}}';
 			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
 			localVault.setSyncHiddenFiles(true);
 
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/snippets/custom.css', content: FileContent.fromPlainText('.tag { color: red; }') },
+				{ path: '.obsidian/snippets/custom.css', content: FileContent.fromPlainText('{"color":"red"}') },
 			], []);
 
 			await syncAndHandleResult(fitSync, createMockNotice());
 			await syncAndHandleResult(fitSync, createMockNotice());
 
-			// Explicit config always wins over the heuristic, including to opt OUT of the
-			// .css default's format:"text" eligibility — format:"json" alone is incomplete
-			// for a protected path (no scope yet), so it stays untracked, unlike the
-			// heuristic default which would have synced it.
+			// Explicit config wins over the .css heuristic's format:"text" default — this
+			// path is now format:"json", and (with no explicit scope) defaults to
+			// scope:"subset" like any other protected path, which is a complete, eligible
+			// config on its own — no scope:"full" override needed to activate it.
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/snippets/custom.css': expect.stringOfJson({"color": "red"}),
 			});
 		});
 
@@ -1118,7 +1174,7 @@ describe('FitSync', () => {
 		});
 
 		describe('shouldSyncPath — dynamic ownDataPath', () => {
-			it('blocks own data.json when pluginDir matches install dir', () => {
+			it('excludes own data.json from the normal pipeline when pluginDir matches install dir (diverted to the subset-scope lane, not blocked)', () => {
 				const fit = new Fit(
 					testSettings as FitSettings,
 					makeLocalStore(),
@@ -1126,7 +1182,40 @@ describe('FitSync', () => {
 					'.obsidian/plugins/fit-dev'
 				);
 				fit.localShas['.obsidian/plugins/fit-dev/data.json'] = 'some-sha' as BlobSha;
+				// false here means "handled by FitSync.syncSubsetScopePaths instead", not
+				// "never synced" — own data.json is forced format:"json" + scope:"subset",
+				// not hard-denylisted (see the two tests below).
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/data.json')).toBe(false);
+			});
+
+			it('forces format:"json" + scope:"subset" for own data.json', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault,
+					'.obsidian/plugins/fit-dev'
+				);
+				const ownDataPath = '.obsidian/plugins/fit-dev/data.json';
+				expect(fit.resolveSyncFormat(ownDataPath)).toBe('json');
+				expect(fit.resolveScope(ownDataPath)).toBe('subset');
+			});
+
+			it('an explicit scope:"full" for own data.json resolves truthfully and is eligible for tracking (no independent backstop at this layer)', () => {
+				const fit = new Fit(
+					testSettings as FitSettings,
+					makeLocalStore(),
+					{} as unknown as Vault,
+					'.obsidian/plugins/fit-dev'
+				);
+				const ownDataPath = '.obsidian/plugins/fit-dev/data.json';
+				fit.localShas[ownDataPath] = 'some-sha' as BlobSha;
+				// The denylist gates syncing, not tracking (docs/sync-logic.md § Path Filtering
+				// and Safety) — bypasses the real config-rejection safety net
+				// (readAndApplyFitAttributes, tested separately) by calling setFitAttributes
+				// directly, to confirm eligibility itself provides no independent backstop.
+				fit.setFitAttributes({ [ownDataPath]: { format: 'json', scope: 'full' } });
+				expect(fit.resolveScope(ownDataPath)).toBe('full');
+				expect(fit.isEligibleForTracking(ownDataPath)).toBe(true);
 			});
 
 			it('does not block other files under alternate install dir', () => {
@@ -1141,15 +1230,22 @@ describe('FitSync', () => {
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit-dev/config.json')).toBe(true);
 			});
 
-			it('still blocks standard plugins/fit/data.json even without pluginDir (hard denylist, path-literal branch)', () => {
+			it('standard plugins/fit/data.json without pluginDir still gets the generic json+subset default, but with no path-specific denylist applied (ownDataPath unset)', () => {
 				const fit = new Fit(
 					testSettings as FitSettings,
 					makeLocalStore(),
 					{} as unknown as Vault
-					// no pluginDir
+					// no pluginDir — ownDataPath stays null, so safeFieldDenylist(path) is null
+					// for this path; nothing marks it as FIT's own data specifically.
 				);
 				fit.localShas['.obsidian/plugins/fit/data.json'] = 'some-sha' as BlobSha;
+				// Diverted to the scope:"subset" lane by the ordinary json+.obsidian/ defaults,
+				// not by any ownDataPath-specific handling. Only UNIVERSAL_SECRET_FIELD_DENYLIST
+				// (pat, encryptionPassword) applies here — FIT_OWN_SETTINGS_DENYLIST's
+				// identity/bookkeeping fields do NOT, since safeFieldDenylist(path) requires
+				// path === ownDataPath (see util/protectedPaths.ts).
 				expect(fit.shouldSyncPath('.obsidian/plugins/fit/data.json')).toBe(false);
+				expect(fit.resolveSyncFormat('.obsidian/plugins/fit/data.json')).toBe('json');
 			});
 
 			it('does NOT block alternate dir data.json without pluginDir (gap closed by passing pluginDir)', () => {
@@ -3487,7 +3583,7 @@ describe('FitSync', () => {
 			expect(localStoreState.pendingClashes).toContain('board.canvas');
 		});
 
-		it('format:"json" alone is NOT eligible for a protected .obsidian/ path (incomplete without scope, stays untracked)', async () => {
+		it('format:"json" alone defaults to scope:"subset" for a protected .obsidian/ path (first pull creates the tracked fields)', async () => {
 			const fitSync = createFitSync();
 			const fitAttributesContent = '{".obsidian/graph.json":{"format":"json"}}';
 			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
@@ -3498,11 +3594,12 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 
-			// format:"json" for a protected path only means anything once paired with an
-			// explicit scope:"full" — until then it's treated the same as unconfigured, not
-			// defaulted to whole-file sync. The remote file never gets pulled locally.
+			// No local file yet — first pull creates it containing exactly the tracked
+			// fields (every key currently present in the remote blob, since scope:"subset"
+			// is the default for a protected path once format resolves to "json").
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/graph.json': expect.stringOfJson({"colorGroups": [], "zoom": 1}),
 			});
 		});
 
@@ -3564,6 +3661,664 @@ describe('FitSync', () => {
 		});
 	});
 
+	describe('scope: "subset" field-level masking', () => {
+		it("FIT's own data.json syncs only denylist-safe fields — pat and sync bookkeeping never leak either direction", async () => {
+			const ownDataPath = '.obsidian/plugins/fit-dev/data.json';
+			const fitSync = createFitSync('.obsidian/plugins/fit-dev');
+			localVault.setSyncHiddenFiles(true);
+			// Simulates a bug or compromised device pushing pat alongside a safe field.
+			await remoteVault.setFile(ownDataPath, '{"autoSync":"on","pat":"leaked-secret"}');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[ownDataPath]: expect.stringOfJson({"autoSync": "on"}), // pat stripped on read, never written locally
+			});
+
+			// The real data.json shape: pat/localShas alongside the field the user just changed.
+			const realLocalDataJson = JSON.stringify({
+				pat: 'real-local-secret',
+				localShas: { 'note.md': 'abc123' },
+				autoSync: 'off',
+			});
+			localVault.setFile(ownDataPath, realLocalDataJson);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				// pat/localShas never pushed; remote's earlier leaked pat is dropped too.
+				[ownDataPath]: expect.stringOfJson({"autoSync": "off"}),
+			});
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[ownDataPath]: realLocalDataJson, // untouched by the push itself
+			});
+		});
+
+		it('push: only the changed tracked field is pushed, an untracked local field is never sent', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "dark"}), // first pull creates the file
+			});
+
+			// Untracked (local-only) field added alongside the tracked field's change.
+			const trackedEdit = { theme: 'light' };
+			const untrackedField = { windowWidth: 1200 };
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ ...trackedEdit, ...untrackedField }));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson(trackedEdit), // windowWidth never left the device
+			});
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ ...trackedEdit, ...untrackedField }), // untouched by the push itself
+			});
+		});
+
+		it('pull: a remote change to the tracked field overlays onto local, an untracked local field survives', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Untracked field, no opinion from remote.
+			const untrackedField = { windowWidth: 1200 };
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', ...untrackedField }));
+			await syncAndHandleResult(fitSync, createMockNotice()); // also pushes the unchanged tracked field
+
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				// new tracked value from remote, untracked field preserved from local
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', ...untrackedField }),
+			});
+			expect(localStoreState.pendingClashes).not.toContain('.obsidian/appearance.json');
+		});
+
+		it('deleting a tracked scope:"subset" path locally propagates the deletion to remote instead of self-healing via re-pull', async () => {
+			// resolveSubsetScopePath's `localText === null` branch (fitSync.ts) now checks
+			// priorRawSha before assuming first contact - a confirmed prior baseline means this
+			// is a real deletion, mirroring the baseline-presence diff every other tracked path
+			// category already gets from compareFileStates. See
+			// docs/sync-scenario-matrix.md's scope:"subset" delete row for the comparison against
+			// format:"text" .obsidian/ paths.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // establishes a real, confirmed baseline
+
+			localVault.deleteFile('.obsidian/appearance.json'); // user deletes the local file
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
+
+			// No resurrection on a further sync - remote's copy is really gone, not just observed absent.
+			const followUp = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(followUp).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
+		});
+
+		it('deleting a tracked scope:"subset" path locally while remote concurrently edits the tracked field clashes instead of silently deleting remote\'s edit', async () => {
+			// Same shape as the ordinary-path/format:"text" both-changed clash (resolveAllChanges'
+			// generic branch treats any local/remote change-type combination identically - see
+			// docs/sync-scenario-matrix.md's ordinary-path clash row) - a local delete concurrent
+			// with a remote edit must not resolve as an unconditional push-delete, or remote's
+			// edit is silently destroyed with no clash and no record.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // establishes a real, confirmed baseline
+
+			localVault.deleteFile('.obsidian/appearance.json'); // user deletes the local file
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"sepia"}'); // remote concurrently edits the tracked field
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/appearance.json' })]),
+			}));
+			// Whole object, not just the one path - proves remote's edit survives without
+			// asserting anything else was left untouched separately.
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				'.obsidian/appearance.json': '{"theme":"sepia"}', // Remote's edit survives - not silently deleted.
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+			});
+		});
+
+		it('cross-device rule disagreement: an opaque format:"text" pull that would drop an untracked local field is caught and overlaid instead, even with no remote .fitattributes.json at all', async () => {
+			// Full mechanism: docs/sync-logic.md § .fitattributes.json, "Cross-device rule
+			// disagreement". This variant has no remote .fitattributes.json entry at all — the
+			// case a naive rule comparison can't catch, since there's nothing to compare against.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"text"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
+
+			// Local adds a field remote (and remote's .fitattributes.json, which never
+			// exists in this test) has no opinion on, then pushes it up normally — under
+			// format:"text" this is just an opaque whole-file push, nothing masked yet.
+			const untrackedField = { windowWidth: 1200 };
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', ...untrackedField }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', ...untrackedField }), // opaque push landed whole
+			});
+
+			// Simulates another device/process pushing a masked subset directly — remote's
+			// own .fitattributes.json is still never written, only the tracked field
+			// changes and "windowWidth" disappears from the blob entirely.
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			// windowWidth survives — an opaque pull would have overwritten local with just
+			// '{"theme":"light"}', losing it.
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', ...untrackedField }),
+			});
+		});
+
+		it('single-device rule evolution: switching a path from scope:"subset" to format:"text" does not lose an untracked field on the next pull', async () => {
+			// Same mechanism as the cross-device test above (content-based, not rule-based),
+			// triggered differently: no disagreement between devices at pull time - both
+			// currently agree the path is format:"text" - but remote's blob predates that
+			// agreement, still shaped by the scope:"subset" rule this path used to have, so
+			// it never received "windowWidth". needsMaskedOverlayForPull doesn't care why
+			// remote's blob is a subset of local's fields, only that it is.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // pulls tracked field only
+			const untrackedField = { windowWidth: 1200 };
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', ...untrackedField }));
+			await syncAndHandleResult(fitSync, createMockNotice()); // pushes masked - windowWidth stays local-only
+
+			// Switch to format:"text" - no file edit, nothing else changed, so this sync is quiet.
+			const textRule = JSON.stringify({ '.obsidian/appearance.json': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Remote pushes a change to the same (previously tracked) field - its blob has
+			// never included windowWidth, since subset-lane pushes never sent it.
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: textRule,
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', ...untrackedField }),
+			});
+		});
+
+		// No "different tracked fields, clean auto-merge" test: GENERIC_JSON_MERGE_SPEC
+		// conflicts on any shared scalar key with differing values regardless of base (only
+		// brand-new key additions merge — src/util/jsonMerge.ts), and subset's tracked fields
+		// only grow via remote content, so a local edit can't produce that addition case.
+		// Both-changed realistically always clashes here — see the test below.
+		it('falls back to a _fit/ clash when local and remote change the same tracked field differently', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const untrackedField = { windowWidth: 1200 };
+			const localEdit = { theme: 'light', ...untrackedField };
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify(localEdit));
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"sepia"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson(localEdit), // untouched — nothing auto-applied
+				// full comparable preview: remote's tracked value overlaid onto local's untracked field
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'sepia', ...untrackedField }),
+			});
+			expect(localStoreState.pendingClashes).toContain('.obsidian/appearance.json');
+		});
+
+		it('a tracked field whose value is a nested object clashes correctly instead of being silently masked as in-sync', async () => {
+			// Regression test: stableStringify used to build its "stable" serialization via
+			// JSON.stringify(obj, Object.keys(obj).sort()) - an array replacer, which
+			// JSON.stringify applies at EVERY nesting level, not just the top level. A
+			// nested object's own keys were filtered against the outer object's key list
+			// and silently dropped (JSON.stringify({config:{mode:'x'}}, ['config']) ===
+			// '{"config":{}}'). Both local's and remote's masked view collapsed to the same
+			// "{config:{}}" regardless of what was actually inside, so the masked-equality
+			// shortcut wrongly reported "in sync" even though the two sides had genuinely
+			// different values for the tracked field - a silent, permanent divergence with
+			// no clash, no notice, nothing pushed or pulled.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"config":{"mode":"original"}}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			localVault.setFile('.obsidian/appearance.json', '{"config":{"mode":"local-edit"}}');
+			await remoteVault.setFile('.obsidian/appearance.json', '{"config":{"mode":"remote-edit"}}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/appearance.json' })]),
+			}));
+			expect(localStoreState.pendingClashes).toContain('.obsidian/appearance.json');
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ config: { mode: 'local-edit' } }), // untouched
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ config: { mode: 'remote-edit' } }),
+			});
+		});
+
+		it('a path switching from format:"text" into scope:"subset" with matching content does not spuriously push', async () => {
+			// Regression test: localShas[path] means "raw file bytes SHA" under format:"text"
+			// but "masked-projection SHA" under scope:"subset" — a stale baseline from the
+			// other scheme must never cause a real content match to look like a change.
+			const fitSync = createFitSync();
+			const textAttributesContent = '{".obsidian/appearance.json":{"format":"text"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, textAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			// Onboarding a never-before-seen .obsidian/ path takes two syncs (first only
+			// observes the remote SHA via protectedPathShas; reconciliation lands next sync).
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: textAttributesContent,
+				'.obsidian/appearance.json': '{"theme":"dark"}', // pulled from remote, onboarding complete
+			});
+
+			// Flip to scope:"subset" — local and remote already agree on the tracked field.
+			const jsonAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, jsonAttributesContent);
+			const remoteBefore = remoteVault.getAllFilesAsRaw();
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Only .fitattributes.json's own content should have moved — appearance.json
+			// untouched on either side, nothing stray added or dropped.
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				...remoteBefore,
+				[FITATTRIBUTES_PATH]: jsonAttributesContent,
+			});
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			// .fitattributes.json itself legitimately needs pushing (its content just changed
+			// in this test step) — appearance.json must not appear anywhere in either group.
+			const allChangedPaths = result.success ? result.changeGroups.flatMap(g => g.changes.map(c => c.path)) : [];
+			expect(allChangedPaths).not.toContain('.obsidian/appearance.json');
+		});
+
+		it('first sync ever with pre-existing conflicting content on both sides clashes without a spurious merge attempt changing the outcome', async () => {
+			// Regression test for a refactor-introduced concern, checked and confirmed safe:
+			// the old code had an explicit "genuine first sync" branch that skipped merge-attempt
+			// entirely and went straight to clash. The compareFileStates/resolveAllChanges-based
+			// classification (see docs/sync-logic.md § .fitattributes.json, Architecture note)
+			// routes this through the generic both-changed branch instead, which does attempt a
+			// merge first. Confirmed empirically (not just reasoned) that mergeJson with a null
+			// base is conservative enough that this never changes the outcome — still a clash.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			// Local's pre-existing content lacks the tracked field entirely — the shape most
+			// likely to tempt a null-base merge into treating remote's field as a clean addition
+			// rather than a conflict.
+			localVault.setFile('.obsidian/appearance.json', '{"windowWidth":1200}');
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/appearance.json' })]),
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': '{"windowWidth":1200}', // untouched by the clash
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({"windowWidth": 1200, "theme": "dark"}), // clash preview
+			});
+		});
+
+		it('surfaces a subset-scope push in the sync result changeGroups, not just the log', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // first pull, creates the local file
+
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				changeGroups: expect.arrayContaining([
+					expect.objectContaining({
+						heading: 'Remote file updates:',
+						changes: [{ path: '.obsidian/appearance.json', type: 'MODIFIED' }],
+					}),
+				]),
+			}));
+		});
+
+		it('surfaces a subset-scope clash in the sync result clash array, not just pendingClashes', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"sepia"}');
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([expect.objectContaining({ path: '.obsidian/appearance.json' })]),
+			}));
+		});
+
+		it('Explain flags an edited subset-scope path as an unconfirmed possible change, network-free', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // first pull, establishes baseline
+
+			// Edit an untracked field only — Explain can't tell this apart from a tracked-field
+			// edit without a live remote fetch, so it must still flag the path (never a false
+			// negative), just with honest "unconfirmed" wording rather than claiming certainty.
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1200}');
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: expect.arrayContaining([
+					expect.objectContaining({
+						heading: expect.stringContaining('unconfirmed'),
+						items: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+					}),
+				]),
+			}));
+		});
+
+		it('Explain does not flag a subset-scope path that has not changed since last sync', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({ kind: 'ok' }));
+		});
+
+		it('Explain never flags an untracked .obsidian/ json path that has no remote baseline, regardless of local content', async () => {
+			// Regression test: every .obsidian/*.json path defaults to format:"json"/scope:"subset"
+			// whether or not it's actually git-mask tracked. A local-only file that was never
+			// pushed (no remote content ever observed for it) has no baseline to compare
+			// against at all — that means "untracked, nothing to sync," not "possibly changed."
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			localVault.setFile('.obsidian/workspace.json', '{"main":{}}');
+			localVault.setFile('.obsidian/community-plugins.json', '["dataview"]');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({ kind: 'ok' }));
+		});
+
+		it('a synced-only subset-scope push updates lastFetchedCommitSha to the new commit', async () => {
+			// Regression test: syncSubsetScopePaths pushes via its own remoteVault.applyChanges
+			// call, creating a real new commit — but when the normal pipeline has nothing of its
+			// own to push this sync, executeSync's fallback must use that commit SHA, not the
+			// one fetched before the subset lane ran, or Explain Sync Status would keep showing
+			// the old commit despite a real, successful push.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // first pull, establishes baseline
+
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // subset-only push, no normal-pipeline changes
+
+			const { commitSha: actualHeadCommitSha } = await remoteVault.readFromSource();
+			expect(localStoreState.lastFetchedCommitSha).toBe(actualHeadCommitSha);
+		});
+
+		it('a subset-scope push retries once a rate-limited failure clears, instead of silently treating itself as synced', async () => {
+			// Regression test: syncSubsetScopePaths must not advance localShas[path] for a
+			// 'push' action that was rate-limited — ApplyChangesResult's documented contract
+			// says a rate-limited path must not advance the baseline. Asserting only that
+			// remote content is unchanged right after the failed push wouldn't distinguish a
+			// correct implementation from a broken one — the fake vault's rate-limit
+			// simulation blocks the write either way — so this checks the one thing that
+			// actually falsifies a baseline-advanced-anyway bug: a later sync retrying
+			// successfully once the failure clears.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			remoteVault.setRateLimitedPaths(['.obsidian/appearance.json']);
+			await syncAndHandleResult(fitSync, createMockNotice());
+			remoteVault.setRateLimitedPaths([]);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // untouched by any of this
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "light"}), // pushed successfully once the rate limit cleared
+			});
+		});
+
+		it('a subset-scope pull retries once a local write failure clears, instead of silently treating itself as synced', async () => {
+			// Regression test: syncSubsetScopePaths discarded LocalVault.applyChanges' returned
+			// failedPaths entirely — a local write failure would still advance
+			// lastFetchedRemoteShas/localShas as if the pull had landed, permanently losing the
+			// remote update with no retry. Only a later successful retry actually distinguishes
+			// this from the bug (see the rate-limited push test above for the same reasoning).
+			//
+			// Can't use a brand-new (never-synced-locally) path here: that pull kind is
+			// unconditional whenever the local file is absent (see resolveSubsetScopePath's
+			// `localText === null` branch), so it self-heals regardless of whether this fix
+			// exists — it wouldn't exercise the baseline-protection logic under test. Needs an
+			// existing local file, which runs into a second fake-specific wrinkle: FakeLocalVault
+			// reuses its write-failure hook inside readFromSource's own scan (so other tests can
+			// simulate a scan failure) as well as inside applyChanges' write loop — the same hook
+			// fires once for each. A call-count gate lets the scan (1st call) succeed and only
+			// the actual write (2nd call) fail, isolating the applyChanges failure this test needs.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // first pull, establishes baseline
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			let appearanceJsonWriteCalls = 0;
+			localVault.setMockWriteFile(async (path) => {
+				if (path !== '.obsidian/appearance.json') return;
+				appearanceJsonWriteCalls++;
+				if (appearanceJsonWriteCalls === 2) throw new Error('EACCES: permission denied'); // 1st call is the scan, 2nd is the actual write
+			});
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setMockWriteFile(null);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // untouched by any of this
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "light"}), // pulled successfully once the write failure cleared
+			});
+		});
+
+		it('a pure remote-only field removal pulls cleanly instead of clashing, with zero local edits', async () => {
+			// Regression test: a scheme that derives localChanged from trackedFields
+			// re-computed against the CURRENT remote content each sync would misclassify a
+			// remote-only field drop as local-changed (trackedFields shrinks, so its hash
+			// moves, even with zero local edits) and spuriously clash a clean pull. The raw
+			// whole-file SHA of LOCAL content only (see docs/sync-logic.md § Baseline model
+			// for scope:"subset") is independent of remote's field set and can't hit this —
+			// confirming that here rather than trusting the reasoning alone.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","accent":"blue"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // establishes baseline, both fields tracked
+
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}'); // remote drops "accent", zero local edits
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // untouched by any of this
+				// Clean pull, no _fit/ clash. "accent" survives locally — a field dropping out of
+				// trackedFields means "no longer tracked," not "delete it": overlayMask only ever
+				// sets keys present in remote's current tracked view, never deletes a local field.
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "dark", "accent": "blue"}),
+			});
+		});
+
+		it('a resolved subset-scope clash (deleted _fit/ copy + local edit) is picked up as resolved and pushes local\'s edit', async () => {
+			// Was a real, unfixed gap (docs/sync-logic.md § Known limitations of the
+			// scope:"subset" lane): the 'clash' branch in syncSubsetScopePaths never updated
+			// localShas/lastFetchedRemoteShas, so the next sync's resolveSubsetScopePath re-derived
+			// localChanged/remoteChanged against the SAME stale pre-conflict baseline and reached the
+			// same both-changed conclusion again — re-clashing even after the user deleted _fit/<path>
+			// and committed to a specific local edit, which every other clash-resolution path in this
+			// codebase treats as an unambiguous resolution signal. Fixed by running Phase 0 (which
+			// detects the _fit/ deletion) before syncSubsetScopePaths, and having
+			// resolveSubsetScopePath push local's masked view unconditionally for a path Phase 0 just
+			// resolved, instead of re-deriving against the stale baseline.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // establishes baseline
+
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"purple"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // both changed -> clashes to _fit/
+			expect(localStoreState.pendingClashes).toContain('.obsidian/appearance.json');
+
+			// User resolves it the normal way: delete the _fit/ copy, commit to local's edit.
+			localVault.deleteFile('_fit/.obsidian/appearance.json');
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Resolved: no longer pending, local's edit pushed to remote, _fit/ copy stays gone.
+			expect(localStoreState.pendingClashes).not.toContain('.obsidian/appearance.json');
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': '{"theme":"light"}', // local's edit, untouched
+			});
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({"theme": "light"}), // local's edit pushed
+			});
+		});
+
+		it('a pending self-clash on .fitattributes.json does not corrupt routing for another masked path clashing in the same sync', async () => {
+			// Structural claim (docs/sync-logic.md § .fitattributes.json, "Self-clash"): local's
+			// live config always governs local's own decisions, remote's committed blob is
+			// fetched independently for the remote side, and neither ever consults
+			// _fit/.fitattributes.json's clash copy - so .fitattributes.json being mid-clash on
+			// itself must not affect how any other path's masked routing resolves. Exercises
+			// both at once: .fitattributes.json clashes as an ordinary whole file (nothing
+			// masked-aware about its own sync), while .obsidian/appearance.json's masked field
+			// clashes in that same sync and resolves exactly as it would with no self-clash
+			// happening at all.
+			const fitSync = createFitSync();
+			const baseFitAttributes = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, baseFitAttributes);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice()); // establishes both baselines
+
+			// Diverge .fitattributes.json itself on both sides via a THIRD path's rule (not
+			// appearance.json's own, which stays identical both sides - isolating this
+			// self-clash mechanism from cross-device rule disagreement on appearance.json
+			// itself). A shared key with genuinely different values, not just distinct key
+			// additions, is required to force a real clash instead of a clean auto-merge
+			// (GENERIC_JSON_MERGE_SPEC only clashes on a shared-key value conflict - see
+			// "falls back to a _fit/ clash..." above).
+			const localFitAttributesV2 = JSON.stringify({
+				'.obsidian/appearance.json': { format: 'json' },
+				'.obsidian/dummy.json': { format: 'text' },
+			});
+			const remoteFitAttributesV2 = JSON.stringify({
+				'.obsidian/appearance.json': { format: 'json' },
+				'.obsidian/dummy.json': { format: 'json', scope: 'full' },
+			});
+			localVault.setFile(FITATTRIBUTES_PATH, localFitAttributesV2);
+			await remoteVault.setFile(FITATTRIBUTES_PATH, remoteFitAttributesV2);
+			// appearance.json's tracked field also changes on both sides in the same sync.
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"purple"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: expect.arrayContaining([
+					expect.objectContaining({ path: FITATTRIBUTES_PATH }),
+					expect.objectContaining({ path: '.obsidian/appearance.json' }),
+				]),
+			}));
+			expect(localStoreState.pendingClashes).toContain(FITATTRIBUTES_PATH);
+			expect(localStoreState.pendingClashes).toContain('.obsidian/appearance.json');
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: localFitAttributesV2, // ordinary whole-file clash - local's edit untouched
+				[`_fit/${FITATTRIBUTES_PATH}`]: remoteFitAttributesV2, // remote's version saved for comparison
+				'.obsidian/appearance.json': '{"theme":"light"}', // local's edit untouched
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({"theme": "purple"}), // masked clash preview, unaffected by the self-clash above
+			});
+		});
+	});
 	describe('.fitattributes.json validation', () => {
 		it('surfaces a visible warning Notice when .fitattributes.json is malformed', async () => {
 			// .fitattributes.json is a load-bearing config file — a malformed file must not
@@ -3575,6 +4330,37 @@ describe('FitSync', () => {
 			await syncAndHandleResult(fitSync, createMockNotice());
 
 			expect(fitNoticeSpy).toHaveBeenCalled();
+			fitNoticeSpy.mockRestore();
+		});
+
+		it('surfaces a visible warning for a .fitattributes.json entry targeting a non-configurable path (own data.json), but only drops that one entry — other valid entries keep working', async () => {
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync('.obsidian/plugins/fit-dev');
+			const ownDataPath = '.obsidian/plugins/fit-dev/data.json';
+			// A well-formed rule, format/scope both valid values — the file parses fine on
+			// its own. It's still warned about because this specific path isn't
+			// configurable (forced internally regardless). Bundled with an otherwise-valid
+			// entry for a real path to prove that one keeps working — unlike a genuinely
+			// malformed (unparseable) file, this isn't whole-file blast radius.
+			const fitAttributesContent = JSON.stringify({
+				[ownDataPath]: { format: 'json', scope: 'full' },
+				'.obsidian/graph.json': { format: 'text' },
+			});
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/graph.json', 'graph content');
+
+			// .obsidian/ path activation is a two-sync pattern: the first sync detects the
+			// remote content and records it (protectedRemote bucket, not yet applied); the
+			// second sync's pre-sync reconcile step is what actually pulls it.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).toHaveBeenCalled();
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // on disk unchanged — only the in-memory parse drops the entry
+				'.obsidian/graph.json': 'graph content', // unaffected, syncs normally
+			});
 			fitNoticeSpy.mockRestore();
 		});
 

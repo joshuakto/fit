@@ -11,6 +11,7 @@ function snapshot(overrides: Partial<SyncStatusSnapshot> = {}): SyncStatusSnapsh
 		pendingClashes: [],
 		oversizedFilePaths: [],
 		fitAttributesWarning: null,
+		possiblyChangedSubsetScopePaths: [],
 		...overrides,
 	};
 }

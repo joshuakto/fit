@@ -7,14 +7,14 @@
 
 import { LocalStores } from "@/localStores";
 import { FitSettings } from "@/fitSettings";
-import { FitAttributeRule, FitAttributesFile, FITATTRIBUTES_PATH, detectSyncFormat, parseFitAttributes } from "@/fitAttributes";
+import { FitAttributeRule, FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes, resolveSyncFormat as resolveSyncFormatPure, resolveScope as resolveScopePure } from "@/fitAttributes";
 import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
-import { isHardDenylistedObsidianPath } from "./util/protectedPaths";
+import { isHardDenylistedObsidianPath, FIT_OWN_SETTINGS_DENYLIST } from "./util/protectedPaths";
 
 /**
  * Coordinator for local vault and remote repository access with sync state management.
@@ -135,21 +135,14 @@ export class Fit {
 	}
 
 	/**
-	 * Check if a file path should be included in sync operations.
-	 *
-	 * Excludes paths based on sync policy:
-	 * - `_fit/`: Conflict resolution directory (written locally but not synced)
-	 * - `.obsidian/`: Excluded unless git-tracked (content exists in the remote git tree
-	 *   or has an established local baseline) AND format-eligible (`.fitattributes.json`
-	 *   declares `format: "text"` for the path). See docs/sync-logic.md § Protected Paths.
-	 *
-	 * Note: This is sync policy, not a storage limitation. Both LocalVault and
-	 * RemoteGitHubVault can read/write these paths - we choose not to sync them.
-	 *
-	 * TODO: Rename to isProtectedPath() and invert logic (return true for protected paths)
+	 * Whether a path goes through the normal full-file SHA-diff pipeline. Not the same
+	 * as "does this path sync" — a `.obsidian/` path with `scope:"subset"` returns false
+	 * here but still syncs, through `FitSync.syncSubsetScopePaths` instead (its own lane,
+	 * masked field-level diffing instead of whole-file SHA comparison). See
+	 * docs/sync-logic.md § Protected Paths.
 	 *
 	 * @param path - File path to check
-	 * @returns true if path should be included in sync
+	 * @returns true if path should go through the normal pipeline
 	 */
 	shouldSyncPath(path: string): boolean {
 		// Exclude _fit/ directory (conflict resolution area)
@@ -158,16 +151,18 @@ export class Fit {
 		}
 
 		if (path.startsWith(".obsidian/")) {
-			// The trigger is git, not FIT: tracked purely because content exists (or has an
-			// established baseline) — never because of a local toggle of any kind. This is
-			// orthogonal to isEligibleForTracking below: a path can be fully eligible (valid,
-			// complete format/scope) and still not sync at all because it's never actually
-			// appeared in git content yet — that's what this checks, not config completeness.
+			// Tracked purely by git content presence, never a local toggle — orthogonal
+			// to isEligibleForTracking below (a path can be fully eligible and still not
+			// tracked yet).
 			const isTracked =
 				path in this.localShas ||
 				path in this.lastFetchedRemoteShas ||
 				this.trackedForCurrentSync.has(path);
 			if (!isTracked) return false;
+
+			// scope:"subset" only ever comes from format:"json" (see resolveScope) — routed
+			// to FitSync.syncSubsetScopePaths instead, so excluded here.
+			if (this.resolveScope(path) === "subset") return false;
 		}
 
 		return this.isEligibleForTracking(path);
@@ -175,15 +170,11 @@ export class Fit {
 
 	/**
 	 * Whether a path is allowed to sync at all: not hard-denylisted, and resolveScope
-	 * resolves to a non-null value. `!== null` alone is a correct completeness check only
-	 * because resolveScope is documented to return `null` for any scope value this layer
-	 * doesn't yet support (e.g. "subset", until that's a real implemented case) — this
-	 * function trusts that contract rather than separately validating the value.
+	 * resolves to a non-null value.
 	 *
 	 * Split out from shouldSyncPath so the pre-sync reconcile block (FitSync) can ask this
-	 * about a `.obsidian/` path that's about to become tracked, without a chicken-and-egg
-	 * dependency on shouldSyncPath's own git-tracked check (a separate, orthogonal signal —
-	 * see shouldSyncPath's own comment).
+	 * about a `.obsidian/` path about to become tracked, without depending on
+	 * shouldSyncPath's own tracked-check.
 	 */
 	isEligibleForTracking(path: string): boolean {
 		if (this.isHardDenylistedPath(path)) return false;
@@ -193,30 +184,39 @@ export class Fit {
 	/**
 	 * The sync format that governs how an already-tracked path is merged — whole-file
 	 * opaque replace ("text") vs structural JSON merge ("json", src/util/jsonMerge.ts).
-	 * Explicit .fitattributes.json config always wins over the filetype heuristic,
-	 * including to opt a path back OUT of a heuristic-implied format. `null` means
-	 * unresolved: unrecognized extension, unconfigured.
+	 * Explicit config always wins over the filetype heuristic. `null`: no extension
+	 * match, unconfigured.
 	 */
 	resolveSyncFormat(path: string): FitAttributeRule['format'] | null {
-		const configuredFormat = this.fitAttributes[path]?.format;
-		return configuredFormat ?? detectSyncFormat(path);
+		return resolveSyncFormatPure(path, this.fitAttributes);
 	}
 
 	/**
-	 * How much of a tracked path syncs. Explicit .fitattributes.json config always wins.
-	 * Default (no config): "full" for any ordinary (non-`.obsidian/`) path, unconditionally.
-	 * For a protected `.obsidian/` path: "full" for format:"text", "subset" where
-	 * feasible/supported, `null` otherwise.
+	 * How much of a tracked path syncs — "full" (whole file) or "subset" (field-level
+	 * masking, only tracked keys). Explicit config always wins. Default:
+	 * - Ordinary (non-`.obsidian/`) path: "full", unconditionally.
+	 * - Protected `.obsidian/` path: "full" for format:"text", "subset" for format:"json",
+	 *   `null` otherwise.
 	 */
 	resolveScope(path: string): FitAttributeRule['scope'] | null {
-		const configuredScope = this.fitAttributes[path]?.scope;
-		if (configuredScope) return configuredScope;
-		if (!path.startsWith(".obsidian/")) return "full";
-		const format = this.resolveSyncFormat(path);
-		if (format === "text") return "full";
-		// "subset" isn't implemented yet at this layer — null here for every non-"text"
-		// case is temporary, not a permanent "json is unsupported" statement.
-		return null;
+		return resolveScopePure(path, this.fitAttributes);
+	}
+
+	/**
+	 * Path-specific unsafe-field denylist, on top of the universal one
+	 * (UNIVERSAL_SECRET_FIELD_DENYLIST, always applied by FitSync.resolveSubsetScopePath
+	 * to every scope:"subset" path regardless of this method). `null` for every path
+	 * except `ownDataPath` — FIT's own data.json, resolved dynamically from the plugin's
+	 * actual install dir (`.obsidian/plugins/<pluginDir>/data.json`, follows an alternate
+	 * install name like `fit-dev`).
+	 *
+	 * resolveSyncFormat/resolveScope never consult this — ownDataPath gets its "subset"
+	 * default the same way any other protected json path does. Consulted separately, where
+	 * content is actually applied: readAndApplyFitAttributes rejects a user config entry
+	 * targeting this path, and resolveSubsetScopePath strips these fields from content.
+	 */
+	safeFieldDenylist(path: string): readonly string[] | null {
+		return path === this.ownDataPath ? FIT_OWN_SETTINGS_DENYLIST : null;
 	}
 
 	/**
@@ -235,7 +235,7 @@ export class Fit {
 
 	/** Path-level hard denylist — see src/util/protectedPaths.ts for the "why". */
 	isHardDenylistedPath(path: string): boolean {
-		return isHardDenylistedObsidianPath(path, this.ownDataPath);
+		return isHardDenylistedObsidianPath(path);
 	}
 
 	/** Replaces the parsed .fitattributes.json content used by shouldSyncPath's format gate. */
@@ -348,8 +348,19 @@ export class Fit {
 			const fitAttributesContent = await this.localVault.readFileContent(FITATTRIBUTES_PATH);
 			const parsed = parseFitAttributes(fitAttributesContent.toPlainText());
 			if (parsed.ok) {
+				// A denylisted path's config has no effect either way (safeFieldDenylist),
+				// so drop it here just to avoid it silently looking "applied". Scoped to
+				// just that entry — every other rule here is independently valid.
+				const nonConfigurablePaths = Object.keys(parsed.value).filter(path => this.safeFieldDenylist(path));
+				if (nonConfigurablePaths.length > 0) {
+					for (const path of nonConfigurablePaths) delete parsed.value[path];
+					const message = `.fitattributes.json: ${nonConfigurablePaths.map(p => `"${p}"`).join(', ')} ${nonConfigurablePaths.length === 1 ? 'is' : 'are'} not configurable (sync behavior fixed internally) — ${nonConfigurablePaths.length === 1 ? 'this entry has' : 'these entries have'} no effect and should be removed`;
+					fitLogger.log(`[Fit] ${message}`);
+					this.fitAttributesWarning = message;
+				} else {
+					this.fitAttributesWarning = null;
+				}
 				this.setFitAttributes(parsed.value);
-				this.fitAttributesWarning = null;
 			} else {
 				const message = `.fitattributes.json is malformed — no .obsidian/ paths will sync until it's fixed (${parsed.error})`;
 				fitLogger.log(`[Fit] ${message}`);

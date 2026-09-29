@@ -1,5 +1,5 @@
 import { Fit } from "./fit";
-import { FileChange, FileClash, FileStates, determineLocalChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
+import { FileChange, FileClash, FileStates, compareFileStates, determineLocalChecksNeeded, resolveAllChanges, resolveUntrackedState } from "./util/changeTracking";
 import { LocalStores } from "@/localStores";
 import FitNotice from "./fitNotice";
 import { SyncResult, SyncErrors, SyncError } from "./syncResult";
@@ -7,13 +7,48 @@ import { fitLogger } from "./logger";
 import { ApplyChangesResult, VaultError } from "./vault";
 import { Base64Content, FileContent } from "./util/contentEncoding";
 import { detectNormalizationMismatches } from "./util/filePath";
-import { BlobSha, CommitSha } from "./util/hashing";
+import { BlobSha, CommitSha, computeGitBlobSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
 import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
-import { mergeJson, mergeSpecForPath, serialiseMerged, MergeResult } from './util/jsonMerge';
+import { mergeJson, mergeSpecForPath, GENERIC_JSON_MERGE_SPEC, serialiseMerged, MergeResult } from './util/jsonMerge';
 import { tryLineMerge } from './util/lineMerge';
 import { hasNullByte } from './util/obsidianHelpers';
+import { extractMask, overlayMask, parseJsonObject } from './util/protectedPathMask';
+import { UNIVERSAL_SECRET_FIELD_DENYLIST } from './util/protectedPaths';
+import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes, resolveSyncFormat as resolveSyncFormatPure, resolveScope as resolveScopePure } from '@/fitAttributes';
+
+/** Resolution outcome for one scope:"subset" path — see FitSync.resolveSubsetScopePath. */
+type SubsetPathAction =
+	| { path: string; kind: 'skip' }
+	| { path: string; kind: 'in-sync'; trackedObj: Record<string, unknown>; rawLocalContent: string }
+	| { path: string; kind: 'push'; trackedObj: Record<string, unknown>; rawLocalContent: string }
+	| { path: string; kind: 'pull'; trackedObj: Record<string, unknown>; localFullContent: string; localOpType: 'ADDED' | 'MODIFIED' }
+	| { path: string; kind: 'push-and-pull'; trackedObj: Record<string, unknown>; localFullContent: string }
+	| { path: string; kind: 'clash'; previewContent: string }
+	| { path: string; kind: 'delete' };
+
+/**
+ * Deterministic JSON serialization for masked-view SHA comparisons only — never
+ * compared against a real git blob SHA, so it doesn't need to match git's own
+ * serialization, just be stable across calls regardless of source key order.
+ *
+ * Recurses to sort keys at every nesting level. `JSON.stringify(obj, Object.keys(obj).sort())`
+ * looks equivalent but isn't: an array replacer is applied at every level of the object, not
+ * just the top level, so a nested object's own keys get filtered against the *top-level* key
+ * list and silently dropped (`JSON.stringify({a:{x:1}}, ['a'])` → `'{"a":{}}'`).
+ */
+function stableStringify(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(stableStringify).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const obj = value as Record<string, unknown>;
+		const entries = Object.keys(obj).sort().map(k => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+		return `{${entries.join(',')}}`;
+	}
+	return JSON.stringify(value);
+}
 
 // Helper to log SHA cache updates with provenance tracking
 function logCacheUpdate(
@@ -143,6 +178,396 @@ export class FitSync implements IFitSync {
 			path: path,  // Return original path, not _fit/ prefixed
 			content: FileContent.fromBase64(content)
 		};
+	}
+
+	/**
+	 * Dedicated lane for scope:"subset" `.obsidian/` json paths — excluded from the
+	 * normal SHA-diff pipeline (`Fit.shouldSyncPath`) because whole-file SHA comparison
+	 * can't work when local always carries untracked fields the remote blob doesn't.
+	 *
+	 * - `localShas[path]` here means exactly what it means for every other path — the raw
+	 *   whole-file git-blob SHA, used only as a coarse "did the file move" flag (see
+	 *   docs/sync-logic.md § Baseline model for scope:"subset"). `lastFetchedRemoteShas[path]`
+	 *   keeps its normal meaning too — a subset-scope git blob only ever holds tracked fields.
+	 * - Both-changed reuses the generic JSON merge engine (src/util/jsonMerge.ts) on the
+	 *   masked view, then overlays the result onto local's real full file
+	 *   (src/util/protectedPathMask.ts) so untracked local fields are never touched.
+	 *
+	 * Known limitations: docs/sync-logic.md § .fitattributes.json (#337).
+	 *
+	 * Returns the local/remote ops actually applied plus any new clashes, so the caller can
+	 * fold them into the same post-sync Notice (changeGroups) and SyncResult.clash that the
+	 * normal pipeline's localOps/remoteOps/conflicts feed — a push/pull/clash on a
+	 * subset-scope path is reported through the same Notice text and conflict handling as
+	 * any other path, not just logged.
+	 */
+	/**
+	 * Fetches and parses remote's currently-committed .fitattributes.json at this sync's
+	 * tree snapshot (once per sync, not per-candidate) — the counterpart to Fit.fitAttributes,
+	 * which only ever reflects *local's* live config. Needed so a path's scope can be resolved
+	 * from either side's actual rule, not just local's — see syncSubsetScopePaths' candidate
+	 * filter below for why this matters (docs/sync-logic.md § Known risk).
+	 *
+	 * Malformed/missing/unreadable all degrade to {} (same "nothing configured" fallback local's
+	 * own copy uses) — this is read-only diagnostic input for routing decisions, not something
+	 * that itself needs a user-visible warning; local's own fitAttributesWarning already covers
+	 * the "config is broken" case for local's copy.
+	 */
+	private async resolveRemoteFitAttributes(remoteTreeSha: FileStates): Promise<FitAttributesFile> {
+		const sha = remoteTreeSha[FITATTRIBUTES_PATH];
+		if (!sha) return {};
+		try {
+			const content = await this.fit.remoteVault.readFileBlobBySha(sha);
+			const parsed = parseFitAttributes(content.toPlainText());
+			return parsed.ok ? parsed.value : {};
+		} catch (e) {
+			fitLogger.log('[FitSync] Failed to fetch/parse remote .fitattributes.json this sync, treating as empty', { error: String(e) });
+			return {};
+		}
+	}
+
+	private async syncSubsetScopePaths(
+		remoteTreeSha: FileStates,
+		remoteFitAttributes: FitAttributesFile,
+		previouslyPendingClashPaths: Set<string>
+	): Promise<{
+		localOps: FileChange[]; remoteOps: FileChange[]; clashes: FileClash[];
+		commitSha?: CommitSha;
+		handledPaths: string[];
+	}> {
+		// Cross-device rule disagreement, rule-based half — full mechanism in
+		// docs/sync-logic.md § .fitattributes.json. Gated to remote's EXPLICIT rule
+		// (`path in remoteFitAttributes`), not its bare default: the default heuristic is a
+		// pure function of the path alone, so it can never itself disagree with local's
+		// default — treating an empty remote ruleset as a disagreement was a real false-positive
+		// regression this gate exists to prevent.
+		const ruleBasedCandidates = Object.keys(remoteTreeSha).filter(path =>
+			path.startsWith('.obsidian/') &&
+			!this.fit.isHardDenylistedPath(path) &&
+			(
+				(this.fit.resolveSyncFormat(path) === 'json' && this.fit.resolveScope(path) === 'subset') ||
+				(path in remoteFitAttributes &&
+					resolveSyncFormatPure(path, remoteFitAttributes) === 'json' &&
+					resolveScopePure(path, remoteFitAttributes) === 'subset')
+			)
+		);
+
+		// Cross-device rule disagreement, content-based half (catches what the rule-based
+		// candidates above can't — remote with no .fitattributes.json entry at all). Full
+		// mechanism in docs/sync-logic.md § .fitattributes.json; see needsMaskedOverlayForPull
+		// below for the actual check. Bounded to paths whose remote SHA actually changed this
+		// sync and not already caught above.
+		const contentCheckCandidates = Object.keys(remoteTreeSha).filter(path =>
+			path.startsWith('.obsidian/') &&
+			!this.fit.isHardDenylistedPath(path) &&
+			!ruleBasedCandidates.includes(path) &&
+			remoteTreeSha[path] !== this.fit.lastFetchedRemoteShas[path]
+		);
+		const contentCheckResults = await Promise.all(
+			contentCheckCandidates.map(async path => ({
+				path, needed: await this.needsMaskedOverlayForPull(path),
+			}))
+		);
+		const contentBasedCandidates = contentCheckResults.filter(r => r.needed).map(r => r.path);
+
+		const candidates = [...ruleBasedCandidates, ...contentBasedCandidates];
+		if (candidates.length === 0) return { localOps: [], remoteOps: [], clashes: [], handledPaths: [] };
+
+		const actions = await Promise.all(
+			candidates.map(path => {
+				// Phase 0 (run by the caller before this) already re-checked _fit/<path>'s
+				// existence against this sync's real, current filesystem state and removed
+				// path from this.fit.pendingClashes if the user resolved it (deleted _fit/,
+				// optionally edited local). previouslyPendingClashPaths is a snapshot taken
+				// before Phase 0 mutated that list — a path present there but absent from the
+				// live list right now was JUST resolved this sync.
+				const justResolved = previouslyPendingClashPaths.has(path) && !this.fit.pendingClashes.includes(path);
+				return this.resolveSubsetScopePath(path, remoteTreeSha[path], justResolved);
+			})
+		);
+
+		const pushes: Array<{ path: string, content: FileContent }> = [];
+		const deletions: string[] = [];
+		const localWrites: Array<{ path: string, content: FileContent }> = [];
+		const clashPreviews: Array<{ path: string, content: FileContent }> = [];
+		const clashPaths = new Set<string>();
+		// Raw whole-file content each path ends this sync with, hashed into localShas[path]
+		// below — only for paths that actually landed (see docs/sync-logic.md § Baseline
+		// model for scope:"subset" for the don't-advance-past-confirmed invariant this follows).
+		const rawShaUpdates = new Map<string, string>();
+		// Remote-baseline updates for pull-type actions are deferred until local write
+		// success is confirmed below — a 'pull'/'push-and-pull' whose local write fails must
+		// not advance lastFetchedRemoteShas, or the pulled content is lost with no retry.
+		const pendingRemoteShaUpdates = new Map<string, BlobSha>();
+		const localOps: FileChange[] = [];
+		const remoteOps: FileChange[] = [];
+		const clashes: FileClash[] = [];
+
+		for (const action of actions) {
+			switch (action.kind) {
+				case 'skip':
+					continue;
+				case 'in-sync':
+					rawShaUpdates.set(action.path, action.rawLocalContent);
+					this.fit.lastFetchedRemoteShas[action.path] = remoteTreeSha[action.path];
+					break;
+				case 'push':
+					pushes.push({ path: action.path, content: FileContent.fromPlainText(serialiseMerged(action.trackedObj)) });
+					rawShaUpdates.set(action.path, action.rawLocalContent);
+					remoteOps.push({ path: action.path, type: 'MODIFIED' });
+					break;
+				case 'pull':
+					localWrites.push({ path: action.path, content: FileContent.fromPlainText(action.localFullContent) });
+					rawShaUpdates.set(action.path, action.localFullContent);
+					pendingRemoteShaUpdates.set(action.path, remoteTreeSha[action.path]);
+					localOps.push({ path: action.path, type: action.localOpType });
+					break;
+				case 'push-and-pull':
+					pushes.push({ path: action.path, content: FileContent.fromPlainText(serialiseMerged(action.trackedObj)) });
+					localWrites.push({ path: action.path, content: FileContent.fromPlainText(action.localFullContent) });
+					rawShaUpdates.set(action.path, action.localFullContent);
+					remoteOps.push({ path: action.path, type: 'MODIFIED' });
+					localOps.push({ path: action.path, type: 'MODIFIED' });
+					break;
+				case 'clash':
+					// Resolution (user deletes _fit/<path>, keeps a local edit) is handled in
+					// resolveSubsetScopePath's justResolved branch, not here - by the time an
+					// action is 'clash' here, Phase 0 (which runs before this) has already
+					// confirmed the path is still genuinely unresolved this sync.
+					clashPreviews.push({ path: action.path, content: FileContent.fromPlainText(action.previewContent) });
+					clashPaths.add(action.path);
+					if (!this.fit.pendingClashes.includes(action.path)) this.fit.pendingClashes.push(action.path);
+					clashes.push({ path: action.path, localState: 'MODIFIED', remoteOp: 'MODIFIED' });
+					fitLogger.log('[FitSync] subset-scope path clash, written to _fit/', { path: action.path });
+					break;
+				case 'delete':
+					// Confirmed prior baseline + local file now absent — a real deletion,
+					// propagated to remote the same way a format:"text" .obsidian/ path or an
+					// ordinary tracked file would (compareFileStates' REMOVED case). Deletions
+					// never get skipped/rate-limited by RemoteGitHubVault (only content writes
+					// can be, on size/rate limits), so this is treated as unconditionally
+					// successful once the commit below succeeds.
+					deletions.push(action.path);
+					remoteOps.push({ path: action.path, type: 'REMOVED' });
+					break;
+			}
+		}
+
+		if (localWrites.length > 0 || clashPreviews.length > 0) {
+			// clashPaths (original, unprefixed paths) tells LocalVault.applyChanges to write
+			// each entry to _fit/<path> instead of <path> directly — same convention used
+			// everywhere else clash files are written (see applyRemoteChanges below).
+			const localResult = await this.fit.localVault.applyChanges([...localWrites, ...clashPreviews], [], { clashPaths });
+			const localFailedPaths = new Set(localResult.failedPaths ?? []);
+			if (localFailedPaths.size > 0) {
+				fitLogger.log('[FitSync] subset-scope: local write failed for some path(s), will retry next sync', {
+					paths: [...localFailedPaths],
+				});
+				for (const path of localFailedPaths) {
+					rawShaUpdates.delete(path);
+					pendingRemoteShaUpdates.delete(path);
+				}
+			}
+		}
+		for (const [path, sha] of pendingRemoteShaUpdates) {
+			this.fit.lastFetchedRemoteShas[path] = sha;
+		}
+
+		let commitSha: CommitSha | undefined;
+		if (pushes.length > 0 || deletions.length > 0) {
+			const result = await this.fit.remoteVault.applyChanges(pushes, deletions, { clashPaths: new Set() });
+			commitSha = result.commitSha;
+			for (const { path } of pushes) {
+				const newSha = result.newState[path];
+				if (newSha) this.fit.lastFetchedRemoteShas[path] = newSha;
+			}
+			// Skipped/rate-limited paths must not advance localShas — see docs/sync-logic.md
+			// § Baseline model for scope:"subset" (mirrors ApplyChangesResult<"remote">'s
+			// documented contract in src/vault.ts, minus the normal pipeline's unpushedFiles UX).
+			// Deletions are never skipped/rate-limited (only content writes can be, on
+			// size/rate limits), so every path in `deletions` is treated as confirmed here.
+			const failedPushPaths = new Set([...(result.skippedPaths ?? []), ...(result.rateLimitedPaths ?? [])]);
+			if (failedPushPaths.size > 0) {
+				fitLogger.log('[FitSync] subset-scope: push skipped or rate-limited for some path(s), will retry next sync', {
+					paths: [...failedPushPaths],
+				});
+				for (const path of failedPushPaths) {
+					rawShaUpdates.delete(path);
+				}
+			}
+			for (const path of deletions) {
+				delete this.fit.localShas[path];
+				delete this.fit.lastFetchedRemoteShas[path];
+			}
+		}
+
+		for (const [path, content] of rawShaUpdates) {
+			this.fit.localShas[path] = await computeGitBlobSha(new TextEncoder().encode(content));
+		}
+
+		if (actions.some(a => a.kind !== 'skip')) {
+			fitLogger.log('[FitSync] subset-scope paths resolved', {
+				pushed: pushes.length, pulled: localWrites.length, clashed: clashPreviews.length, deleted: deletions.length,
+			});
+		}
+
+		return { localOps, remoteOps, clashes, commitSha, handledPaths: candidates };
+	}
+
+	/**
+	 * Content-level cross-device disagreement signal for syncSubsetScopePaths' candidate
+	 * filter (see the comment there) - would an opaque whole-file pull (the normal pipeline's
+	 * behavior) drop a top-level key local's current file has that remote's blob doesn't? Not
+	 * itself a decision about push, both-changed, or first-contact: those either can't lose
+	 * data this way (push just uploads everything local has; first-contact has no local
+	 * content to lose) or are already handled correctly by the caller's other checks. `false`
+	 * on any read/parse failure - nothing to protect if either side isn't a readable JSON
+	 * object, and the normal pipeline's own error handling covers a genuine fetch failure.
+	 */
+	private async needsMaskedOverlayForPull(path: string): Promise<boolean> {
+		let localText: string;
+		try {
+			localText = (await this.fit.localVault.readFileContent(path)).toPlainText();
+		} catch {
+			return false; // no local content yet - nothing an opaque pull could drop
+		}
+		let remoteText: string;
+		try {
+			remoteText = (await this.fit.remoteVault.readFileContent(path)).toPlainText();
+		} catch {
+			return false; // let the normal pipeline's own fetch attempt/error handling take it
+		}
+		const localParsed = parseJsonObject(localText);
+		const remoteParsed = parseJsonObject(remoteText);
+		if (!localParsed.ok || !remoteParsed.ok) return false; // masking is JSON-object-only
+		const remoteKeys = new Set(Object.keys(remoteParsed.value));
+		return Object.keys(localParsed.value).some(k => !remoteKeys.has(k));
+	}
+
+	private async resolveSubsetScopePath(path: string, remoteSha: BlobSha, justResolved = false): Promise<SubsetPathAction> {
+		let remoteText: string;
+		try {
+			remoteText = (await this.fit.remoteVault.readFileContent(path)).toPlainText();
+		} catch (e) {
+			fitLogger.log('[FitSync] subset-scope: failed to read remote content, skipping this sync', { path, error: String(e) });
+			return { path, kind: 'skip' };
+		}
+		const remoteParsed = parseJsonObject(remoteText);
+		if (!remoteParsed.ok) {
+			fitLogger.log('[FitSync] subset-scope: remote content is not a JSON object, skipping this sync', { path, error: remoteParsed.error });
+			return { path, kind: 'skip' };
+		}
+		// Strip denylisted keys before anything below reads remoteObj, regardless of what
+		// the git blob claims is tracked (UNIVERSAL_SECRET_FIELD_DENYLIST + per-path).
+		const denylist: readonly string[] = [...UNIVERSAL_SECRET_FIELD_DENYLIST, ...(this.fit.safeFieldDenylist(path) ?? [])];
+		const remoteObj = Object.fromEntries(Object.entries(remoteParsed.value).filter(([k]) => !denylist.includes(k)));
+		const trackedFields = Object.keys(remoteObj).sort();
+
+		let localText: string | null;
+		try {
+			localText = (await this.fit.localVault.readFileContent(path)).toPlainText();
+		} catch {
+			localText = null;
+		}
+
+		const localMaskedResult = extractMask(localText ?? '{}', trackedFields);
+		const localMaskedObj = localMaskedResult.ok ? localMaskedResult.value : {};
+
+		const priorRemoteSha = this.fit.lastFetchedRemoteShas[path];
+		// Raw whole-file SHA, same meaning as every other path — see docs/sync-logic.md
+		// § Baseline model for scope:"subset". Only a coarse "has the file moved" flag; the
+		// actual tracked-field decision is made below from real masked content.
+		const priorRawSha = this.fit.localShas[path];
+
+		const buildClashPreview = (): SubsetPathAction => {
+			const overlaid = overlayMask(localText, remoteObj);
+			const previewObj = overlaid.ok ? overlaid.value : remoteObj;
+			return { path, kind: 'clash', previewContent: JSON.stringify(previewObj, null, '\t') };
+		};
+
+		// Masked view already matches remote — nothing to do regardless of raw bytes (which can
+		// differ due to untracked fields) or either baseline.
+		if (stableStringify(localMaskedObj) === stableStringify(remoteObj)) {
+			return { path, kind: 'in-sync', trackedObj: remoteObj, rawLocalContent: localText ?? '{}' };
+		}
+
+		// A just-resolved clash pushes local's masked view unconditionally, rather than
+		// re-deriving against the stale pre-clash baseline (which would just re-clash forever).
+		if (justResolved && localText !== null) {
+			return { path, kind: 'push', trackedObj: localMaskedObj, rawLocalContent: localText };
+		}
+
+		// Classify via the normal pipeline's own machinery, not hand-rolled booleans — see
+		// docs/sync-logic.md § .fitattributes.json, Architecture note. No SHA-identity skip
+		// (localShas/remoteShas omitted): raw whole-file SHAs essentially never match here
+		// (local always carries untracked fields); the masked-equality check above already
+		// covers the equivalent case.
+		const currentRawSha = localText !== null ? await computeGitBlobSha(new TextEncoder().encode(localText)) : undefined;
+		const localState = currentRawSha !== undefined ? { [path]: currentRawSha } : {};
+		const localBaseline = priorRawSha !== undefined ? { [path]: priorRawSha } : {};
+		const remoteState = { [path]: remoteSha };
+		const remoteBaseline = priorRemoteSha !== undefined ? { [path]: priorRemoteSha } : {};
+		const { safeLocal, safeRemote, clashes } = resolveAllChanges(
+			compareFileStates(localState, localBaseline),
+			compareFileStates(remoteState, remoteBaseline),
+			new Set(), new Set()
+		);
+
+		if (clashes.length > 0) {
+			if (localText === null) return buildClashPreview();
+
+			// Both changed — attempt a 3-way merge on the masked view, same engine .canvas/
+			// ordinary format:"json" paths already use. Also reached on a genuine first sync
+			// (no baseline, so baseText below stays null) — confirmed safe, doesn't merge over
+			// a real conflict: mergeJson with a null base is conservative enough to still clash.
+			let baseText: string | null = null;
+			if (priorRemoteSha) {
+				try {
+					baseText = (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText();
+				} catch (e) {
+					fitLogger.log('[FitSync] subset-scope: base blob fetch failed, falling back to clash', { path, error: String(e) });
+				}
+			}
+			let mergeResult: MergeResult;
+			try {
+				mergeResult = mergeJson(baseText, stableStringify(localMaskedObj), stableStringify(remoteObj), GENERIC_JSON_MERGE_SPEC);
+			} catch (e) {
+				fitLogger.log('[FitSync] subset-scope: merge threw, falling back to clash', { path, error: String(e) });
+				return buildClashPreview();
+			}
+			if (!mergeResult.merged) return buildClashPreview();
+
+			const mergedObj = mergeResult.value as Record<string, unknown>;
+			const overlaid = overlayMask(localText, mergedObj);
+			if (!overlaid.ok) return buildClashPreview();
+			return {
+				path, kind: 'push-and-pull', trackedObj: mergedObj,
+				localFullContent: JSON.stringify(overlaid.value, null, '\t'),
+			};
+		}
+
+		if (safeLocal.length > 0) {
+			// Local changed, remote didn't. If local has no content at all, this is a real
+			// deletion (confirmed prior baseline + now absent) — propagate it. Otherwise it's
+			// an ordinary content push.
+			if (localText === null) return { path, kind: 'delete' };
+			return { path, kind: 'push', trackedObj: localMaskedObj, rawLocalContent: localText };
+		}
+
+		if (safeRemote.length > 0) {
+			// Remote changed, local didn't (or never existed). No local file at all is first
+			// contact — write remote's content wholesale. Otherwise overlay onto local's real
+			// content so untracked fields survive.
+			if (localText === null) {
+				return { path, kind: 'pull', trackedObj: remoteObj, localFullContent: JSON.stringify(remoteObj, null, '\t'), localOpType: 'ADDED' };
+			}
+			const overlaid = overlayMask(localText, remoteObj);
+			if (!overlaid.ok) return buildClashPreview();
+			return { path, kind: 'pull', trackedObj: remoteObj, localFullContent: JSON.stringify(overlaid.value, null, '\t'), localOpType: 'MODIFIED' };
+		}
+
+		// Defensive fallback, not a reachable path given the checks above.
+		return { path, kind: 'in-sync', trackedObj: remoteObj, rawLocalContent: localText ?? '{}' };
 	}
 
 	/**
@@ -708,7 +1133,13 @@ export class FitSync implements IFitSync {
 		// Only the remote SHA is recorded — no content download, no _fit/ write.
 		// When the user later opts in a path, the reconciliation pre-sync step reads
 		// protectedPathShas to establish a baseline and avoid junk clashes.
+		//
+		// scope: "subset" paths are excluded — they have their own reconciliation
+		// (syncSubsetScopePaths runs every sync, unconditionally, not opt-in-triggered),
+		// and the generic reconcile block below compares RAW file SHAs, which would
+		// wrongly clobber a masked-view baseline the moment it ran.
 		for (const change of protectedRemote) {
+			if (this.fit.resolveSyncFormat(change.path) === 'json' && this.fit.resolveScope(change.path) === 'subset') continue;
 			if (change.type === 'REMOVED') {
 				delete this.fit.protectedPathShas[change.path];
 				continue;
@@ -824,13 +1255,25 @@ export class FitSync implements IFitSync {
 
 		const newlySkippedPaths = pushResult?.skippedPaths?.filter(p => !previousUnpushedKeys.has(p)) ?? [];
 
+		// scope:"subset" paths are excluded from the normal pipeline entirely (see
+		// syncSubsetScopePaths), so newLocalState/latestRemoteTreeSha never contain them —
+		// without this merge, persisting would silently wipe the baselines
+		// syncSubsetScopePaths just set, undoing this sync's push/pull on the next one.
+		const subsetLocalShas: FileStates = {};
+		const subsetRemoteShas: FileStates = {};
+		for (const path of new Set([...Object.keys(this.fit.localShas), ...Object.keys(this.fit.lastFetchedRemoteShas)])) {
+			if (this.fit.resolveSyncFormat(path) !== 'json' || this.fit.resolveScope(path) !== 'subset') continue;
+			if (this.fit.localShas[path] !== undefined) subsetLocalShas[path] = this.fit.localShas[path];
+			if (this.fit.lastFetchedRemoteShas[path] !== undefined) subsetRemoteShas[path] = this.fit.lastFetchedRemoteShas[path];
+		}
+
 		await this.saveLocalStoreCallback({
-			lastFetchedRemoteShas: latestRemoteTreeSha,
+			lastFetchedRemoteShas: { ...latestRemoteTreeSha, ...subsetRemoteShas },
 			lastFetchedCommitSha: latestCommitSha,
 			// TODO: Remove filterSyncedState after fixing bug where remote _fit/ files are passed to applyChanges
 			// Currently remote _fit/ paths bypass shouldSyncPath filtering and get SHAs computed.
 			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
-			localShas: this.fit.filterSyncedState(newLocalState),
+			localShas: { ...this.fit.filterSyncedState(newLocalState), ...subsetLocalShas },
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
 			protectedPathShas: this.fit.protectedPathShas,
@@ -897,7 +1340,12 @@ export class FitSync implements IFitSync {
 			if (reconcileCandidates.length > 0) {
 				await this.fit.refreshFitAttributesForReconcile();
 			}
-			const reconcilePaths = reconcileCandidates.filter(p => this.fit.isEligibleForTracking(p));
+			// scope: "subset" paths never belong here (see the protectedPathShas write site in
+			// executeSync) — excluded again defensively in case a stale entry exists.
+			const reconcilePaths = reconcileCandidates.filter(p =>
+				this.fit.isEligibleForTracking(p) &&
+				!(this.fit.resolveSyncFormat(p) === 'json' && this.fit.resolveScope(p) === 'subset')
+			);
 			if (reconcilePaths.length > 0) {
 				// Same-sync-only signal: without this, the "file absent locally" branch below
 				// (which clears lastFetchedRemoteShas[path]) would make shouldSyncPath's tracked
@@ -1002,6 +1450,11 @@ export class FitSync implements IFitSync {
 
 			// Phase 0: Resolve pending clashes
 			// For each path with an unresolved _fit/ copy, check if the user has resolved it.
+			// Snapshot before any mutation below - syncSubsetScopePaths (after this block) needs
+			// to know which paths were pending going into this sync, to tell "still unresolved"
+			// apart from "just resolved this sync" once this block's own mutation below removes
+			// a resolved path from the live list.
+			const previouslyPendingClashPaths = new Set(this.fit.pendingClashes);
 			const activePendingPaths = new Set<string>();
 			const pendingDeletions: string[] = [];
 			// Paths resolved with content matching remote — already in sync, no push needed.
@@ -1099,18 +1552,49 @@ export class FitSync implements IFitSync {
 				});
 			}
 
+			// scope: "subset" .obsidian/ paths are handled entirely here, before the normal
+			// pipeline — they're excluded from it (Fit.shouldSyncPath) since whole-file SHA
+			// comparison doesn't work for a masked path. See syncSubsetScopePaths' doc comment.
+			// Runs after Phase 0 above (not before) so a subset-scope path's own pending-clash
+			// resolution (deleted _fit/ copy) is already reflected in this.fit.pendingClashes
+			// before resolveSubsetScopePath re-derives anything from it — otherwise this lane's
+			// own clash-detection would re-write _fit/<path> before Phase 0 ever got to check
+			// whether the user had deleted it (see resolveSubsetScopePath's justResolved handling).
+			//
+			// remoteFitAttributes only exists from here on — it needs remoteTreeSha, which
+			// itself only exists after the local/remote scan (above) has already run. That scan
+			// is where Fit.shouldSyncPath decided, from local's rule alone, which paths even
+			// reached localChanges/remoteChanges in the first place — so a path where local and
+			// remote disagree about scope:"subset" is already sitting in those arrays under the
+			// wrong assumption by the time we get here, and has to be patched out below
+			// (filteredLocalChanges/filteredRemoteChanges) instead of never having been added.
+			// A continuously-evaluating engine — local state as a live input feeding whatever
+			// remote fetches it actually needs, rather than fixed local-scan/remote-fetch/reconcile
+			// phases run in a set order — wouldn't have this problem: shouldSyncPath's decision
+			// would just be re-askable once remote's rule is known, not baked into an
+			// already-produced list from a scan that ran before that rule existed.
+			const remoteFitAttributes = await this.resolveRemoteFitAttributes(remoteTreeSha);
+			const subsetScopeResult = await this.syncSubsetScopePaths(remoteTreeSha, remoteFitAttributes, previouslyPendingClashPaths);
+			const subsetScopeHandledPaths = new Set(subsetScopeResult.handledPaths);
+
 			// localChanges is pre-filtered by getLocalChanges() (shouldTrackState + shouldSyncPath).
 			// pendingDeletions come from pendingClashes which were synced paths originally.
 			const filteredLocalChanges = [
 				...localChanges
 					.filter(c => !activePendingPaths.has(c.path))
-					.filter(c => !resolvedNoChangePaths.has(c.path)),
+					.filter(c => !resolvedNoChangePaths.has(c.path))
+					// subsetScopeHandledPaths: a path where local's and remote's resolved rule
+					// disagree about scope:"subset" — already handled above, must not also be
+					// opaquely diffed/overwritten by the normal pipeline. See the comment above
+					// subsetScopeResult's call site for why this can't just be "never scanned".
+					.filter(c => !subsetScopeHandledPaths.has(c.path)),
 				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),
 			];
+			const filteredRemoteChanges = remoteChanges.filter(c => !subsetScopeHandledPaths.has(c.path));
 
 			// Log detected changes for diagnostics
 			const localCount = filteredLocalChanges.length;
-			const remoteCount = remoteChanges.length;
+			const remoteCount = filteredRemoteChanges.length;
 
 			if (localCount > 0 || remoteCount > 0) {
 				const logData: Record<string, Record<string, string[]>> = {};
@@ -1127,7 +1611,7 @@ export class FitSync implements IFitSync {
 				if (remoteCount > 0) {
 					const remoteData: Record<string, string[]> = {};
 					['ADDED', 'MODIFIED', 'REMOVED'].forEach(changeType => {
-						const files = remoteChanges.filter(c => c.type === changeType).map(c => c.path);
+						const files = filteredRemoteChanges.filter(c => c.type === changeType).map(c => c.path);
 						if (files.length > 0) remoteData[changeType] = files;
 					});
 					logData.remote = remoteData;
@@ -1141,7 +1625,7 @@ export class FitSync implements IFitSync {
 			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
 			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, protectedRemote, untrackNotices, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
-				remoteChanges,
+				filteredRemoteChanges,
 				localScanPaths,
 				remoteScanPaths,
 				currentLocalState,
@@ -1175,12 +1659,20 @@ export class FitSync implements IFitSync {
 			];
 
 			// Phase 3: Execute - push, pull, persist (atomic operation)
+			// subsetScopeResult.commitSha (if set) is strictly newer than remoteCommitSha —
+			// the subset lane may have already pushed its own commit earlier this same sync,
+			// which the initial remote fetch above couldn't have known about. Without this,
+			// a sync where only subset-scope paths changed persists the stale pre-push commit
+			// SHA (executeSync's own pushResult-null fallback uses this same value), showing
+			// the wrong "Synced to commit" in Explain Sync Status even though the push
+			// succeeded.
+			const remoteCommitShaAfterSubsetPush = subsetScopeResult.commitSha ?? remoteCommitSha;
 			const { localOps, remoteOps, conflicts: executedConflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths, localFailedPaths } = await this.executeSync(
 				currentLocalState,
 				{
-					remoteChanges,
+					remoteChanges: filteredRemoteChanges,
 					remoteTreeSha,
-					latestRemoteCommitSha: remoteCommitSha
+					latestRemoteCommitSha: remoteCommitShaAfterSubsetPush
 				},
 				safeLocal,
 				safeRemote,
@@ -1191,7 +1683,7 @@ export class FitSync implements IFitSync {
 				syncNotice
 			);
 
-			const conflicts = executedConflicts;
+			const conflicts = [...executedConflicts, ...subsetScopeResult.clashes];
 
 			// Log conflicts if any (these are real unresolved conflicts, not temporary clashes)
 			if (conflicts.length > 0) {
@@ -1257,8 +1749,8 @@ export class FitSync implements IFitSync {
 				changeGroups: [
 					// untrackNotices are pre-tagged MODIFIED with a note (see resolveAllChanges) so
 					// they render as an ordinary file change, not a real REMOVED.
-					{heading: "Local file updates:", changes: [...localOps, ...untrackNotices]},
-					{heading: "Remote file updates:", changes: remoteOps},
+					{heading: "Local file updates:", changes: [...localOps, ...untrackNotices, ...subsetScopeResult.localOps]},
+					{heading: "Remote file updates:", changes: [...remoteOps, ...subsetScopeResult.remoteOps]},
 				],
 				clash: conflicts
 			};
@@ -1458,6 +1950,7 @@ export class FitSync implements IFitSync {
 			pendingClashes: [...this.fit.pendingClashes],
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
 			fitAttributesWarning: this.fit.fitAttributesWarning,
+			possiblyChangedSubsetScopePaths: [],
 		};
 
 		if (!snapshot.lastFetchedCommitSha) {
@@ -1473,6 +1966,41 @@ export class FitSync implements IFitSync {
 			// getLocalChanges() may have just refreshed fitAttributesWarning (lazy hook) —
 			// use the post-scan value so Explain reflects the current file, not last sync's.
 			snapshot.fitAttributesWarning = this.fit.fitAttributesWarning;
+
+			// scope:"subset" paths are excluded from `changes` above (Fit.shouldSyncPath), since
+			// they don't go through the normal push/pull pipeline — but result.state (the raw
+			// local scan, unfiltered) already has today's raw whole-file SHA for them too, for
+			// free. Diffed against localShas[path] (same raw-SHA meaning for every path, see
+			// FitSync.syncSubsetScopePaths), this is a real, network-free signal that the file
+			// moved since last sync — coarser than a normal pending change (it can't tell
+			// whether the edit landed in a tracked field or not, only a live remote fetch can),
+			// so it's surfaced as its own distinctly-worded, "unconfirmed" section rather than
+			// folded into the ordinary Pending local changes list.
+			//
+			// Candidates are drawn from lastFetchedRemoteShas, NOT from every local .json path
+			// that defaults to format:"json"/scope:"subset" — git-mask tracking requires actual
+			// remote content to have been observed at least once (FitSync.syncSubsetScopePaths
+			// only ever resolves paths present in that sync's remote tree). A path with no
+			// remote baseline at all is untracked, same as any other git-mask path: nothing to
+			// sync, regardless of what format/scope it would default to.
+			const subsetScopePaths = new Set(
+				Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
+					path.startsWith('.obsidian/') &&
+					!this.fit.isHardDenylistedPath(path) &&
+					this.fit.resolveSyncFormat(path) === 'json' &&
+					this.fit.resolveScope(path) === 'subset'
+				)
+			);
+			if (subsetScopePaths.size > 0) {
+				const subsetCurrent: FileStates = {};
+				const subsetBaseline: FileStates = {};
+				for (const path of subsetScopePaths) {
+					if (result.state[path] !== undefined) subsetCurrent[path] = result.state[path];
+					if (this.fit.localShas[path] !== undefined) subsetBaseline[path] = this.fit.localShas[path];
+				}
+				snapshot.possiblyChangedSubsetScopePaths = compareFileStates(subsetCurrent, subsetBaseline)
+					.filter(c => !this.fit.pendingClashes.includes(c.path));
+			}
 		} catch (err) {
 			scanFailedPaths = err instanceof VaultError && err.details?.failedPaths
 				? err.details.failedPaths
