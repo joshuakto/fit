@@ -12,6 +12,8 @@
  * path actually move) is a later change, not this module.
  */
 
+import { hasExtension } from '@/util/filePath';
+
 export interface FitAttributeRule {
 	/**
 	 * "text": opts this tracked path into whole-file sync — full content
@@ -19,10 +21,20 @@ export interface FitAttributeRule {
 	 * yet. Required for any non-JSON tracked path (e.g. .obsidian/snippets/
 	 * *.css) to actually sync; without it, a tracked non-JSON path is
 	 * detected/logged but never read or written.
-	 * "json": reserved, not yet implemented — will opt a path into
-	 * field-level JSON masking once that lands.
+	 * "json": opts this tracked path into structural JSON merge (src/util/jsonMerge.ts)
+	 * instead of whole-file opaque replace — concurrent edits to different keys (or,
+	 * for `.canvas`, different id-keyed array elements) merge automatically instead of
+	 * clashing to `_fit/`. For a protected `.obsidian/` path, `format: "json"` alone is
+	 * incomplete — pair it with `scope: "full"` (see below) to actually activate it.
 	 */
 	format?: 'json' | 'text';
+	/**
+	 * "full": every key syncs, no field-level masking. Only value accepted today;
+	 * "subset" (field-level masking, docs/sync-logic.md § `.fitattributes.json` (#337))
+	 * is planned but not yet implemented — any other value fails validation rather
+	 * than being silently ignored.
+	 */
+	scope?: 'full';
 }
 
 /**
@@ -45,17 +57,23 @@ export const FITATTRIBUTES_PATH = '.fitattributes.json';
 const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt'];
 
 /**
+ * Filetype extensions whose sync format defaults to structural JSON merge
+ * (src/util/jsonMerge.ts) — applied uniformly, protected `.obsidian/` paths
+ * included. `.canvas` was already always merged this way (hardcoded in
+ * fitSync.ts before this became a general filetype default); plain `.json`
+ * files get the same treatment.
+ */
+const HEURISTIC_JSON_EXTENSIONS = ['.json', '.canvas'];
+
+/**
  * The sync format a path's filetype implies on its own, with no `.fitattributes.json`
  * entry — `null` if unknown (stays detection-only until explicitly configured).
- * Mirrors how ordinary (non-`.obsidian/`) files are handled implicitly today: plain
- * text by default, `.canvas` a JSON-shaped special case (though that one is handled
- * entirely by its own merge-spec selection in fitSync.ts, not through this function —
- * ordinary files are always eligible regardless of detected format, only `.obsidian/`
- * paths gate on it via `Fit.isEligibleForTracking`).
+ * Applied the same way for every path, protected or not: `.json`/`.canvas` default to
+ * `"json"` (structural merge), `.css`/`.md`/`.txt` default to `"text"`.
  */
 export function detectSyncFormat(path: string): FitAttributeRule['format'] | null {
-	const lowerPath = path.toLowerCase();
-	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext))) return 'text';
+	if (HEURISTIC_JSON_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'json';
+	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'text';
 	return null;
 }
 
@@ -80,8 +98,17 @@ function validateRule(path: string, rawRule: unknown): { ok: true; rule: FitAttr
 		format = rawRule.format;
 	}
 
+	let scope: 'full' | undefined;
+	if ('scope' in rawRule && rawRule.scope !== undefined) {
+		if (rawRule.scope !== 'full') {
+			return { ok: false, error: `rule for "${path}": "scope" must be "full" if present (other values not yet supported)` };
+		}
+		scope = rawRule.scope;
+	}
+
 	const rule: FitAttributeRule = {};
 	if (format) rule.format = format;
+	if (scope) rule.scope = scope;
 	return { ok: true, rule };
 }
 
@@ -103,6 +130,14 @@ export function parseFitAttributes(text: string): ParseFitAttributesResult {
 		return { ok: false, error: 'root value must be a JSON object mapping paths to rules' };
 	}
 
+	// TODO(#337): one invalid rule currently invalidates the entire file — every
+	// .obsidian/ path stops syncing until the single bad entry is fixed, even if every
+	// other rule is well-formed. Should be strict per-rule (an invalid rule is dropped/
+	// treated as unconfigured for just that path) but loose at the file level (other
+	// valid entries keep working) — see docs/sync-logic.md § .fitattributes.json (#337)
+	// "Malformed .fitattributes.json". Not changed yet: needs a way to surface a
+	// per-path warning (not just the current file-wide Fit.fitAttributesWarning) so a
+	// silently-dropped rule doesn't become a *silently* silently-dropped rule.
 	const value: FitAttributesFile = {};
 	for (const [path, rawRule] of Object.entries(parsed)) {
 		const result = validateRule(path, rawRule);

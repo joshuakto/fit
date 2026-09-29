@@ -262,20 +262,9 @@ FIT implements three layers of path filtering:
 
 **`_fit/` is separately, unconditionally excluded** — a `path.startsWith("_fit/")` check in `shouldSyncPath` itself (`src/fit.ts`), not part of the hard denylist above (it's the conflict-resolution directory, not an `.obsidian/` path at all).
 
-**Note on `.obsidian/core-plugins.json` / `.obsidian/community-plugins.json`:** neither is on the hard denylist (unlike the old `obsidianSyncRules`-era `OBSIDIAN_NEEDS_MERGE` set, which lumped them in with FIT's own `data.json`) — that older grouping was itself based on a misunderstanding that both files were array-shaped. They're different cases:
-- `core-plugins.json` is a plain `{ pluginId: boolean }` map — it fits field-level masking cleanly once `format: "json"` exists: each plugin's enabled state is an ordinary trackable key, and any device-local entries not present in git simply stay untouched, no special handling needed. A good masking candidate, not just a loosened-but-risky one.
-- `community-plugins.json` is a bare array of plugin ids — it doesn't fit the flat key-masking model at all. Syncing *some* array entries via git while preserving other purely local-only entries needs real design work (a `.fitattributes.json` option for set-membership within an array, not just reordering) — deliberately not designed yet.
+**Filetype defaults.** A tracked `.obsidian/` path with no `.fitattributes.json` entry gets a format from its extension: `.css`/`.md`/`.txt` → `format: "text"` (whole-file, opaque bytes, no merge attempt); `.json`/`.canvas` → `format: "json"`. Any other extension has no default and stays detection-only (logged, never read or written — see [Explain Sync Status](#explain-sync-status)) until an explicit entry gives it one. `.fitattributes.json`'s presence never causes tracking by itself; it only modulates how an already-tracked path (per git presence, above) is handled. See [`src/fitAttributes.ts`](../src/fitAttributes.ts) for the schema.
 
-Under the current whole-file-only scope, both are simply ordinary tracked JSON paths: detection-only unless a user explicitly sets `format: "text"` on one, which works crudely today (whole-file replace, no array-aware merge — real clash risk if two devices have different plugin sets installed at the same time). That's accepted as an explicit opt-in for now; the message to a user asking about either file today is "whole-file sync if you want it via `format: "text"`, otherwise wait for the more graceful field/array-aware mechanism."
-
-**Whole-file text-mode sync (`.fitattributes.json`, current scope):**
-A tracked non-JSON `.obsidian/` path (e.g. `.obsidian/snippets/custom.css`) only actually syncs — full content, either direction — when `.fitattributes.json` at the vault root explicitly declares it:
-```json
-{ ".obsidian/snippets/custom.css": { "format": "text" } }
-```
-Without that declaration, a tracked non-JSON path is detected and logged but never read or written — see [Explain Sync Status](#explain-sync-status). `.fitattributes.json`'s presence never causes tracking by itself; it only modulates how an already-tracked path (per git presence, above) is handled. See [`src/fitAttributes.ts`](../src/fitAttributes.ts) for the schema.
-
-**A JSON `.obsidian/` path is not synced unless explicitly given `format: "text"`.** `format: "text"` treats content as opaque bytes regardless of shape — it works for JSON content the same as any other file, just with zero field awareness (whole file replace/clash, a device-local field mixed into an otherwise-shared file is not protected). Field-level masking — syncing only a configured subset of a JSON file's top-level keys, so device-local fields are never touched — is a later change (`format: "json"`, reserved, not built yet). A tracked JSON path with no `.fitattributes.json` entry at all is detection-only: logged, never read or written.
+**A protected json path needs an explicit `scope: "full"` entry to sync today**, activating the structural merge engine `.canvas` files already use ([`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts)) — whole-file, every key syncs, nothing masked. `scope: "subset"` (field-level masking, so device-local fields stay untouched) will become the default for a protected path once implemented, with `scope: "full"` remaining available as an explicit override; see [`src/util/protectedPathMask.ts`](../src/util/protectedPathMask.ts) for the extraction/overlay sketch. Without `scope: "full"` (or a `format: "text"` override instead), a protected json path stays detection-only.
 
 **Behavior for untracked or unsynced-format paths:**
 - **⬆️ Local→Remote:** Never pushed
@@ -739,7 +728,7 @@ Canvas files are JSON with the schema `{ nodes: [{id, ...}], edges: [{id, ...}] 
 
 **Result:** merged content written to the local file, SHA stored in baseline, path excluded from `pendingClashes`. From the user's perspective, no clash ever occurred.
 
-**Implementation:** [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts) (merge engine + `CANVAS_MERGE_SPEC`), [`src/remoteGitHubVault.ts`](../src/remoteGitHubVault.ts) (`readFileBlobBySha` for base fetch), [`src/fitSync.ts`](../src/fitSync.ts) (parallel base pre-fetch + canvas auto-merge block before `clashFiles` computation)
+**Implementation:** [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts) (merge engine + `CANVAS_MERGE_SPEC`/`GENERIC_JSON_MERGE_SPEC`/`mergeSpecForPath`), [`src/remoteGitHubVault.ts`](../src/remoteGitHubVault.ts) (`readFileBlobBySha` for base fetch), [`src/fitSync.ts`](../src/fitSync.ts) (parallel base pre-fetch + JSON auto-merge block before `clashFiles` computation). Dispatch is format-driven (`Fit.resolveSyncFormat`), not a `.canvas`-only special case — any path (protected or ordinary vault) resolving to `format: "json"` (explicit `.fitattributes.json` entry, or the filetype default for `.canvas`/`.json` vault paths) goes through this engine at clash time.
 
 ### Merge engine design (`JsonMergeSpec`)
 
@@ -751,25 +740,32 @@ interface JsonMergeSpec {
 }
 ```
 
-`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). Canvas uses a hardcoded spec (`CANVAS_MERGE_SPEC`); the interface is designed for future `.fitattributes.json`-driven parameterization (#337), not yet wired up.
+`mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). `mergeSpecForPath(path)` picks the spec: `CANVAS_MERGE_SPEC` (id-keyed `nodes`/`edges`) for `.canvas` paths, `GENERIC_JSON_MERGE_SPEC` (no keyed arrays, plain key-level merge) for every other `format: "json"` path. Per-file keyed-array config beyond `.canvas` (e.g. for a specific `.obsidian/` JSON file) is future work, not yet in the schema.
 
 ### `.fitattributes.json` (#337, #67, #358)
 
-`.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file, always synced regardless of `syncHiddenFiles` (it has to propagate for the feature to work at all). It maps `.obsidian/` paths to a rule object. **Its presence never triggers tracking** — see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded) above for what does (git content presence). It only modulates how an already-tracked path is handled:
+`.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file, always synced regardless of `syncHiddenFiles`. It maps `.obsidian/` paths to a rule object and only modulates how an already-tracked path is handled — **its presence never triggers tracking** (see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded) above for what does: git content presence).
 
 ```typescript
 interface FitAttributeRule {
   format?: 'json' | 'text';
+  scope?: 'full'; // 'subset' planned, not yet implemented (see below)
 }
 ```
 
-**Currently implemented:** `format: "text"` — opts a tracked path into whole-file sync, treating its content as opaque bytes regardless of whether it happens to be JSON-shaped (full-content replace, `_fit/` clash on both-sides-changed, no merge — though see diff3 merge below, which applies to any text-mode path). Not restricted to non-JSON paths — a JSON file with `format: "text"` syncs exactly like any other text file, with no field awareness at all; this is deliberately identical to what `obsidianSyncRules`'s `"replace"` strategy always did for any path, JSON included, since that mechanism never had field-level masking either. A tracked `.obsidian/` path ending in `.css` (e.g. `.obsidian/snippets/*.css`, #358) defaults to `format: "text"` on its own — no `.fitattributes.json` entry needed; an explicit entry still overrides the heuristic either direction. This is also how alpha users who had a JSON path opted in via `obsidianSyncRules` keep syncing after migration (below).
+**`format: "text"`** — opaque whole-file sync regardless of content shape: full-content replace, `_fit/` clash on both-sides-changed (diff3 line merge still applies, see below). No field awareness, JSON-shaped or not — deliberately identical to the retired `obsidianSyncRules`'s `"replace"` strategy (see Migration below). `.obsidian/` paths ending `.css`/`.md`/`.txt` (#358) default to this with no `.fitattributes.json` entry needed; an explicit entry still overrides either direction.
 
-**Malformed `.fitattributes.json`:** since this file is the sole enable-switch for any `.obsidian/` sync in this version, a parse failure (invalid JSON, non-object root, invalid rule shape) degrades to "treat as empty — nothing syncs" rather than aborting the sync, but is surfaced two ways rather than just a debug-log line — a config file this load-bearing shouldn't fail silently: a visible sync-notice warning (`Fit.fitAttributesWarning`, shown by `FitSync` via `FitNotice`) at sync time, and a persistent entry in [Explain Sync Status](#explain-sync-status) (`fitAttributesNote`) so the problem stays visible between syncs without needing to trigger one. A separate failure mode — the file existing but failing to *read* (I/O error, permission issue) — is debug-logged only, not surfaced as a warning: `LocalVault.readFromSource()`'s own per-file scan reads this same file as part of its normal pass and aborts the whole sync on any unreadable tracked file before the warning-Notice code would run, so a dedicated warning here couldn't reliably appear anyway.
+**`format: "json"`** — whole-file structural merge via [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts), the same engine `.canvas` uses (see [Semantic JSON Merge](#semantic-json-merge) above). Concurrent edits to different top-level keys merge instead of clashing; a device-local field mixed into an otherwise-shared file still syncs along with everything else — that's what `scope: "subset"` will fix once it exists. For an ordinary vault `.json`/`.canvas` path this is real and active today (explicit entry, or the filetype default). For a protected `.obsidian/` path, `format: "json"` alone is incomplete — pair it with an explicit **`scope: "full"`** to activate whole-file structural sync; without `scope`, it's treated as unconfigured (logged/`classifyObsidianPathsForLog`-bucketed the same as no rule at all), not defaulted to whole-file sync. Defaulting a protected JSON file to whole-file sync with no explicit opt-in, even temporarily, was considered and rejected: it's the wrong direction to default toward, and would be disruptive to walk back once `scope: "subset"` ships. `scope: "full"` was cheap to add alongside this decision precisely because it required the same validation work `scope: "subset"` will need anyway (rejecting unrecognized `scope` values outright, not silently ignoring them — see `parseFitAttributes` in `src/fitAttributes.ts`), so building it now is real groundwork, not throwaway.
+
+**Malformed `.fitattributes.json`:** a parse failure — including an unrecognized `format` or `scope` value — degrades to "treat as empty — nothing syncs," surfaced as a sync notice (`Fit.fitAttributesWarning`) and a persistent [Explain Sync Status](#explain-sync-status) entry (`fitAttributesNote`) rather than just a debug-log line, since this file is the sole enable-switch for `.obsidian/` sync. An unreadable-but-present file (I/O error) is debug-logged only — `LocalVault.readFromSource()`'s own scan already aborts the whole sync on any unreadable tracked file before that warning path would run.
+
+**TODO — malformed scope is file-wide, should be per-rule:** today one invalid rule (`parseFitAttributes` in `src/fitAttributes.ts`) invalidates the *entire* file — every `.obsidian/` path stops syncing until the single bad entry is fixed, even if every other rule is well-formed. The right shape is strict per-rule (an invalid rule is dropped/treated as unconfigured for just that path, with its own visible warning) but loose at the file level (other valid entries keep working uninterrupted). Not changed yet — needs a per-path surfacing mechanism (log + Explain), not just the current file-wide `Fit.fitAttributesWarning`, so a dropped rule doesn't silently disappear along with the loud warning that would otherwise flag it.
+
+**Known gap — self-clash not consulted:** the local copy is read and applied unconditionally every sync, even while it has an unresolved clash with remote sitting in `_fit/.fitattributes.json`. Not yet fixed; likely shape is per-entry, applying rules that agree between local and remote and treating disagreeing ones as temporarily unconfigured, matching how a pending clash is already handled elsewhere.
 
 **Not yet implemented:**
-- `format: "json"` (reserved) — will opt a tracked JSON path into field-level masking once that engine exists: syncing only the top-level keys actually present in the tracked (masked) copy, leaving every other local key — including ones this device has no opinion on — untouched. Needed because most `.obsidian/` JSON files mix genuinely shared settings with device-local state (window layout, etc.) at no fixed nesting depth; whole-file replace on such a file would clobber the device-local parts.
-- Array-valued field handling (set-union merge instead of clash, e.g. a plugin-list array) once JSON masking exists — not yet in the schema at all. Deliberately not speccing a shape yet (a flat top-level-only `unordered: string[]` field was tried and removed before this landed — nested field targeting needs real design, not a placeholder). Left undecided rather than shipping a shape now; revisit when `format: "json"` is actually designed.
+- **`scope: "subset"`** — syncs only the top-level keys present in the tracked copy, leaving every other local key untouched. Needed because most `.obsidian/` json files mix shared settings with device-local state at no fixed depth, so whole-file `format: "json"` (even with `scope: "full"`) still clobbers the device-local parts. Extraction/overlay helpers exist ([`src/util/protectedPathMask.ts`](../src/util/protectedPathMask.ts)), not yet wired into push/pull. Default once implemented: `subset` for `.obsidian/` paths, `full` for ordinary vault paths — explicitly overridable either way, so an existing explicit `scope: "full"` entry keeps meaning exactly what it says once `subset` ships. Ordinary vault json/canvas paths are unaffected either way — full is already their behavior with or without an explicit `scope`.
+- Array-valued field handling (set-union instead of clash) beyond `.canvas`'s hardcoded `nodes`/`edges` — not in the schema. A flat `unordered: string[]` shape was tried and dropped before landing; nested field targeting needs real design, left undecided rather than shipped half-right.
 
 ### Migrating from `obsidianSyncRules` (alpha)
 
@@ -832,7 +828,7 @@ If `autoMerge: false` is set on a rule, the clash file IS written to `_fit/` and
 
 Every sync logs a dry-run classification of `.obsidian/` paths seen this sync (local scan and/or remote tree) that aren't actively syncing — hard-denylisted, tracked-but-not-format-eligible, or genuinely untracked — via `Fit.classifyObsidianPathsForLog()` (called from `FitSync`). Sync-log-only (`fitLogger`), read-only, no extra network calls or I/O — derived entirely from state this sync already fetched. Skipped entirely when there's no `.obsidian/` activity to report. It does not yet appear in the Explain Sync Status modal itself — surfacing it there (so a user can see *why* a given `.obsidian/` path isn't syncing without digging through the log) is a separately-scoped follow-up.
 
-Whenever any `.obsidian/` path is actively syncing (`trackedTextMode` non-empty), a second log line follows with a hint: to stop syncing it, remove it from the GitHub repo — `.fitattributes.json` only controls *how* a tracked path syncs, not *whether* it's tracked, so it can't be used as an off-switch.
+Whenever any `.obsidian/` path is actively syncing (`trackedSyncing` non-empty), a second log line follows with a hint: to stop syncing it, remove it from the GitHub repo — `.fitattributes.json` only controls *how* a tracked path syncs, not *whether* it's tracked, so it can't be used as an off-switch.
 
 ### Keeping Explain accurate
 
@@ -1434,13 +1430,13 @@ Known real issue with this: some log call sites dump full, uncapped path arrays 
 [timestamp] ... ☁️ [RemoteVault] Fetched 9 files
 [timestamp] .. ✅ [Sync] Change detection complete
 [timestamp] [FitSync] Protected-path detection: {
-  "trackedTextMode": [".obsidian/app.json", ".obsidian/graph.json"],
+  "trackedSyncing": [".obsidian/app.json", ".obsidian/graph.json"],
   "hardDenylisted": [".obsidian/plugins/fit/data.json"],
   "trackedUnconfigured": [".obsidian/plugins/obsidian42-brat/data.json"],
   "untracked": [".obsidian/hotkeys.json"],
   "untrackedTotal": 1
 }
-[timestamp] [FitSync] Note: to stop syncing any of the above trackedTextMode paths, remove them from your GitHub repo — .fitattributes.json only changes how a tracked path syncs, not whether it is tracked.
+[timestamp] [FitSync] Note: to stop syncing any of the above trackedSyncing paths, remove them from your GitHub repo — .fitattributes.json only changes how a tracked path syncs, not whether it is tracked.
 [timestamp] 🔄 [FitSync] Syncing changes (1 local, 1 remote): {
   "local": { "MODIFIED": [".obsidian/app.json"] },
   "remote": { "MODIFIED": ["note.md"] }

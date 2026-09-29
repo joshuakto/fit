@@ -7,7 +7,7 @@
 
 import { LocalStores } from "@/localStores";
 import { FitSettings } from "@/fitSettings";
-import { FitAttributesFile, FITATTRIBUTES_PATH, detectSyncFormat, parseFitAttributes } from "@/fitAttributes";
+import { FitAttributeRule, FitAttributesFile, FITATTRIBUTES_PATH, detectSyncFormat, parseFitAttributes } from "@/fitAttributes";
 import { FileChange, FileStates, compareFileStates } from "./util/changeTracking";
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
@@ -159,36 +159,64 @@ export class Fit {
 
 		if (path.startsWith(".obsidian/")) {
 			// The trigger is git, not FIT: tracked purely because content exists (or has an
-			// established baseline) — never because of a local toggle of any kind.
+			// established baseline) — never because of a local toggle of any kind. This is
+			// orthogonal to isEligibleForTracking below: a path can be fully eligible (valid,
+			// complete format/scope) and still not sync at all because it's never actually
+			// appeared in git content yet — that's what this checks, not config completeness.
 			const isTracked =
 				path in this.localShas ||
 				path in this.lastFetchedRemoteShas ||
 				this.trackedForCurrentSync.has(path);
 			if (!isTracked) return false;
-
-			return this.isEligibleForTracking(path);
 		}
 
-		return true;
+		return this.isEligibleForTracking(path);
 	}
 
 	/**
-	 * Everything shouldSyncPath checks for a `.obsidian/` path *except* whether it's
-	 * currently tracked — i.e. "would this path sync once/if tracked?". Split out so the
-	 * pre-sync reconcile block (FitSync) can ask this about a path that's about to become
-	 * tracked without a chicken-and-egg dependency on shouldSyncPath's own tracked-check.
+	 * Whether a path is allowed to sync at all: not hard-denylisted, and resolveScope
+	 * resolves to a non-null value. `!== null` alone is a correct completeness check only
+	 * because resolveScope is documented to return `null` for any scope value this layer
+	 * doesn't yet support (e.g. "subset", until that's a real implemented case) — this
+	 * function trusts that contract rather than separately validating the value.
+	 *
+	 * Split out from shouldSyncPath so the pre-sync reconcile block (FitSync) can ask this
+	 * about a `.obsidian/` path that's about to become tracked, without a chicken-and-egg
+	 * dependency on shouldSyncPath's own git-tracked check (a separate, orthogonal signal —
+	 * see shouldSyncPath's own comment).
 	 */
 	isEligibleForTracking(path: string): boolean {
 		if (this.isHardDenylistedPath(path)) return false;
+		return this.resolveScope(path) !== null;
+	}
 
-		// Explicit .fitattributes.json config always wins over the filetype heuristic
-		// below — including to opt a path back OUT of a heuristic-implied format.
+	/**
+	 * The sync format that governs how an already-tracked path is merged — whole-file
+	 * opaque replace ("text") vs structural JSON merge ("json", src/util/jsonMerge.ts).
+	 * Explicit .fitattributes.json config always wins over the filetype heuristic,
+	 * including to opt a path back OUT of a heuristic-implied format. `null` means
+	 * unresolved: unrecognized extension, unconfigured.
+	 */
+	resolveSyncFormat(path: string): FitAttributeRule['format'] | null {
 		const configuredFormat = this.fitAttributes[path]?.format;
-		const format = configuredFormat ?? detectSyncFormat(path);
+		return configuredFormat ?? detectSyncFormat(path);
+	}
 
-		// format:"json" is reserved (field-level masking, not built yet); a path with no
-		// known/configured text format is detection-only.
-		return format === "text";
+	/**
+	 * How much of a tracked path syncs. Explicit .fitattributes.json config always wins.
+	 * Default (no config): "full" for any ordinary (non-`.obsidian/`) path, unconditionally.
+	 * For a protected `.obsidian/` path: "full" for format:"text", "subset" where
+	 * feasible/supported, `null` otherwise.
+	 */
+	resolveScope(path: string): FitAttributeRule['scope'] | null {
+		const configuredScope = this.fitAttributes[path]?.scope;
+		if (configuredScope) return configuredScope;
+		if (!path.startsWith(".obsidian/")) return "full";
+		const format = this.resolveSyncFormat(path);
+		if (format === "text") return "full";
+		// "subset" isn't implemented yet at this layer — null here for every non-"text"
+		// case is temporary, not a permanent "json is unsupported" statement.
+		return null;
 	}
 
 	/**
@@ -226,7 +254,7 @@ export class Fit {
 	classifyObsidianPathsForLog(
 		currentLocalState: FileStates,
 		remoteState: FileStates
-	): { trackedTextMode: string[]; hardDenylisted: string[]; trackedUnconfigured: string[]; untracked: string[] } {
+	): { trackedSyncing: string[]; hardDenylisted: string[]; trackedUnconfigured: string[]; untracked: string[] } {
 		const candidates = new Set<string>();
 		for (const path of Object.keys(currentLocalState)) {
 			if (path.startsWith(".obsidian/")) candidates.add(path);
@@ -235,7 +263,7 @@ export class Fit {
 			if (path.startsWith(".obsidian/")) candidates.add(path);
 		}
 
-		const trackedTextMode: string[] = [];
+		const trackedSyncing: string[] = [];
 		const hardDenylisted: string[] = [];
 		const trackedUnconfigured: string[] = [];
 		const untracked: string[] = [];
@@ -244,8 +272,10 @@ export class Fit {
 			if (this.isHardDenylistedPath(path)) {
 				hardDenylisted.push(path);
 			} else if (path in remoteState) {
-				if (this.fitAttributes[path]?.format === "text") {
-					trackedTextMode.push(path);
+				// format: "json" alone is incomplete for a protected path (see
+				// isEligibleForTracking) — bucketed with "unconfigured", not "syncing".
+				if (this.isEligibleForTracking(path)) {
+					trackedSyncing.push(path);
 				} else {
 					trackedUnconfigured.push(path);
 				}
@@ -254,7 +284,7 @@ export class Fit {
 			}
 		}
 
-		return { trackedTextMode, hardDenylisted, trackedUnconfigured, untracked };
+		return { trackedSyncing, hardDenylisted, trackedUnconfigured, untracked };
 	}
 
 	/**
@@ -310,6 +340,9 @@ export class Fit {
 	 * this.fitAttributes and this.fitAttributesWarning. Shared by the eager (reconcile) and
 	 * lazy (getLocalChanges) refresh paths below.
 	 */
+	// Known gap: always trusts local disk content, even if .fitattributes.json itself has
+	// an unresolved pending clash with remote — see docs/sync-logic.md § .fitattributes.json
+	// (#337) → "Known gap — self-clash not consulted".
 	private async readAndApplyFitAttributes(): Promise<void> {
 		try {
 			const fitAttributesContent = await this.localVault.readFileContent(FITATTRIBUTES_PATH);

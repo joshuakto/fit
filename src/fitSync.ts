@@ -11,7 +11,7 @@ import { BlobSha, CommitSha } from "./util/hashing";
 import { LocalVault } from "./localVault";
 import * as Encryption from "./encryption";
 import { buildStatusExplanation, StatusExplanation, SyncStatusSnapshot } from '@/fitStatusExplainer';
-import { CANVAS_MERGE_SPEC, mergeJson, serialiseMerged, MergeResult } from './util/jsonMerge';
+import { mergeJson, mergeSpecForPath, serialiseMerged, MergeResult } from './util/jsonMerge';
 import { tryLineMerge } from './util/lineMerge';
 import { hasNullByte } from './util/obsidianHelpers';
 
@@ -497,58 +497,65 @@ export class FitSync implements IFitSync {
 		// Deletion of a pending path arrives with remoteOp === 'REMOVED' via the reclassification
 		// path above, so the remoteOp !== 'REMOVED' filter here can never incorrectly skip it.
 
-		// Auto-merge: canvas clashes are resolved via semantic JSON merge (id-keyed set union).
-		// Successful merges bypass _fit/ entirely; the merged result is written locally and
-		// pushed on the next sync. mergedPaths tells applyRemoteChanges these are safe to
-		// write even when not yet in localShas (caller already incorporated local content).
-		const canvasClashCandidates = clashes
+		// Auto-merge: format:"json" clashes are resolved via semantic JSON merge (see
+		// src/util/jsonMerge.ts). Successful merges bypass _fit/ entirely; the merged
+		// result is written locally and pushed on the next sync. mergedPaths tells
+		// applyRemoteChanges these are safe to write even when not yet in localShas
+		// (caller already incorporated local content). Format is resolved the same way
+		// for any path (.obsidian/ or ordinary vault) — .fitattributes.json config wins,
+		// else filetype default (detectSyncFormat) — .canvas gets its id-keyed
+		// nodes/edges spec, everything else gets the generic key-level spec
+		// (mergeSpecForPath). Was hardcoded to `.canvas` alone; generalizing this is what
+		// makes forcing a specific `.canvas` file to format:"text" (or opting an ordinary
+		// `.json` vault file into structural merge) actually take effect.
+		const jsonClashCandidates = clashes
 			.filter(c => c.remoteOp !== 'REMOVED')
 			.filter(c => !pendingReminderPaths.has(c.path))
-			.filter(c => c.path.endsWith('.canvas'));
+			.filter(c => this.fit.resolveSyncFormat(c.path) === 'json');
 
 		// Pre-fetch base blobs in parallel before running merges (three-way merge base).
 		// Base = content at last successful sync = lastFetchedRemoteShas blob SHA.
-		const canvasBaseTexts = new Map<string, string | null>();
-		await Promise.all(canvasClashCandidates.map(async (clash) => {
+		const jsonBaseTexts = new Map<string, string | null>();
+		await Promise.all(jsonClashCandidates.map(async (clash) => {
 			const baseSha = this.fit.lastFetchedRemoteShas[clash.path];
-			if (!baseSha) { canvasBaseTexts.set(clash.path, null); return; }
+			if (!baseSha) { jsonBaseTexts.set(clash.path, null); return; }
 			try {
 				const content = await this.fit.remoteVault.readFileBlobBySha(baseSha);
-				canvasBaseTexts.set(clash.path, content.toPlainText());
-				fitLogger.log('... [FitSync] Fetched base blob for canvas merge', { path: clash.path, sha: baseSha });
+				jsonBaseTexts.set(clash.path, content.toPlainText());
+				fitLogger.log('... [FitSync] Fetched base blob for JSON merge', { path: clash.path, sha: baseSha });
 			} catch (e) {
 				fitLogger.log('... [FitSync] Base blob fetch failed, falling back to two-way merge', { path: clash.path, sha: baseSha, error: String(e) });
-				canvasBaseTexts.set(clash.path, null);
+				jsonBaseTexts.set(clash.path, null);
 			}
 		}));
 
-		const autoMergedCanvasClashes: Array<{path: string, content: FileContent}> = [];
+		const autoMergedJsonClashes: Array<{path: string, content: FileContent}> = [];
 
 		await Promise.all(
-			canvasClashCandidates.map(async (clash) => {
+			jsonClashCandidates.map(async (clash) => {
 				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
 				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
 				if (remoteContent === null || localContent === null) return;
-				const baseText = canvasBaseTexts.get(clash.path) ?? null;
+				const baseText = jsonBaseTexts.get(clash.path) ?? null;
 				let result: MergeResult;
 				try {
-					result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), CANVAS_MERGE_SPEC);
+					result = mergeJson(baseText, localContent.toPlainText(), remoteContent.toPlainText(), mergeSpecForPath(clash.path));
 				} catch (e) {
-					fitLogger.log('.. [FitSync] Canvas auto-merge threw, falling back to clash', {
+					fitLogger.log('.. [FitSync] JSON auto-merge threw, falling back to clash', {
 						path: clash.path, error: String(e),
 					});
 					return;
 				}
 				if (!result.merged) {
-					fitLogger.log('.. [FitSync] Canvas auto-merge failed, falling back to clash', {
+					fitLogger.log('.. [FitSync] JSON auto-merge failed, falling back to clash', {
 						path: clash.path, reason: result.reason,
 					});
 					return;
 				}
-				fitLogger.log('.. [FitSync] Canvas auto-merge succeeded', {
+				fitLogger.log('.. [FitSync] JSON auto-merge succeeded', {
 					path: clash.path, hadBase: baseText !== null,
 				});
-				autoMergedCanvasClashes.push({
+				autoMergedJsonClashes.push({
 					path: clash.path,
 					content: FileContent.fromPlainText(serialiseMerged(result.value)),
 				});
@@ -558,7 +565,7 @@ export class FitSync implements IFitSync {
 		const textClashCandidates = clashes
 			.filter(c => c.remoteOp !== 'REMOVED')
 			.filter(c => !pendingReminderPaths.has(c.path))
-			.filter(c => !c.path.endsWith('.canvas'));
+			.filter(c => this.fit.resolveSyncFormat(c.path) !== 'json');
 
 		const autoMergedTextClashes: Array<{path: string, content: FileContent}> = [];
 		// Cache remote content read here so clashFiles (below) doesn't re-fetch it
@@ -608,7 +615,7 @@ export class FitSync implements IFitSync {
 			})
 		);
 
-		const mergedPaths = new Set([...autoMergedCanvasClashes, ...autoMergedTextClashes].map(c => c.path));
+		const mergedPaths = new Set([...autoMergedJsonClashes, ...autoMergedTextClashes].map(c => c.path));
 
 		const clashFiles = await Promise.all(
 			clashes
@@ -666,9 +673,9 @@ export class FitSync implements IFitSync {
 		}
 
 		// 3b. Pull remote changes to local (with safety checks and clash resolution)
-		// autoMergedCanvasClashes are written as normal files (not to _fit/), deferred push on next sync.
+		// autoMergedJsonClashes are written as normal files (not to _fit/), deferred push on next sync.
 		// mergedPaths bypasses the untracked-file safety redirect — content already merged from local.
-		const allAddToLocal = [...addToLocalNonClashed, ...autoMergedCanvasClashes, ...autoMergedTextClashes];
+		const allAddToLocal = [...addToLocalNonClashed, ...autoMergedJsonClashes, ...autoMergedTextClashes];
 		const localFileOpsRecord = await this.applyRemoteChanges(
 			allAddToLocal,
 			deleteFromLocalNonClashed,
@@ -683,7 +690,7 @@ export class FitSync implements IFitSync {
 				filesWritten: allAddToLocal.length,
 				filesDeleted: deleteFromLocalNonClashed.length,
 				clashesWrittenToFit: clashFiles.length,
-				...(autoMergedCanvasClashes.length > 0 && { canvasAutoMerged: autoMergedCanvasClashes.length }),
+				...(autoMergedJsonClashes.length > 0 && { jsonAutoMerged: autoMergedJsonClashes.length }),
 				...(autoMergedTextClashes.length > 0 && { textAutoMerged: autoMergedTextClashes.length }),
 			});
 		}
@@ -967,7 +974,7 @@ export class FitSync implements IFitSync {
 			// docs/sync-logic.md § Protected-path detection. Skipped entirely when there's
 			// nothing to report (no .obsidian/ activity at all this sync).
 			const protectedPathDetection = this.fit.classifyObsidianPathsForLog(currentLocalState, remoteTreeSha);
-			const hasProtectedPathActivity = protectedPathDetection.trackedTextMode.length > 0
+			const hasProtectedPathActivity = protectedPathDetection.trackedSyncing.length > 0
 				|| protectedPathDetection.hardDenylisted.length > 0
 				|| protectedPathDetection.trackedUnconfigured.length > 0
 				|| protectedPathDetection.untracked.length > 0;
@@ -978,15 +985,15 @@ export class FitSync implements IFitSync {
 				// array length).
 				const UNTRACKED_LOG_CAP = 30;
 				fitLogger.log('[FitSync] Protected-path detection', {
-					trackedTextMode: protectedPathDetection.trackedTextMode,
+					trackedSyncing: protectedPathDetection.trackedSyncing,
 					hardDenylisted: protectedPathDetection.hardDenylisted,
 					trackedUnconfigured: protectedPathDetection.trackedUnconfigured,
 					untracked: protectedPathDetection.untracked.slice(0, UNTRACKED_LOG_CAP),
 					untrackedTotal: protectedPathDetection.untracked.length,
 				});
-				if (protectedPathDetection.trackedTextMode.length > 0) {
+				if (protectedPathDetection.trackedSyncing.length > 0) {
 					fitLogger.log(
-						'[FitSync] Note: to stop syncing any of the above trackedTextMode paths, ' +
+						'[FitSync] Note: to stop syncing any of the above trackedSyncing paths, ' +
 						'remove them from your GitHub repo — .fitattributes.json only changes how a ' +
 						'tracked path syncs, not whether it is tracked.'
 					);

@@ -1,3 +1,5 @@
+import { hasExtension } from '@/util/filePath';
+
 /**
  * Semantic JSON merge for Fit sync.
  *
@@ -133,10 +135,13 @@ function mergeObjects(
 		const inRemote = Object.prototype.hasOwnProperty.call(remote, key);
 
 		if (inLocal && inRemote) {
-			if (!deepEqual(local[key], remote[key])) {
+			const baseHasKey = base !== null && Object.prototype.hasOwnProperty.call(base, key);
+			const baseValue = base !== null ? base[key] : undefined;
+			const resolved = resolveThreeWay(baseValue, baseHasKey, local[key], remote[key]);
+			if (resolved === null) {
 				return { merged: false, reason: `conflicting values for key "${key}"` };
 			}
-			result[key] = remote[key];
+			result[key] = resolved.value;
 		} else if (inLocal !== inRemote) {
 			// One side has the key, the other doesn't
 			if (base === null) {
@@ -245,12 +250,9 @@ function mergeKeyedArrays(
 			continue;
 		}
 		// Same id, different content — attempt three-way resolution
-		const baseItem = baseById.get(id);
-		if (baseItem !== undefined) {
-			if (deepEqual(baseItem, remoteItem)) { result.push(localItem); continue; } // remote unchanged → local wins
-			if (deepEqual(baseItem, localItem))  { result.push(remoteItem); continue; } // local unchanged → remote wins
-		}
-		return { ok: false, conflictId: id }; // no base or genuine divergence
+		const resolved = resolveThreeWay(baseById.get(id), baseById.has(id), localItem, remoteItem);
+		if (resolved === null) return { ok: false, conflictId: id }; // no base or genuine divergence
+		result.push(resolved.value);
 	}
 
 	for (const item of local) {
@@ -259,6 +261,23 @@ function mergeKeyedArrays(
 	}
 
 	return { ok: true, value: result };
+}
+
+/**
+ * Three-way value resolution, shared by mergeObjects' same-key branch and
+ * mergeKeyedArrays' same-id branch: if local and remote already agree, that's the
+ * answer; otherwise, if only one side actually changed relative to base, the other
+ * side's edit wins; if both diverged from base (or there's no base to compare
+ * against), it's a genuine conflict. `hasBase` is passed separately from `base`
+ * since `undefined` is a valid tracked value and can't double as "no base entry".
+ */
+function resolveThreeWay<T>(base: T | undefined, hasBase: boolean, local: T, remote: T): { value: T } | null {
+	if (deepEqual(local, remote)) return { value: remote };
+	if (hasBase) {
+		if (deepEqual(local, base)) return { value: remote }; // local unchanged → remote wins
+		if (deepEqual(remote, base)) return { value: local }; // remote unchanged → local wins
+	}
+	return null; // genuine divergence, or no base to disambiguate
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -309,3 +328,23 @@ export const CANVAS_MERGE_SPEC: JsonMergeSpec = {
 		edges: 'id',
 	},
 };
+
+/**
+ * Default spec for a `format:"json"` path with no filetype-specific shape known —
+ * plain key-level 3-way merge, no keyed-array set-union. Still real merge value over
+ * opaque text replace: concurrent edits to different top-level keys merge instead of
+ * clashing, and formatting/key-order differences never cause a spurious clash.
+ */
+export const GENERIC_JSON_MERGE_SPEC: JsonMergeSpec = {
+	keyedArrays: {},
+};
+
+/**
+ * Which JsonMergeSpec to use for a path already known to be format:"json" — `.canvas`
+ * gets its id-keyed nodes/edges set-union, everything else gets the generic key-level
+ * spec. Filetype-specific specs beyond `.canvas` (e.g. per-file keyed-array config for
+ * particular `.obsidian/` JSON files) are future work, not yet needed.
+ */
+export function mergeSpecForPath(path: string): JsonMergeSpec {
+	return hasExtension(path, '.canvas') ? CANVAS_MERGE_SPEC : GENERIC_JSON_MERGE_SPEC;
+}

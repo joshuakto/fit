@@ -74,4 +74,26 @@ describe('parseFitAttributes', () => {
 			expect.objectContaining({ ok: false }),
 		);
 	});
+
+	it('accepts scope: "full" alongside format: "json"', () => {
+		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'full' } });
+		expect(parseFitAttributes(text)).toEqual({
+			ok: true,
+			value: { '.obsidian/graph.json': { format: 'json', scope: 'full' } },
+		});
+	});
+
+	it('rejects scope: "subset" (planned, not yet implemented)', () => {
+		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'subset' } });
+		expect(parseFitAttributes(text)).toEqual(
+			expect.objectContaining({ ok: false }),
+		);
+	});
+
+	it('rejects an unrecognized scope value', () => {
+		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'partial' } });
+		expect(parseFitAttributes(text)).toEqual(
+			expect.objectContaining({ ok: false }),
+		);
+	});
 });
