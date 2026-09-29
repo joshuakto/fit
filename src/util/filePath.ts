@@ -16,6 +16,25 @@
 import { fitLogger } from '@/logger';
 
 /**
+ * Case-insensitive extension check on a raw path string. Doesn't require FilePath
+ * branding/normalization - for call sites that just need a quick, consistent match
+ * (e.g. filetype-default heuristics). Centralized so two independent lowercase+endsWith
+ * checks can't silently disagree on case-sensitivity, as detectSyncFormat and
+ * mergeSpecForPath once did.
+ *
+ * `ext` must include the leading dot (e.g. ".canvas") - without this check, a caller
+ * that forgot the dot (`hasExtension(path, "canvas")`) would silently match any path
+ * merely ending in that substring (e.g. "mycanvas", no extension at all), not just a
+ * real `.canvas` file.
+ */
+export function hasExtension(path: string, ext: string): boolean {
+	if (!ext.startsWith('.')) {
+		throw new Error(`hasExtension: ext must start with "." (got ${JSON.stringify(ext)})`);
+	}
+	return path.toLowerCase().endsWith(ext.toLowerCase());
+}
+
+/**
  * Branded type for normalized file paths
  * Always in NFC (composed) Unicode normalization form
  * Always uses forward slashes as path separator

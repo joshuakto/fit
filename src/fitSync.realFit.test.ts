@@ -3252,6 +3252,37 @@ describe('FitSync', () => {
 			expect(merged.nodes.map((n: any) => n.id)).toEqual(expect.arrayContaining(['a', 'local', 'remote']));
 		});
 
+		it('a mixed-case .canvas path (Board.Canvas) still gets id-keyed node/edge auto-merge, not a generic key-conflict clash', async () => {
+			// Regression test: mergeSpecForPath used to case-sensitively check
+			// path.endsWith('.canvas'), disagreeing with detectSyncFormat's lowercased
+			// match - a real file named Board.Canvas (case-insensitive filesystems allow
+			// this) would get dispatched into the JSON-merge lane but silently receive
+			// GENERIC_JSON_MERGE_SPEC instead of CANVAS_MERGE_SPEC, so two independent node
+			// additions would clash on the shared "nodes" key instead of auto-merging.
+			const fitSync = createFitSync();
+			const base = canvasJson([node('a')]);
+			localVault.setFile('Board.Canvas', base);
+			await remoteVault.setFile('Board.Canvas', base);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			localVault.setFile('Board.Canvas', canvasJson([node('a'), node('local')]));
+			await remoteVault.setFile('Board.Canvas', canvasJson([node('a'), node('remote')]));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			const files = localVault.getAllFilesAsRaw();
+			expect(files).not.toHaveProperty('_fit/Board.Canvas');
+			const merged = JSON.parse(files['Board.Canvas']);
+			expect(merged.nodes.map((n: any) => n.id)).toEqual(expect.arrayContaining(['a', 'local', 'remote']));
+		});
+
 		it('auto-merged canvas not added to pendingClashes', async () => {
 			const fitSync = createFitSync();
 			const base = canvasJson([node('a')]);
@@ -3384,10 +3415,11 @@ describe('FitSync', () => {
 			}));
 
 			// Each side adds a different new top-level key — no shared key touched, so the
-			// generic (no keyed-arrays) spec merges cleanly instead of clashing. (A same-key
-			// value edit on both sides, by contrast, is always a conflict — this engine only
-			// auto-resolves key-presence additions/removals and keyed-array elements, not
-			// scalar value differences on a key both sides already had.)
+			// generic (no keyed-arrays) spec merges cleanly instead of clashing. See the test
+			// below for the sibling case where a *pre-existing* shared key is edited on only
+			// one side, which also merges - a scalar value difference only conflicts when
+			// both sides actually diverged from base (see jsonMerge.test.ts for the isolated
+			// 3-way-resolution coverage).
 			localVault.setFile('data.json', '{"a":1,"b":"local"}');
 			await remoteVault.setFile('data.json', '{"a":1,"c":"remote"}');
 
@@ -3396,6 +3428,40 @@ describe('FitSync', () => {
 
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'data.json': expect.stringOfJson({ a: 1, b: 'local', c: 'remote' }),
+			});
+			expect(localStoreState.pendingClashes).not.toContain('data.json');
+		});
+
+		it('an ordinary vault .json file merges an edit to a pre-existing shared key alongside an unrelated new key from the other side', async () => {
+			// Regression test: this is the scenario the feature actually advertises
+			// ("concurrent edits to different top-level keys merge instead of clashing") -
+			// distinct from the test above, which only ever exercised two brand-new key
+			// additions. Editing an EXISTING shared key used to spuriously clash even when
+			// the other side never touched it, because the merge engine's same-key branch
+			// ignored base entirely (jsonMerge.ts, see docs/sync-logic.md § Semantic JSON
+			// Merge for the fix).
+			const fitSync = createFitSync();
+			const base = '{"a":1}';
+			localVault.setFile('data.json', base);
+			await remoteVault.setFile('data.json', base);
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+
+			// Local edits the pre-existing key "a"; remote leaves "a" untouched but adds a
+			// new key "c" of its own.
+			localVault.setFile('data.json', '{"a":2}');
+			await remoteVault.setFile('data.json', '{"a":1,"c":"remote"}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'data.json': expect.stringOfJson({ a: 2, c: 'remote' }),
 			});
 			expect(localStoreState.pendingClashes).not.toContain('data.json');
 		});

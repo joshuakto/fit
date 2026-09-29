@@ -12,6 +12,8 @@
  * path actually move) is a later change, not this module.
  */
 
+import { hasExtension } from '@/util/filePath';
+
 export interface FitAttributeRule {
 	/**
 	 * "text": opts this tracked path into whole-file sync — full content
@@ -70,9 +72,8 @@ const HEURISTIC_JSON_EXTENSIONS = ['.json', '.canvas'];
  * `"json"` (structural merge), `.css`/`.md`/`.txt` default to `"text"`.
  */
 export function detectSyncFormat(path: string): FitAttributeRule['format'] | null {
-	const lowerPath = path.toLowerCase();
-	if (HEURISTIC_JSON_EXTENSIONS.some(ext => lowerPath.endsWith(ext))) return 'json';
-	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext))) return 'text';
+	if (HEURISTIC_JSON_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'json';
+	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'text';
 	return null;
 }
 
