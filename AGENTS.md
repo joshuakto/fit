@@ -40,7 +40,7 @@ See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
 **Commands**: `npm test`, `npm run typecheck && npm run lint`
 **Targeted test**: `npm test -- --testNamePattern="pattern"`
 **Architecture**: Vaults (storage) → Fit/FitSync (sync logic) → src/fitPlugin.ts (Obsidian integration)
-**Testing conventions**: see [docs/CONTRIBUTING.md § Code Quality](docs/CONTRIBUTING.md#code-quality)
+**Testing conventions**: if you're writing or editing any test file, you MUST read and follow [docs/CONTRIBUTING.md § Code Quality](docs/CONTRIBUTING.md#code-quality)
 
 ---
 
