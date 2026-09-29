@@ -476,6 +476,8 @@ describe('FitPlugin sync-on-save trigger', () => {
 	const fakeFile = { path: 'notes/a.md' };
 
 	beforeEach(() => {
+		// Scoped: unscoped useFakeTimers() hangs under Node 18 (vitest 4.1 + Node 18's
+		// microtask/timer interaction) — deterministic, reproduced outside CI via Docker.
 		vi.useFakeTimers({
 			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
 		});

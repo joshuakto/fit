@@ -60,6 +60,8 @@ describe('FitSettingTab - GitHub settings', () => {
 		// Store captures for afterEach to access
 		(global as any).__testConsoleCapture = { log: consoleLogCapture, error: consoleErrorCapture };
 
+		// Scoped: unscoped useFakeTimers() hangs under Node 18 (vitest 4.1 + Node 18's
+		// microtask/timer interaction) — deterministic, reproduced outside CI via Docker.
 		vi.useFakeTimers({
 			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
 		});
