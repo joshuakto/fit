@@ -337,6 +337,17 @@ describe('FitPlugin sync-error notice content (#214)', () => {
 		return plugin;
 	}
 
+	// This test deliberately drives a real sync failure, which hits fitPlugin.ts's own
+	// console.error (real production logging, not a test bug) — suppress it so vitest's
+	// stderr capture doesn't read as an unexpected failure.
+	let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+	});
+	afterEach(() => {
+		consoleErrorSpy.mockRestore();
+	});
+
 	it('adds a settings link (wired to openPluginSettings) for a plain authentication failure', async () => {
 		const plugin = makeConfiguredPlugin();
 		const openSettingsSpy = vi.spyOn(plugin, 'openPluginSettings').mockImplementation(() => {});
