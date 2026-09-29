@@ -12,7 +12,11 @@ vi.mock('@/logger', () => ({
 describe('withSlowOperationMonitoring', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.useFakeTimers();
+		// Scoped: unscoped useFakeTimers() hangs under Node 18 (vitest 4.1 + Node 18's
+		// microtask/timer interaction) — deterministic, reproduced outside CI via Docker.
+		vi.useFakeTimers({
+			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+		});
 	});
 
 	afterEach(() => {
