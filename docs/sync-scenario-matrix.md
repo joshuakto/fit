@@ -104,6 +104,7 @@ Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, an
 | ordinary vault path | 🟢 agree | 👀 tracked | ✏️ edited | ⚪ unchanged | ⚪ no clash | 💥 local write fails | ✅ `'should retry a failed local delete next sync instead of losing track of...'` |
 | ordinary vault path | 🟢 agree | 👀 tracked | ⚪ unchanged | ✏️ edited | ⚪ no clash | 💥 remote push skipped/rate-limited (unrelated file) | ✅ `'rate-limited file: localShas cleared so it is re-detected on next sync'` and siblings |
 | ordinary vault path | 🟢 agree | 👀 tracked | ✏️ edited | ⚪ unchanged | 🔀 clash pending | ⚪ no failure, sync repeated | ✅ clash lifecycle series `'A:'`...`'H:'` |
+| ordinary vault path | 🟢 agree | 👀 tracked | 🗑️ deleted | ✏️ edited | 🔀 clash pending | ⚪ no failure, sync repeated | ✅ **Fixed (#283).** Doesn't fold into the row above — a delete/modify clash's own creation state (local absent, `_fit/` present) was indistinguishable from "user deleted local to resolve," so the very next sync silently pushed the deletion and cleaned up the `_fit/` copy with zero user action. `'I: delete/modify clash left untouched — next sync must NOT push the deletion or clear the pending clash (#283)'`. |
 | n/a (whole-sync failure, not path-specific) | 🟢 agree | 👀 tracked | n/a | n/a | n/a | 💥 fetch fails entirely this sync | ✅ `'a whole-sync remote fetch failure leaves localShas/lastFetchedRemoteShas/protectedPathShas untouched'` - already a guaranteed no-op by `_doSync`'s error-path rollback (`fitSync.ts`), this test just confirms it; see [sync-logic.md § Network Interruption](./sync-logic.md), the "before commit created" case |
 
 Invariant: every row has at least one of rule disagreement, pending clash, or mid-sync failure -
@@ -145,7 +146,7 @@ fitSync.realFit.test.ts
   ├ 🚨 Data loss prevention (safety nets for bugs/migrations)
   │ ├ 'should report file as conflict when saved to _fit/ for any safety reason'
   │ ├ clash lifecycle: pending resolution across multiple syncs
-  │ │ └ 'A:' ... 'H:' series (remote-changes-during-clash, user-resolves variants, reload-survival)
+  │ │ └ 'A:' ... 'I:' series (remote-changes-during-clash, user-resolves variants, reload-survival, delete/modify #283)
   │ └ 'must NOT delete remote files when tracking capabilities removed (version migration safety)'
   ├ Per-File Error Handling
   │ └ 'should retry a failed local delete next sync instead of losing track of...'

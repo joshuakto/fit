@@ -1496,9 +1496,12 @@ export class FitSync implements IFitSync {
 						}
 						// If local exists: no baseline → ADDED → pushed in normal detection
 					} else if (!localExists) {
-						// Local deleted but _fit/ remains — treat as deletion, clean up _fit/
-						pendingDeletions.push(path);
-						fitCopiesToDelete.push(`_fit/${path}`);
+						// _fit/ remains and local is still absent — indistinguishable from a
+						// delete/modify clash's original creation state (local was already
+						// absent when the clash was made). The only unambiguous resolution
+						// signal here is deleting the _fit/ copy (handled above); keep pending.
+						activePendingPaths.add(path);
+						stillPending.push(path);
 					} else {
 						// Both exist — resolved if content matches, still pending otherwise
 						try {

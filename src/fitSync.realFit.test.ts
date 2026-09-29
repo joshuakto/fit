@@ -2070,6 +2070,55 @@ describe('FitSync', () => {
 				expect(localVault.getAllFilesAsRaw()['doc.md']).toBe('local edits\n');
 				expect(remoteVault.getAllFilesAsRaw()['doc.md']).toBe('remote edits\n');
 			});
+
+			async function setupDeleteModifyClash(fitSync: FitSync) {
+				// Establish a clean baseline, then delete locally while remote edits concurrently.
+				localVault.setFile('doc.md', 'original\n');
+				remoteVault.setFile('doc.md', 'original\n');
+				const remoteResult = await remoteVault.readFromSource();
+				const localResult = await localVault.readFromSource();
+				fitSync.fit.loadLocalStore(makeLocalStore({
+					localShas: localResult.state,
+					lastFetchedRemoteShas: remoteResult.state,
+					lastFetchedCommitSha: remoteResult.commitSha,
+				}));
+
+				localVault.deleteFile('doc.md');
+				remoteVault.setFile('doc.md', 'remote edits\n');
+
+				// Sync: delete/modify clash detected, remote version written to _fit/doc.md.
+				// Local stays absent (nothing to write for a deletion side of a clash).
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+				expect(result).toEqual(expect.objectContaining({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md' })]),
+				}));
+				expect(localVault.getAllFilesAsRaw()).toEqual({
+					'_fit/doc.md': 'remote edits\n', // Clash copy holding remote content
+					// 'doc.md' absent — local side of the clash stays deleted
+				});
+			}
+
+			it('I: delete/modify clash left untouched — next sync must NOT push the deletion or clear the pending clash (#283)', async () => {
+				// Regression guard: a delete/modify clash's own creation state (local absent,
+				// _fit/ present with remote content) must not be mistaken by Phase 0 for "user
+				// deleted local to resolve the clash" on the very next sync with zero user action.
+				const fitSync = createFitSync();
+				await setupDeleteModifyClash(fitSync);
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect(result).toEqual(expect.objectContaining({
+					success: true,
+					clash: expect.arrayContaining([expect.objectContaining({ path: 'doc.md', localState: 'pending' })]),
+				}));
+				expect(localVault.getAllFilesAsRaw()).toEqual({
+					'_fit/doc.md': 'remote edits\n', // Pending clash copy must survive, still the only record of the clash
+					// 'doc.md' absent — deletion must NOT have been pushed
+				});
+				// Deletion must NOT have been pushed to remote either.
+				expect(remoteVault.getAllFilesAsRaw()).toHaveProperty('doc.md');
+			});
 		});
 
 		it('must NOT delete remote files when tracking capabilities removed (version migration safety)', async () => {
