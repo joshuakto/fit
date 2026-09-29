@@ -476,7 +476,9 @@ describe('FitPlugin sync-on-save trigger', () => {
 	const fakeFile = { path: 'notes/a.md' };
 
 	beforeEach(() => {
-		vi.useFakeTimers();
+		vi.useFakeTimers({
+			toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+		});
 	});
 
 	afterEach(() => {
