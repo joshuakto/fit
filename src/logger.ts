@@ -14,6 +14,15 @@ import { Vault } from "obsidian";
 export const MAX_LOG_STRING_LENGTH = 2000;
 
 /**
+ * Maximum number of entries logged from an array value.
+ * Longer arrays (e.g. a hidden-path scan dumping thousands of entries) are
+ * truncated to a head count plus a marker noting how many were omitted -
+ * the full length is still visible from that marker (or a sibling `count`
+ * field the caller may log alongside the array).
+ */
+export const MAX_LOG_ARRAY_LENGTH = 100;
+
+/**
  * Minimal filesystem interface for a single log file.
  * Decouples logger from Obsidian's Vault type for easier testing.
  * All operations target a single preconfigured file path.
@@ -69,7 +78,11 @@ function sanitizeForLogging(data: unknown, depth = 0): unknown {
 	}
 
 	if (Array.isArray(data)) {
-		return data.map(item => sanitizeForLogging(item, depth + 1));
+		const sanitized = data.slice(0, MAX_LOG_ARRAY_LENGTH).map(item => sanitizeForLogging(item, depth + 1));
+		if (data.length > MAX_LOG_ARRAY_LENGTH) {
+			sanitized.push(`... [truncated ${data.length - MAX_LOG_ARRAY_LENGTH} more entries, ${data.length} total]`);
+		}
+		return sanitized;
 	}
 
 	// Handle plain objects (including Error objects)

@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { FilePath } from './filePath';
+import { FilePath, isUnderAnyPrefix } from './filePath';
 
 describe('FilePath namespace', () => {
 	describe('create', () => {
@@ -166,6 +166,23 @@ describe('FilePath namespace', () => {
 			// const path: FilePath = 'file.md'; // ❌ TypeScript error
 			// const path: FilePath = FilePath.create('file.md'); // ✅ Correct
 		});
+	});
+});
+
+describe('isUnderAnyPrefix', () => {
+	it.each([
+		['the prefix itself', '.mytool/.git', ['.mytool/.git'], true],
+		['a descendant of the prefix', '.mytool/.git/config', ['.mytool/.git'], true],
+		['a sibling sharing the prefix as a string prefix', '.mytool/.gitignore', ['.mytool/.git'], false],
+		['an unrelated path', 'notes/a.md', ['.mytool/.git'], false],
+		['no prefixes at all', '.mytool/.git/config', [], false],
+		// The scan root stands for the hidden-path scan as a whole, which only ever produces
+		// hidden paths: ordinary vault files come from Obsidian's index, not from that scan.
+		['a hidden path under the scan root', '.obsidian/app.json', ['/'], true],
+		['a hidden path nested in an ordinary folder under the scan root', 'notes/.drafts/a.md', ['/'], true],
+		['an ordinary path under the scan root', 'notes/a.md', ['/'], false],
+	])('%s', (_label, path, prefixes, expected) => {
+		expect(isUnderAnyPrefix(path, new Set(prefixes))).toBe(expected);
 	});
 });
 

@@ -59,10 +59,14 @@ function containsPrunedComponent(path: string): boolean {
 
 interface HiddenPathScanResult {
 	paths: string[];
-	// Every file or folder the scan declined to look at (pruned components). Returned as
-	// orphanedScanPrefixes so the baseline comparison can tell "not scanned" from "deleted"
-	// (docs/sync-logic.md § Scan-time pruning vs. the stored baseline).
-	prunedPaths: string[];
+	// Every file or folder the scan did not look at: pruned components, and directories
+	// the adapter could not list. Returned as orphanedScanPrefixes so the baseline
+	// comparison can tell "not scanned" from "deleted" (docs/sync-logic.md § Scan-time
+	// pruning vs. the stored baseline).
+	skippedPaths: string[];
+	// The subset of skippedPaths the scan tried to list and could not, as opposed to ones it
+	// pruned on purpose. These are surfaced to the user (FitSync's sync notice).
+	unlistablePaths: string[];
 }
 
 /**
@@ -71,17 +75,15 @@ interface HiddenPathScanResult {
  * when syncHiddenFiles is enabled. Results are vault-relative paths.
  */
 async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
-	const results: string[] = [];
-	const prunedPaths: string[] = [];
-	await collectHiddenInDir(adapter, '/', results, prunedPaths);
-	return { paths: results, prunedPaths };
+	const scan: HiddenPathScanResult = { paths: [], skippedPaths: [], unlistablePaths: [] };
+	await collectHiddenInDir(adapter, '/', scan);
+	return scan;
 }
 
 async function collectHiddenInDir(
 	adapter: DataAdapter,
 	dir: string,
-	results: string[],
-	prunedPaths: string[],
+	scan: HiddenPathScanResult,
 	dirIsHidden = false,
 	visited = new Set<string>()
 ): Promise<void> {
@@ -94,28 +96,44 @@ async function collectHiddenInDir(
 	let listing: ListedFiles;
 	try {
 		listing = await adapter.list(dir);
-	} catch {
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		// The failure is usually one unreadable child (e.g. a dangling symlink, named in
+		// `reason`), which makes the adapter reject the listing of `dir` as a whole. At the
+		// root that skips every hidden path, which skippedPaths reports as `/`.
+		if (dir === '/') {
+			fitLogger.log('⚠️ [LocalVault] Hidden-path scan could not list the vault root, skipping all hidden paths this sync', {
+				error: reason
+			});
+		} else {
+			fitLogger.log('⚠️ [LocalVault] Hidden-path scan could not list a directory, possibly due to an unreadable entry inside it; skipping it and everything under it', {
+				dir,
+				error: reason
+			});
+		}
+		scan.skippedPaths.push(dir);
+		scan.unlistablePaths.push(dir);
 		return;
 	}
 
 	for (const file of listing.files) {
 		if (containsPrunedComponent(file)) {
-			prunedPaths.push(file);
+			scan.skippedPaths.push(file);
 			continue;
 		}
 		// Skip per-file check when already inside a hidden directory — all paths are hidden
 		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
-			results.push(file);
+			scan.paths.push(file);
 		}
 	}
 
 	const [pruned, walked] = partition(listing.folders, containsPrunedComponent);
-	prunedPaths.push(...pruned);
+	scan.skippedPaths.push(...pruned);
 
 	await Promise.all(
 		walked.map(folder => {
 			const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
-			return collectHiddenInDir(adapter, folder, results, prunedPaths, folderIsHidden, visited);
+			return collectHiddenInDir(adapter, folder, scan, folderIsHidden, visited);
 		})
 	);
 }
@@ -234,10 +252,12 @@ export class LocalVault implements IVault<"local"> {
 		// This involves a full recursive directory scan and has performance overhead.
 		let hiddenPaths: string[] = [];
 		let orphanedScanPrefixes: string[] = [];
+		let unlistablePaths: string[] = [];
 		if (this.syncHiddenFiles) {
 			const scanResult = await scanHiddenPaths(this.vault.adapter);
 			hiddenPaths = scanResult.paths;
-			orphanedScanPrefixes = scanResult.prunedPaths;
+			orphanedScanPrefixes = scanResult.skippedPaths;
+			unlistablePaths = scanResult.unlistablePaths;
 			if (hiddenPaths.length > 0) {
 				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
 					count: hiddenPaths.length, paths: hiddenPaths
@@ -287,7 +307,7 @@ export class LocalVault implements IVault<"local"> {
 
 		if (untrackedPaths.length > 0) {
 			fitLogger.log('[LocalVault] Untracked paths in local scan (hidden files)', {
-				paths: untrackedPaths
+				count: untrackedPaths.length, paths: untrackedPaths
 			});
 		}
 
@@ -302,7 +322,7 @@ export class LocalVault implements IVault<"local"> {
 			const { kept, ignored } = gitignoreFilter.filter(trackedPaths);
 			pathsToScan = kept;
 			if (ignored.length > 0) {
-				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { paths: ignored });
+				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { count: ignored.length, paths: ignored });
 			}
 		} else {
 			pathsToScan = trackedPaths;
@@ -374,7 +394,11 @@ export class LocalVault implements IVault<"local"> {
 			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
 		);
 
-		return { state: { ...newState }, orphanedScanPrefixes: new Set(orphanedScanPrefixes) };
+		return {
+			state: { ...newState },
+			orphanedScanPrefixes: new Set(orphanedScanPrefixes),
+			unlistablePaths
+		};
 	}
 
 	/**

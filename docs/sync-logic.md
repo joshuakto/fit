@@ -313,6 +313,7 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 **When `syncHiddenFiles = true` (default):**
 - Local vault performs a full recursive `adapter.list` scan on each sync to discover hidden paths (Obsidian's `vault.getFiles()` omits them)
+- A path whose contents the adapter cannot list (a folder, or a symlink to one) is skipped along with everything under it and logged; see [Scan-time pruning vs. the stored baseline](#scan-time-pruning-vs-the-stored-baseline)
 - Hidden files read via `vault.adapter.readBinary()` and tracked in `localShas` like any other file
 - Subject to `.gitignore` filtering and `shouldSyncPath` policy as normal
 - ⚠️ Clash copies (written to `_fit/`) won't appear in Obsidian's file explorer — requires desktop file manager to resolve
@@ -328,7 +329,9 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 The hidden-path scan (`collectHiddenInDir`) does not walk into VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file). A walk into one costs a full recursive scan and can surface thousands of paths nobody means to sync.
 
-A pruned path is absent from `currentState` because the scan didn't look, not because it was deleted. `readFromSource()` therefore reports every pruned file or folder as `orphanedScanPrefixes: Set<string>` (derived fresh each scan, never persisted), and a path equal to or under one is out of scope for that sync in both directions:
+The scan also skips a path whose contents the adapter cannot list (a folder, or a symlink to one). Obsidian's desktop `list()` stats every entry and rejects the whole call when one fails (e.g. a dangling symlink inside the folder), so one bad entry hides the path and everything under it, but not its siblings. The failure is logged with the path and error (the failing entry named in the error may be a child of that path) and listed in the sync notice as a block like the rate-limited and locally-failed file lists, since hidden files under it are not syncing. If the vault root itself cannot be listed, the whole hidden-path scan is skipped the same way: the root is reported as `/`, which stands for every hidden path (they all come from that scan), while ordinary vault files still sync.
+
+A skipped path is absent from `currentState` because the scan didn't look, not because it was deleted. `readFromSource()` therefore reports every pruned file or folder, and every path that could not be listed, as `orphanedScanPrefixes: Set<string>` (derived fresh each scan, never persisted), and a path equal to or under one is out of scope for that sync in both directions:
 - **Local:** `Fit.getLocalChanges()` excludes it from both sides of `compareFileStates`, so it reads as neither present nor removed.
 - **Remote:** `FitSync` drops remote changes under a prefix. Applying one would act on a local state the scan never saw, e.g. a remote deletion removing a local edit nobody scanned.
 
@@ -1529,8 +1532,8 @@ uncapped debug-log path-array dumps): [Sync Performance Inventory](./sync-perfor
 ## Debug Logging
 
 When enabled (Settings → Enable debug logging), FIT writes to `.obsidian/plugins/fit/debug.log`.
-Known real issue with this: some log call sites dump full, uncapped path arrays - see
-[Sync Performance Inventory](./sync-performance-inventory.md).
+Arrays in a logged value are capped at 100 entries, with a
+`"... [truncated N more entries, M total]"` marker in place of the rest.
 
 **Example sync with 5 local files, cache hit (fast ~500ms):**
 ```
@@ -1581,8 +1584,7 @@ Known real issue with this: some log call sites dump full, uncapped path arrays 
   "trackedSyncing": [".obsidian/app.json", ".obsidian/graph.json"],
   "hardDenylisted": [".obsidian/plugins/some-plugin/main.js"],
   "trackedUnconfigured": [".obsidian/plugins/obsidian42-brat/data.json"],
-  "untracked": [".obsidian/hotkeys.json"],
-  "untrackedTotal": 1
+  "untracked": [".obsidian/hotkeys.json"]
 }
 [timestamp] [FitSync] Note: to stop syncing any of the above trackedSyncing paths, remove them from your GitHub repo — .fitattributes.json only changes how a tracked path syncs, not whether it is tracked.
 [timestamp] 🔄 [FitSync] Syncing changes (1 local, 1 remote): {
@@ -1607,8 +1609,8 @@ show in `trackedSyncing` too — like any `scope: "subset"` path, it's excluded 
 change-set pipeline and handled by the dedicated subset-scope lane instead, see § `.fitattributes.json`
 above.)
 
-`untracked` can be long (full local `.obsidian/` scan), so the logged array is capped at 30
-entries; `untrackedTotal` always carries the real count regardless of truncation.
+`untracked` can be long (full local `.obsidian/` scan); like any logged array it is cut to the
+first 100 entries followed by a `... [truncated N more entries, M total]` entry.
 
 **Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
 ```

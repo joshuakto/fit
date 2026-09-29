@@ -425,6 +425,13 @@ export class FakeLocalVault implements IVault<"local"> {
 		this.orphanedScanPrefixes = new Set(prefixes);
 	}
 
+	private unlistablePaths: string[] = [];
+
+	/** Simulates paths the hidden-path scan failed to list this sync (reported, not hidden). */
+	setUnlistablePaths(paths: string[]): void {
+		this.unlistablePaths = paths;
+	}
+
 	private isUnderOrphanedPrefix(path: string): boolean {
 		return isUnderAnyPrefix(path, this.orphanedScanPrefixes);
 	}
@@ -580,7 +587,11 @@ export class FakeLocalVault implements IVault<"local"> {
 			);
 		}
 
-		return { state, orphanedScanPrefixes: new Set(this.orphanedScanPrefixes) };
+		return {
+			state,
+			orphanedScanPrefixes: new Set(this.orphanedScanPrefixes),
+			unlistablePaths: [...this.unlistablePaths]
+		};
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {

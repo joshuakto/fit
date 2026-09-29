@@ -512,6 +512,24 @@ describe('Logger', () => {
 			expect(content).toContain('"data": "This too"');
 		});
 
+		it('should cap long arrays to a head count plus a truncation marker', async () => {
+			const adapter = createMockAdapter();
+			const logger = new Logger({
+				adapter,
+				maxLogSize: 100000
+			});
+
+			const paths = Array.from({ length: 250 }, (_, i) => `path/${i}.md`);
+			logger.log('scan', { paths });
+			await logger.flush();
+
+			const content = adapter.content!;
+			expect(content).toContain('"path/0.md"');
+			expect(content).toContain('"path/99.md"');
+			expect(content).not.toContain('"path/100.md"');
+			expect(content).toContain('truncated 150 more entries, 250 total');
+		});
+
 		it('should handle deeply nested objects', async () => {
 			const adapter = createMockAdapter();
 			const logger = new Logger({
