@@ -1067,4 +1067,80 @@ describe('LocalVault', () => {
 			expect(Object.keys(state).sort()).toEqual(['note.md']);
 		});
 	});
+
+	describe('hidden-path scan walk bounds (#389)', () => {
+		// The adapter-backed hidden-path scan is FIT's only recursive filesystem walk.
+		// Obsidian's DataAdapter exposes no lstat/realpath, so a symlinked directory is
+		// indistinguishable from a real one in what list() reports — the walk has to bound
+		// itself rather than try to identify links.
+		//
+		// LISTING_CAP exists so that a walk which fails to terminate produces a test failure
+		// instead of hanging the worker.
+		const LISTING_CAP = 100;
+
+		function stubAdapterListing(listing: Record<string, { files: string[]; folders: string[] }>): string[] {
+			const visited: string[] = [];
+			const listingsPerDir = new Map<string, number>();
+			(mockVault.adapter as any).list = vi.fn().mockImplementation(async (dir: string) => {
+				visited.push(dir);
+				const count = (listingsPerDir.get(dir) ?? 0) + 1;
+				listingsPerDir.set(dir, count);
+				if (count > LISTING_CAP) return { files: [], folders: [] };
+				return listing[dir] ?? { files: [], folders: [] };
+			});
+			return visited;
+		}
+
+		beforeEach(() => {
+			mockVault.getFiles.mockReturnValue([] as TFile[]);
+			mockVault.getAbstractFileByPath.mockReturnValue(null);
+			(mockVault.adapter as any).read = vi.fn().mockResolvedValue('content');
+			(mockVault.adapter as any).readBinary = vi.fn()
+				.mockResolvedValue(new TextEncoder().encode('content').buffer);
+		});
+
+		it('does not descend into a .git directory while scanning hidden paths', async () => {
+			const visited = stubAdapterListing({
+				'/': { files: [], folders: ['.obsidian'] },
+				'.obsidian': { files: [], folders: ['.obsidian/plugins'] },
+				'.obsidian/plugins': { files: [], folders: ['.obsidian/plugins/fit'] },
+				'.obsidian/plugins/fit': {
+					files: ['.obsidian/plugins/fit/main.js'],
+					folders: ['.obsidian/plugins/fit/.git'],
+				},
+				// Only reachable by walking through .git, which is the cost under test.
+				'.obsidian/plugins/fit/.git': { files: [], folders: ['.obsidian/plugins/fit/.git/objects'] },
+				'.obsidian/plugins/fit/.git/objects': {
+					files: ['.obsidian/plugins/fit/.git/objects/68/2c3d4e5f6a7b8c9d'],
+					folders: [],
+				},
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state)).toEqual(['.obsidian/plugins/fit/main.js']);
+			// Filtering the results would be enough for the first assertion; the walk itself
+			// must not enter .git, since that descent is what costs the time and memory.
+			expect(visited).not.toContain('.obsidian/plugins/fit/.git');
+		});
+
+		it('lists each directory at most once when a listing contains a cycle', async () => {
+			// A symlinked plugin directory whose target contains itself makes list() report a
+			// folder that is an ancestor of the directory being walked.
+			const visited = stubAdapterListing({
+				'/': { files: [], folders: ['.obsidian'] },
+				'.obsidian': { files: ['.obsidian/app.json'], folders: ['.obsidian/plugins'] },
+				'.obsidian/plugins': { files: [], folders: ['.obsidian/plugins/fit'] },
+				'.obsidian/plugins/fit': { files: [], folders: ['.obsidian'] },
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			await localVault.readFromSource();
+
+			expect(visited).toEqual([...new Set(visited)]);
+		});
+	});
 });

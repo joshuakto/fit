@@ -46,6 +46,18 @@ function isBinaryExtensionForLegacySha(extension: string): boolean {
 }
 
 /**
+ * Path components that are tooling metadata rather than vault content. Walking into them
+ * costs a full recursive scan and surfaces files nobody means to sync: a plugin directory
+ * carrying its own git history turns one sync into thousands of paths. Matched as a whole
+ * component so `.gitignore` and `.gitattributes` stay syncable.
+ */
+const PRUNED_PATH_COMPONENTS = new Set(['.git']);
+
+function containsPrunedComponent(path: string): boolean {
+	return path.split('/').some(part => PRUNED_PATH_COMPONENTS.has(part));
+}
+
+/**
  * Recursively scan vault adapter for hidden file paths (any path component starts with '.').
  * vault.getFiles() does not return hidden files, so this adapter-based scan is needed
  * when syncHiddenFiles is enabled. Results are vault-relative paths.
@@ -60,8 +72,15 @@ async function collectHiddenInDir(
 	adapter: DataAdapter,
 	dir: string,
 	results: string[],
-	dirIsHidden = false
+	dirIsHidden = false,
+	visited = new Set<string>()
 ): Promise<void> {
+	// Obsidian resolves a symlinked directory while reporting the link's own path, and
+	// DataAdapter exposes no lstat/realpath to tell the two apart, so re-entering a path
+	// already walked is the only signal available that this walk is looping.
+	if (visited.has(dir)) return;
+	visited.add(dir);
+
 	let listing: ListedFiles;
 	try {
 		listing = await adapter.list(dir);
@@ -70,6 +89,7 @@ async function collectHiddenInDir(
 	}
 
 	for (const file of listing.files) {
+		if (containsPrunedComponent(file)) continue;
 		// Skip per-file check when already inside a hidden directory — all paths are hidden
 		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
 			results.push(file);
@@ -77,10 +97,12 @@ async function collectHiddenInDir(
 	}
 
 	await Promise.all(
-		listing.folders.map(folder => {
-			const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
-			return collectHiddenInDir(adapter, folder, results, folderIsHidden);
-		})
+		listing.folders
+			.filter(folder => !containsPrunedComponent(folder))
+			.map(folder => {
+				const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
+				return collectHiddenInDir(adapter, folder, results, folderIsHidden, visited);
+			})
 	);
 }
 
