@@ -1108,11 +1108,16 @@ export class FitSync implements IFitSync {
 		}
 
 		let latestRemoteTreeSha: FileStates;
+		// Post-push symlink-membership counterpart to latestRemoteTreeSha — must advance
+		// at the same commit point (docs/sync-logic.md § Symlink baseline), same as the
+		// local-side newLocalSymlinkPaths built below.
+		let latestRemoteSymlinkPaths: Set<string>;
 		let latestCommitSha: CommitSha;
 		let pushedChanges: Array<FileChange>;
 
 		if (pushResult) {
 			latestRemoteTreeSha = pushResult.lastFetchedRemoteShas;
+			latestRemoteSymlinkPaths = pushResult.lastFetchedRemoteSymlinkPaths;
 			latestCommitSha = pushResult.lastFetchedCommitSha;
 			pushedChanges = pushResult.pushedChanges;
 		} else {
@@ -1121,6 +1126,7 @@ export class FitSync implements IFitSync {
 			// This could indicate a push failure that we're silently ignoring. If we continue and persist
 			// the new remote state, we might incorrectly mark those local changes as synced.
 			latestRemoteTreeSha = remoteUpdate.remoteTreeSha;
+			latestRemoteSymlinkPaths = remoteSymlinkPaths;
 			latestCommitSha = remoteUpdate.latestRemoteCommitSha;
 			pushedChanges = [];
 		}
@@ -1178,16 +1184,20 @@ export class FitSync implements IFitSync {
 
 		if (localFailedPathsSet.size > 0) {
 			latestRemoteTreeSha = { ...latestRemoteTreeSha };
+			latestRemoteSymlinkPaths = new Set(latestRemoteSymlinkPaths);
 			for (const path of localFailedPathsSet) {
 				if (deleteFromLocalNonClashed.includes(path)) {
 					const previousSha = this.fit.lastFetchedRemoteShas[path];
 					if (previousSha !== undefined) {
 						latestRemoteTreeSha[path] = previousSha;
+						if (this.fit.remoteSymlinkPaths.has(path)) latestRemoteSymlinkPaths.add(path);
+						else latestRemoteSymlinkPaths.delete(path);
 					} else {
 						fitLogger.log('⚠️ [FitSync] Delete-failed path missing expected baseline SHA — retry may not be detected', { path });
 					}
 				} else {
 					delete latestRemoteTreeSha[path];
+					latestRemoteSymlinkPaths.delete(path);
 				}
 			}
 		}
@@ -1205,10 +1215,20 @@ export class FitSync implements IFitSync {
 			...newBaselineShas // Update SHAs for all files written (non-clashed + clashes) (#169)
 		};
 
+		// Post-apply symlink-membership counterpart to newLocalState — must advance at the
+		// same commit points as newLocalState itself, through every branch below (docs/
+		// sync-logic.md § Symlink baseline).
+		const newLocalSymlinkPaths = new Set(localSymlinkPaths);
+		for (const path of Object.keys(newBaselineShas)) {
+			if (localFileOpsRecord.newSymlinkPaths.has(path)) newLocalSymlinkPaths.add(path);
+			else newLocalSymlinkPaths.delete(path);
+		}
+
 		// Remove deleted files from state
 		for (const path of deleteFromLocalNonClashed) {
 			if (!localFailedPathsSet.has(path)) {
 				delete newLocalState[path];
+				newLocalSymlinkPaths.delete(path);
 			}
 		}
 
@@ -1225,6 +1245,7 @@ export class FitSync implements IFitSync {
 					this.fit.pendingClashes.push(clash.path);
 				}
 				delete newLocalState[clash.path];
+				newLocalSymlinkPaths.delete(clash.path);
 			}
 		}
 
@@ -1238,8 +1259,11 @@ export class FitSync implements IFitSync {
 			const previousSha = this.fit.localShas[path];
 			if (previousSha !== undefined) {
 				newLocalState[path] = previousSha;
+				if (this.fit.localSymlinkPaths.has(path)) newLocalSymlinkPaths.add(path);
+				else newLocalSymlinkPaths.delete(path);
 			} else {
 				delete newLocalState[path];
+				newLocalSymlinkPaths.delete(path);
 			}
 		}
 		if (rateLimitedPaths.length > 0) {
@@ -1308,10 +1332,11 @@ export class FitSync implements IFitSync {
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
 			// Mode baseline for the next sync's collision check (docs/sync-logic.md
-			// § Symlink baseline) — mirrors localShas/lastFetchedRemoteShas above at
-			// the same commit point.
-			localSymlinkPaths: [...localSymlinkPaths],
-			remoteSymlinkPaths: [...remoteSymlinkPaths],
+			// § Symlink baseline) — post-apply, mirrors localShas/lastFetchedRemoteShas
+			// above advancing at the same commit point (not the pre-apply
+			// localSymlinkPaths/remoteSymlinkPaths params captured at sync start).
+			localSymlinkPaths: [...newLocalSymlinkPaths],
+			remoteSymlinkPaths: [...latestRemoteSymlinkPaths],
 		});
 
 		return {
@@ -1835,7 +1860,7 @@ export class FitSync implements IFitSync {
 		},
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
 		localSymlinkPaths: Set<string> = new Set()
-	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string, rateLimitedPaths?: string[]}|null> {
+	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedRemoteSymlinkPaths: Set<string>, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string, rateLimitedPaths?: string[]}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
@@ -1894,6 +1919,7 @@ export class FitSync implements IFitSync {
 				return {
 					pushedChanges: [],
 					lastFetchedRemoteShas: result.newState,
+					lastFetchedRemoteSymlinkPaths: result.newSymlinkPaths,
 					lastFetchedCommitSha: result.commitSha,
 					skippedPaths: result.skippedPaths,
 					skippedWarning: result.skippedWarning,
@@ -1911,6 +1937,7 @@ export class FitSync implements IFitSync {
 		return {
 			pushedChanges,
 			lastFetchedRemoteShas: result.newState,
+			lastFetchedRemoteSymlinkPaths: result.newSymlinkPaths,
 			lastFetchedCommitSha: result.commitSha,
 			skippedPaths: result.skippedPaths,
 			skippedWarning: result.skippedWarning,

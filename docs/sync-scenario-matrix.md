@@ -123,6 +123,8 @@ unverified middle state.
 | `_fit/` itself | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ `'should exclude 📁 _fit/ directory from sync operations'` - never pushed, regardless of content |
 | `_fit/` itself | 👀 tracked | ⚪ unchanged | ✏️ edited (a real `_fit/` path exists on remote - another device, or a manual git push) | ✅ same test - SHA cached in `lastFetchedRemoteShas` (to detect future changes) but never written locally, no `_fit/_fit/` nesting. Internal wrinkle, not a correctness gap: `fitSync.ts` has a TODO noting this relies on a post-hoc `filterSyncedState` scrub rather than upfront filtering earlier in the pipeline - safe today, just not the cleanest shape. |
 | ordinary vault path | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ `'should update commit SHA when remote commit changes but no tracked files changed'` - empty `changeGroups` both sides |
+| hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ **Baseline path's folder pruned/skipped this sync.** See [sync-logic.md § Symlink baseline](./sync-logic.md#symlink-baseline), "Scan-time pruning vs. the stored baseline". `'does not push a deletion for a baseline path whose folder this sync pruned/skipped'` |
+| hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ✏️ edited | ✅ **Same, remote side edited.** `'does not report a spurious remote-edit clash for a path this sync could not see'` |
 | any (don't-care - never reaches the machinery that would distinguish categories) | 🆕 untracked, never observed | n/a | n/a | `n/a` - no path exists on either side, so `compareFileStates` never iterates it (nothing in `currentShaMap`/`storedShaMap` to compare); not a gap, provably nothing to test |
 
 Table invariants (every row):
@@ -245,10 +247,13 @@ fitSync.realFit.test.ts
   │   ├ 'changed file with legacy SHA — detected as ADDED, entry cleared'
   │   ├ 'downgrade scenario (both fields) — re-promoted on match'
   │   └ 'orphaned legacy entry for deleted file — cleaned up'
-  └ Symlink handling (#389)
-    ├ 'pushes a local symlink to remote as a real symlink, not flattened content'
-    ├ 'pulls a remote symlink to local as a real symlink, not flattened content'
-    ├ 'skips a remote symlink on a platform without symlink support, and does not push it back as a deletion'
-    └ 'detects a remote mode change (file -> symlink) even when the blob sha is unchanged'
+  ├ Symlink handling (#389)
+  │ ├ 'pushes a local symlink to remote as a real symlink, not flattened content'
+  │ ├ 'pulls a remote symlink to local as a real symlink, not flattened content'
+  │ ├ 'skips a remote symlink on a platform without symlink support, and does not push it back as a deletion'
+  │ └ 'detects a remote mode change (file -> symlink) even when the blob sha is unchanged'
+  └ Hidden-path scan pruning — baseline safety (#389)
+    ├ 'does not report a spurious remote-edit clash for a path this sync could not see'
+    └ 'does not push a deletion for a baseline path whose folder this sync pruned/skipped'
 ```
 

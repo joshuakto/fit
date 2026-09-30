@@ -176,6 +176,18 @@ That scan also threads a `visited: Set<string>` through its recursion, independe
 detection: a directory already walked is never re-entered, so a cycle (symlink or otherwise)
 terminates the walk instead of hanging it, even where `isSymlink` itself fails closed.
 
+**Scan-time pruning vs. the stored baseline.** The hidden-path scan (`collectHiddenInDir`)
+prunes VCS-metadata dirs (`PRUNED_PATH_COMPONENTS`) and skips a newly-detected symlinked
+folder without walking into it — folders `readFromSource()` reports as
+`orphanedScanPrefixes: Set<string>`. A path from `localShas` that sits under one of these has
+no corresponding entry in `currentState` this sync purely because the scan didn't look there
+— not because it was deleted. `Fit.getLocalChanges()`'s `isSyncCandidate` excludes any such
+path from *both* sides of `compareFileStates` for this sync only (derived fresh from each
+scan, nothing persisted), so it reads as neither present nor removed instead of a false
+deletion. Mirrors the mobile-symlink-write-skip exclusion above in spirit (exclude before
+comparison, not after), but as a distinct mechanism since this one guards a stale *baseline*
+entry rather than a live pull.
+
 ## Change Detection
 
 ### 💾 Local Change Detection

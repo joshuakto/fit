@@ -2856,6 +2856,7 @@ describe('FitSync', () => {
 			const mockApplyChanges = vi.spyOn(localVault, 'applyChanges').mockResolvedValue({
 				changes: [{ path: 'test.md', type: 'ADDED' }],
 				newBaselineStates: Promise.resolve({ 'test.md': 'mock-sha' as BlobSha }),
+				newSymlinkPaths: new Set<string>(),
 				userWarning: '⚠️ Encoding Issue Detected\nSuspicious filename patterns found during sync.'
 			});
 
@@ -4644,6 +4645,95 @@ describe('FitSync', () => {
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localVault.getAllSymlinksAsRaw()).toEqual({ 'x.md': sameBytes });
 			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('x.md');
+		});
+
+		it('does not spuriously re-flag a just-pulled symlink as changed on the very next sync', async () => {
+			// Baseline-timing bug: the persisted localSymlinkPaths must reflect this
+			// sync's post-apply state (a symlink just materialized locally), not the
+			// pre-apply state captured before this sync's pull ran, or the next sync's
+			// mode-vs-sha check sees a spurious mismatch and reports a false MODIFIED.
+			const fitSync = createFitSync();
+			await remoteVault.setSymlink('link.md', '../target.md');
+
+			const result1 = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result1).toEqual(expect.objectContaining({ success: true }));
+
+			const result2 = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result2).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(result2.success ? result2.changeGroups : []).toEqual([
+				{ heading: 'Local file updates:', changes: [] },
+				{ heading: 'Remote file updates:', changes: [] },
+			]);
+		});
+
+	});
+
+	// docs/sync-logic.md § Symlink baseline, "Scan-time pruning vs. the stored baseline".
+	describe('Hidden-path scan pruning — baseline safety', () => {
+		// Setup shared by both tests below: establishes a baseline where `path` was tracked
+		// by a *prior* sync (orphanedScanPrefixes not yet set — a real baseline read), then
+		// arms pruning for *this* sync only, simulating a folder this sync's scan newly
+		// prunes/skips (a VCS-dir component, or a newly-detected symlinked folder). Content
+		// stays on disk throughout — only discovery is skipped this sync.
+		async function setUpOrphanedBaseline(path: string, content: string) {
+			localVault.setFile(path, content);
+			localVault.setSyncHiddenFiles(true);
+			const baseline = await localVault.readFromSource();
+			localVault.setOrphanedScanPrefixes([path.split('/').slice(0, -1).join('/')]);
+			return baseline;
+		}
+
+		it('does not report a spurious remote-edit clash for a path this sync could not see', async () => {
+			// This is the residual gap after the pre-existing existenceMap stat safeguard in
+			// pushChangedFilesToRemote (see "does not push a deletion" below): that safeguard
+			// only guards the local-REMOVED + remote-unchanged case (a real stat before
+			// deleting from remote). resolveAllChanges routes local-REMOVED + remote-EDITED
+			// straight to a clash — no stat check on that path — so without this fix, a
+			// remote edit to a path under a pruned/skipped folder would spuriously clash
+			// against a "deletion" that never actually happened, writing an unwanted _fit/
+			// copy for a file the user never touched.
+			const path = '.mytool/.git/config';
+			const content = 'tracked before pruning existed';
+			await remoteVault.setFile(path, content);
+			const remoteBaseline = await remoteVault.readFromSource();
+			const baseline = await setUpOrphanedBaseline(path, content);
+			const fitSync = createFitSync();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: baseline.state,
+				lastFetchedRemoteShas: remoteBaseline.state,
+				lastFetchedCommitSha: remoteBaseline.commitSha,
+			}));
+
+			await remoteVault.setFile(path, 'edited on remote this sync');
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty(`_fit/${path}`);
+		});
+
+		it('does not push a deletion for a baseline path whose folder this sync pruned/skipped', async () => {
+			// Belt-and-suspenders with a pre-existing, independent safeguard: pushChangedFilesToRemote
+			// stats every local-REMOVED path directly before deleting from remote (see
+			// "version migration safety" in sync-scenario-matrix.md), which already catches
+			// this exact scenario since the file is still physically present. This test
+			// documents that the outcome stays safe either way; the clash test above is
+			// where this fix's own contribution is actually observable.
+			const path = '.mytool/.git/config';
+			const content = 'tracked before pruning existed';
+			await remoteVault.setFile(path, content);
+			const remoteBaseline = await remoteVault.readFromSource();
+			const baseline = await setUpOrphanedBaseline(path, content);
+			const fitSync = createFitSync();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: baseline.state,
+				lastFetchedRemoteShas: remoteBaseline.state,
+				lastFetchedCommitSha: remoteBaseline.commitSha,
+			}));
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getFile(path)).toBe(content);
 		});
 	});
 });

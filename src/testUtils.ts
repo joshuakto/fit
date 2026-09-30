@@ -415,6 +415,8 @@ export class FakeLocalVault implements IVault<"local"> {
 	// real symlinks, so a mobile local vault can never actually contain one).
 	private symlinks: Map<string, string> = new Map();
 	private symlinkSupportAvailable = true;
+	// See setOrphanedScanPrefixes below; docs/sync-logic.md § Symlink baseline.
+	private orphanedScanPrefixes: Set<string> = new Set();
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
@@ -426,6 +428,19 @@ export class FakeLocalVault implements IVault<"local"> {
 	 * mobile) — see LocalVault.supportsSymlinks(). Defaults to true (desktop-like). */
 	setSymlinkSupportAvailable(available: boolean): void {
 		this.symlinkSupportAvailable = available;
+	}
+
+	/** Simulates a folder this sync's scan pruned/skipped, without touching `files` — see
+	 * docs/sync-logic.md § Symlink baseline. Replaces any previously set prefixes. */
+	setOrphanedScanPrefixes(prefixes: string[]): void {
+		this.orphanedScanPrefixes = new Set(prefixes);
+	}
+
+	private isUnderOrphanedPrefix(path: string): boolean {
+		for (const prefix of this.orphanedScanPrefixes) {
+			if (path === prefix || path.startsWith(`${prefix}/`)) return true;
+		}
+		return false;
 	}
 
 	async supportsSymlinks(): Promise<boolean> {
@@ -564,7 +579,7 @@ export class FakeLocalVault implements IVault<"local"> {
 		const paths = [
 			...Array.from(this.files.keys()),
 			...symlinkPaths
-		].filter(path => this.shouldTrackState(path));
+		].filter(path => this.shouldTrackState(path) && !this.isUnderOrphanedPrefix(path));
 		const settledResults = await Promise.allSettled(
 			paths.map(async (path) => {
 				// Call mock if provided (allows test to inject failures)
@@ -609,7 +624,7 @@ export class FakeLocalVault implements IVault<"local"> {
 			);
 		}
 
-		return { state, symlinkPaths };
+		return { state, symlinkPaths, orphanedScanPrefixes: new Set(this.orphanedScanPrefixes) };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -791,10 +806,12 @@ export class FakeLocalVault implements IVault<"local"> {
 		// Start computing SHAs for written files asynchronously (for later retrieval)
 		// Only for trackable files that will appear in future scans
 		const newBaselineStates = this.computeWrittenFileShas(succeededWrites, clashPaths);
+		const newSymlinkPaths = this.computeWrittenFileSymlinkPaths(succeededWrites, clashPaths);
 
 		return {
 			changes,
 			newBaselineStates,
+			newSymlinkPaths,
 			...(failedPaths.length > 0 && { failedPaths })
 		};
 	}
@@ -828,6 +845,27 @@ export class FakeLocalVault implements IVault<"local"> {
 
 		const results = await Promise.all(shaPromises);
 		return Object.fromEntries(results.filter((r): r is [string, BlobSha] => r !== null));
+	}
+
+	/** Symlink-membership counterpart to computeWrittenFileShas — same inclusion filter
+	 * (direct writes + untracked clashes), so both baselines advance at the same commit
+	 * point. Mirrors LocalVault.writeFileAsSymlink's fallback: unsupported still writes
+	 * regular content, so doesn't count as a symlink here either. */
+	private computeWrittenFileSymlinkPaths(
+		filesToWrite: Array<{path: string, isSymlink?: boolean}>,
+		clashPaths: Set<string>
+	): Set<string> {
+		const result = new Set<string>();
+		for (const { path, isSymlink } of filesToWrite) {
+			if (!isSymlink || !this.symlinkSupportAvailable) continue;
+			const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
+			const shaPath = clashPaths.has(path) ? path : undefined;
+			const pathForSha = shaPath ?? writePath;
+			if (shaPath === undefined || !this.shouldTrackState(pathForSha)) {
+				result.add(path);
+			}
+		}
+		return result;
 	}
 
 	shouldTrackState(path: string): boolean {
@@ -1117,6 +1155,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 			commitSha: this.commitSha,
 			treeSha,
 			newState,
+			newSymlinkPaths: new Set(this.symlinkPaths),
 			...(skippedPaths.length > 0 && { skippedPaths, skippedWarning }),
 			...(rateLimitedPaths.length > 0 && { rateLimitedPaths }),
 		};

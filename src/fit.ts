@@ -422,6 +422,7 @@ export class Fit {
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
 		const currentSymlinkPaths = readResult.symlinkPaths;
+		const orphanedScanPrefixes = readResult.orphanedScanPrefixes;
 
 		// Re-parse .fitattributes.json content (feeds shouldSyncPath's format gate) from this
 		// scan's own knowledge of whether the file exists — never a separate stat/read probe,
@@ -476,13 +477,23 @@ export class Fit {
 			}
 		}
 
+		// See docs/sync-logic.md § Symlink baseline, "Scan-time pruning vs. the stored
+		// baseline" — without this, a baseline entry under a pruned/skipped folder reads
+		// as REMOVED and gets pushed as a deletion.
+		const isUnderOrphanedPrefix = orphanedScanPrefixes.size === 0 ? () => false : (path: string) => {
+			for (const prefix of orphanedScanPrefixes) {
+				if (path === prefix || path.startsWith(`${prefix}/`)) return true;
+			}
+			return false;
+		};
+
 		// Filter both states to paths that are trackable AND syncable (#169).
 		// shouldTrackState: LocalVault can read the file (always true when syncHiddenFiles=true).
 		// shouldSyncPath: sync policy allows pushing (filters _fit/, .obsidian/, etc.).
 		// Both required — protected paths like .obsidian/ are readable but never pushed,
 		// and would appear as phantom ADDED changes without this combined filter.
 		const isSyncCandidate = (path: string) =>
-			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path);
+			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path) && !isUnderOrphanedPrefix(path);
 
 		const trackableLocalShas: FileStates = {};
 		for (const [path, sha] of Object.entries(this.localShas)) {

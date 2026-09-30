@@ -91,6 +91,9 @@ interface HiddenPathScanResult {
 	// tally.
 	prunedDirsSkipped: number;
 	symlinksSkipped: number;
+	// Full path lists behind the two counts above — never logged (see orphanedScanPrefixes
+	// below; docs/sync-logic.md § Symlink baseline, "Scan-time pruning vs. the stored baseline").
+	skippedFolders: string[];
 }
 
 async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
@@ -98,7 +101,12 @@ async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResu
 	const skippedPrunedDirs: string[] = [];
 	const skippedSymlinks: string[] = [];
 	await collectHiddenInDir(adapter, '/', results, false, new Set<string>(), skippedPrunedDirs, skippedSymlinks);
-	return { paths: results, prunedDirsSkipped: skippedPrunedDirs.length, symlinksSkipped: skippedSymlinks.length };
+	return {
+		paths: results,
+		prunedDirsSkipped: skippedPrunedDirs.length,
+		symlinksSkipped: skippedSymlinks.length,
+		skippedFolders: [...skippedPrunedDirs, ...skippedSymlinks]
+	};
 }
 
 async function collectHiddenInDir(
@@ -265,7 +273,7 @@ export class LocalVault implements IVault<"local"> {
 	/**
 	 * Scan vault, update latest known state, and return it
 	 */
-	async readFromSource(): Promise<VaultReadResult> {
+	async readFromSource(): Promise<VaultReadResult<"local">> {
 		const allFiles = this.vault.getFiles();
 		const vaultIndexPaths = allFiles.map(f => f.path);
 
@@ -273,9 +281,13 @@ export class LocalVault implements IVault<"local"> {
 		// (vault.getFiles() only returns non-hidden files due to Obsidian API limitations).
 		// This involves a full recursive directory scan and has performance overhead.
 		let hiddenPaths: string[] = [];
+		// Folders this scan skipped — see docs/sync-logic.md § Symlink baseline,
+		// "Scan-time pruning vs. the stored baseline".
+		let orphanedScanPrefixes: string[] = [];
 		if (this.syncHiddenFiles) {
 			const scanResult = await scanHiddenPaths(this.vault.adapter);
 			hiddenPaths = scanResult.paths;
+			orphanedScanPrefixes = scanResult.skippedFolders;
 			if (hiddenPaths.length > 0 || scanResult.prunedDirsSkipped > 0 || scanResult.symlinksSkipped > 0) {
 				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
 					count: hiddenPaths.length, paths: hiddenPaths,
@@ -433,7 +445,7 @@ export class LocalVault implements IVault<"local"> {
 			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
 		);
 
-		return { state: { ...newState }, symlinkPaths };
+		return { state: { ...newState }, symlinkPaths, orphanedScanPrefixes: new Set(orphanedScanPrefixes) };
 	}
 
 	/**
@@ -854,11 +866,18 @@ export class LocalVault implements IVault<"local"> {
 		// Only includes files with SHA computations (direct writes + untracked clashes) (#169)
 		// Tracked clash files are excluded (null shaPromise) as they self-heal via local scan
 		const shaPromiseMap: Record<string, Promise<BlobSha>> = {};
+		// Post-apply symlink-membership counterpart to shaPromiseMap — same key set (paths
+		// entering the SHA baseline this call), since a path's mode baseline must advance
+		// at the same commit point as its content baseline (docs/sync-logic.md § Symlink
+		// baseline). A clash write (excluded above) leaves the main path's own symlink
+		// status untouched too, for the same self-heals-via-local-scan reason.
+		const newSymlinkPaths = new Set<string>();
 		for (const result of writeResults) {
 			if (result.shaPromise) {
 				// Key by original path from filesToWrite, not the write path (which may be _fit/...)
 				const originalPath = filesToWrite[result.index].path;
 				shaPromiseMap[originalPath] = result.shaPromise;
+				if (filesToWrite[result.index].isSymlink) newSymlinkPaths.add(originalPath);
 			}
 		}
 
@@ -874,6 +893,7 @@ export class LocalVault implements IVault<"local"> {
 		return {
 			changes,
 			newBaselineStates,
+			newSymlinkPaths,
 			userWarning,
 			...(failedPaths.length > 0 && { failedPaths })
 		};

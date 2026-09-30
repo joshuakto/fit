@@ -21,6 +21,10 @@ type VaultReadResultMap = {
 		 * this set exists purely to drive write-mechanism selection and the mode-change
 		 * collision check — see docs/sync-logic.md § Symlink baseline. */
 		symlinkPaths: Set<string>;
+		/** Folders this scan pruned/skipped rather than walked into — empty unless "Sync
+		 * hidden files" is on. See docs/sync-logic.md § Symlink baseline, "Scan-time
+		 * pruning vs. the stored baseline". */
+		orphanedScanPrefixes: Set<string>;
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {
@@ -53,6 +57,12 @@ type ApplyChangesResultMap = {
 		/** Promise for file SHAs (computed from in-memory content during writes).
 		 * Await when ready to update local state - allows parallelization on mobile. */
 		newBaselineStates: Promise<FileStates>;
+		/** Paths among newBaselineStates' keys that were written as real symlinks this
+		 * call — the post-apply mode-baseline counterpart to newBaselineStates, since a
+		 * path's symlink membership must advance at the same commit point as its SHA
+		 * (see docs/sync-logic.md § Symlink baseline). Not a promise: computed
+		 * synchronously alongside the writes themselves, unlike SHA computation. */
+		newSymlinkPaths: Set<string>;
 		failedPaths?: string[];
 	};
 	/** Remote vault result - includes commit metadata and new state */
@@ -63,6 +73,9 @@ type ApplyChangesResultMap = {
 		treeSha: TreeSha;
 		/** FileStates computed from the new tree (for cache updates) */
 		newState: FileStates;
+		/** Post-apply symlink-membership counterpart to newState — see "local"'s
+		 * newSymlinkPaths above for why this must move in lockstep. */
+		newSymlinkPaths: Set<string>;
 		/** Paths skipped due to a definitive or likely size rejection (413/422, or 401/403
 		 * with size-related keywords). Caller must add to unpushedFiles — not in newState. */
 		skippedPaths?: string[];

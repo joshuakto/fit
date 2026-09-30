@@ -294,7 +294,8 @@ describe("RemoteGitHubVault", () => {
 					changes: [{ path: "newfile.md", type: "ADDED" }],
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
-					newState: { 'newfile.md': expect.any(String) }
+					newState: { 'newfile.md': expect.any(String) },
+					newSymlinkPaths: new Set()
 				});
 
 				// Verify the file was ADDED to the tree
@@ -325,6 +326,7 @@ describe("RemoteGitHubVault", () => {
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
 					newState: { "existing.md": expect.any(String) },
+					newSymlinkPaths: new Set()
 				});
 			});
 
@@ -345,6 +347,7 @@ describe("RemoteGitHubVault", () => {
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
 					newState: {},
+					newSymlinkPaths: new Set()
 				});
 
 				// Verify file was REMOVED from tree
@@ -365,6 +368,7 @@ describe("RemoteGitHubVault", () => {
 					commitSha: expect.not.stringMatching(PARENTCOMMIT123_SHA),
 					treeSha: expect.not.stringMatching(TREE456_SHA),
 					newState: { "image.png": expect.any(String) },
+					newSymlinkPaths: new Set()
 				});
 			});
 
@@ -386,6 +390,7 @@ describe("RemoteGitHubVault", () => {
 					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no tree nodes created
 					treeSha: TREE456_SHA, // Unchanged when no tree nodes created
 					newState: { "file.md": expect.any(String) },
+					newSymlinkPaths: new Set()
 				});
 				// Commit SHA should not have changed
 				expect(fakeOctokit.getLatestCommitSha()).toBe(PARENTCOMMIT123_SHA);
@@ -408,6 +413,7 @@ describe("RemoteGitHubVault", () => {
 					commitSha: PARENTCOMMIT123_SHA, // Unchanged when no changes
 					treeSha: TREE456_SHA, // Unchanged when no changes
 					newState: { "other.md": BLOB1_SHA },
+					newSymlinkPaths: new Set()
 				});
 			});
 
@@ -439,7 +445,26 @@ describe("RemoteGitHubVault", () => {
 						"new.md": expect.any(String),
 						"existing.md": expect.any(String),
 					},
+					newSymlinkPaths: new Set()
 				});
+			});
+
+			it("keeps the readFromSource cache-hit path's symlinkPaths in sync with a push", async () => {
+				// Cache-staleness bug: applyChanges's post-push cache refresh updated
+				// latestKnownState but not latestKnownSymlinkPaths, so a same-instance
+				// readFromSource() cache-hit right after a symlink push returned stale
+				// (missing) symlink membership for the path just pushed.
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+
+				await vault.applyChanges(
+					[{ path: "link.md", content: FileContent.fromPlainText("../target.md"), isSymlink: true }],
+					[]
+				);
+
+				// Same commit as applyChanges just created -> cache-hit branch, not a fresh fetch.
+				const result = await vault.readFromSource();
+
+				expect(result.symlinkPaths).toEqual(new Set(["link.md"]));
 			});
 
 			describe("blob rejection bucketing", () => {

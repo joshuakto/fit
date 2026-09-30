@@ -767,6 +767,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 				commitSha: parentCommitSha,
 				treeSha: parentTreeSha,
 				newState: currentState,
+				newSymlinkPaths: currentSymlinkPaths,
 				...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
 				...(retriableFiles.length > 0 && { rateLimitedPaths: retriableFiles.map(f => f.path) }),
 			};
@@ -780,6 +781,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Build file operation records and construct new state from known changes
 		const changes: FileChange[] = [];
 		const newState: FileStates = { ...currentState };
+		// Post-apply symlink-membership counterpart to newState — must advance at the
+		// same commit point as newState itself (docs/sync-logic.md § Symlink baseline).
+		const newSymlinkPaths = new Set(currentSymlinkPaths);
 
 		for (const node of treeNodes) {
 			if (!node.path) continue;
@@ -791,14 +795,19 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 				// Deletion
 				changeType = "REMOVED";
 				delete newState[node.path];
+				newSymlinkPaths.delete(node.path);
 			} else if (node.path in currentState) {
 				// Modification - node.sha is BlobSha for blob nodes
 				changeType = "MODIFIED";
 				newState[node.path] = node.sha as BlobSha;
+				if (node.mode === '120000') newSymlinkPaths.add(node.path);
+				else newSymlinkPaths.delete(node.path);
 			} else {
 				// Addition - node.sha is BlobSha for blob nodes
 				changeType = "ADDED";
 				newState[node.path] = node.sha as BlobSha;
+				if (node.mode === '120000') newSymlinkPaths.add(node.path);
+				else newSymlinkPaths.delete(node.path);
 			}
 
 			changes.push({ path: node.path, type: changeType });
@@ -807,12 +816,14 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Update cache to avoid redundant fetches later
 		this.latestKnownCommitSha = newCommitSha;
 		this.latestKnownState = newState;
+		this.latestKnownSymlinkPaths = newSymlinkPaths;
 
 		return {
 			changes,
 			commitSha: newCommitSha,
 			treeSha: newTreeSha,
 			newState,
+			newSymlinkPaths,
 			userWarning,
 			...(skippedPathsList && { skippedPaths: skippedPathsList, skippedWarning }),
 			...(retriableFiles.length > 0 && { rateLimitedPaths: retriableFiles.map(f => f.path) }),

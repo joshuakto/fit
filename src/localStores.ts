@@ -58,6 +58,11 @@ export interface LocalStores {
  *   1. Add to LocalStores interface above with a ?? default here
  *   2. Add to saveLocalStoreCallback in fitSync.ts
  *   3. Add a round-trip assertion in localStores.test.ts
+ *   4. If this field mirrors a runtime (non-persisted) value elsewhere - a vault's read-cache,
+ *      a same-function derived variable - audit every place that sibling value gets updated and
+ *      confirm this one advances at the same points. This is the gap that produced real bugs in
+ *      #389/PR #391 (RemoteGitHubVault.latestKnownState's cache, fitSync.ts's newLocalState
+ *      construction).
  */
 export function parseLocalStore(data: Record<string, unknown> | null | undefined): LocalStores {
 	const d = data ?? {};
