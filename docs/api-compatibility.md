@@ -82,6 +82,16 @@ const Buffer = require('buffer');
 
 **Alternative:** Use Web APIs (TextEncoder, TextDecoder, Blob, etc.) or Obsidian's platform abstractions.
 
+**Narrow exception — guarded desktop-only Node access:** when no Obsidian API exposes what's
+needed (e.g. symlink/inode info — `DataAdapter` has none), a Node built-in may be used, but only
+behind all three guards together: dynamic `import()` (never a top-level `require`/`import`, so
+mobile never touches the module), an `instanceof FileSystemAdapter` (or equivalent desktop-only
+class) gate, and a try/catch fallback to "unsupported" on any resolution or call failure. All
+current uses live in [src/util/desktopCompat.ts](../src/util/desktopCompat.ts) — symlink
+detection, target read, and write (`isSymlink`, `readSymlinkTarget`, `writeSymlink`,
+`supportsSymlinks`; see docs/sync-logic.md § Symlink baseline). Add further desktop-only Node
+access here too, not as new inline shims elsewhere.
+
 ### ❌ TextDecoder without `fatal: true`
 
 **DANGEROUS:** Silently corrupts binary data

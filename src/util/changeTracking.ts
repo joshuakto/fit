@@ -214,7 +214,13 @@ export function resolveAllChanges(
 	untrackedPaths: Set<string>,
 	localShas: FileStates = {},
 	remoteShas: FileStates = {},
-	gitMaskTrackedPaths: Set<string> = new Set()
+	gitMaskTrackedPaths: Set<string> = new Set(),
+	/** Current symlink-membership on each side — guards the content-identity fast path
+	 * below against the sha-collision case (see docs/sync-logic.md § Symlink baseline):
+	 * without this, a local plain file whose bytes equal a remote symlink's target string
+	 * (or vice versa) would be treated as "already converged," silently discarding the
+	 * mode difference. Omit for callers that don't track symlinks — behavior unchanged. */
+	symlinkPaths: { local: Set<string>, remote: Set<string> } = { local: new Set(), remote: new Set() }
 ): {
 	safeLocal: FileChange[];
 	safeRemote: FileChange[];
@@ -249,7 +255,8 @@ export function resolveAllChanges(
 			const remoteSha = remoteShas[remoteChange.path];
 			if (
 				localChange.type !== "REMOVED" && remoteChange.type !== "REMOVED" &&
-				localSha !== undefined && remoteSha !== undefined && localSha === remoteSha
+				localSha !== undefined && remoteSha !== undefined && localSha === remoteSha &&
+				symlinkPaths.local.has(localChange.path) === symlinkPaths.remote.has(remoteChange.path)
 			) {
 				continue;
 			}
@@ -312,9 +319,18 @@ export function resolveAllChanges(
  * @param storedShaMap - Baseline file state (path -> SHA)
  * @returns Array of detected changes
  */
+/**
+ * @param symlinkBaseline - Optional symlink-membership sets for mode-change detection.
+ *   Git blob SHA covers content bytes only, not mode, so a path whose SHA is unchanged
+ *   can still have changed kind (plain file <-> symlink) if its bytes happen to equal the
+ *   other kind's target string. Without this, that specific collision is invisible — see
+ *   docs/sync-logic.md § Symlink baseline. Omit entirely for callers that don't track
+ *   symlinks (e.g. `.fitattributes.json` subset-scope masking) — behavior is unchanged.
+ */
 export function compareFileStates(
 	currentShaMap: FileStates,
-	storedShaMap: FileStates
+	storedShaMap: FileStates,
+	symlinkBaseline?: { currentSymlinkPaths: Set<string>, storedSymlinkPaths: Set<string> }
 ): FileChange[] {
 	const getValueOrNull = <T>(obj: Record<string, T>, key: string): T | null =>
 		obj.hasOwnProperty(key) ? obj[key] : null;
@@ -338,7 +354,16 @@ export function compareFileStates(
 			getValueOrNull(currentShaMap, path),
 			getValueOrNull(storedShaMap, path)
 		];
-		const changeType = determineChangeType(currentSha, storedSha);
+		let changeType = determineChangeType(currentSha, storedSha);
+		// Sha-equal (or both-absent) case: still check for a mode-only change, the one
+		// case sha comparison alone can't see (see doc comment above).
+		if (!changeType && currentSha && storedSha && symlinkBaseline) {
+			const wasSymlink = symlinkBaseline.storedSymlinkPaths.has(path);
+			const isSymlink = symlinkBaseline.currentSymlinkPaths.has(path);
+			if (wasSymlink !== isSymlink) {
+				changeType = "MODIFIED";
+			}
+		}
 		if (changeType) {
 			return [{
 				path,

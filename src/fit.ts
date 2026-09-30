@@ -38,6 +38,12 @@ export class Fit {
 	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
 	pendingClashes: string[];               // Paths with unresolved _fit/ copies
 	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
+	// Symlink-membership baselines (paths that were real symlinks as of the last
+	// successful sync) — the mode-equivalent of localShas/lastFetchedRemoteShas above.
+	// See docs/sync-logic.md § Symlink baseline for why sha alone can't detect a
+	// mode-only change.
+	localSymlinkPaths: Set<string>;
+	remoteSymlinkPaths: Set<string>;
 	fitAttributes: FitAttributesFile = {};  // Parsed from local .fitattributes.json; refreshed each sync
 	// Set when the last .fitattributes.json parse attempt failed; null when it parsed fine or
 	// the file doesn't exist. FitSync surfaces this as a visible Notice — a malformed file
@@ -111,6 +117,8 @@ export class Fit {
 		this.unpushedFiles = localStore.unpushedFiles ?? {};
 		this.pendingClashes = localStore.pendingClashes ?? [];
 		this.protectedPathShas = localStore.protectedPathShas ?? {};
+		this.localSymlinkPaths = new Set(localStore.localSymlinkPaths ?? []);
+		this.remoteSymlinkPaths = new Set(localStore.remoteSymlinkPaths ?? []);
 
 		const localCount = Object.keys(this.localShas).length;
 		const legacyCount = Object.keys(this.localSha).length;
@@ -406,13 +414,14 @@ export class Fit {
 		await this.readAndApplyFitAttributes();
 	}
 
-	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
+	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates, symlinkPaths: Set<string>}> {
 		// Feed the tracked-path set to local hidden-path discovery before scanning.
 		this.localVault.configure({ trackedHiddenPaths: this.trackedObsidianPaths() });
 
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
+		const currentSymlinkPaths = readResult.symlinkPaths;
 
 		// Re-parse .fitattributes.json content (feeds shouldSyncPath's format gate) from this
 		// scan's own knowledge of whether the file exists — never a separate stat/read probe,
@@ -487,8 +496,11 @@ export class Fit {
 				trackableCurrentState[path] = sha;
 			}
 		}
-		const changes = compareFileStates(trackableCurrentState, trackableLocalShas);
-		return { changes, state: currentState };
+		const changes = compareFileStates(trackableCurrentState, trackableLocalShas, {
+			currentSymlinkPaths,
+			storedSymlinkPaths: this.localSymlinkPaths
+		});
+		return { changes, state: currentState, symlinkPaths: currentSymlinkPaths };
 	}
 
 	/**
@@ -499,13 +511,16 @@ export class Fit {
 	 *
 	 * @returns Remote changes, current state, and the commit SHA of the fetched state
 	 */
-	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha}> {
+	async getRemoteChanges(): Promise<{changes: FileChange[], state: FileStates, commitSha: CommitSha, symlinkPaths: Set<string>}> {
 		fitLogger.log('.. ☁️ [RemoteVault] Fetching from GitHub...');
-		const { state, commitSha } = await this.remoteVault.readFromSource();
+		const { state, commitSha, symlinkPaths } = await this.remoteVault.readFromSource();
 		if (!commitSha) {
 			throw new Error("Expected RemoteGitHubVault to provide commitSha");
 		}
-		const changes = compareFileStates(state, this.lastFetchedRemoteShas);
+		const changes = compareFileStates(state, this.lastFetchedRemoteShas, {
+			currentSymlinkPaths: symlinkPaths,
+			storedSymlinkPaths: this.remoteSymlinkPaths
+		});
 
 		// Diagnostic logging for tracking remote cache state
 		if (changes.length > 0) {
@@ -517,6 +532,6 @@ export class Fit {
 			});
 		}
 
-		return { changes, state, commitSha };
+		return { changes, state, commitSha, symlinkPaths };
 	}
 }

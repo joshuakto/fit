@@ -27,6 +27,34 @@ still be an unbounded-cost hot path there, which is why they're separate docs.
   stated in prose, never left implicit.
 - **Pairwise (2-way) coverage is the default bar**, not full combinatorial explosion. Exhaustive
   (3-way+) treatment only where the failure mode is severe enough to warrant it.
+- **Every test name cited in a scenario table must also appear in Test minimap below.** Two
+  indexes into the same tests, kept in sync by hand - a row added to one without the other is a
+  gap the next person can't see.
+
+### Composing tables
+
+Every table in this doc shares the same Dimensions vocabulary below, so any two rows from any
+two tables can be laid side by side in one superset schema (all declared dimensions + Status) to
+check they don't silently disagree about what a shared cell means. Three rules make that
+composition unambiguous instead of guesswork:
+
+- **A dimension may be dropped from a table's explicit columns only if it's truly invariant
+  across every row of that table, and the table must say so in an Invariants line** (e.g. the
+  Normal path table's rule-agreement/clash/failure footer). Composing = filling in that stated
+  value for every row when unioning against a table where the dimension varies.
+- **A dimension that forks Status but not Local/Remote edit, and only for a minority of a
+  table's rows, may be multiplexed inline in the Status cell instead of getting its own
+  column** - but only flagged explicitly per-row (bold sub-labels naming the fork), never
+  silently. Composing = expand that one row into N rows, one per multiplexed outcome.
+- **`n/a` and don't-care are different states, not interchangeable.** Don't-care (above) means
+  the outcome doesn't depend on this input. `n/a` means the input has no other value to range
+  over for this row - the precondition for any other value literally can't occur (see Symlink
+  content-fidelity below: local-only capability is n/a on a push row, not don't-care, since a
+  local symlink can only exist in the first place when capability was available).
+
+A dimension that doesn't fit any of the three above (materially forks outcomes across most of a
+table's rows) needs a real column, and belongs in the shared Dimensions table, not invented
+locally.
 
 ## Dimensions
 
@@ -42,6 +70,7 @@ the header to be readable, the label is wrong.
 | Remote edit | ✏️ remote edited / ⚪ remote unchanged / 🗑️ remote deleted / n/a | |
 | Pre-existing clash | 🔀 clash pending / ⚪ no clash | Must never be silently overridden by an unrelated reconcile/observe pass. |
 | Mid-sync failure | ⚪ no failure / 💥 local write fails / 💥 remote push skipped or rate-limited / 💥 fetch fails | Baseline must not advance past a confirmed operation - a documented invariant, easy to violate case-by-case. |
+| Content kind | 📄 regular content (text/binary) / 🔗 symlink | Orthogonal to Path category, not a new category value - any path category can be a symlink. See [sync-logic.md § Symlink baseline](./sync-logic.md#symlink-baseline) for the mode-vs-sha mechanism. |
 | Path category | ordinary vault path / hidden vault path (non-`.obsidian/`) / `.obsidian/` (`format:"text"`) / `.obsidian/` (`format:"json"`) / `.fitattributes.json` itself / `_fit/` itself | `_fit/` is FIT's own scratchpad - unconditionally excluded both directions (`shouldSyncPath`), regardless of every other dimension, including on remote if another device or a manual git push puts real content there. Reflects the *resolved* category only - whether a path landed there via an explicit `.fitattributes.json` rule or a heuristic default doesn't change behavior, so it doesn't get a separate value here. `.canvas` is called out explicitly where it appears because it's the one path shape with a dedicated merge spec (id-keyed `nodes`/`edges` set-union, `mergeSpecForPath` in `jsonMerge.ts`) - it goes through the exact same `format:"json"` dispatch as any other JSON path, it just doesn't share the generic key-level spec everything else gets. `.fitattributes.json`'s own sync is a special case of every other dimension (self-clash on its own copy) rather than exempt from them. This is a real table column below, not just a Dimensions-table entry - a row should be identifiable from its input cells alone, without reading Status. |
 
 ### Categories not modeled here
@@ -64,9 +93,12 @@ exactly that, into the Known compatibility factors table below.
 Each row is one scenario family. ✅ links a real test proving correct behavior; 🔴 marks
 *confirmed wrong* behavior (a real bug, with a test proving it - see Canvas delete-vs-edit below);
 🚧 marks a row that can't be exercised yet because the feature it depends on isn't built (not a
-bug claim either way). There is deliberately no separate "untested, don't know" marker - per the
-Method section above, every row must resolve to one of these three, not sit in an unverified
-middle state.
+bug claim either way); `n/a` (no emoji) marks a row that's structurally unreachable - no code
+path can produce these inputs together, so there's nothing to test, proven by construction
+rather than left unverified. Distinct from both 🚧 (a real future gap) and from the deliberately
+absent "untested, don't know" marker (this isn't that - it's proven vacuous, not merely unchecked).
+Per the Method section above, every row must resolve to one of these four, not sit in an
+unverified middle state.
 
 ### Normal path (rules agree, no pending clash, no mid-sync failure)
 
@@ -90,9 +122,40 @@ middle state.
 | `.obsidian/` (`format:"text"`) | 👀 tracked | ✏️ edited | 🗑️ deleted | ✅ `'treats a locally-edited .obsidian/ path as an ordinary clash (not an untrack...'` |
 | `_fit/` itself | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ `'should exclude 📁 _fit/ directory from sync operations'` - never pushed, regardless of content |
 | `_fit/` itself | 👀 tracked | ⚪ unchanged | ✏️ edited (a real `_fit/` path exists on remote - another device, or a manual git push) | ✅ same test - SHA cached in `lastFetchedRemoteShas` (to detect future changes) but never written locally, no `_fit/_fit/` nesting. Internal wrinkle, not a correctness gap: `fitSync.ts` has a TODO noting this relies on a post-hoc `filterSyncedState` scrub rather than upfront filtering earlier in the pipeline - safe today, just not the cleanest shape. |
+| ordinary vault path | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ `'should update commit SHA when remote commit changes but no tracked files changed'` - empty `changeGroups` both sides |
+| any (don't-care - never reaches the machinery that would distinguish categories) | 🆕 untracked, never observed | n/a | n/a | `n/a` - no path exists on either side, so `compareFileStates` never iterates it (nothing in `currentShaMap`/`storedShaMap` to compare); not a gap, provably nothing to test |
 
-Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, and mid-sync failure is
-⚪ no failure, every row - all three columns dropped.
+Table invariants (every row):
+- Rule agreement: 🟢 agree
+- Pre-existing clash: ⚪ no clash
+- Mid-sync failure: ⚪ no failure
+- Content kind: 📄 regular content (no row in this table exercises a symlink; see Symlink
+  content-fidelity below for where content kind actually varies)
+
+Not modeled: `👻` tracking state paired with unchanged/unchanged - its steady state (as opposed
+to the transition into/out of it, which the rows above do cover) has no citing test yet, and
+unlike `🆕` above isn't provably vacuous either (a `👻` path has real persisted state -
+`protectedPathShas` - so this is a genuine untested gap, not given a row per this table's own
+no-untested-marker rule).
+
+### Symlink content-fidelity (#389)
+
+| Tracking state | Content kind | Local edit | Remote edit | Status |
+|---|---|---|---|---|
+| 🆕 untracked, never observed | 🔗 symlink | ✏️ new local symlink | ⚪ unchanged | ✅ `'pushes a local symlink...'` |
+| 🆕 / 👀 | 🔗 (new) / 📄→🔗 (mode flip, same bytes) | ⚪ unchanged | ✏️ edited | **available:** ✅ `'pulls a remote symlink...'` (🆕) / `'detects a remote mode change...'` (👀). **unavailable:** ✅ `'skips a remote symlink...'` (🆕 only) |
+| 🆕 untracked, never observed | 🔗 symlink | ⚪ unchanged | ⚪ unchanged | ✅ `'skips a remote symlink...'`, 2nd sync — confirms the row above's skip never becomes a `🗑️` next time |
+
+Table invariants (every row):
+- Rule agreement: 🟢 agree
+- Path category: ordinary vault path
+- Pre-existing clash: ⚪ no clash
+- Mid-sync failure: ⚪ no failure
+- Symlink-write capability: n/a on the push row (can't exist locally without it), multiplexed
+  into Status on the pull row (see Composing tables above) - never a column
+
+Not modeled: local plain file vs. remote symlink clash — ordinary clash handling, not
+symlink-specific.
 
 ### Exceptional path (rule disagreement, pending clash, and/or mid-sync failure)
 
@@ -107,8 +170,12 @@ Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, an
 | ordinary vault path | 🟢 agree | 👀 tracked | 🗑️ deleted | ✏️ edited | 🔀 clash pending | ⚪ no failure, sync repeated | ✅ **Fixed (#283).** Doesn't fold into the row above — a delete/modify clash's own creation state (local absent, `_fit/` present) was indistinguishable from "user deleted local to resolve," so the very next sync silently pushed the deletion and cleaned up the `_fit/` copy with zero user action. `'I: delete/modify clash left untouched — next sync must NOT push the deletion or clear the pending clash (#283)'`. |
 | n/a (whole-sync failure, not path-specific) | 🟢 agree | 👀 tracked | n/a | n/a | n/a | 💥 fetch fails entirely this sync | ✅ `'a whole-sync remote fetch failure leaves localShas/lastFetchedRemoteShas/protectedPathShas untouched'` - already a guaranteed no-op by `_doSync`'s error-path rollback (`fitSync.ts`), this test just confirms it; see [sync-logic.md § Network Interruption](./sync-logic.md), the "before commit created" case |
 
-Invariant: every row has at least one of rule disagreement, pending clash, or mid-sync failure -
-that's what puts it here instead of the normal-path table.
+Invariants (every row):
+- At least one of rule disagreement, pending clash, or mid-sync failure - that's what puts a row
+  here instead of the Normal path table (the other two of the three are still whatever the row's
+  own columns say, not fixed - unlike Normal path table, this one doesn't drop those columns)
+- Content kind: 📄 regular content (no row in this table exercises a symlink; see Symlink
+  content-fidelity above for where content kind actually varies)
 
 ### Known compatibility factors
 
@@ -166,15 +233,22 @@ fitSync.realFit.test.ts
   │ └ 'a pending self-clash on .fitattributes.json does not corrupt routing for another masked path clashing in the same sync'
   ├ Whole-sync fetch failure
   │ └ 'a whole-sync remote fetch failure leaves localShas/lastFetchedRemoteShas/protectedPathShas untouched'
-  └ SHA migration (localSha → localShas)
-    ├ loadLocalStore field mapping
-    │ ├ 'localShas only (clean v2) — no migration, localSha empty'
-    │ ├ 'localSha only (legacy data) — localShas empty, localSha populated'
-    │ └ 'both present (downgrade scenario) — both populated'
-    └ getLocalChanges: per-file migration
-      ├ 'unchanged file with legacy SHA — promoted silently, not in changes'
-      ├ 'changed file with legacy SHA — detected as ADDED, entry cleared'
-      ├ 'downgrade scenario (both fields) — re-promoted on match'
-      └ 'orphaned legacy entry for deleted file — cleaned up'
+  ├ Only Commit SHA Changed
+  │ └ 'should update commit SHA when remote commit changes but no tracked files changed'
+  ├ SHA migration (localSha → localShas)
+  │ ├ loadLocalStore field mapping
+  │ │ ├ 'localShas only (clean v2) — no migration, localSha empty'
+  │ │ ├ 'localSha only (legacy data) — localShas empty, localSha populated'
+  │ │ └ 'both present (downgrade scenario) — both populated'
+  │ └ getLocalChanges: per-file migration
+  │   ├ 'unchanged file with legacy SHA — promoted silently, not in changes'
+  │   ├ 'changed file with legacy SHA — detected as ADDED, entry cleared'
+  │   ├ 'downgrade scenario (both fields) — re-promoted on match'
+  │   └ 'orphaned legacy entry for deleted file — cleaned up'
+  └ Symlink handling (#389)
+    ├ 'pushes a local symlink to remote as a real symlink, not flattened content'
+    ├ 'pulls a remote symlink to local as a real symlink, not flattened content'
+    ├ 'skips a remote symlink on a platform without symlink support, and does not push it back as a deletion'
+    └ 'detects a remote mode change (file -> symlink) even when the blob sha is unchanged'
 ```
 

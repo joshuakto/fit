@@ -15,12 +15,21 @@ type VaultReadResultMap = {
 	/** Local vault result - just the state */
 	"local": {
 		state: FileStates;
+		/** Paths detected as real symlinks (desktop only — always empty where symlink
+		 * detection isn't supported). FileStates itself stays content-only: a symlink's
+		 * "content" is its target-path string, hashed the same as any other content, so
+		 * this set exists purely to drive write-mechanism selection and the mode-change
+		 * collision check — see docs/sync-logic.md § Symlink baseline. */
+		symlinkPaths: Set<string>;
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {
 		state: FileStates;
 		commitSha: CommitSha;
 		treeSha: TreeSha;
+		/** Paths whose tree entry has mode "120000" (a real git symlink) — see "local"'s
+		 * symlinkPaths above for why this is a side channel rather than part of FileStates. */
+		symlinkPaths: Set<string>;
 	};
 };
 
@@ -214,7 +223,9 @@ export interface IVault<T extends VaultCategory> {
 	 *   - Returns new commitSha and treeSha
 	 *   - Ignores clashPaths (remote doesn't have _fit/ concept)
 	 *
-	 * @param filesToWrite - Files to write or update with their ORIGINAL paths
+	 * @param filesToWrite - Files to write or update with their ORIGINAL paths. `isSymlink`
+	 *   (set by the caller from the source vault's `symlinkPaths`) selects a real symlink
+	 *   write/mode-120000 tree entry instead of ordinary content — see § Symlink baseline.
 	 * @param filesToDelete - Files to delete (original paths)
 	 * @param options.clashPaths - Set of paths that should be written as clash files.
 	 *   For LocalVault: writes to `_fit/{path}` but computes SHA for `{path}`.
@@ -222,7 +233,7 @@ export interface IVault<T extends VaultCategory> {
 	 * @returns Operations performed and vault-specific metadata (type determined by T)
 	 */
 	applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		filesToDelete: Array<string>,
 		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<T>>;

@@ -43,6 +43,15 @@ export class Vault {
 	cachedRead = vi.fn();
 }
 
+// Minimal stand-in for Obsidian's desktop-only FileSystemAdapter class, used by
+// LocalVault's symlink detection (`instanceof FileSystemAdapter` gate — see #389) to
+// distinguish real desktop adapters from mocked/mobile ones in tests.
+export class FileSystemAdapter {
+	getBasePath(): string {
+		return '';
+	}
+}
+
 export class Component {
 	load = vi.fn();
 	unload = vi.fn();

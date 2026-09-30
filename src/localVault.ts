@@ -16,6 +16,7 @@ import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
 import { GitignoreFilter } from "./util/gitignore";
+import { isSymlink, readSymlinkTarget, supportsSymlinks, writeSymlink } from "./util/desktopCompat";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -51,33 +52,68 @@ function isBinaryExtensionForLegacySha(extension: string): boolean {
  * carrying its own git history turns one sync into thousands of paths. Matched as a whole
  * component so `.gitignore` and `.gitattributes` stay syncable.
  */
-const PRUNED_PATH_COMPONENTS = new Set(['.git']);
+const PRUNED_PATH_COMPONENTS = new Set(['.git', '.jj', '.hg', '.svn', '.bzr']);
 
 function containsPrunedComponent(path: string): boolean {
 	return path.split('/').some(part => PRUNED_PATH_COMPONENTS.has(part));
 }
+
+// Symlink detection (isSymlink, from ./util/desktopCompat) is used two ways here:
+// - Inside the hidden-path walk below: skip recursing into a symlinked folder, so a
+//   cycle can't blow up the scan. The `visited` set is kept as a second, independent
+//   guard even with real detection present — isSymlink fails closed (falls back to "not
+//   a symlink") on any resolution/lstat error, and a cycle could in principle come from
+//   something other than a symlink (bind mount, FUSE, a network-mapped filesystem) that
+//   this walk has no way to identify directly. Cheap (one Set, O(1) per directory) and
+//   never wrong to have as a backstop.
+// - In readFromSource() further down: detect a symlinked *file* (hidden or not) so its
+//   target string, not its resolved content, is what gets hashed/synced — see
+//   docs/sync-logic.md § Symlink baseline.
+//
+// TODO: overlay the hidden-path walk onto `vault.getFiles()`'s existing index instead of
+// an independent scan with bolted-on symlink/prune heuristics — a path the index already
+// reports could skip this check entirely. Needs confirming what Obsidian's indexer does
+// with symlinks first; a real design change, not attempted here.
 
 /**
  * Recursively scan vault adapter for hidden file paths (any path component starts with '.').
  * vault.getFiles() does not return hidden files, so this adapter-based scan is needed
  * when syncHiddenFiles is enabled. Results are vault-relative paths.
  */
-async function scanHiddenPaths(adapter: DataAdapter): Promise<string[]> {
+interface HiddenPathScanResult {
+	paths: string[];
+	// Rollup counts only (see #389) - individual pruned-dir/symlink paths are not logged
+	// per-entry. A vault with many pruned/skipped dirs would otherwise multiply the same
+	// unbounded-array-logging problem this scan's own fix was meant to avoid; a count
+	// folded into the existing scan-summary log line is enough to see the mechanism is
+	// active without another per-item dump. Revisits caught by the `visited` guard (#390)
+	// aren't counted separately — they're cycle-prevention, not a category worth its own
+	// tally.
+	prunedDirsSkipped: number;
+	symlinksSkipped: number;
+}
+
+async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
 	const results: string[] = [];
-	await collectHiddenInDir(adapter, '/', results);
-	return results;
+	const skippedPrunedDirs: string[] = [];
+	const skippedSymlinks: string[] = [];
+	await collectHiddenInDir(adapter, '/', results, false, new Set<string>(), skippedPrunedDirs, skippedSymlinks);
+	return { paths: results, prunedDirsSkipped: skippedPrunedDirs.length, symlinksSkipped: skippedSymlinks.length };
 }
 
 async function collectHiddenInDir(
 	adapter: DataAdapter,
 	dir: string,
 	results: string[],
-	dirIsHidden = false,
-	visited = new Set<string>()
+	dirIsHidden: boolean,
+	visited: Set<string>,
+	skippedPrunedDirs: string[],
+	skippedSymlinks: string[]
 ): Promise<void> {
 	// Obsidian resolves a symlinked directory while reporting the link's own path, and
-	// DataAdapter exposes no lstat/realpath to tell the two apart, so re-entering a path
-	// already walked is the only signal available that this walk is looping.
+	// DataAdapter exposes no lstat/realpath to tell the two apart from a listing alone —
+	// see the module-level comment above for why this stays even with real isSymlink
+	// detection below.
 	if (visited.has(dir)) return;
 	visited.add(dir);
 
@@ -96,12 +132,26 @@ async function collectHiddenInDir(
 		}
 	}
 
+	for (const folder of listing.folders) {
+		if (containsPrunedComponent(folder)) {
+			skippedPrunedDirs.push(folder);
+		}
+	}
+
 	await Promise.all(
 		listing.folders
 			.filter(folder => !containsPrunedComponent(folder))
-			.map(folder => {
+			.map(async folder => {
 				const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
-				return collectHiddenInDir(adapter, folder, results, folderIsHidden, visited);
+				// Symlink detection only matters (and only costs an lstat) inside a hidden
+				// subtree — a symlink reachable purely through non-hidden path components is
+				// already covered by Obsidian's own vault.getFiles() index/indexer, which this
+				// hidden-only scan doesn't duplicate for non-hidden content anyway.
+				if (folderIsHidden && await isSymlink(adapter, folder)) {
+					skippedSymlinks.push(folder);
+					return;
+				}
+				await collectHiddenInDir(adapter, folder, results, folderIsHidden, visited, skippedPrunedDirs, skippedSymlinks);
 			})
 	);
 }
@@ -126,6 +176,10 @@ export class LocalVault implements IVault<"local"> {
 	// recursive hidden-path scan is skipped (syncHiddenFiles = false), same pattern
 	// already used for .fitattributes.json itself below.
 	private trackedHiddenPaths: string[] = [];
+	// Symlink target strings found during the last readFromSource() scan, keyed by
+	// vault-relative path. Populated desktop-only (see util/desktopCompat.ts). Cached so
+	// readFileContent() can return the target string without a second fs.readlink call.
+	private symlinkTargets: Map<string, string> = new Map();
 
 	constructor(vault: Vault) {
 		this.vault = vault;
@@ -138,6 +192,13 @@ export class LocalVault implements IVault<"local"> {
 		if (opts.trackedHiddenPaths !== undefined) {
 			this.trackedHiddenPaths = opts.trackedHiddenPaths;
 		}
+	}
+
+	/** Whether this runtime can detect/create real symlinks (desktop only). One cheap
+	 * capability check — cache the result for the duration of a sync if calling more than
+	 * once. */
+	async supportsSymlinks(): Promise<boolean> {
+		return supportsSymlinks(this.vault.adapter);
 	}
 
 	/** Returns file size in bytes, or null if path doesn't exist or is not a file. */
@@ -213,10 +274,12 @@ export class LocalVault implements IVault<"local"> {
 		// This involves a full recursive directory scan and has performance overhead.
 		let hiddenPaths: string[] = [];
 		if (this.syncHiddenFiles) {
-			hiddenPaths = await scanHiddenPaths(this.vault.adapter);
-			if (hiddenPaths.length > 0) {
+			const scanResult = await scanHiddenPaths(this.vault.adapter);
+			hiddenPaths = scanResult.paths;
+			if (hiddenPaths.length > 0 || scanResult.prunedDirsSkipped > 0 || scanResult.symlinksSkipped > 0) {
 				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
-					count: hiddenPaths.length, paths: hiddenPaths
+					count: hiddenPaths.length, paths: hiddenPaths,
+					prunedDirsSkipped: scanResult.prunedDirsSkipped, symlinksSkipped: scanResult.symlinksSkipped
 				});
 			}
 		}
@@ -284,12 +347,31 @@ export class LocalVault implements IVault<"local"> {
 			pathsToScan = trackedPaths;
 		}
 
+		// Symlink detection (desktop only — see util/desktopCompat.ts): a symlinked path's
+		// "content" for hashing/sync purposes is its target string, not the resolved
+		// target's bytes — see docs/sync-logic.md § Symlink baseline. Checked for every
+		// path, not just hidden ones: an ordinary non-hidden symlink is a symlink too.
+		const symlinkCapable = await supportsSymlinks(this.vault.adapter);
+		const newSymlinkTargets = new Map<string, string>();
+		const symlinkPaths = new Set<string>();
+
 		// Compute SHAs for all non-ignored files
 		// Monitor for slow operations that could cause mobile crashes
 		// Use allSettled to collect both successes and failures per file
 		const shaResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
 				pathsToScan.map(async (path): Promise<[string, BlobSha]> => {
+					if (symlinkCapable && await isSymlink(this.vault.adapter, path)) {
+						const target = await readSymlinkTarget(this.vault.adapter, path);
+						if (target !== null) {
+							newSymlinkTargets.set(path, target);
+							symlinkPaths.add(path);
+							const sha = await LocalVault.fileSha1(path, FileContent.fromPlainText(target));
+							return [path, sha];
+						}
+						// readSymlinkTarget failed after isSymlink said yes (rare race/perm
+						// issue) — fall through to reading it as a regular file below.
+					}
 					const sha = await LocalVault.fileSha1(
 						path, await readFileContent(this.vault, path));
 					return [path, sha];
@@ -298,6 +380,7 @@ export class LocalVault implements IVault<"local"> {
 			`Local vault SHA computation (${pathsToScan.length} files)`,
 			{ warnAfterMs: 10000 }
 		);
+		this.symlinkTargets = newSymlinkTargets;
 
 		// Separate successes from failures
 		const shaEntries: Array<[string, BlobSha]> = [];
@@ -350,7 +433,7 @@ export class LocalVault implements IVault<"local"> {
 			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
 		);
 
-		return { state: { ...newState } };
+		return { state: { ...newState }, symlinkPaths };
 	}
 
 	/**
@@ -472,6 +555,10 @@ export class LocalVault implements IVault<"local"> {
 	 * Read file content for a specific path
 	 */
 	async readFileContent(path: string): Promise<FileContent> {
+		const target = this.symlinkTargets.get(path);
+		if (target !== undefined) {
+			return FileContent.fromPlainText(target);
+		}
 		return readFileContent(this.vault, path);
 	}
 
@@ -563,6 +650,40 @@ export class LocalVault implements IVault<"local"> {
 	}
 
 	/**
+	 * Write a real symlink at `path` pointing at `content`'s target-path text (desktop
+	 * only — see util/desktopCompat.ts). Caller (applyChanges) is responsible for only
+	 * setting `isSymlink` when the source vault actually flagged the path as a symlink;
+	 * this method still checks `supportsSymlinks()` defensively and falls back to an
+	 * ordinary content write (never silently drops the sync) if unsupported, logging why.
+	 */
+	private async writeFileAsSymlink(
+		path: string,
+		content: FileContent,
+		shaPath?: string
+	): Promise<{ change: FileChange; shaPromise: Promise<BlobSha> | null }> {
+		if (!(await supportsSymlinks(this.vault.adapter))) {
+			fitLogger.log(
+				`[LocalVault] Symlink write requested but unsupported on this platform, ` +
+				`writing regular content instead: ${path}`
+			);
+			return this.writeFile(path, content.toBase64(), content, shaPath);
+		}
+
+		const target = content.toPlainText();
+		const changeType: 'ADDED' | 'MODIFIED' = this.vault.getAbstractFileByPath(path) ? 'MODIFIED' : 'ADDED';
+		await this.ensureFolderExists(path);
+		const wrote = await writeSymlink(this.vault.adapter, path, target);
+		if (!wrote) {
+			throw VaultError.filesystem(`Failed to write symlink: ${path}`);
+		}
+
+		return {
+			change: { path, type: changeType },
+			shaPromise: this.computeShaIfNeeded(shaPath, path, content)
+		};
+	}
+
+	/**
 	 * Compute SHA for a file if needed based on tracking rules.
 	 * See docs/sync-logic.md "SHA Computation from In-Memory Content" for rationale.
 	 */
@@ -623,7 +744,7 @@ export class LocalVault implements IVault<"local"> {
 	 *   Returned newBaselineStates uses original path as key, not write path.
 	 */
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		filesToDelete: Array<string>,
 		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
@@ -667,10 +788,13 @@ export class LocalVault implements IVault<"local"> {
 		// Monitor for slow file write operations
 		const writeSettledResults = await withSlowOperationMonitoring(
 			Promise.allSettled(
-				filesToWrite.map(async ({path, content}) => {
+				filesToWrite.map(async ({path, content, isSymlink: writeAsSymlink}) => {
 					// If path is in clashPaths, write to _fit/ subdirectory
 					const writePath = clashPaths.has(path) ? `_fit/${path}` : path;
 					const shaPath = clashPaths.has(path) ? path : undefined;
+					if (writeAsSymlink) {
+						return this.writeFileAsSymlink(writePath, content, shaPath);
+					}
 					return this.writeFile(writePath, content.toBase64(), content, shaPath);
 				})
 			),

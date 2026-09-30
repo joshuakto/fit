@@ -4570,4 +4570,80 @@ describe('FitSync', () => {
 			expect(localStoreState.pendingClashes).toContain('data.bin');
 		});
 	});
+
+	/**
+	 * Symlink content-fidelity (#389) — see docs/sync-logic.md § Symlink baseline. Scope:
+	 * real symlinks pushed/pulled as symlinks, the mobile no-write-capability skip, and
+	 * the sha-collision mode-change case, through FitSync orchestration. Not duplicating
+	 * localVault.test.ts's desktop-only unit coverage of isSymlink/writeSymlink themselves.
+	 */
+	describe('Symlink handling', () => {
+		it('pushes a local symlink to remote as a real symlink, not flattened content', async () => {
+			const fitSync = createFitSync();
+			localVault.setSymlink('link.md', '../target.md');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllSymlinksAsRaw()).toEqual({ 'link.md': '../target.md' });
+		});
+
+		it('pulls a remote symlink to local as a real symlink, not flattened content', async () => {
+			const fitSync = createFitSync();
+			await remoteVault.setSymlink('link.md', '../target.md');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllSymlinksAsRaw()).toEqual({ 'link.md': '../target.md' });
+			// Not written as a regular file containing the target string (the bug this fixes)
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('link.md');
+		});
+
+		it('skips a remote symlink on a platform without symlink support, and does not push it back as a deletion', async () => {
+			localVault.setSymlinkSupportAvailable(false);
+			const fitSync = createFitSync();
+			await remoteVault.setSymlink('link.md', '../target.md');
+
+			// First sync: nothing written locally (mobile can't materialize a real symlink) —
+			// not flattened into a regular file, not silently applied either.
+			const result1 = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result1).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllSymlinksAsRaw()).toEqual({});
+			expect(localVault.getAllFilesAsRaw()).toEqual({});
+
+			// Second sync: the skipped path must not read back as a local deletion and get
+			// pushed to remote as one — proving it never entered the local baseline.
+			const result2 = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(result2).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllSymlinksAsRaw()).toEqual({ 'link.md': '../target.md' });
+		});
+
+		it('detects a remote mode change (file -> symlink) even when the blob sha is unchanged', async () => {
+			// Git blob sha covers content bytes only, not mode — a plain file and a symlink
+			// whose target is byte-identical to those bytes hash identically. Establish a
+			// synced baseline where both sides hold ordinary (non-symlink) content, then flip
+			// remote to a symlink with the SAME bytes: sha-only comparison would see nothing
+			// changed at all, silently leaving local as a stale plain file forever.
+			const sameBytes = '../target.md';
+			localVault.setFile('x.md', sameBytes);
+			await remoteVault.setFile('x.md', sameBytes);
+			const remoteBaseline = await remoteVault.readFromSource();
+			const localBaseline = await localVault.readFromSource();
+			const fitSync = createFitSync();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localBaseline.state,
+				lastFetchedRemoteShas: remoteBaseline.state,
+				lastFetchedCommitSha: remoteBaseline.commitSha,
+			}));
+
+			await remoteVault.setSymlink('x.md', sameBytes); // same bytes, mode-only change
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllSymlinksAsRaw()).toEqual({ 'x.md': sameBytes });
+			expect(localVault.getAllFilesAsRaw()).not.toHaveProperty('x.md');
+		});
+	});
 });

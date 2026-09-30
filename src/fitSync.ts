@@ -578,7 +578,7 @@ export class FitSync implements IFitSync {
 	 * @returns File operations performed and stat failure tracking
 	 */
 	private async applyRemoteChanges(
-		addToLocalNonClashed: Array<{path: string, content: FileContent}>,
+		addToLocalNonClashed: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		deleteFromLocalNonClashed: string[],
 		clashFiles: Array<{path: string, content: FileContent}>,
 		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
@@ -591,7 +591,7 @@ export class FitSync implements IFitSync {
 			syncNotice.setMessage("Writing remote changes to local");
 		}
 
-		const resolvedChanges: Array<{path: string, content: FileContent}> = [];
+		const resolvedChanges: Array<{path: string, content: FileContent, isSymlink?: boolean}> = [];
 		const clashPaths = new Set<string>(); // Track which paths should go to _fit/
 
 		// Add all clash files to clashPaths set and resolvedChanges.
@@ -630,7 +630,7 @@ export class FitSync implements IFitSync {
 			}
 
 			// Normal file or no conflict - add as-is
-			resolvedChanges.push({path: change.path, content: change.content});
+			resolvedChanges.push({path: change.path, content: change.content, isSymlink: change.isSymlink});
 		}
 
 		// SAFETY: Never delete untracked files from local
@@ -716,7 +716,9 @@ export class FitSync implements IFitSync {
 		localScanPaths: Set<string>,
 		remoteScanPaths: Set<string>,
 		currentLocalState: FileStates,
-		remoteTreeSha: FileStates
+		remoteTreeSha: FileStates,
+		currentLocalSymlinkPaths: Set<string> = new Set(),
+		currentRemoteSymlinkPaths: Set<string> = new Set()
 	) {
 		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
 		detectNormalizationMismatches(Array.from(localScanPaths), Array.from(remoteScanPaths));
@@ -807,7 +809,8 @@ export class FitSync implements IFitSync {
 			untrackedPaths,
 			identityLocalShas,
 			identityRemoteShas,
-			gitMaskTrackedPaths
+			gitMaskTrackedPaths,
+			{ local: currentLocalSymlinkPaths, remote: currentRemoteSymlinkPaths }
 		);
 
 		if (untrackNotices.length > 0) {
@@ -875,7 +878,10 @@ export class FitSync implements IFitSync {
 		protectedRemote: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
-		syncNotice: FitNotice
+		syncNotice: FitNotice,
+		localSymlinkPaths: Set<string> = new Set(),
+		remoteSymlinkPaths: Set<string> = new Set(),
+		symlinkSupportAvailable: boolean = false
 	): Promise<SyncExecutionResult> {
 		// Prepare safe remote changes for pulling
 		const deleteFromLocalNonClashed = safeRemote.filter(c => c.type === "REMOVED").map(c => c.path);
@@ -892,7 +898,12 @@ export class FitSync implements IFitSync {
 				if (change.type === "REMOVED") continue;
 				const localSha = currentLocalState[change.path];
 				const remoteSha = remoteUpdate.remoteTreeSha[change.path];
-				if (localSha && remoteSha && localSha === remoteSha) {
+				// Sha match alone isn't enough — see docs/sync-logic.md § Symlink baseline:
+				// a git blob sha covers content bytes only, not mode, so also require both
+				// sides to agree on whether this path is currently a symlink before calling
+				// it identical.
+				const modeMatches = localSymlinkPaths.has(change.path) === remoteSymlinkPaths.has(change.path);
+				if (localSha && remoteSha && localSha === remoteSha && modeMatches) {
 					shaParitySkipped.add(change.path);
 				}
 			}
@@ -904,12 +915,29 @@ export class FitSync implements IFitSync {
 			}
 		}
 
+		// Remote symlink paths this runtime can't materialize as real symlinks (mobile, or
+		// any fs-capability failure) are skipped entirely — never written as flattened
+		// regular-file content (the bug this feature fixes), never pushed back as a
+		// deletion either, since excluding them here also excludes them from
+		// newBaselineStates below (nothing was written, so nothing to baseline). Logged
+		// only, no user-facing notice — there's nothing actionable to tell the user.
+		const skippedUnsupportedSymlinks = !symlinkSupportAvailable
+			? safeRemote.filter(c => c.type !== "REMOVED" && remoteSymlinkPaths.has(c.path)).map(c => c.path)
+			: [];
+		if (skippedUnsupportedSymlinks.length > 0) {
+			fitLogger.log('[FitSync] Skipping remote symlink path(s) — unsupported on this platform', {
+				paths: skippedUnsupportedSymlinks
+			});
+		}
+		const skippedUnsupportedSymlinksSet = new Set(skippedUnsupportedSymlinks);
+
 		const addToLocalNonClashed = await Promise.all(
 			safeRemote
-				.filter(c => c.type !== "REMOVED" && !shaParitySkipped.has(c.path))
+				.filter(c => c.type !== "REMOVED" && !shaParitySkipped.has(c.path) && !skippedUnsupportedSymlinksSet.has(c.path))
 				.map(async (change) => ({
 					path: change.path,
-					content: await this.fit.remoteVault.readFileContent(change.path)
+					content: await this.fit.remoteVault.readFileContent(change.path),
+					isSymlink: symlinkSupportAvailable && remoteSymlinkPaths.has(change.path)
 				}))
 		);
 
@@ -1059,7 +1087,7 @@ export class FitSync implements IFitSync {
 			localChanges: safeLocal,
 			parentCommitSha: remoteUpdate.latestRemoteCommitSha
 		};
-		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap);
+		const pushResult = await this.pushChangedFilesToRemote(pushUpdate, existenceMap, localSymlinkPaths);
 
 		if (pushResult && pushResult.pushedChanges.length > 0) {
 			fitLogger.log(`.. ⬆️ [Push] Pushed ${pushResult.pushedChanges.length} changes to remote`);
@@ -1279,6 +1307,11 @@ export class FitSync implements IFitSync {
 			protectedPathShas: this.fit.protectedPathShas,
 			// Only persist localSha if there are still legacy entries remaining (not yet promoted)
 			localSha: Object.keys(this.fit.localSha).length > 0 ? this.fit.localSha : undefined,
+			// Mode baseline for the next sync's collision check (docs/sync-logic.md
+			// § Symlink baseline) — mirrors localShas/lastFetchedRemoteShas above at
+			// the same commit point.
+			localSymlinkPaths: [...localSymlinkPaths],
+			remoteSymlinkPaths: [...remoteSymlinkPaths],
 		});
 
 		return {
@@ -1403,8 +1436,14 @@ export class FitSync implements IFitSync {
 			}
 
 			// Both succeeded, extract values
-			const {changes: localChanges, state: currentLocalState} = localResult.value;
-			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
+			const {changes: localChanges, state: currentLocalState, symlinkPaths: currentLocalSymlinkPaths} = localResult.value;
+			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha, symlinkPaths: currentRemoteSymlinkPaths} = remoteResult.value;
+			// Whether this runtime can write/detect real symlinks at all — checked once per
+			// sync. When false (mobile, or any fs resolution failure), currentLocalSymlinkPaths
+			// is always empty by construction (LocalVault never detects local symlinks without
+			// this), and remote symlink paths must be excluded from local application below
+			// rather than flattened into regular files. See docs/sync-logic.md § Symlink baseline.
+			const symlinkSupportAvailable = await this.fit.localVault.supportsSymlinks();
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 
 			// .fitattributes.json is a load-bearing config file — a malformed file silently
@@ -1632,7 +1671,9 @@ export class FitSync implements IFitSync {
 				localScanPaths,
 				remoteScanPaths,
 				currentLocalState,
-				remoteTreeSha
+				remoteTreeSha,
+				currentLocalSymlinkPaths,
+				currentRemoteSymlinkPaths
 			);
 
 			// Reclassify safeRemote items for active pending paths — new remote changes must
@@ -1683,7 +1724,10 @@ export class FitSync implements IFitSync {
 				protectedRemote,
 				pendingReminderPaths,
 				existenceMap,
-				syncNotice
+				syncNotice,
+				currentLocalSymlinkPaths,
+				currentRemoteSymlinkPaths,
+				symlinkSupportAvailable
 			);
 
 			const conflicts = [...executedConflicts, ...subsetScopeResult.clashes];
@@ -1789,14 +1833,15 @@ export class FitSync implements IFitSync {
 			localChanges: FileChange[],
 			parentCommitSha: CommitSha
 		},
-		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>
+		existenceMap: Map<string, 'file' | 'folder' | 'nonexistent'>,
+		localSymlinkPaths: Set<string> = new Set()
 	): Promise<{pushedChanges: FileChange[], lastFetchedRemoteShas: FileStates, lastFetchedCommitSha: CommitSha, skippedPaths?: string[], skippedWarning?: string, rateLimitedPaths?: string[]}|null> {
 		if (localUpdate.localChanges.length === 0) {
 			return null;
 		}
 
 		// Prepare files to write and delete by reading content from local vault
-		const filesToWrite: Array<{path: string, content: FileContent}> = [];
+		const filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}> = [];
 		const filesToDelete: Array<string> = [];
 
 		for (const change of localUpdate.localChanges) {
@@ -1820,7 +1865,7 @@ export class FitSync implements IFitSync {
 				filesToDelete.push(change.path);
 			} else {
 				const content = await this.fit.localVault.readFileContent(change.path);
-				filesToWrite.push({ path: change.path, content });
+				filesToWrite.push({ path: change.path, content, isSymlink: localSymlinkPaths.has(change.path) });
 			}
 		}
 

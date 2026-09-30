@@ -408,12 +408,42 @@ type FailureScenario = 'read' | 'stat' | 'write';
  */
 export class FakeLocalVault implements IVault<"local"> {
 	private files: Map<string, FileContent> = new Map();
+	// Real symlinks (path -> target string), tracked separately from `files` since a
+	// symlink's "content" for sync purposes is its target string, not file bytes — see
+	// docs/sync-logic.md § Symlink baseline. Only visible in state/readFromSource when
+	// `symlinkSupportAvailable` is true (mirrors LocalVault: mobile can't detect or create
+	// real symlinks, so a mobile local vault can never actually contain one).
+	private symlinks: Map<string, string> = new Map();
+	private symlinkSupportAvailable = true;
 	private failureScenarios: Map<FailureScenario, Error> = new Map();
 	private statLog: string[] = []; // Track all stat operations for performance testing
 	private mockWriteFile: ((path: string) => Promise<void>) | null = null; // Mock for writeFile operations
 	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
 	private syncHiddenFiles = false;
 	private trackedHiddenPaths: string[] = [];
+
+	/** Simulates whether this runtime can detect/create real symlinks (desktop vs.
+	 * mobile) — see LocalVault.supportsSymlinks(). Defaults to true (desktop-like). */
+	setSymlinkSupportAvailable(available: boolean): void {
+		this.symlinkSupportAvailable = available;
+	}
+
+	async supportsSymlinks(): Promise<boolean> {
+		return this.symlinkSupportAvailable;
+	}
+
+	/** Set a real symlink at `path` pointing at `target` (for test setup). Clears any
+	 * regular file previously at that path — a path is one or the other, not both. */
+	setSymlink(path: string, target: string): void {
+		this.files.delete(path);
+		this.symlinks.set(path, target);
+	}
+
+	/** Get all symlinks as path -> target (for test assertions), parallel to
+	 * getAllFilesAsRaw(). */
+	getAllSymlinksAsRaw(): Record<string, string> {
+		return Object.fromEntries(this.symlinks);
+	}
 
 	/**
 	 * Mirrors LocalVault's syncHiddenFiles toggle exactly — a single global flag, not
@@ -470,6 +500,7 @@ export class FakeLocalVault implements IVault<"local"> {
 	 * - Binary files: stored as base64 (detected via decoding failure or null bytes)
 	 */
 	setFile(path: string, content: string | PlainTextContent | FileContent): void {
+		this.symlinks.delete(path);
 		if (!(content instanceof FileContent)) {
 			// Raw string, treat as plaintext
 			this.files.set(path, FileContent.fromPlainText(content));
@@ -502,6 +533,7 @@ export class FakeLocalVault implements IVault<"local"> {
 
 	deleteFile(path: string): void {
 		this.files.delete(path);
+		this.symlinks.delete(path);
 	}
 
 	/**
@@ -521,8 +553,18 @@ export class FakeLocalVault implements IVault<"local"> {
 			throw VaultError.filesystem(message, { originalError: error });
 		}
 
+		// Symlink paths (desktop-like only — see setSymlinkSupportAvailable) are read the
+		// same as any other path for change-detection purposes: hash over the target
+		// string, same as LocalVault does via readSymlinkTarget.
+		const symlinkPaths = this.symlinkSupportAvailable
+			? new Set(this.symlinks.keys())
+			: new Set<string>();
+
 		// Use Promise.allSettled to collect all file processing results
-		const paths = Array.from(this.files.keys()).filter(path => this.shouldTrackState(path));
+		const paths = [
+			...Array.from(this.files.keys()),
+			...symlinkPaths
+		].filter(path => this.shouldTrackState(path));
 		const settledResults = await Promise.allSettled(
 			paths.map(async (path) => {
 				// Call mock if provided (allows test to inject failures)
@@ -530,7 +572,9 @@ export class FakeLocalVault implements IVault<"local"> {
 					await this.mockWriteFile(path);
 				}
 
-				const content = this.files.get(path)!;
+				const content = symlinkPaths.has(path)
+					? FileContent.fromPlainText(this.symlinks.get(path)!)
+					: this.files.get(path)!;
 				const sha = await LocalVault.fileSha1(path, content);
 				return { path, sha };
 			})
@@ -565,7 +609,7 @@ export class FakeLocalVault implements IVault<"local"> {
 			);
 		}
 
-		return { state };
+		return { state, symlinkPaths };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -575,6 +619,10 @@ export class FakeLocalVault implements IVault<"local"> {
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read file content: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
+		}
+
+		if (this.symlinkSupportAvailable && this.symlinks.has(path)) {
+			return FileContent.fromPlainText(this.symlinks.get(path)!);
 		}
 
 		const content = this.files.get(path);
@@ -635,7 +683,7 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		filesToDelete: Array<string>,
 		options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"local">> {
@@ -680,8 +728,15 @@ export class FakeLocalVault implements IVault<"local"> {
 					);
 				}
 
-				const existed = this.files.has(writePath);
-				this.setFile(writePath, file.content);
+				const existed = this.files.has(writePath) || this.symlinks.has(writePath);
+				if (file.isSymlink && this.symlinkSupportAvailable) {
+					this.setSymlink(writePath, file.content.toPlainText());
+				} else {
+					// Defensive fallback matching LocalVault.writeFileAsSymlink: an isSymlink
+					// write requested where unsupported still writes ordinary content rather
+					// than silently dropping it.
+					this.setFile(writePath, file.content);
+				}
 				const changeType: 'MODIFIED' | 'ADDED' = existed ? 'MODIFIED' : 'ADDED';
 				// Return FileChange with write path (matches real LocalVault)
 				return { path: writePath, type: changeType };
@@ -795,6 +850,11 @@ export class FakeLocalVault implements IVault<"local"> {
  */
 export class FakeRemoteVault implements IVault<"remote"> {
 	private files: Map<string, FileContent> = new Map();
+	// Paths whose tree entry is mode "120000" (a real symlink) — content itself (the
+	// target string) is still stored in `files`/`blobShas` like any other path; git
+	// doesn't distinguish symlink blobs from regular ones at the blob level, only at the
+	// tree-entry level. See docs/sync-logic.md § Symlink baseline.
+	private symlinkPaths: Set<string> = new Set();
 	private blobShas: Map<BlobSha, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: CommitSha = 'initial-commit' as CommitSha;
 	private failureError: Error | null = null;
@@ -846,6 +906,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	clear(): void {
 		this.files.clear();
 		this.blobShas.clear();
+		this.symlinkPaths.clear();
 		// Don't reset commitSha - it auto-increments
 	}
 
@@ -860,11 +921,27 @@ export class FakeRemoteVault implements IVault<"remote"> {
 			fileContent = FileContent.fromPlainText(content);
 		}
 		this.files.set(path, fileContent);
+		this.symlinkPaths.delete(path);
 		// Store blob SHA -> content mapping for readFileContent.
 		// Canonical git blob SHA (matches GitHub's actual blob SHAs) so tests exercise the same
 		// local/remote SHA comparability that production relies on (e.g. SHA parity fast paths).
 		const sha = await computeGitBlobSha(fileContent.toBytes());
 		this.blobShas.set(sha, fileContent.toBase64());
+	}
+
+	/** Set a real symlink at `path` pointing at `target` (for test setup) — a mode
+	 * "120000" tree entry whose blob content is the target string. */
+	async setSymlink(path: string, target: string): Promise<void> {
+		await this.setFile(path, target);
+		this.symlinkPaths.add(path);
+	}
+
+	/** Get all symlinks as path -> target (for test assertions), parallel to
+	 * getAllFilesAsRaw(). */
+	getAllSymlinksAsRaw(): Record<string, string> {
+		return Object.fromEntries(
+			[...this.symlinkPaths].map(path => [path, this.files.get(path)?.toPlainText() ?? ''])
+		);
 	}
 
 	/**
@@ -943,7 +1020,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		const state = await this.buildCurrentState(true);
 		// Mock tree SHA - not accurate but sufficient for testing
 		const treeSha = `tree-${this.commitSha}` as TreeSha;
-		return { state, commitSha: this.commitSha, treeSha };
+		return { state, commitSha: this.commitSha, treeSha, symlinkPaths: new Set(this.symlinkPaths) };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -970,7 +1047,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	}
 
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		filesToDelete: Array<string>,
 		_options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"remote">> {
@@ -994,7 +1071,12 @@ export class FakeRemoteVault implements IVault<"remote"> {
 				continue; // Simulate transient rejection
 			}
 			const existed = this.files.has(file.path);
-			this.setFile(file.path, file.content);
+			await this.setFile(file.path, file.content);
+			if (file.isSymlink) {
+				this.symlinkPaths.add(file.path);
+			} else {
+				this.symlinkPaths.delete(file.path);
+			}
 			changes.push({ path: file.path, type: existed ? 'MODIFIED' : 'ADDED' });
 		}
 		this._skippedPaths.clear(); // Consume after one applyChanges call
@@ -1003,6 +1085,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		for (const path of filesToDelete) {
 			if (this.files.has(path)) {
 				this.files.delete(path);
+				this.symlinkPaths.delete(path);
 				changes.push({ path, type: 'REMOVED' });
 			}
 		}

@@ -145,6 +145,37 @@ A path is **pending** when it has an unresolved `_fit/` copy — the user has no
 - FIT **shields** pending paths: excluded from push (local version is unconfirmed) and protected from remote overwrites (new remote versions go to `_fit/` only).
 - A path leaves pending when the user resolves the discrepancy — deleting `_fit/path`, or editing either file until both copies match. See [Pending Clash State Machine](#pending-clash-state-machine).
 
+### Symlink baseline
+
+A real symlink's tracked "content" is its **target string**, not the bytes at the resolved
+target — `LocalVault`/`RemoteGitHubVault` hash and sync that string like any other content, so
+`FileStates` stays a plain `Record<path, BlobSha>` with no symlink-specific shape. Each vault's
+`readFromSource()` returns which of its paths are currently symlinks alongside `state`
+(`symlinkPaths: Set<string>`) — a git tree entry with mode `120000` on remote, a real
+`fs`-detected symlink on desktop (`src/util/desktopCompat.ts`; unsupported on mobile, see
+docs/api-compatibility.md's "Narrow exception" note).
+
+Git blob SHA covers content bytes only, not mode, so a plain file byte-identical to some
+symlink's target string hashes the same despite differing in kind — a gap ordinary SHA
+comparison can't see. `localSymlinkPaths`/`remoteSymlinkPaths` (`LocalStores`) are a second
+baseline alongside `localShas`/`lastFetchedRemoteShas`, mode instead of content, closing it:
+`compareFileStates` and every "sha matches, already in sync" check
+(`RemoteGitHubVault.createTreeNodeFromContent`, `FitSync`'s `shaParitySkipped`) also require
+matching symlink status on both sides.
+
+Desktop pushes/pulls a changed symlink path as a real symlink (`LocalVault.writeFileAsSymlink`,
+`fs.symlink`; remote tree mode `120000`). A platform without symlink-write capability (mobile,
+or any `fs` resolution failure) never writes a remote symlink path locally — logged, not
+applied, not surfaced as a user notice — and since it's never written, it's excluded from the
+local baseline too, so it's never mistaken for a local deletion on a later sync.
+
+Folder-level symlink detection only runs inside the hidden-path scan (`folderIsHidden` gate,
+see Path Filtering below) — a non-hidden symlinked folder's contents still sync as ordinary
+files at their resolved paths rather than the folder being represented as one symlink entry.
+That scan also threads a `visited: Set<string>` through its recursion, independent of
+detection: a directory already walked is never re-entered, so a cycle (symlink or otherwise)
+terminates the walk instead of hanging it, even where `isSymlink` itself fails closed.
+
 ## Change Detection
 
 ### 💾 Local Change Detection

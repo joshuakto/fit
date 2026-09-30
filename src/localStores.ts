@@ -37,6 +37,16 @@ export interface LocalStores {
 	// (baseline reconciliation takes over).
 	// Downgrade-safe: absent field treated as empty object.
 	protectedPathShas?: FileStates
+	// Snapshot of which localShas/lastFetchedRemoteShas-tracked paths were real symlinks
+	// as of the last successful sync. Needed alongside the SHA caches above because a git
+	// blob SHA covers content bytes only, not mode — a plain file whose bytes equal some
+	// symlink's target string (or vice versa) would otherwise look unchanged. See
+	// docs/sync-logic.md § Symlink baseline.
+	// Downgrade-safe: absent field treated as empty array (no known symlinks) — an old
+	// client's baseline predates symlink tracking entirely, so this only risks a one-time
+	// missed mode-change detection on upgrade, not data loss.
+	localSymlinkPaths?: string[]
+	remoteSymlinkPaths?: string[]
 }
 
 /**
@@ -59,6 +69,8 @@ export function parseLocalStore(data: Record<string, unknown> | null | undefined
 		lastFetchedRemoteSha: undefined,               // consume legacy field → omitted by JSON.stringify
 		unpushedFiles: (d.unpushedFiles ?? {}) as unknown as FileStates,
 		pendingClashes: (d.pendingClashes ?? []) as unknown as string[],
+		localSymlinkPaths: d.localSymlinkPaths as unknown as string[] | undefined,
+		remoteSymlinkPaths: d.remoteSymlinkPaths as unknown as string[] | undefined,
 		lastSyncedAt: (d.lastSyncedAt as number | undefined) ?? undefined,
 		protectedPathShas: (d.protectedPathShas ?? {}) as unknown as FileStates,
 	};

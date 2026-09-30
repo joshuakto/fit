@@ -1142,5 +1142,119 @@ describe('LocalVault', () => {
 
 			expect(visited).toEqual([...new Set(visited)]);
 		});
+
+		// Covers the full PRUNED_PATH_COMPONENTS set; .git overlaps the dedicated test
+		// above, included here for parity across the whole set.
+		it.each(['.git', '.jj', '.hg', '.svn', '.bzr'])(
+			'prunes %s dirs from the hidden-path scan without descending into them',
+			async (vcsDirName) => {
+				const visited = stubAdapterListing({
+					'/': { files: [], folders: [`.obsidian/${vcsDirName}`] },
+					// Only reachable if pruning failed to skip recursion.
+					[`.obsidian/${vcsDirName}`]: { files: [`.obsidian/${vcsDirName}/objects/deadbeef`], folders: [] },
+				});
+
+				const localVault = new LocalVault(mockVault as any as Vault);
+				localVault.configure({ syncHiddenFiles: true });
+				const { state } = await localVault.readFromSource();
+
+				expect(state).toEqual({});
+				expect(visited).not.toContain(`.obsidian/${vcsDirName}`);
+			}
+		);
+
+		// Real symlink detection (#389's content-fidelity scope) — distinct from the
+		// stubbed-listing cycle guard above: this exercises the actual `isSymlink` lstat
+		// check via a real filesystem symlink, not a simulated repeating listing.
+		it('does not recurse into a real symlinked directory during the hidden-path scan', async () => {
+			const fs = await import('fs');
+			const os = await import('os');
+			const path = await import('path');
+
+			const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fit-symlink-test-'));
+			const vaultDir = path.join(tmpRoot, 'vault');
+			const outsideTargetDir = path.join(tmpRoot, 'outside-target');
+			await fs.promises.mkdir(vaultDir);
+			await fs.promises.mkdir(outsideTargetDir);
+			await fs.promises.writeFile(path.join(outsideTargetDir, 'leaked.txt'), 'should not be scanned');
+			await fs.promises.mkdir(path.join(vaultDir, '.obsidian', 'plugins'), { recursive: true });
+			await fs.promises.symlink(outsideTargetDir, path.join(vaultDir, '.obsidian', 'plugins', 'example'), 'dir');
+
+			try {
+				const { FileSystemAdapter } = await import('obsidian');
+				const adapter = new FileSystemAdapter();
+				adapter.getBasePath = () => vaultDir;
+				(adapter as any).list = vi.fn().mockImplementation(async (dir: string) => {
+					// A VCS dir alongside the symlink, so this one test's rollup-count
+					// assertions below cover both skip reasons at once.
+					if (dir === '/') return { files: [], folders: ['.obsidian/plugins/example', '.obsidian/.git'] };
+					// Would only be reached if the symlink/VCS-dir checks failed to skip recursion
+					return { files: ['.obsidian/plugins/example/leaked.txt'], folders: [] };
+				});
+
+				mockVault.getFiles.mockReturnValue([] as TFile[]);
+				mockVault.getAbstractFileByPath.mockReturnValue(null);
+				mockVault.adapter = adapter as any;
+
+				const localVault = new LocalVault(mockVault as any as Vault);
+				localVault.configure({ syncHiddenFiles: true });
+				const { state } = await localVault.readFromSource();
+
+				expect(state).toEqual({});
+
+				// Rollup counts only (#389) — folded into the existing scan-summary log
+				// line, no separate per-skipped-path log call with a full path array.
+				expect(consoleLogSpy).toHaveBeenCalledWith(
+					'[LocalVault] Hidden paths discovered via adapter scan',
+					expect.objectContaining({ prunedDirsSkipped: 1, symlinksSkipped: 1 })
+				);
+				const ownLogCall = consoleLogSpy.mock.calls.find(
+					([tag]) => typeof tag === 'string' && (tag.includes('VCS metadata') || tag.includes('Symlinked dirs'))
+				);
+				expect(ownLogCall).toBeUndefined();
+			} finally {
+				await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+			}
+		});
+
+		it('still walks into a non-hidden symlinked directory (lstat scoped to hidden subtrees only)', async () => {
+			const fs = await import('fs');
+			const os = await import('os');
+			const path = await import('path');
+
+			const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fit-symlink-nonhidden-test-'));
+			const vaultDir = path.join(tmpRoot, 'vault');
+			const outsideTargetDir = path.join(tmpRoot, 'outside-target');
+			await fs.promises.mkdir(vaultDir);
+			await fs.promises.mkdir(outsideTargetDir);
+			await fs.promises.symlink(outsideTargetDir, path.join(vaultDir, 'notes'), 'dir');
+
+			try {
+				const { FileSystemAdapter } = await import('obsidian');
+				const adapter = new FileSystemAdapter();
+				adapter.getBasePath = () => vaultDir;
+				const listMock = vi.fn().mockImplementation(async (dir: string) => {
+					if (dir === '/') return { files: [], folders: ['notes'] };
+					if (dir === 'notes') return { files: ['notes/.hidden-in-symlink'], folders: [] };
+					return { files: [], folders: [] };
+				});
+				(adapter as any).list = listMock;
+				(adapter as any).readBinary = vi.fn().mockResolvedValue(new TextEncoder().encode('hidden content').buffer);
+
+				mockVault.getFiles.mockReturnValue([] as TFile[]);
+				mockVault.getAbstractFileByPath.mockReturnValue(null);
+				mockVault.adapter = adapter as any;
+
+				const localVault = new LocalVault(mockVault as any as Vault);
+				localVault.configure({ syncHiddenFiles: true });
+				const { state } = await localVault.readFromSource();
+
+				// Non-hidden folder path — recursed into normally, no lstat/skip applied
+				expect(listMock).toHaveBeenCalledWith('notes');
+				expect(Object.keys(state)).toEqual(['notes/.hidden-in-symlink']);
+			} finally {
+				await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+			}
+		});
 	});
 });

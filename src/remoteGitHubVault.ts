@@ -68,6 +68,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	// Avoids redundant API calls when remote hasn't changed
 	private latestKnownCommitSha: CommitSha | null = null;
 	private latestKnownState: FileStates | null = null;
+	private latestKnownSymlinkPaths: Set<string> = new Set();
 
 	/** @param githubHost - Hostname to sync with, e.g. "github.com" or a GitHub Enterprise Server */
 	constructor(
@@ -367,13 +368,23 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * @param path - File path
 	 * @param content - File content (base64 for binary, raw text otherwise) or null for deletion
 	 * @param currentState - Current remote FileStates (for optimization - skip if unchanged)
+	 * @param isSymlink - Whether this path should be pushed as a real symlink (mode
+	 *   "120000") rather than ordinary content — set by the caller from the local vault's
+	 *   own symlinkPaths. See docs/sync-logic.md § Symlink baseline.
+	 * @param currentSymlinkPaths - Which paths are *currently* symlinks on remote — needed
+	 *   because blob SHA alone can't distinguish a mode-only change (git blob hashing
+	 *   doesn't include mode; see § Symlink baseline for the collision this closes).
 	 * @returns TreeNode to include in commit, or null if no change needed
 	 */
 	private async createTreeNodeFromContent(
 		path: string,
 		content: FileContent | null,
-		currentState: FileStates
+		currentState: FileStates,
+		isSymlink: boolean,
+		currentSymlinkPaths: Set<string>
 	): Promise<TreeNode | null> {
+		const mode = isSymlink ? '120000' : '100644';
+
 		// Deletion case (content is null)
 		if (content === null) {
 			// Skip deletion if file doesn't exist on remote
@@ -394,14 +405,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		const encoding = rawContentObj.encoding === 'base64' ? 'base64' : 'utf-8';
 		const blobSha = await this.createBlob(rawContent, encoding);
 
-		// Skip if file on remote is identical
-		if (currentState[path] === blobSha) {
+		// Skip if file on remote is identical — sha match AND mode match. Sha alone isn't
+		// enough: a git blob's hash covers content bytes only, not mode, so a plain file
+		// whose bytes equal some symlink's target string (or vice versa) would otherwise
+		// look unchanged despite differing in kind.
+		if (currentState[path] === blobSha && currentSymlinkPaths.has(path) === isSymlink) {
 			return null;
 		}
 
 		return {
 			path: path,
-			mode: '100644',
+			mode,
 			type: 'blob',
 			sha: blobSha,
 		};
@@ -615,13 +629,13 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * @param options.clashPaths - Ignored by RemoteVault (no _fit/ concept on remote)
 	 */
 	async applyChanges(
-		filesToWrite: Array<{path: string, content: FileContent}>,
+		filesToWrite: Array<{path: string, content: FileContent, isSymlink?: boolean}>,
 		filesToDelete: Array<string>,
 		_options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"remote">> {
 		// Note: clashPaths is ignored - remote doesn't have _fit/ directory concept
 		// Get current state using cache when available
-		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
+		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha, symlinkPaths: currentSymlinkPaths } = await this.readFromSource();
 
 		// Create tree nodes for all changes, tracking metadata for error handling
 		const operations: Array<{
@@ -631,11 +645,11 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		}> = [];
 
 		// Process file writes/updates
-		for (const {path, content} of filesToWrite) {
+		for (const {path, content, isSymlink} of filesToWrite) {
 			operations.push({
 				path,
 				sizeBytes: content.size(),
-				promise: this.createTreeNodeFromContent(path, content, currentState)
+				promise: this.createTreeNodeFromContent(path, content, currentState, !!isSymlink, currentSymlinkPaths)
 			});
 		}
 
@@ -644,7 +658,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			operations.push({
 				path,
 				sizeBytes: null,  // No size for deletions
-				promise: this.createTreeNodeFromContent(path, null, currentState)
+				promise: this.createTreeNodeFromContent(path, null, currentState, false, currentSymlinkPaths)
 			});
 		}
 
@@ -850,7 +864,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Return cached state if remote hasn't changed
 		if (!ignoreCache && commitSha === this.latestKnownCommitSha && this.latestKnownState !== null) {
 			fitLogger.log(`... 📦 [RemoteVault] Using cached state (${commitSha.slice(0, 7)})`);
-			return { state: { ...this.latestKnownState }, commitSha, treeSha };
+			return { state: { ...this.latestKnownState }, commitSha, treeSha, symlinkPaths: new Set(this.latestKnownSymlinkPaths) };
 		}
 
 		// Fetch fresh state from GitHub
@@ -860,7 +874,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			fitLogger.log(`... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
 		}
 		// Monitor for slow GitHub API operations
-		const newState = await withSlowOperationMonitoring(
+		const { state: newState, symlinkPaths } = await withSlowOperationMonitoring(
 			this.buildStateFromTree(treeSha),
 			`Remote vault tree fetch from GitHub`,
 			{ warnAfterMs: 10000 }
@@ -869,6 +883,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
+		this.latestKnownSymlinkPaths = symlinkPaths;
 
 		// Log completion with normalization diagnostics
 		const normalizationInfo = detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
@@ -877,7 +892,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
 		);
 
-		return { state: { ...newState }, commitSha, treeSha };
+		return { state: { ...newState }, commitSha, treeSha, symlinkPaths: new Set(symlinkPaths) };
 	}
 
 	/**
@@ -885,15 +900,17 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 	 * Used after applyChanges() to construct state from the new tree.
 	 *
 	 * @param treeSha - Tree SHA to read
-	 * @returns FileStates mapping paths to blob SHAs
+	 * @returns FileStates mapping paths to blob SHAs, plus which of those paths are real
+	 *   symlinks (tree mode "120000" — see docs/sync-logic.md § Symlink baseline)
 	 */
-	private async buildStateFromTree(treeSha: TreeSha): Promise<FileStates> {
+	private async buildStateFromTree(treeSha: TreeSha): Promise<{ state: FileStates, symlinkPaths: Set<string> }> {
 		// Check if this is the empty tree - skip getTree() call (would return 404)
 		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
 			? []
 			: await this.getTree(treeSha);
 
 		const state: FileStates = {};
+		const symlinkPaths = new Set<string>();
 		const failedPaths: Array<{path: string, error: unknown}> = [];
 
 		for (const node of remoteTree) {
@@ -906,6 +923,9 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 					}
 					// TODO: Should this notice if there's a collision overwriting same path?
 					state[path] = node.sha;
+					if (node.mode === '120000') {
+						symlinkPaths.add(path);
+					}
 				} catch (error) {
 					if (error instanceof ReferenceError) throw error;
 					failedPaths.push({ path: path, error });
@@ -927,7 +947,7 @@ export class RemoteGitHubVault implements IVault<"remote"> {
 			);
 		}
 
-		return state;
+		return { state, symlinkPaths };
 	}
 
 }
