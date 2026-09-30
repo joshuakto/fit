@@ -438,6 +438,45 @@ describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
 		});
 	});
 
+	it('skips migration instead of rewriting a file that has an invalid rule, so the rule is not erased', async () => {
+		const existing = JSON.stringify({ '.obsidian/hotkeys.json': { format: 'yaml' } });
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		expect(writes).toEqual({});
+	});
+
+	it('skips migration instead of overwriting a file that is not valid JSON', async () => {
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: '{not valid json' });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		expect(writes).toEqual({});
+	});
+
+	it('migrates into an existing but empty .fitattributes.json', async () => {
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: '  \n' });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		expect(JSON.parse(writes[FITATTRIBUTES_PATH])).toEqual({
+			'.obsidian/appearance.json': { format: 'text' },
+		});
+	});
+
 	it('is a no-op when there is no legacy obsidianSyncRules setting', async () => {
 		const { plugin, writes } = makePluginWithAdapter();
 		mockLoad(plugin, { pat: 'token', owner: 'alice', repo: 'notes' });

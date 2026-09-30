@@ -4432,6 +4432,32 @@ describe('FitSync', () => {
 			fitNoticeSpy.mockRestore();
 		});
 
+		it('drops only an invalid rule and names it in the warning, while every other rule keeps working', async () => {
+			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
+			const fitSync = createFitSync();
+			const fitAttributesContent = JSON.stringify({
+				'.obsidian/bad.json': { format: 'yaml' },
+				'.obsidian/graph.json': { format: 'text' },
+			});
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/graph.json', 'graph content');
+
+			// Two syncs for .obsidian/ activation, same as the non-configurable-path test above.
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(fitNoticeSpy).toHaveBeenCalled();
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // on disk unchanged — only the in-memory parse drops the bad rule
+				'.obsidian/graph.json': 'graph content', // its own valid rule still applies
+			});
+			expect(await fitSync.explainStatus()).toEqual(expect.objectContaining({
+				fitAttributesNote: expect.stringContaining('.obsidian/bad.json'),
+			}));
+			fitNoticeSpy.mockRestore();
+		});
+
 		it('does not show the .fitattributes.json warning Notice once the file is fixed', async () => {
 			const fitNoticeSpy = vi.spyOn(FitNotice.prototype, 'show').mockImplementation(() => {});
 			const fitSync = createFitSync();

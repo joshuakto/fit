@@ -18,6 +18,7 @@ describe('parseFitAttributes', () => {
 				'.obsidian/core-plugins.json': {},
 				'.obsidian/community-plugins.json': { format: 'json' },
 			},
+			invalidRules: [],
 		});
 	});
 
@@ -26,6 +27,7 @@ describe('parseFitAttributes', () => {
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
 			value: { '.obsidian/appearance.json': {} },
+			invalidRules: [],
 		});
 	});
 
@@ -45,11 +47,43 @@ describe('parseFitAttributes', () => {
 		);
 	});
 
-	it('rejects a rule that is not an object', () => {
-		const text = JSON.stringify({ '.obsidian/graph.json': ['not', 'an', 'object'] });
-		expect(parseFitAttributes(text)).toEqual(
-			expect.objectContaining({ ok: false }),
-		);
+	it.each([
+		['is not an object', ['not', 'an', 'object'], 'rule for ".obsidian/bad.json" must be an object'],
+		['has an unrecognized format', { format: 'yaml' }, 'rule for ".obsidian/bad.json": "format" must be "json" or "text" if present'],
+		['has an unrecognized scope', { format: 'json', scope: 'partial' }, 'rule for ".obsidian/bad.json": "scope" must be "full" or "subset" if present'],
+	])('drops only the rule that %s, keeping the valid rules around it', (_label, badRule, expectedError) => {
+		const text = JSON.stringify({
+			'.obsidian/a.json': { format: 'json' },
+			'.obsidian/bad.json': badRule,
+			'.obsidian/z.css': { format: 'text' },
+		});
+		expect(parseFitAttributes(text)).toEqual({
+			ok: true,
+			value: {
+				'.obsidian/a.json': { format: 'json' },
+				'.obsidian/z.css': { format: 'text' },
+			},
+			invalidRules: [{ path: '.obsidian/bad.json', error: expectedError }],
+		});
+	});
+
+	it('drops a rule with one invalid field entirely instead of keeping its valid field', () => {
+		// Keeping { format: "json" } alone would silently activate behavior the author
+		// didn't finish specifying (scope defaults differ from an explicit one).
+		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'partial' } });
+		expect(parseFitAttributes(text)).toEqual(expect.objectContaining({ ok: true, value: {} }));
+	});
+
+	it('reports every invalid rule, not just the first', () => {
+		const text = JSON.stringify({ 'a.json': 'x', 'b.json': { format: 'yaml' } });
+		expect(parseFitAttributes(text)).toEqual({
+			ok: true,
+			value: {},
+			invalidRules: [
+				{ path: 'a.json', error: 'rule for "a.json" must be an object' },
+				{ path: 'b.json', error: 'rule for "b.json": "format" must be "json" or "text" if present' },
+			],
+		});
 	});
 
 	it('accepts format: "json"', () => {
@@ -57,6 +91,7 @@ describe('parseFitAttributes', () => {
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
 			value: { '.obsidian/graph.json': { format: 'json' } },
+			invalidRules: [],
 		});
 	});
 
@@ -65,14 +100,8 @@ describe('parseFitAttributes', () => {
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
 			value: { '.obsidian/snippets/custom.css': { format: 'text' } },
+			invalidRules: [],
 		});
-	});
-
-	it('rejects an unrecognized format value', () => {
-		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'yaml' } });
-		expect(parseFitAttributes(text)).toEqual(
-			expect.objectContaining({ ok: false }),
-		);
 	});
 
 	it('accepts scope: "full" alongside format: "json"', () => {
@@ -80,6 +109,7 @@ describe('parseFitAttributes', () => {
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
 			value: { '.obsidian/graph.json': { format: 'json', scope: 'full' } },
+			invalidRules: [],
 		});
 	});
 
@@ -88,13 +118,7 @@ describe('parseFitAttributes', () => {
 		expect(parseFitAttributes(text)).toEqual({
 			ok: true,
 			value: { '.obsidian/graph.json': { format: 'json', scope: 'subset' } },
+			invalidRules: [],
 		});
-	});
-
-	it('rejects an unrecognized scope value', () => {
-		const text = JSON.stringify({ '.obsidian/graph.json': { format: 'json', scope: 'partial' } });
-		expect(parseFitAttributes(text)).toEqual(
-			expect.objectContaining({ ok: false }),
-		);
 	});
 });

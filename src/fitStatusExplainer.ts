@@ -12,7 +12,7 @@ export interface SyncStatusSnapshot {
 	trackedFileCount: number;
 	pendingClashes: string[];
 	oversizedFilePaths: string[];
-	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape). */
+	/** Fit.fitAttributesWarning — set when .fitattributes.json is malformed (invalid JSON/shape) or has invalid/non-configurable rules. */
 	fitAttributesWarning: string | null;
 	/**
 	 * scope:"subset" `.obsidian/` paths whose raw whole-file content has changed since the

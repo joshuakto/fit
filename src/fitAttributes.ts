@@ -103,8 +103,18 @@ export function resolveScope(path: string, rules: FitAttributesFile): FitAttribu
 	return null;
 }
 
+export interface InvalidFitAttributeRule {
+	path: string;
+	error: string;
+}
+
+/**
+ * `ok: false` means the file as a whole is unusable (bad JSON, non-object root).
+ * `ok: true` carries every valid rule in `value`; rules that failed validation are
+ * left out of `value` and listed in `invalidRules`.
+ */
 export type ParseFitAttributesResult =
-	| { ok: true; value: FitAttributesFile }
+	| { ok: true; value: FitAttributesFile; invalidRules: InvalidFitAttributeRule[] }
 	| { ok: false; error: string };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -139,10 +149,10 @@ function validateRule(path: string, rawRule: unknown): { ok: true; rule: FitAttr
 }
 
 /**
- * Parses and validates .fitattributes.json content. Never throws — malformed
- * input (bad JSON, non-object root, invalid rule shape) is reported via the
- * `ok: false` branch so the caller (Fit) can surface it loudly instead of
- * silently treating it as "nothing configured".
+ * Parses and validates .fitattributes.json content. Never throws — an unusable
+ * file (bad JSON, non-object root) is reported via the `ok: false` branch, and an
+ * invalid individual rule via `invalidRules`, so the caller (Fit) can surface either
+ * loudly instead of silently treating it as "nothing configured".
  */
 export function parseFitAttributes(text: string): ParseFitAttributesResult {
 	let parsed: unknown;
@@ -156,20 +166,18 @@ export function parseFitAttributes(text: string): ParseFitAttributesResult {
 		return { ok: false, error: 'root value must be a JSON object mapping paths to rules' };
 	}
 
-	// TODO(#337): one invalid rule currently invalidates the entire file — every
-	// .obsidian/ path stops syncing until the single bad entry is fixed, even if every
-	// other rule is well-formed. Should be strict per-rule (an invalid rule is dropped/
-	// treated as unconfigured for just that path) but loose at the file level (other
-	// valid entries keep working) — see docs/sync-logic.md § .fitattributes.json (#337)
-	// "Malformed .fitattributes.json". Not changed yet: needs a way to surface a
-	// per-path warning (not just the current file-wide Fit.fitAttributesWarning) so a
-	// silently-dropped rule doesn't become a *silently* silently-dropped rule.
+	// An invalid rule is dropped whole (that path is treated as unconfigured), not
+	// partially applied, and reported via `invalidRules` so the caller can surface it.
 	const value: FitAttributesFile = {};
+	const invalidRules: InvalidFitAttributeRule[] = [];
 	for (const [path, rawRule] of Object.entries(parsed)) {
 		const result = validateRule(path, rawRule);
-		if (!result.ok) return result;
-		value[path] = result.rule;
+		if (result.ok) {
+			value[path] = result.rule;
+		} else {
+			invalidRules.push({ path, error: result.error });
+		}
 	}
 
-	return { ok: true, value };
+	return { ok: true, value, invalidRules };
 }
