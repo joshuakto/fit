@@ -312,8 +312,8 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 **Hidden files:** Any path component starting with `.` (e.g., `.gitignore`, `.env`)
 
 **When `syncHiddenFiles = true` (default):**
-- Local vault performs a full recursive `adapter.list` scan on each sync to discover hidden paths (Obsidian's `vault.getFiles()` omits them)
-- A path whose contents the adapter cannot list (a folder, or a symlink to one) is skipped along with everything under it and logged; see [Scan-time pruning vs. the stored baseline](#scan-time-pruning-vs-the-stored-baseline)
+- Local vault walks the vault with `adapter.list` on each sync as an overlay on Obsidian's `vault.getFiles()` index: it adds the unindexed hidden paths (the index omits them) and never re-reports an indexed path
+- Paths the walk deliberately or unavoidably does not scan are covered in [Scan-time pruning vs. the stored baseline](#scan-time-pruning-vs-the-stored-baseline)
 - Hidden files read via `vault.adapter.readBinary()` and tracked in `localShas` like any other file
 - Subject to `.gitignore` filtering and `shouldSyncPath` policy as normal
 - ⚠️ Clash copies (written to `_fit/`) won't appear in Obsidian's file explorer — requires desktop file manager to resolve
@@ -327,15 +327,22 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 #### Scan-time pruning vs. the stored baseline
 
-The hidden-path scan (`collectHiddenInDir`) does not walk into VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file) or a plugin's `node_modules/` (`.obsidian/plugins/*/node_modules`, path-scoped). A walk into one costs a full recursive scan and can surface thousands of paths nobody means to sync.
+The unindexed-path walk (`collectUnindexedInDir`) does not scan three kinds of path. Each is reported as an orphaned scan prefix (`orphanedScanPrefixes: Set<string>`, derived fresh each scan, never persisted):
 
-The scan also skips a path whose contents the adapter cannot list (a folder, or a symlink to one). Obsidian's desktop `list()` stats every entry and rejects the whole call when one fails (e.g. a dangling symlink inside the folder), so one bad entry hides the path and everything under it, but not its siblings. The failure is logged with the path and error (the failing entry named in the error may be a child of that path) and listed in the sync notice as a block like the rate-limited and locally-failed file lists, since hidden files under it are not syncing. If the vault root itself cannot be listed, the whole hidden-path scan is skipped the same way: the root is reported as `/`, which stands for every hidden path (they all come from that scan), while ordinary vault files still sync.
+- **Pruned:** VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file) and a plugin's `node_modules/` (`.obsidian/plugins/*/node_modules`, path-scoped). Walking one costs a full recursive scan and can surface thousands of paths nobody means to sync.
+- **Unlistable:** a path whose contents the adapter cannot list. Obsidian's desktop `list()` stats every entry and rejects the whole call when one fails (e.g. a dangling symlink inside the folder), so one bad entry hides that path and everything under it, but not its siblings. It is logged with the path and error (the failing entry may be a child of that path) and listed in the sync notice like the rate-limited and locally-failed file lists. If the vault root cannot be listed, the whole walk is skipped the same way and the root is reported as `/`, which stands for every hidden path.
+- **Probably a symlink:** an unindexed non-hidden file or folder (the adapter lists it, the index lacks it). In Obsidian 1.13.4 the index skips every symlink (file or folder) while `adapter.list` follows them, so admitting it would sync flattened copies of the target (a link cycle yields a copy per nesting level). It is not admitted or walked into, only logged (`Ignoring unindexed non-hidden paths (likely symlinks, or not yet indexed)`). A real file or folder the index has not caught up with gets the same treatment for that sync and is picked up once indexed. Symlinks under a hidden path are still followed and flattened.
 
-A skipped path is absent from `currentState` because the scan didn't look, not because it was deleted. `readFromSource()` therefore reports every pruned file or folder, and every path that could not be listed, as `orphanedScanPrefixes: Set<string>` (derived fresh each scan, never persisted), and a path equal to or under one is out of scope for that sync in both directions:
+A skipped path is absent from the scan's state because it wasn't looked at, not because it was deleted. `Fit.getLocalChanges()` combines the prefixes with the state into a `ScanCoverage`, whose `statusOf(path)` is one of:
+- **`present`:** the scan saw the path. This wins even under an orphaned prefix, so an ordinary note that Obsidian's index lists keeps syncing when its folder could not be listed.
+- **`unknown`:** absent from the state and equal to or under an orphaned prefix. Out of scope for that sync in both directions.
+- **`absent`:** the scan looked and it is not there.
+
+Callers act only on `unknown`:
 - **Local:** `Fit.getLocalChanges()` excludes it from both sides of `compareFileStates`, so it reads as neither present nor removed.
-- **Remote:** `FitSync` drops remote changes under a prefix. Applying one would act on a local state the scan never saw, e.g. a remote deletion removing a local edit nobody scanned.
+- **Remote:** `FitSync` drops remote changes to an `unknown` path. Applying one would act on a local state the scan never saw, e.g. a remote deletion removing a local edit nobody scanned.
 
-Pruned paths that were synced by an earlier version stay on the remote and on disk untouched; they just stop participating.
+Skipped paths that an earlier version synced stay on the remote and on disk untouched; they just stop participating.
 
 ### 3. Gitignore Patterns (`GitignoreFilter`) - User-Defined Exclusions
 

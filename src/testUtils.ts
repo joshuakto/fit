@@ -149,6 +149,15 @@ export class FakeObsidianVault {
 			stat: { size: content?.byteLength ?? 0, mtime: 0, ctime: 0 }
 		} as TFile;
 	});
+	// Folders the index knows: every parent of an indexed file.
+	getAllFolders = () => {
+		const folders = new Set<string>();
+		for (const filePath of this.vaultIndex) {
+			const parts = filePath.split('/').slice(0, -1);
+			for (let i = 1; i <= parts.length; i++) folders.add(parts.slice(0, i).join('/'));
+		}
+		return Array.from(folders).map(path => ({ path }));
+	};
 	createFolder = async () => {};
 }
 
@@ -432,8 +441,10 @@ export class FakeLocalVault implements IVault<"local"> {
 		this.unlistablePaths = paths;
 	}
 
+	// Mirrors LocalVault: ordinary (non-hidden) files come from Obsidian's index, so an
+	// orphaned prefix only hides the hidden paths under it from the scan.
 	private isUnderOrphanedPrefix(path: string): boolean {
-		return isUnderAnyPrefix(path, this.orphanedScanPrefixes);
+		return FilePath.isHidden(FilePath.create(path)) && isUnderAnyPrefix(path, this.orphanedScanPrefixes);
 	}
 
 	/**

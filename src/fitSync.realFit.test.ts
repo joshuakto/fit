@@ -4687,5 +4687,51 @@ describe('FitSync', () => {
 				},
 			});
 		});
+
+		describe('an ordinary path under a folder the hidden-path scan could not list', () => {
+			// Obsidian's index lists ordinary files whether or not the adapter can list their
+			// folder, so the scan did see them. Only the folder's hidden contents are unknown.
+			const notePath = 'notes/a.md';
+
+			async function setUpSyncedNoteWithUnlistableFolder(): Promise<FitSync> {
+				await remoteVault.setFile(notePath, 'v1');
+				const remoteBaseline = await remoteVault.readFromSource();
+				localVault.setFile(notePath, 'v1');
+				localVault.setSyncHiddenFiles(true);
+				const baseline = await localVault.readFromSource();
+				localVault.setOrphanedScanPrefixes(['notes']);
+				const fitSync = createFitSync();
+				fitSync.fit.loadLocalStore(makeLocalStore({
+					localShas: baseline.state,
+					lastFetchedRemoteShas: remoteBaseline.state,
+					lastFetchedCommitSha: remoteBaseline.commitSha,
+				}));
+				return fitSync;
+			}
+
+			it('still pulls a remote edit', async () => {
+				const fitSync = await setUpSyncedNoteWithUnlistableFolder();
+				await remoteVault.setFile(notePath, 'v2 from remote');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect({ result, files: localVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({ success: true }),
+					files: { [notePath]: 'v2 from remote' },
+				});
+			});
+
+			it('still pushes a local edit', async () => {
+				const fitSync = await setUpSyncedNoteWithUnlistableFolder();
+				localVault.setFile(notePath, 'v2 from local');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect({ result, remote: remoteVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({ success: true }),
+					remote: { [notePath]: 'v2 from local' },
+				});
+			});
+		});
 	});
 });

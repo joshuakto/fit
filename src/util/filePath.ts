@@ -36,9 +36,10 @@ export function hasExtension(path: string, ext: string): boolean {
 
 /**
  * Whether `path` equals one of `prefixes` or sits under one (whole-segment match). The
- * prefix `/` stands for the hidden-path scan's root, which only ever produces hidden
- * paths (ordinary vault files come from Obsidian's index, not that scan), so it matches
- * every hidden path and nothing else.
+ * prefix `/` stands for the unindexed-path scan's root, which only ever produces unindexed
+ * paths (hidden ones; ordinary vault files come from the index), so it matches every hidden
+ * path and nothing else. TODO: recording which source a path came from in the baseline would
+ * let `/` stop inferring "hidden" from the name.
  */
 export function isUnderAnyPrefix(path: string, prefixes: ReadonlySet<string>): boolean {
 	for (const prefix of prefixes) {
