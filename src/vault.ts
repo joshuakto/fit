@@ -12,9 +12,15 @@ import { CommitSha, TreeSha } from "./util/hashing";
 
 /** Discriminated return types for readFromSource() based on vault category */
 type VaultReadResultMap = {
-	/** Local vault result - just the state */
+	/** Local vault result - the state, plus paths the scan deliberately skipped */
 	"local": {
 		state: FileStates;
+		/**
+		 * Files and folders the scan declined to look at (pruned VCS metadata). A baseline
+		 * entry at or under one of these is absent from `state` only because it wasn't
+		 * scanned, not because it was deleted. Derived fresh each scan, never persisted.
+		 */
+		orphanedScanPrefixes: Set<string>;
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {

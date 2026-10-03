@@ -76,6 +76,9 @@ middle state.
 | ordinary vault path | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ ordinary push path (same file, symmetric case) |
 | ordinary vault path | 👀 tracked | ✏️ edited | ✏️ edited | ✅ `'should report file as conflict when saved to _fit/ for any safety reason'` |
 | hidden vault path (non-`.obsidian/`) | 🆕 untracked, never observed | n/a | ✏️ edited | ✅ `'should write remote hidden files directly when no local version exists (#...'`; two-sync onboarding shape documented in [sync-logic.md § Protected Paths](./sync-logic.md) |
+| hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ **Baseline path (or its folder) pruned from this sync's scan.** Not pushed as a deletion; see [sync-logic.md § Scan-time pruning vs. the stored baseline](./sync-logic.md#scan-time-pruning-vs-the-stored-baseline). `'does not push a deletion for a baseline path this sync pruned'` |
+| hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ✏️ edited | ✅ **Same, remote side edited.** Ignored this sync: no clash, no pull. `'does not pull a remote edit over a path this sync could not see'` |
+| hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | 🗑️ deleted | ✅ **Same, remote side deleted.** Local copy kept. `'does not apply a remote deletion to a path this sync could not see'` |
 | `.obsidian/` (`format:"text"`) | 👻 untracked, observed while ineligible | ⚪ unchanged, matches remote already | n/a | ✅ `'re-establishes a baseline quietly (no push) for a re-eligible path...'` |
 | `.obsidian/` (`format:"text"`) | 👻 untracked, observed while ineligible | 🗑️ deleted while ineligible | n/a | ✅ `'pulls fresh content for a re-eligible path whose local file was deleted...'` |
 | ordinary vault path (`.canvas`) | 👀 tracked | ✏️ edited | ✏️ edited, different node than local | ✅ `'independent node additions on both sides auto-merge without a clash file'` and sibling merge tests |
@@ -143,6 +146,10 @@ fitSync.realFit.test.ts
   │ └ 'does not disturb an unresolved .obsidian/ clash even when the path also qualifies as a reconcile candidate'
   ├ 👻 Hidden file handling
   │ └ 'should write remote hidden files directly when no local version exists (#...'
+  ├ Hidden-path scan pruning — baseline safety (#389)
+  │ ├ 'does not push a deletion for a baseline path this sync pruned'
+  │ ├ 'does not pull a remote edit over a path this sync could not see'
+  │ └ 'does not apply a remote deletion to a path this sync could not see'
   ├ 🚨 Data loss prevention (safety nets for bugs/migrations)
   │ ├ 'should report file as conflict when saved to _fit/ for any safety reason'
   │ ├ clash lifecycle: pending resolution across multiple syncs

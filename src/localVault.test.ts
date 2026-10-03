@@ -1142,5 +1142,43 @@ describe('LocalVault', () => {
 
 			expect(visited).toEqual([...new Set(visited)]);
 		});
+
+		it.each(['.jj', '.hg', '.svn', '.bzr'])(
+			'prunes %s dirs from the hidden-path scan without descending into them',
+			async (vcsDirName) => {
+				const visited = stubAdapterListing({
+					'/': { files: [], folders: [`.obsidian/${vcsDirName}`] },
+					// Only reachable if pruning failed to skip recursion.
+					[`.obsidian/${vcsDirName}`]: { files: [`.obsidian/${vcsDirName}/objects/deadbeef`], folders: [] },
+				});
+
+				const localVault = new LocalVault(mockVault as any as Vault);
+				localVault.configure({ syncHiddenFiles: true });
+				const { state } = await localVault.readFromSource();
+
+				expect(state).toEqual({});
+				expect(visited).not.toContain(`.obsidian/${vcsDirName}`);
+			}
+		);
+
+		// A pruned component can be a *file*, not just a dir (e.g. a submodule's `.git`
+		// gitlink marker). It must be reported as orphaned too, or a baseline entry for it
+		// reads as a local deletion — exercised against the real scan, not FakeLocalVault,
+		// which takes orphanedScanPrefixes as a given and never runs this code.
+		it('reports a pruned file (not just a pruned dir) as an orphaned scan prefix', async () => {
+			stubAdapterListing({
+				'/': { files: ['.mytool/.git', '.mytool/config'], folders: [] },
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes } = await localVault.readFromSource();
+
+			expect({ paths: Object.keys(state), orphanedScanPrefixes }).toEqual({
+				paths: ['.mytool/config'], // Ordinary hidden file, still scanned
+				// '.mytool/.git' absent from paths (pruned) but present here, so a baseline entry for it isn't read as deleted
+				orphanedScanPrefixes: new Set(['.mytool/.git']),
+			});
+		});
 	});
 });

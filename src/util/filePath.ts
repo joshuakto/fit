@@ -34,6 +34,14 @@ export function hasExtension(path: string, ext: string): boolean {
 	return path.toLowerCase().endsWith(ext.toLowerCase());
 }
 
+/** Whether `path` equals one of `prefixes` or sits under one (whole-segment match). */
+export function isUnderAnyPrefix(path: string, prefixes: ReadonlySet<string>): boolean {
+	for (const prefix of prefixes) {
+		if (path === prefix || path.startsWith(`${prefix}/`)) return true;
+	}
+	return false;
+}
+
 /**
  * Branded type for normalized file paths
  * Always in NFC (composed) Unicode normalization form

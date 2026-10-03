@@ -324,6 +324,16 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 **Note:** `shouldTrackState` controls LocalVault's scanning capability. Sync policy decisions (e.g. never push `.obsidian/`) are handled separately by `Fit.shouldSyncPath()`.
 
+#### Scan-time pruning vs. the stored baseline
+
+The hidden-path scan (`collectHiddenInDir`) does not walk into VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file). A walk into one costs a full recursive scan and can surface thousands of paths nobody means to sync.
+
+A pruned path is absent from `currentState` because the scan didn't look, not because it was deleted. `readFromSource()` therefore reports every pruned file or folder as `orphanedScanPrefixes: Set<string>` (derived fresh each scan, never persisted), and a path equal to or under one is out of scope for that sync in both directions:
+- **Local:** `Fit.getLocalChanges()` excludes it from both sides of `compareFileStates`, so it reads as neither present nor removed.
+- **Remote:** `FitSync` drops remote changes under a prefix. Applying one would act on a local state the scan never saw, e.g. a remote deletion removing a local edit nobody scanned.
+
+Pruned paths that were synced by an earlier version stay on the remote and on disk untouched; they just stop participating.
+
 ### 3. Gitignore Patterns (`GitignoreFilter`) - User-Defined Exclusions
 
 - **Filtered by:** `GitignoreFilter` in `LocalVault.readFromSource()`

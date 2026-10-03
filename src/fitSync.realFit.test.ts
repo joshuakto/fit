@@ -4570,4 +4570,82 @@ describe('FitSync', () => {
 			expect(localStoreState.pendingClashes).toContain('data.bin');
 		});
 	});
+
+	describe('Hidden-path scan pruning — baseline safety', () => {
+		const path = '.mytool/.git/config';
+		const content = 'tracked before pruning existed';
+
+		// Baseline: `path` was tracked and synced by a *prior* sync, before its folder was
+		// pruned. Then arms pruning for *this* sync only, simulating a scan that newly skips
+		// the folder. Content stays on disk throughout — only discovery is skipped.
+		async function setUpSyncWithPrunedBaselinePath(): Promise<FitSync> {
+			await remoteVault.setFile(path, content);
+			const remoteBaseline = await remoteVault.readFromSource();
+			localVault.setFile(path, content);
+			localVault.setSyncHiddenFiles(true);
+			const baseline = await localVault.readFromSource();
+			localVault.setOrphanedScanPrefixes(['.mytool/.git']);
+			const fitSync = createFitSync();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: baseline.state,
+				lastFetchedRemoteShas: remoteBaseline.state,
+				lastFetchedCommitSha: remoteBaseline.commitSha,
+			}));
+			return fitSync;
+		}
+
+		it('does not pull a remote edit over a path this sync could not see', async () => {
+			// The local copy was never scanned, so a local edit there is invisible: pulling the
+			// remote edit would overwrite it without a clash.
+			const fitSync = await setUpSyncWithPrunedBaselinePath();
+			await remoteVault.setFile(path, 'edited on remote this sync');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect({ result, files: localVault.getAllFilesAsRaw() }).toEqual({
+				result: expect.objectContaining({ success: true, clash: [] }),
+				files: {
+					// Pruned: local copy untouched. The remote edit is neither pulled over it nor
+					// reported as a clash, and no _fit/ copy is written.
+					'.mytool/.git/config': content,
+				},
+			});
+		});
+
+		it('does not push a deletion for a baseline path this sync pruned', async () => {
+			// Belt-and-suspenders with the independent stat safeguard in
+			// pushChangedFilesToRemote (it stats every local-REMOVED path before deleting from
+			// remote, which already catches this since the file is still physically present).
+			// This documents that the outcome stays safe either way; the two remote-side tests
+			// around it are where the orphaned-prefix filters' own contribution is observable.
+			const fitSync = await setUpSyncWithPrunedBaselinePath();
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect({ result, remote: remoteVault.getAllFilesAsRaw() }).toEqual({
+				result: expect.objectContaining({ success: true }),
+				remote: { [path]: content }, // Not deleted from remote
+			});
+		});
+
+		it('does not apply a remote deletion to a path this sync could not see', async () => {
+			// Local content under a pruned folder was never scanned, so a local edit there is
+			// invisible — applying the remote deletion would destroy it. Without the filter the
+			// same scenario instead surfaces a junk REMOVED/REMOVED clash for a file that is
+			// still on disk.
+			const fitSync = await setUpSyncWithPrunedBaselinePath();
+			remoteVault.clear();
+			await remoteVault.setFile('other.md', 'x');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect({ result, files: localVault.getAllFilesAsRaw() }).toEqual({
+				result: expect.objectContaining({ success: true, clash: [] }),
+				files: {
+					'.mytool/.git/config': content, // Pruned: still on disk, untouched by the remote deletion
+					'other.md': 'x',                // Ordinary remote addition, pulled
+				},
+			});
+		});
+	});
 });
