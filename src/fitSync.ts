@@ -1404,7 +1404,7 @@ export class FitSync implements IFitSync {
 			}
 
 			// Both succeeded, extract values
-			const {changes: localChanges, state: currentLocalState, orphanedScanPrefixes} = localResult.value;
+			const {changes: localChanges, state: currentLocalState, orphanedScanPrefixes, unlistablePaths} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 
@@ -1428,17 +1428,13 @@ export class FitSync implements IFitSync {
 				|| protectedPathDetection.trackedUnconfigured.length > 0
 				|| protectedPathDetection.untracked.length > 0;
 			if (hasProtectedPathActivity) {
-				// untracked can be long on a vault with many local-only .obsidian/ files — cap it,
-				// same rationale as the known unbounded-array-log gap tracked for LocalVault's
-				// hidden-path dumps (src/logger.ts's sanitizeForLogging truncates strings, not
-				// array length).
-				const UNTRACKED_LOG_CAP = 30;
+				// untracked can be long on a vault with many local-only .obsidian/ files; the logger
+				// caps any logged array and marks the truncation with the real total.
 				fitLogger.log('[FitSync] Protected-path detection', {
 					trackedSyncing: protectedPathDetection.trackedSyncing,
 					hardDenylisted: protectedPathDetection.hardDenylisted,
 					trackedUnconfigured: protectedPathDetection.trackedUnconfigured,
-					untracked: protectedPathDetection.untracked.slice(0, UNTRACKED_LOG_CAP),
-					untrackedTotal: protectedPathDetection.untracked.length,
+					untracked: protectedPathDetection.untracked,
 				});
 				if (protectedPathDetection.trackedSyncing.length > 0) {
 					fitLogger.log(
@@ -1733,6 +1729,17 @@ export class FitSync implements IFitSync {
 			if (remainingUnpushed.length > 0 && !isAutoSync && !(newlySkippedPaths.length > 0 && skippedWarning)) {
 				const fileList = remainingUnpushed.map(p => `• ${p}`).join('\n');
 				detailBlocks.push(`${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`);
+			}
+
+			if (unlistablePaths.length > 0) {
+				// '/' means the root listing failed, so the whole hidden-file scan was skipped.
+				const pathList = unlistablePaths
+					.map(p => p === '/' ? '• / (the whole hidden-file scan)' : `• ${p}`)
+					.join('\n');
+				detailBlocks.push(
+					`${unlistablePaths.length} path(s) couldn't be scanned for hidden files, possibly due to an ` +
+					`unreadable entry inside, so hidden files under them are not syncing:\n${pathList}`
+				);
 			}
 
 			if (rateLimitedPaths.length > 0) {

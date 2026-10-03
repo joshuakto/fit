@@ -46,13 +46,6 @@ crashes").
 | Hidden-path discovery scan (`scanHiddenPaths`, only when "Sync hidden files" is enabled) | Total vault size (recursive directory walk via `vault.adapter`, bypassing Obsidian's index) | **O(vault size) extra traversal**, on top of (not instead of) the ordinary `vault.getFiles()` index read - effectively doubles local traversal cost while the setting is on | A vault with deeply nested plugin directories (`.obsidian/plugins/*/node_modules/...`): this scan walks all of it. |
 | Tracked-`.obsidian/`-path probing when "Sync hidden files" is **disabled** (`trackedHiddenPaths` stat loop, `LocalVault.readFromSource`) | Number of already-tracked `.obsidian/` paths (`Fit.trackedObsidianPaths()`, both `format:"text"` and `scope:"subset"` paths) | **O(tracked-path count) extra `adapter.stat()` calls every sync**, bypassing the (skipped) recursive scan to individually probe each already-tracked path - predates subset-scope masking (#67), but subset-scope tracks one path per masked `.obsidian/*.json` file (not one per plugin), so this set grows faster than it used to as more granular JSON files get tracked | A vault with 20 tracked `.obsidian/` paths (several plugins' JSON configs, each masked separately): 20 extra `stat()` calls every sync even with hidden-file sync off. |
 
-This scan's paths also feed a real, confirmed logging problem: `LocalVault.readFromSource()` logs
-the *entire* matching path array every sync (hidden paths, untracked paths, gitignore-ignored
-paths, three separate call sites), unconditionally - `sanitizeForLogging` (`src/logger.ts`)
-truncates long strings but maps over arrays with no length cap at all. Confirmed in practice: a
-real vault with "Sync hidden files" enabled and several nested plugin directories logged 12,000+
-path entries in a single sync's debug output.
-
 ## Per-file size, not file count
 
 The two sections above characterize *how many* files/requests. This is the orthogonal axis: what

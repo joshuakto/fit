@@ -1172,12 +1172,73 @@ describe('LocalVault', () => {
 
 			const localVault = new LocalVault(mockVault as any as Vault);
 			localVault.configure({ syncHiddenFiles: true });
-			const { state, orphanedScanPrefixes } = await localVault.readFromSource();
+			const { state, orphanedScanPrefixes, unlistablePaths } = await localVault.readFromSource();
 
-			expect({ paths: Object.keys(state), orphanedScanPrefixes }).toEqual({
+			expect({ paths: Object.keys(state), orphanedScanPrefixes, unlistablePaths }).toEqual({
 				paths: ['.mytool/config'], // Ordinary hidden file, still scanned
 				// '.mytool/.git' absent from paths (pruned) but present here, so a baseline entry for it isn't read as deleted
 				orphanedScanPrefixes: new Set(['.mytool/.git']),
+				unlistablePaths: [], // Pruned on purpose, nothing to tell the user
+			});
+		});
+
+		// Obsidian's desktop list() stats every entry and rejects the whole call when one
+		// stat fails (e.g. a dangling symlink inside the directory), so one bad entry hides
+		// the directory and everything under it. The skip itself is unavoidable; doing it
+		// without a trace in the log is not.
+		it('logs a path whose listing fails instead of silently dropping it', async () => {
+			(mockVault.adapter as any).list = vi.fn().mockImplementation(async (dir: string) => {
+				if (dir === '/') return { files: [], folders: ['.obsidian/plugins/helpers'] };
+				throw new Error('ENOENT: no such file or directory, stat dangling-link.md');
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			await localVault.readFromSource();
+
+			expect(consoleLogSpy).toHaveBeenCalledWith(
+				'⚠️ [LocalVault] Hidden-path scan could not list a directory, possibly due to an unreadable entry inside it; skipping it and everything under it',
+				{ dir: '.obsidian/plugins/helpers', error: 'ENOENT: no such file or directory, stat dangling-link.md' }
+			);
+		});
+
+		// A path the scan could not list is absent from the state because it was not
+		// scanned, not because its files are gone, so it is reported like a pruned folder.
+		it('reports a path whose listing fails as an orphaned scan prefix', async () => {
+			(mockVault.adapter as any).list = vi.fn().mockImplementation(async (dir: string) => {
+				if (dir === '/') return { files: ['.root.json'], folders: ['.mytool'] };
+				throw new Error('ENOENT: dangling link');
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes, unlistablePaths } = await localVault.readFromSource();
+
+			expect({ paths: Object.keys(state), orphanedScanPrefixes, unlistablePaths }).toEqual({
+				paths: ['.root.json'], // Listed fine, still scanned
+				orphanedScanPrefixes: new Set(['.mytool']), // Could not be listed: unscanned, not deleted
+				unlistablePaths: ['.mytool'], // Also reported separately so the user can be told
+			});
+		});
+
+		// Same handling as any other path, just at the top: the hidden scan finds nothing, and
+		// the root is reported so the baseline's hidden paths are not read as deleted.
+		it('skips the hidden-path scan and reports the root as orphaned when the vault root cannot be listed', async () => {
+			(mockVault.adapter as any).list = vi.fn().mockRejectedValue(new Error('ENOENT: stat dangling-note.md'));
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes, unlistablePaths } = await localVault.readFromSource();
+
+			expect({
+				state, orphanedScanPrefixes, unlistablePaths, logged: consoleLogSpy.mock.calls.map(call => call[0])
+			}).toEqual({
+				state: {},
+				orphanedScanPrefixes: new Set(['/']),
+				unlistablePaths: ['/'],
+				logged: expect.arrayContaining([
+					'⚠️ [LocalVault] Hidden-path scan could not list the vault root, skipping all hidden paths this sync',
+				]),
 			});
 		});
 	});

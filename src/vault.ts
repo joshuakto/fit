@@ -21,6 +21,12 @@ type VaultReadResultMap = {
 		 * scanned, not because it was deleted. Derived fresh each scan, never persisted.
 		 */
 		orphanedScanPrefixes: Set<string>;
+		/**
+		 * The subset of skipped paths the scan tried to list and could not (`/` when the
+		 * root itself failed), as opposed to paths it deliberately pruned. Surfaced to the
+		 * user, since files under them are silently not syncing.
+		 */
+		unlistablePaths: string[];
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {

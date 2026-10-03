@@ -495,12 +495,31 @@ describe('FitSync', () => {
 				hardDenylisted: ['.obsidian/plugins/some-plugin/main.js'],
 				trackedUnconfigured: ['.obsidian/unconfigured'],
 				untracked: ['.obsidian/hotkeys.json'],
-				untrackedTotal: 1,
 			});
 			const hintCall = fitLoggerLogSpy.mock.calls.find(
 				(call) => typeof call[0] === 'string' && call[0].startsWith('[FitSync] Note: to stop syncing')
 			);
 			expect(hintCall).toBeDefined();
+		});
+
+		it('passes every untracked path to the logger, leaving truncation (and its marker) to the logger itself', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			const untrackedPaths = Array.from({ length: 45 }, (_, i) => `.obsidian/local-only-${String(i).padStart(2, '0')}.json`);
+			for (const path of untrackedPaths) localVault.setFile(path, '{}');
+			// Tracked, so the detection log fires even though no other bucket would need it.
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/some-plugin/main.js', content: FileContent.fromPlainText('console.log(1)') },
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expectLoggerCalledWith('[FitSync] Protected-path detection', {
+				trackedSyncing: [],
+				hardDenylisted: ['.obsidian/plugins/some-plugin/main.js'],
+				trackedUnconfigured: [],
+				untracked: untrackedPaths,
+			});
 		});
 
 		it('does not log the stop-syncing hint when no .obsidian/ path is actively syncing', async () => {
@@ -4578,13 +4597,13 @@ describe('FitSync', () => {
 		// Baseline: `path` was tracked and synced by a *prior* sync, before its folder was
 		// pruned. Then arms pruning for *this* sync only, simulating a scan that newly skips
 		// the folder. Content stays on disk throughout — only discovery is skipped.
-		async function setUpSyncWithPrunedBaselinePath(): Promise<FitSync> {
+		async function setUpSyncWithPrunedBaselinePath(skippedPrefix = '.mytool/.git'): Promise<FitSync> {
 			await remoteVault.setFile(path, content);
 			const remoteBaseline = await remoteVault.readFromSource();
 			localVault.setFile(path, content);
 			localVault.setSyncHiddenFiles(true);
 			const baseline = await localVault.readFromSource();
-			localVault.setOrphanedScanPrefixes(['.mytool/.git']);
+			localVault.setOrphanedScanPrefixes([skippedPrefix]);
 			const fitSync = createFitSync();
 			fitSync.fit.loadLocalStore(makeLocalStore({
 				localShas: baseline.state,
@@ -4612,6 +4631,23 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('tells the user which paths the hidden-path scan could not list', async () => {
+			const fitSync = createFitSync();
+			localVault.setUnlistablePaths(['.mytool', '/']);
+			await remoteVault.setFile('note.md', 'x'); // Gives the sync something to do
+			const notice = createMockNotice();
+
+			await syncAndHandleResult(fitSync, notice);
+
+			expect(notice._calls.at(-1)).toEqual({ method: 'setMessage', args: [
+				'Sync successful\n\n' +
+				"2 path(s) couldn't be scanned for hidden files, possibly due to an unreadable entry " +
+				'inside, so hidden files under them are not syncing:\n' +
+				'• .mytool\n' +
+				'• / (the whole hidden-file scan)'
+			] });
+		});
+
 		it('does not push a deletion for a baseline path this sync pruned', async () => {
 			// Belt-and-suspenders with the independent stat safeguard in
 			// pushChangedFilesToRemote (it stats every local-REMOVED path before deleting from
@@ -4628,12 +4664,16 @@ describe('FitSync', () => {
 			});
 		});
 
-		it('does not apply a remote deletion to a path this sync could not see', async () => {
-			// Local content under a pruned folder was never scanned, so a local edit there is
+		it.each([
+			['a skipped folder', '.mytool/.git'],
+			// Hidden paths all come from the hidden-path scan, so a failed root listing skips them all.
+			['the hidden-path scan root', '/'],
+		])('does not apply a remote deletion to a path under %s that this sync could not see', async (_label, skippedPrefix) => {
+			// Local content under a skipped path was never scanned, so a local edit there is
 			// invisible — applying the remote deletion would destroy it. Without the filter the
 			// same scenario instead surfaces a junk REMOVED/REMOVED clash for a file that is
 			// still on disk.
-			const fitSync = await setUpSyncWithPrunedBaselinePath();
+			const fitSync = await setUpSyncWithPrunedBaselinePath(skippedPrefix);
 			remoteVault.clear();
 			await remoteVault.setFile('other.md', 'x');
 

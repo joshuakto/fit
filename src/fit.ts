@@ -407,7 +407,12 @@ export class Fit {
 		await this.readAndApplyFitAttributes();
 	}
 
-	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates, orphanedScanPrefixes: Set<string>}> {
+	async getLocalChanges(): Promise<{
+		changes: FileChange[],
+		state: FileStates,
+		orphanedScanPrefixes: Set<string>,
+		unlistablePaths: string[]
+	}> {
 		// Feed the tracked-path set to local hidden-path discovery before scanning.
 		this.localVault.configure({ trackedHiddenPaths: this.trackedObsidianPaths() });
 
@@ -495,7 +500,7 @@ export class Fit {
 			}
 		}
 		const changes = compareFileStates(trackableCurrentState, trackableLocalShas);
-		return { changes, state: currentState, orphanedScanPrefixes };
+		return { changes, state: currentState, orphanedScanPrefixes, unlistablePaths: readResult.unlistablePaths };
 	}
 
 	/**
