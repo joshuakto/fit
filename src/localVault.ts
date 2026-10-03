@@ -51,10 +51,18 @@ function isBinaryExtensionForLegacySha(extension: string): boolean {
  * carrying its own git history turns one sync into thousands of paths. Matched as a whole
  * component so `.gitignore` and `.gitattributes` stay syncable.
  */
-const PRUNED_PATH_COMPONENTS = new Set(['.git']);
+const PRUNED_PATH_COMPONENTS = new Set(['.git', '.jj', '.hg', '.svn', '.bzr']);
 
 function containsPrunedComponent(path: string): boolean {
 	return path.split('/').some(part => PRUNED_PATH_COMPONENTS.has(part));
+}
+
+interface HiddenPathScanResult {
+	paths: string[];
+	// Every file or folder the scan declined to look at (pruned components). Returned as
+	// orphanedScanPrefixes so the baseline comparison can tell "not scanned" from "deleted"
+	// (docs/sync-logic.md § Scan-time pruning vs. the stored baseline).
+	prunedPaths: string[];
 }
 
 /**
@@ -62,16 +70,18 @@ function containsPrunedComponent(path: string): boolean {
  * vault.getFiles() does not return hidden files, so this adapter-based scan is needed
  * when syncHiddenFiles is enabled. Results are vault-relative paths.
  */
-async function scanHiddenPaths(adapter: DataAdapter): Promise<string[]> {
+async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
 	const results: string[] = [];
-	await collectHiddenInDir(adapter, '/', results);
-	return results;
+	const prunedPaths: string[] = [];
+	await collectHiddenInDir(adapter, '/', results, prunedPaths);
+	return { paths: results, prunedPaths };
 }
 
 async function collectHiddenInDir(
 	adapter: DataAdapter,
 	dir: string,
 	results: string[],
+	prunedPaths: string[],
 	dirIsHidden = false,
 	visited = new Set<string>()
 ): Promise<void> {
@@ -89,21 +99,32 @@ async function collectHiddenInDir(
 	}
 
 	for (const file of listing.files) {
-		if (containsPrunedComponent(file)) continue;
+		if (containsPrunedComponent(file)) {
+			prunedPaths.push(file);
+			continue;
+		}
 		// Skip per-file check when already inside a hidden directory — all paths are hidden
 		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
 			results.push(file);
 		}
 	}
 
+	const [pruned, walked] = partition(listing.folders, containsPrunedComponent);
+	prunedPaths.push(...pruned);
+
 	await Promise.all(
-		listing.folders
-			.filter(folder => !containsPrunedComponent(folder))
-			.map(folder => {
-				const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
-				return collectHiddenInDir(adapter, folder, results, folderIsHidden, visited);
-			})
+		walked.map(folder => {
+			const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
+			return collectHiddenInDir(adapter, folder, results, prunedPaths, folderIsHidden, visited);
+		})
 	);
+}
+
+function partition<T>(items: T[], predicate: (item: T) => boolean): [T[], T[]] {
+	const matched: T[] = [];
+	const rest: T[] = [];
+	for (const item of items) (predicate(item) ? matched : rest).push(item);
+	return [matched, rest];
 }
 
 /**
@@ -204,7 +225,7 @@ export class LocalVault implements IVault<"local"> {
 	/**
 	 * Scan vault, update latest known state, and return it
 	 */
-	async readFromSource(): Promise<VaultReadResult> {
+	async readFromSource(): Promise<VaultReadResult<"local">> {
 		const allFiles = this.vault.getFiles();
 		const vaultIndexPaths = allFiles.map(f => f.path);
 
@@ -212,8 +233,11 @@ export class LocalVault implements IVault<"local"> {
 		// (vault.getFiles() only returns non-hidden files due to Obsidian API limitations).
 		// This involves a full recursive directory scan and has performance overhead.
 		let hiddenPaths: string[] = [];
+		let orphanedScanPrefixes: string[] = [];
 		if (this.syncHiddenFiles) {
-			hiddenPaths = await scanHiddenPaths(this.vault.adapter);
+			const scanResult = await scanHiddenPaths(this.vault.adapter);
+			hiddenPaths = scanResult.paths;
+			orphanedScanPrefixes = scanResult.prunedPaths;
 			if (hiddenPaths.length > 0) {
 				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
 					count: hiddenPaths.length, paths: hiddenPaths
@@ -350,7 +374,7 @@ export class LocalVault implements IVault<"local"> {
 			normalizationInfo ? { nfdPaths: normalizationInfo.nfdCount } : undefined
 		);
 
-		return { state: { ...newState } };
+		return { state: { ...newState }, orphanedScanPrefixes: new Set(orphanedScanPrefixes) };
 	}
 
 	/**

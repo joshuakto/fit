@@ -14,6 +14,7 @@ import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
+import { isUnderAnyPrefix } from "./util/filePath";
 import { isHardDenylistedObsidianPath, FIT_OWN_SETTINGS_DENYLIST } from "./util/protectedPaths";
 
 /**
@@ -406,13 +407,14 @@ export class Fit {
 		await this.readAndApplyFitAttributes();
 	}
 
-	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates}> {
+	async getLocalChanges(): Promise<{changes: FileChange[], state: FileStates, orphanedScanPrefixes: Set<string>}> {
 		// Feed the tracked-path set to local hidden-path discovery before scanning.
 		this.localVault.configure({ trackedHiddenPaths: this.trackedObsidianPaths() });
 
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
 		const currentState = readResult.state;
+		const orphanedScanPrefixes = readResult.orphanedScanPrefixes;
 
 		// Re-parse .fitattributes.json content (feeds shouldSyncPath's format gate) from this
 		// scan's own knowledge of whether the file exists — never a separate stat/read probe,
@@ -467,13 +469,18 @@ export class Fit {
 			}
 		}
 
+		// See docs/sync-logic.md § Scan-time pruning vs. the stored baseline — without
+		// this, a baseline entry the scan pruned reads as a local REMOVED, though the file is
+		// still on disk.
+		const isUnderOrphanedPrefix = (path: string) => isUnderAnyPrefix(path, orphanedScanPrefixes);
+
 		// Filter both states to paths that are trackable AND syncable (#169).
 		// shouldTrackState: LocalVault can read the file (always true when syncHiddenFiles=true).
 		// shouldSyncPath: sync policy allows pushing (filters _fit/, .obsidian/, etc.).
 		// Both required — protected paths like .obsidian/ are readable but never pushed,
 		// and would appear as phantom ADDED changes without this combined filter.
 		const isSyncCandidate = (path: string) =>
-			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path);
+			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path) && !isUnderOrphanedPrefix(path);
 
 		const trackableLocalShas: FileStates = {};
 		for (const [path, sha] of Object.entries(this.localShas)) {
@@ -488,7 +495,7 @@ export class Fit {
 			}
 		}
 		const changes = compareFileStates(trackableCurrentState, trackableLocalShas);
-		return { changes, state: currentState };
+		return { changes, state: currentState, orphanedScanPrefixes };
 	}
 
 	/**

@@ -7,7 +7,7 @@ import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent, Base64Content, PlainTextContent } from './util/contentEncoding';
-import { FilePath } from './util/filePath';
+import { FilePath, isUnderAnyPrefix } from './util/filePath';
 import { BlobSha, CommitSha, computeGitBlobSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
 import { fitLogger } from './logger';
@@ -414,6 +414,20 @@ export class FakeLocalVault implements IVault<"local"> {
 	private mockDeleteFile: ((path: string) => Promise<void>) | null = null; // Mock for deleteFile operations
 	private syncHiddenFiles = false;
 	private trackedHiddenPaths: string[] = [];
+	private orphanedScanPrefixes: Set<string> = new Set();
+
+	/**
+	 * Simulates a folder this sync's scan pruned, without touching `files` — content stays
+	 * on disk, only discovery is skipped (see docs/sync-logic.md § Scan-time pruning vs.
+	 * the stored baseline). Replaces any previously set prefixes.
+	 */
+	setOrphanedScanPrefixes(prefixes: string[]): void {
+		this.orphanedScanPrefixes = new Set(prefixes);
+	}
+
+	private isUnderOrphanedPrefix(path: string): boolean {
+		return isUnderAnyPrefix(path, this.orphanedScanPrefixes);
+	}
 
 	/**
 	 * Mirrors LocalVault's syncHiddenFiles toggle exactly — a single global flag, not
@@ -522,7 +536,8 @@ export class FakeLocalVault implements IVault<"local"> {
 		}
 
 		// Use Promise.allSettled to collect all file processing results
-		const paths = Array.from(this.files.keys()).filter(path => this.shouldTrackState(path));
+		const paths = Array.from(this.files.keys())
+			.filter(path => this.shouldTrackState(path) && !this.isUnderOrphanedPrefix(path));
 		const settledResults = await Promise.allSettled(
 			paths.map(async (path) => {
 				// Call mock if provided (allows test to inject failures)
@@ -565,7 +580,7 @@ export class FakeLocalVault implements IVault<"local"> {
 			);
 		}
 
-		return { state };
+		return { state, orphanedScanPrefixes: new Set(this.orphanedScanPrefixes) };
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
