@@ -16,9 +16,10 @@ type VaultReadResultMap = {
 	"local": {
 		state: FileStates;
 		/**
-		 * Files and folders the scan declined to look at (pruned VCS metadata). A baseline
-		 * entry at or under one of these is absent from `state` only because it wasn't
-		 * scanned, not because it was deleted. Derived fresh each scan, never persisted.
+		 * Files and folders the scan declined to look at (pruned VCS dirs, plugin
+		 * node_modules). A baseline entry at or under one of these is absent from `state`
+		 * only because it wasn't scanned, not because it was deleted. Derived fresh each
+		 * scan, never persisted.
 		 */
 		orphanedScanPrefixes: Set<string>;
 		/**

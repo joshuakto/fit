@@ -1241,5 +1241,47 @@ describe('LocalVault', () => {
 				]),
 			});
 		});
+
+		it('prunes a plugin\'s node_modules dir from the hidden-path scan without descending into it', async () => {
+			const visited = stubAdapterListing({
+				'/': { files: [], folders: ['.obsidian'] },
+				'.obsidian': { files: [], folders: ['.obsidian/plugins'] },
+				'.obsidian/plugins': { files: [], folders: ['.obsidian/plugins/fit'] },
+				'.obsidian/plugins/fit': {
+					files: ['.obsidian/plugins/fit/main.js'],
+					folders: ['.obsidian/plugins/fit/node_modules'],
+				},
+				// Only reachable if pruning failed to skip recursion.
+				'.obsidian/plugins/fit/node_modules': {
+					files: ['.obsidian/plugins/fit/node_modules/some-dep/index.js'],
+					folders: [],
+				},
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state)).toEqual(['.obsidian/plugins/fit/main.js']);
+			expect(visited).not.toContain('.obsidian/plugins/fit/node_modules');
+		});
+
+		it('does not prune a folder named node_modules outside a plugin dir', async () => {
+			const visited = stubAdapterListing({
+				'/': { files: [], folders: ['.obsidian'] },
+				// Hidden only because it's nested under .obsidian in this test — real vault
+				// content named node_modules is never hidden in the first place, but this
+				// confirms the pruning predicate itself is path-scoped, not name-scoped.
+				'.obsidian': { files: [], folders: ['.obsidian/node_modules'] },
+				'.obsidian/node_modules': { files: ['.obsidian/node_modules/note.md'], folders: [] },
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state } = await localVault.readFromSource();
+
+			expect(Object.keys(state)).toEqual(['.obsidian/node_modules/note.md']);
+			expect(visited).toContain('.obsidian/node_modules');
+		});
 	});
 });
