@@ -196,7 +196,7 @@ Please use your judgement and try to follow conventions from surrounding code to
 
 **Linting**: Check for code style issues with `npm run lint` and automatically fix fixable issues with `npm run lint:fix`.
 
-**Testing**: stack is Vitest + `src/__mocks__/obsidian.ts` (aliased as `'obsidian'` in `vitest.config.ts`).
+**Testing**: stack is Vitest + `src/__mocks__/obsidian.ts` (aliased as `'obsidian'` in `vitest.config.ts`). These guidelines are also declared, in condensed form, as a review rule in [`rules/testing-standards.md`](../rules/testing-standards.md); keep the two in step.
 
 - **One test = one thing.** Use parameterized tests for variations, not near-duplicate tests that hit the same line with a different magic number. If a *shipped default* also matters, assert it flows through unmodified (no override passed) rather than duplicating the same check with a second hardcoded constant.
 - **Mock only true external boundaries** (Obsidian's API), not our own internal modules (`src/*.ts`). Mocking an internal collaborator only proves args were forwarded to it — it hides real bugs inside that collaborator instead of catching them.

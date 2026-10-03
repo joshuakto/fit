@@ -22,16 +22,9 @@ When shipping a feature: update the relevant doc(s) above to reflect the new sta
 
 ---
 
-## Critical: mobile API compatibility
+## Mobile API compatibility
 
-The plugin runs in Obsidian's mobile environment with no Node.js. Violations cause silent failures or crashes on mobile.
-
-- ❌ No `Buffer`, `process`, `require('fs')`, `require('util')`, or any Node.js built-ins
-- ❌ No `new TextDecoder()` without `{ fatal: true }` — causes silent data corruption
-- ✅ Use `vault.readBinary()` for file reads, not `vault.read()`
-- ✅ Use Obsidian's `arrayBufferToBase64()` instead of `Buffer.from(...).toString('base64')`
-
-See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
+The plugin must run on Obsidian mobile, which has no Node.js. This is enforced mechanically by `npm run lint` and `npm test` (ESLint rules plus a bundle check): if both pass, don't second-guess code against a summary of the rules. The specifics, the reasons, and how to allow a desktop-only exception are in [docs/api-compatibility.md](docs/api-compatibility.md) and `eslint.config.js`.
 
 ---
 
@@ -40,7 +33,7 @@ See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
 **Commands**: `npm test`, `npm run typecheck && npm run lint`
 **Targeted test**: `npm test -- --testNamePattern="pattern"`
 **Architecture**: Vaults (storage) → Fit/FitSync (sync logic) → src/fitPlugin.ts (Obsidian integration)
-**Testing conventions**: if you're writing or editing any test file, you MUST read and follow [docs/CONTRIBUTING.md § Code Quality](docs/CONTRIBUTING.md#code-quality)
+**Testing conventions**: if you're writing or editing any test file, you MUST read and follow [docs/CONTRIBUTING.md § Code Quality](docs/CONTRIBUTING.md#code-quality) (also declared as a review rule in [rules/testing-standards.md](rules/testing-standards.md))
 
 ---
 
