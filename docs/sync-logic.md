@@ -964,10 +964,12 @@ The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault
 | Category | Source | Shown when |
 |---|---|---|
 | Never-synced notice | `lastFetchedCommitSha === null` | First launch before any sync |
-| Conflicted files | `pendingClashes` | One or more paths in pending state |
+| Conflicted files | `pendingClashes`, re-checked against disk | A pending path whose `_fit/` copy still exists and differs from (or has no) local file |
 | Oversized files | `unpushedFiles` + live size check on local changes | File exceeds GitHub's 100 MB limit |
 | Pending local changes | `getLocalChanges()` diff | Local edits not yet pushed |
 | All-clear / commit SHA | all of the above empty | Everything in sync |
+
+The conflicted-files list uses the same resolved-or-pending rules as Phase 0 of a sync (`FitSync.resolvePendingClashes`, read-only), so a clash the user has already resolved on disk (deleted its `_fit/` copy, or made the local file match it) stops showing without a sync in between; a stat or read failure keeps it listed.
 
 ### Auto-merge and Explain
 

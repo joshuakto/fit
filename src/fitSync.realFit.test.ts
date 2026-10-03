@@ -4461,6 +4461,92 @@ describe('FitSync', () => {
 		});
 	});
 
+	describe('Explain Sync Status — pending clash vs. the _fit/ copy on disk', () => {
+		// Both sides edit a binary file differently, so the sync writes _fit/image.png and
+		// records a pending clash.
+		async function syncIntoPendingClash(): Promise<FitSync> {
+			const fitSync = createFitSync();
+			const base = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(base, 'base64'));
+			const remoteResult = await remoteVault.readFromSource();
+			const localResult = await localVault.readFromSource();
+			fitSync.fit.loadLocalStore(makeLocalStore({
+				localShas: localResult.state,
+				lastFetchedRemoteShas: remoteResult.state,
+				lastFetchedCommitSha: remoteResult.commitSha,
+			}));
+			const localEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x02]).buffer;
+			const remoteEdit = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x03]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(localEdit, 'base64'));
+			await remoteVault.setFile('image.png', FileContent.fromArrayBuffer(remoteEdit, 'base64'));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			return fitSync;
+		}
+
+		it('lists the clash while its _fit/ copy exists', async () => {
+			const fitSync = await syncIntoPendingClash();
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					heading: '1 conflicted file need resolution',
+					items: [expect.objectContaining({ path: 'image.png', detail: '_fit/image.png' })],
+				})],
+			}));
+		});
+
+		it('stops listing the clash once the local file is edited to match its _fit/ copy', async () => {
+			const fitSync = await syncIntoPendingClash();
+			const fitCopy = await localVault.readFileContent('_fit/image.png');
+			localVault.setFile('image.png', fitCopy);
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					heading: '1 local change pending next sync',
+					items: [expect.objectContaining({ path: 'image.png' })],
+				})],
+			}));
+		});
+
+		it('keeps listing the clash while the local file differs from its _fit/ copy, even after an edit', async () => {
+			const fitSync = await syncIntoPendingClash();
+			const edited = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x09]).buffer;
+			localVault.setFile('image.png', FileContent.fromArrayBuffer(edited, 'base64'));
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					heading: '1 conflicted file need resolution',
+					items: [expect.objectContaining({ path: 'image.png', detail: '_fit/image.png' })],
+				})],
+			}));
+		});
+
+		it('stops listing the clash once the user deletes its _fit/ copy, without a sync in between', async () => {
+			const fitSync = await syncIntoPendingClash();
+			localVault.deleteFile('_fit/image.png');
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					// Resolved, so it is now just a local edit waiting for the next sync
+					heading: '1 local change pending next sync',
+					items: [expect.objectContaining({ path: 'image.png' })],
+				})],
+			}));
+		});
+	});
+
 	describe('Line-based text merge', () => {
 		async function setupSyncedNote(fitSync: FitSync, content: string) {
 			localVault.setFile('note.md', content);

@@ -19,6 +19,11 @@ import { UNIVERSAL_SECRET_FIELD_DENYLIST } from './util/protectedPaths';
 import { isUnderAnyPrefix } from './util/filePath';
 import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes, resolveSyncFormat as resolveSyncFormatPure, resolveScope as resolveScopePure } from '@/fitAttributes';
 
+/** Whether a pending clash is still unresolved on disk — see FitSync.resolvePendingClashes. */
+type PendingClashResolution =
+	| { status: 'pending' }
+	| { status: 'resolved'; fitCopyExists: boolean; localExists: boolean; localContent: FileContent | null };
+
 /** Resolution outcome for one scope:"subset" path — see FitSync.resolveSubsetScopePath. */
 type SubsetPathAction =
 	| { path: string; kind: 'skip' }
@@ -698,6 +703,70 @@ export class FitSync implements IFitSync {
 		}
 
 		return { existenceMap, statError };
+	}
+
+	/**
+	 * Decide, from what is on disk now, whether each pending clash has been resolved. No
+	 * writes. Shared by sync()'s Phase 0 (which then acts on the result) and explainStatus()
+	 * (which only reports it), so the two cannot disagree.
+	 *
+	 * - `_fit/<path>` gone: resolved.
+	 * - `_fit/<path>` present and `<path>` missing: pending. That is indistinguishable from a
+	 *   delete/modify clash's creation state (local was already absent when it was made), so
+	 *   deleting the `_fit/` copy is the only unambiguous resolution signal.
+	 * - Both present: resolved only if their contents match.
+	 * - A stat or read failure: pending, conservatively.
+	 */
+	private async resolvePendingClashes(paths: string[]): Promise<Map<string, PendingClashResolution>> {
+		// All paths here are tracked (non-hidden, non-protected), so vault index would suffice for
+		// existence checks. collectFilesystemState uses adapter.stat, which is fine given the small
+		// count; if this becomes a bottleneck, check getAbstractFileByPath first and fall back to
+		// adapter.stat only on null.
+		const { existenceMap } = await this.collectFilesystemState([
+			...paths.map(p => `_fit/${p}`),
+			...paths,
+		]);
+		const resolutions = new Map<string, PendingClashResolution>();
+
+		for (const path of paths) {
+			const fitState = existenceMap.get(`_fit/${path}`);
+			const localState = existenceMap.get(path);
+			if (fitState === undefined || localState === undefined) {
+				resolutions.set(path, { status: 'pending' });
+				continue;
+			}
+
+			const fitCopyExists = fitState !== 'nonexistent';
+			const localExists = localState !== 'nonexistent';
+			if (!fitCopyExists) {
+				resolutions.set(path, { status: 'resolved', fitCopyExists, localExists, localContent: null });
+			} else if (!localExists) {
+				resolutions.set(path, { status: 'pending' });
+			} else {
+				try {
+					const [fitContent, localContent] = await Promise.all([
+						this.fit.localVault.readFileContent(`_fit/${path}`),
+						this.fit.localVault.readFileContent(path),
+					]);
+					const [fitSha, localSha] = await Promise.all([
+						LocalVault.fileSha1(path, fitContent),
+						LocalVault.fileSha1(path, localContent),
+					]);
+					resolutions.set(path, fitSha === localSha
+						? { status: 'resolved', fitCopyExists, localExists, localContent }
+						: { status: 'pending' });
+				} catch {
+					resolutions.set(path, { status: 'pending' });
+				}
+			}
+		}
+		return resolutions;
+	}
+
+	/** The stored pending clashes that are still unresolved on disk right now (read-only). */
+	private async stillPendingClashes(): Promise<string[]> {
+		const resolutions = await this.resolvePendingClashes(this.fit.pendingClashes);
+		return this.fit.pendingClashes.filter(path => resolutions.get(path)?.status !== 'resolved');
 	}
 
 	/**
@@ -1459,79 +1528,31 @@ export class FitSync implements IFitSync {
 
 			if (this.fit.pendingClashes.length > 0) {
 				fitLogger.log('.. ⏳ [Phase0] Checking pending clashes', { count: this.fit.pendingClashes.length, paths: this.fit.pendingClashes });
-				const pathsToCheck = [
-					...this.fit.pendingClashes.map(p => `_fit/${p}`),
-					...this.fit.pendingClashes,
-				];
-				// All paths here are tracked (non-hidden, non-protected), so vault index would
-				// suffice for existence checks. collectFilesystemState uses adapter.stat, which
-				// is fine given the small count; if this becomes a bottleneck, check
-				// getAbstractFileByPath first and fall back to adapter.stat only on null.
-				const { existenceMap: pendingExistenceMap } = await this.collectFilesystemState(pathsToCheck);
+				const resolutions = await this.resolvePendingClashes(this.fit.pendingClashes);
 				const stillPending: string[] = [];
 				const fitCopiesToDelete: string[] = [];
 
 				for (const path of this.fit.pendingClashes) {
-					const fitState = pendingExistenceMap.get(`_fit/${path}`);
-					const localState = pendingExistenceMap.get(path);
-
-					if (fitState === undefined || localState === undefined) {
-						// Stat failed — keep pending conservatively
+					const resolution = resolutions.get(path);
+					if (resolution === undefined || resolution.status === 'pending') {
 						activePendingPaths.add(path);
 						stillPending.push(path);
-						continue;
-					}
-
-					const fitExists = fitState !== 'nonexistent';
-					const localExists = localState !== 'nonexistent';
-
-					if (!fitExists) {
-						// _fit/ deleted by user — clash is resolved
-						if (!localExists) {
-							// Both gone — push deletion to remote
-							pendingDeletions.push(path);
-						}
-						// If local exists: no baseline → ADDED → pushed in normal detection
-					} else if (!localExists) {
-						// _fit/ remains and local is still absent — indistinguishable from a
-						// delete/modify clash's original creation state (local was already
-						// absent when the clash was made). The only unambiguous resolution
-						// signal here is deleting the _fit/ copy (handled above); keep pending.
-						activePendingPaths.add(path);
-						stillPending.push(path);
+					} else if (!resolution.fitCopyExists) {
+						// _fit/ deleted by user. If local is gone too, push the deletion to remote;
+						// if local exists there is no baseline → ADDED → pushed in normal detection.
+						if (!resolution.localExists) pendingDeletions.push(path);
 					} else {
-						// Both exist — resolved if content matches, still pending otherwise
+						// _fit/ copy matches local — queue it for deletion; path re-enters normal detection
+						fitCopiesToDelete.push(`_fit/${path}`);
+						// Check if local content already matches remote — if so, no push needed.
+						// readFileContent returns cached content from readFromSource (no extra network call).
 						try {
-							const [fitContent, localContent] = await Promise.all([
-								this.fit.localVault.readFileContent(`_fit/${path}`),
-								this.fit.localVault.readFileContent(path),
-							]);
-							const [fitSha, localSha] = await Promise.all([
-								LocalVault.fileSha1(path, fitContent),
-								LocalVault.fileSha1(path, localContent),
-							]);
-
-							if (fitSha === localSha) {
-								// Resolved — queue _fit/ copy for deletion; path re-enters normal detection
-								fitCopiesToDelete.push(`_fit/${path}`);
-								// Check if local content already matches remote — if so, no push needed.
-								// readFileContent returns cached content from readFromSource (no extra network call).
-								try {
-									const remoteContent = await this.fit.remoteVault.readFileContent(path);
-									if (localContent.equals(remoteContent)) {
-										resolvedNoChangePaths.add(path);
-									}
-								} catch {
-									// Can't read remote — safe to push (may cause harmless re-push)
-								}
-							} else {
-								activePendingPaths.add(path);
-								stillPending.push(path);
+							const remoteContent = await this.fit.remoteVault.readFileContent(path);
+							if (resolution.localContent?.equals(remoteContent)) {
+								resolvedNoChangePaths.add(path);
 							}
 						} catch {
-							// Can't read — keep pending conservatively
-							activePendingPaths.add(path);
-							stillPending.push(path);
+							// Can't read remote — safe to push (may cause harmless re-push)
 						}
 					}
 				}
@@ -1963,7 +1984,9 @@ export class FitSync implements IFitSync {
 		const snapshot: SyncStatusSnapshot = {
 			lastFetchedCommitSha: this.fit.lastFetchedCommitSha,
 			trackedFileCount: Object.keys(this.fit.localShas).length,
-			pendingClashes: [...this.fit.pendingClashes],
+			// Re-checked against disk, as Phase 0 would: a clash whose _fit/ copy the user has
+			// since deleted is no longer pending, even though no sync has recorded that yet.
+			pendingClashes: await this.stillPendingClashes(),
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
 			fitAttributesWarning: this.fit.fitAttributesWarning,
 			possiblyChangedSubsetScopePaths: [],
@@ -2015,7 +2038,7 @@ export class FitSync implements IFitSync {
 					if (this.fit.localShas[path] !== undefined) subsetBaseline[path] = this.fit.localShas[path];
 				}
 				snapshot.possiblyChangedSubsetScopePaths = compareFileStates(subsetCurrent, subsetBaseline)
-					.filter(c => !this.fit.pendingClashes.includes(c.path));
+					.filter(c => !snapshot.pendingClashes.includes(c.path));
 			}
 		} catch (err) {
 			scanFailedPaths = err instanceof VaultError && err.details?.failedPaths
