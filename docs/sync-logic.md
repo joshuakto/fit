@@ -327,7 +327,7 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 #### Scan-time pruning vs. the stored baseline
 
-The hidden-path scan (`collectHiddenInDir`) does not walk into VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file). A walk into one costs a full recursive scan and can surface thousands of paths nobody means to sync.
+The hidden-path scan (`collectHiddenInDir`) does not walk into VCS metadata (`.git`, `.jj`, `.hg`, `.svn`, `.bzr`, matched as a whole path component, files as well as folders — a submodule's `.git` gitlink marker is a file) or a plugin's `node_modules/` (`.obsidian/plugins/*/node_modules`, path-scoped). A walk into one costs a full recursive scan and can surface thousands of paths nobody means to sync.
 
 The scan also skips a path whose contents the adapter cannot list (a folder, or a symlink to one). Obsidian's desktop `list()` stats every entry and rejects the whole call when one fails (e.g. a dangling symlink inside the folder), so one bad entry hides the path and everything under it, but not its siblings. The failure is logged with the path and error (the failing entry named in the error may be a child of that path) and listed in the sync notice as a block like the rate-limited and locally-failed file lists, since hidden files under it are not syncing. If the vault root itself cannot be listed, the whole hidden-path scan is skipped the same way: the root is reported as `/`, which stands for every hidden path (they all come from that scan), while ordinary vault files still sync.
 

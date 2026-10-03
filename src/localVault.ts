@@ -16,6 +16,7 @@ import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
 import { GitignoreFilter } from "./util/gitignore";
+import { isPluginNodeModulesRoot } from "./util/protectedPaths";
 
 /**
  * Helper to process Promise.allSettled results and collect failures
@@ -57,12 +58,22 @@ function containsPrunedComponent(path: string): boolean {
 	return path.split('/').some(part => PRUNED_PATH_COMPONENTS.has(part));
 }
 
+/**
+ * containsPrunedComponent, plus a plugin's own node_modules/ (`isPluginNodeModulesRoot`),
+ * which `shouldSyncPath` excludes from sync only after this scan has walked it.
+ * Path-scoped rather than part of PRUNED_PATH_COMPONENTS: that set matches a component
+ * anywhere in the vault, and node_modules is a legitimate folder name outside a plugin dir.
+ */
+function shouldPruneScanFolder(path: string): boolean {
+	return containsPrunedComponent(path) || isPluginNodeModulesRoot(path);
+}
+
 interface HiddenPathScanResult {
 	paths: string[];
-	// Every file or folder the scan did not look at: pruned components, and directories
-	// the adapter could not list. Returned as orphanedScanPrefixes so the baseline
-	// comparison can tell "not scanned" from "deleted" (docs/sync-logic.md § Scan-time
-	// pruning vs. the stored baseline).
+	// Every file or folder the scan did not look at: pruned components (including a
+	// plugin's node_modules), and directories the adapter could not list. Returned as
+	// orphanedScanPrefixes so the baseline comparison can tell "not scanned" from
+	// "deleted" (docs/sync-logic.md § Scan-time pruning vs. the stored baseline).
 	skippedPaths: string[];
 	// The subset of skippedPaths the scan tried to list and could not, as opposed to ones it
 	// pruned on purpose. These are surfaced to the user (FitSync's sync notice).
@@ -127,7 +138,7 @@ async function collectHiddenInDir(
 		}
 	}
 
-	const [pruned, walked] = partition(listing.folders, containsPrunedComponent);
+	const [pruned, walked] = partition(listing.folders, shouldPruneScanFolder);
 	scan.skippedPaths.push(...pruned);
 
 	await Promise.all(

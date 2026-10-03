@@ -10,8 +10,12 @@ const PLUGIN_MANAGED_ASSET = /^\.obsidian\/plugins\/[^/]+\/(main\.js|manifest\.j
 
 // A plugin dev's own node_modules/ checked into their plugin dir — never something anyone
 // intends to track/push, scoped to plugin dirs specifically (not a blanket anywhere-in-vault
-// match, which would misfire on a legitimately-named vault folder or note).
-const PLUGIN_NODE_MODULES = /^\.obsidian\/plugins\/[^/]+\/node_modules\//;
+// match, which would misfire on a legitimately-named vault folder or note). Both regexes
+// below derive from the same root pattern so the sync-time exclusion and the scan-time
+// pruning root (`isPluginNodeModulesRoot`) can't drift apart.
+const PLUGIN_NODE_MODULES_ROOT_SOURCE = String.raw`^\.obsidian\/plugins\/[^/]+\/node_modules`;
+const PLUGIN_NODE_MODULES = new RegExp(`${PLUGIN_NODE_MODULES_ROOT_SOURCE}\\/`);
+const PLUGIN_NODE_MODULES_ROOT = new RegExp(`${PLUGIN_NODE_MODULES_ROOT_SOURCE}$`);
 
 /**
  * Hard, git-content-independent denylist — content never fetched or inspected,
@@ -22,6 +26,17 @@ const PLUGIN_NODE_MODULES = /^\.obsidian\/plugins\/[^/]+\/node_modules\//;
  */
 export function isHardDenylistedObsidianPath(path: string): boolean {
 	return PLUGIN_MANAGED_ASSET.test(path) || PLUGIN_NODE_MODULES.test(path);
+}
+
+/**
+ * Whether `path` is itself a plugin's `node_modules` root folder (no trailing slash, as
+ * `DataAdapter.list()`'s `folders` entries are shaped) — used by the hidden-path scan
+ * (`LocalVault`) to prune recursion into it. `isHardDenylistedObsidianPath` tests file
+ * paths *under* the root and remains the sync gate however a path was discovered (local
+ * scan, tracked-path probe, or remote tree state); this only keeps the scan from walking in.
+ */
+export function isPluginNodeModulesRoot(path: string): boolean {
+	return PLUGIN_NODE_MODULES_ROOT.test(path);
 }
 
 /**
