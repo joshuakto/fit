@@ -169,6 +169,13 @@ or any `fs` resolution failure) never writes a remote symlink path locally — l
 applied, not surfaced as a user notice — and since it's never written, it's excluded from the
 local baseline too, so it's never mistaken for a local deletion on a later sync.
 
+A pulled symlink's target string is untrusted (it comes from a remote git tree entry), so
+`writeSymlink` refuses one that could resolve outside the vault — absolute or drive-letter
+targets, backslashes, `..` anywhere but a leading run, or a leading `..` count deeper than the
+link's *real* (realpath) parent directory. That write then fails like any other per-file local
+write failure (baseline not advanced, retried next sync) instead of surfacing out-of-vault files
+to Obsidian's indexer and pushing them back.
+
 Folder-level symlink detection only runs inside the hidden-path scan (`folderIsHidden` gate,
 see Path Filtering below) — a non-hidden symlinked folder's contents still sync as ordinary
 files at their resolved paths rather than the folder being represented as one symlink entry.
@@ -177,8 +184,9 @@ detection: a directory already walked is never re-entered, so a cycle (symlink o
 terminates the walk instead of hanging it, even where `isSymlink` itself fails closed.
 
 **Scan-time pruning vs. the stored baseline.** The hidden-path scan (`collectHiddenInDir`)
-prunes VCS-metadata dirs (`PRUNED_PATH_COMPONENTS`) and skips a newly-detected symlinked
-folder without walking into it — folders `readFromSource()` reports as
+prunes VCS-metadata dirs *and files* (`PRUNED_PATH_COMPONENTS`; a submodule's `.git` gitlink
+marker is a file) and skips a newly-detected symlinked folder without walking into it — paths
+`readFromSource()` reports as
 `orphanedScanPrefixes: Set<string>`. A path from `localShas` that sits under one of these has
 no corresponding entry in `currentState` this sync purely because the scan didn't look there
 — not because it was deleted. `Fit.getLocalChanges()`'s `isSyncCandidate` excludes any such

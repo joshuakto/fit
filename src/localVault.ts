@@ -89,7 +89,7 @@ interface HiddenPathScanResult {
 	// active without another per-item dump. Revisits caught by the `visited` guard (#390)
 	// aren't counted separately — they're cycle-prevention, not a category worth its own
 	// tally.
-	prunedDirsSkipped: number;
+	prunedPathsSkipped: number;
 	symlinksSkipped: number;
 	// Full path lists behind the two counts above — never logged (see orphanedScanPrefixes
 	// below; docs/sync-logic.md § Symlink baseline, "Scan-time pruning vs. the stored baseline").
@@ -98,14 +98,14 @@ interface HiddenPathScanResult {
 
 async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
 	const results: string[] = [];
-	const skippedPrunedDirs: string[] = [];
+	const skippedPruned: string[] = [];
 	const skippedSymlinks: string[] = [];
-	await collectHiddenInDir(adapter, '/', results, false, new Set<string>(), skippedPrunedDirs, skippedSymlinks);
+	await collectHiddenInDir(adapter, '/', results, false, new Set<string>(), skippedPruned, skippedSymlinks);
 	return {
 		paths: results,
-		prunedDirsSkipped: skippedPrunedDirs.length,
+		prunedPathsSkipped: skippedPruned.length,
 		symlinksSkipped: skippedSymlinks.length,
-		skippedFolders: [...skippedPrunedDirs, ...skippedSymlinks]
+		skippedFolders: [...skippedPruned, ...skippedSymlinks]
 	};
 }
 
@@ -115,7 +115,7 @@ async function collectHiddenInDir(
 	results: string[],
 	dirIsHidden: boolean,
 	visited: Set<string>,
-	skippedPrunedDirs: string[],
+	skippedPruned: string[],
 	skippedSymlinks: string[]
 ): Promise<void> {
 	// Obsidian resolves a symlinked directory while reporting the link's own path, and
@@ -133,7 +133,10 @@ async function collectHiddenInDir(
 	}
 
 	for (const file of listing.files) {
-		if (containsPrunedComponent(file)) continue;
+		if (containsPrunedComponent(file)) {
+			skippedPruned.push(file);
+			continue;
+		}
 		// Skip per-file check when already inside a hidden directory — all paths are hidden
 		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
 			results.push(file);
@@ -142,7 +145,7 @@ async function collectHiddenInDir(
 
 	for (const folder of listing.folders) {
 		if (containsPrunedComponent(folder)) {
-			skippedPrunedDirs.push(folder);
+			skippedPruned.push(folder);
 		}
 	}
 
@@ -159,7 +162,7 @@ async function collectHiddenInDir(
 					skippedSymlinks.push(folder);
 					return;
 				}
-				await collectHiddenInDir(adapter, folder, results, folderIsHidden, visited, skippedPrunedDirs, skippedSymlinks);
+				await collectHiddenInDir(adapter, folder, results, folderIsHidden, visited, skippedPruned, skippedSymlinks);
 			})
 	);
 }
@@ -288,10 +291,10 @@ export class LocalVault implements IVault<"local"> {
 			const scanResult = await scanHiddenPaths(this.vault.adapter);
 			hiddenPaths = scanResult.paths;
 			orphanedScanPrefixes = scanResult.skippedFolders;
-			if (hiddenPaths.length > 0 || scanResult.prunedDirsSkipped > 0 || scanResult.symlinksSkipped > 0) {
+			if (hiddenPaths.length > 0 || scanResult.prunedPathsSkipped > 0 || scanResult.symlinksSkipped > 0) {
 				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
 					count: hiddenPaths.length, paths: hiddenPaths,
-					prunedDirsSkipped: scanResult.prunedDirsSkipped, symlinksSkipped: scanResult.symlinksSkipped
+					prunedPathsSkipped: scanResult.prunedPathsSkipped, symlinksSkipped: scanResult.symlinksSkipped
 				});
 			}
 		}
@@ -686,7 +689,10 @@ export class LocalVault implements IVault<"local"> {
 		await this.ensureFolderExists(path);
 		const wrote = await writeSymlink(this.vault.adapter, path, target);
 		if (!wrote) {
-			throw VaultError.filesystem(`Failed to write symlink: ${path}`);
+			throw VaultError.filesystem(
+				`Failed to write symlink: ${path} (refused if its target resolves outside the vault ` +
+				`or a real folder is in the way)`
+			);
 		}
 
 		return {

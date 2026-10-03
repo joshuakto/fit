@@ -96,19 +96,87 @@ describe('desktopCompat', () => {
 
 			const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fit-writesymlink-ok-test-'));
 			const vaultDir = path.join(tmpRoot, 'vault');
-			await fs.promises.mkdir(vaultDir);
+			await fs.promises.mkdir(path.join(vaultDir, 'notes'), { recursive: true });
 
 			try {
 				const { FileSystemAdapter } = await import('obsidian');
 				const adapter = new FileSystemAdapter();
 				adapter.getBasePath = () => vaultDir;
 
-				const wrote = await writeSymlink(adapter, 'link.md', '../target.md');
+				// Nested so `../target.md` stays inside the vault (a root-level link with
+				// this target would escape it — see the target-validation tests below).
+				const wrote = await writeSymlink(adapter, 'notes/link.md', '../target.md');
 
-				expect(wrote).toBe(true);
-				const stat = await fs.promises.lstat(path.join(vaultDir, 'link.md'));
-				expect(stat.isSymbolicLink()).toBe(true);
-				expect(await fs.promises.readlink(path.join(vaultDir, 'link.md'))).toBe('../target.md');
+				expect({
+					wrote,
+					isSymlink: (await fs.promises.lstat(path.join(vaultDir, 'notes', 'link.md'))).isSymbolicLink(),
+					target: await fs.promises.readlink(path.join(vaultDir, 'notes', 'link.md')),
+				}).toEqual({ wrote: true, isSymlink: true, target: '../target.md' });
+			} finally {
+				await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+			}
+		});
+
+		// Target comes from a remote git tree entry — untrusted. See symlinkTargetStaysInVault.
+		it.each([
+			['absolute target', 'notes/link.md', '/home/user/.ssh'],
+			['windows drive target', 'notes/link.md', 'C:/Users/user/.ssh'],
+			['backslash target', 'notes/link.md', '..\\outside'],
+			['empty target', 'notes/link.md', ''],
+			['".." climbs past vault root from a nested link', 'notes/link.md', '../../outside'],
+			['".." climbs past vault root from a root-level link', 'link.md', '../outside'],
+			['".." after a normal segment', 'notes/link.md', 'sub/../../../outside'],
+		])('refuses a symlink target that could resolve outside the vault: %s', async (_label, linkPath, target) => {
+			const fs = await import('fs');
+			const os = await import('os');
+			const path = await import('path');
+
+			const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fit-writesymlink-target-test-'));
+			const vaultDir = path.join(tmpRoot, 'vault');
+			await fs.promises.mkdir(path.join(vaultDir, 'notes'), { recursive: true });
+
+			try {
+				const { FileSystemAdapter } = await import('obsidian');
+				const adapter = new FileSystemAdapter();
+				adapter.getBasePath = () => vaultDir;
+
+				const wrote = await writeSymlink(adapter, linkPath, target);
+
+				expect({
+					wrote,
+					linkCreated: await fs.promises.lstat(path.join(vaultDir, linkPath)).then(() => true, () => false),
+				}).toEqual({ wrote: false, linkCreated: false });
+			} finally {
+				await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+			}
+		});
+
+		// Two links that each look fine in isolation but climb out together: `p/q` -> `..` is
+		// legal (resolves to the vault root), after which `p/q/s`'s lexical parent `p/q` looks
+		// two levels deep while its real parent is the vault root itself. A purely lexical
+		// check would allow `p/q/s` -> `../..` (resolves to the vault's parent).
+		it('refuses a target that only escapes via an earlier in-vault symlink in the link\'s own path', async () => {
+			const fs = await import('fs');
+			const os = await import('os');
+			const path = await import('path');
+
+			const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fit-writesymlink-chain-test-'));
+			const vaultDir = path.join(tmpRoot, 'vault');
+			await fs.promises.mkdir(path.join(vaultDir, 'p'), { recursive: true });
+
+			try {
+				const { FileSystemAdapter } = await import('obsidian');
+				const adapter = new FileSystemAdapter();
+				adapter.getBasePath = () => vaultDir;
+				const firstLinkWrote = await writeSymlink(adapter, 'p/q', '..');
+
+				const secondLinkWrote = await writeSymlink(adapter, 'p/q/s', '../..');
+
+				expect({
+					firstLinkWrote, // Legal on its own: resolves to the vault root
+					secondLinkWrote, // Would resolve to the vault's parent via the first link
+					escapedLinkCreated: await fs.promises.lstat(path.join(vaultDir, 's')).then(() => true, () => false),
+				}).toEqual({ firstLinkWrote: true, secondLinkWrote: false, escapedLinkCreated: false });
 			} finally {
 				await fs.promises.rm(tmpRoot, { recursive: true, force: true });
 			}

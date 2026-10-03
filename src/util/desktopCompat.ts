@@ -62,8 +62,47 @@ export async function readSymlinkTarget(adapter: DataAdapter, path: string): Pro
 }
 
 /**
+ * Whether a symlink at `absolutePath` pointing at `target` resolves inside the vault.
+ * `target` comes from a remote git tree entry, so it is untrusted: a planted link to
+ * e.g. `/home/user/.ssh` would otherwise surface files outside the vault to Obsidian's
+ * indexer, and FIT would then push them. Rules:
+ * - Absolute targets (`/`, `\`, drive letter) are refused outright — an absolute path is
+ *   device-specific, so it can't mean the same thing across synced devices anyway.
+ * - `..` is only allowed as a leading run (`../../x`), never after a normal segment
+ *   (`x/../..`), since `x` could itself be a symlink and make the physical resolution
+ *   differ from the lexical one.
+ * - The leading `..` count is measured against the link's *real* parent directory
+ *   (realpath), not its lexical one: an earlier in-vault symlink in the path (`a/b` ->
+ *   `..`) changes how deep the parent really is, which two chained links could otherwise
+ *   use to climb out while each looks fine in isolation.
+ */
+async function symlinkTargetStaysInVault(
+	fs: typeof import('fs'),
+	nodePath: typeof import('path'),
+	basePath: string,
+	absolutePath: string,
+	target: string
+): Promise<boolean> {
+	if (target === '' || target.includes('\0') || target.includes('\\')) return false;
+	if (target.startsWith('/') || /^[A-Za-z]:/.test(target)) return false;
+
+	const segments = target.split('/').filter(s => s !== '' && s !== '.');
+	const ups = segments.findIndex(s => s !== '..');
+	const leadingUps = ups === -1 ? segments.length : ups;
+	if (segments.slice(leadingUps).includes('..')) return false;
+
+	const realBase = await fs.promises.realpath(basePath);
+	const realParent = await fs.promises.realpath(nodePath.dirname(absolutePath));
+	const rel = nodePath.relative(realBase, realParent);
+	if (rel === '..' || rel.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(rel)) return false;
+	const parentDepth = rel === '' ? 0 : rel.split(nodePath.sep).length;
+	return leadingUps <= parentDepth;
+}
+
+/**
  * Create (or replace) a real symlink at a vault-relative path pointing at `target`
- * (desktop only). Removes any pre-existing *file* entry at that path first — a previous
+ * (desktop only). Refuses a `target` that resolves outside the vault (see
+ * `symlinkTargetStaysInVault`). Removes any pre-existing *file* entry at that path first — a previous
  * sync may have left a regular file there — but refuses (returns false) if a real
  * directory already occupies the path, matching LocalVault.writeFile's own refusal to
  * clobber a folder. Also refuses any path with a `..` component or a leading `/`: `path`
@@ -77,9 +116,12 @@ export async function writeSymlink(adapter: DataAdapter, path: string, target: s
 	if (!(adapter instanceof FileSystemAdapter)) return false;
 	if (path.startsWith('/') || path.split('/').some(part => part === '..')) return false;
 	const fs = await getNodeFs();
-	if (!fs) return false;
+	const nodePath = await import('path').catch(() => null);
+	if (!fs || !nodePath) return false;
 	try {
-		const absolutePath = `${adapter.getBasePath()}/${path}`;
+		const basePath = adapter.getBasePath();
+		const absolutePath = `${basePath}/${path}`;
+		if (!(await symlinkTargetStaysInVault(fs, nodePath, basePath, absolutePath, target))) return false;
 		const existing = await fs.promises.lstat(absolutePath).catch(() => null);
 		if (existing?.isDirectory()) return false;
 		await fs.promises.rm(absolutePath, { force: true, recursive: true });

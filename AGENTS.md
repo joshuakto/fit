@@ -22,16 +22,9 @@ When shipping a feature: update the relevant doc(s) above to reflect the new sta
 
 ---
 
-## Critical: mobile API compatibility
+## Rules
 
-The plugin runs in Obsidian's mobile environment with no Node.js. Violations cause silent failures or crashes on mobile.
-
-- ❌ No `Buffer`, `process`, `require('fs')`, `require('util')`, or any Node.js built-ins
-- ❌ No `new TextDecoder()` without `{ fatal: true }` — causes silent data corruption
-- ✅ Use `vault.readBinary()` for file reads, not `vault.read()`
-- ✅ Use Obsidian's `arrayBufferToBase64()` instead of `Buffer.from(...).toString('base64')`
-
-See [docs/api-compatibility.md](docs/api-compatibility.md) for the full list.
+Follow every rule file in [rules/](rules/) in addition to this file.
 
 ---
 

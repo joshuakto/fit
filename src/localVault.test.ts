@@ -1163,6 +1163,26 @@ describe('LocalVault', () => {
 			}
 		);
 
+		// A pruned component can be a *file*, not just a dir (e.g. a submodule's `.git`
+		// gitlink marker). It must be reported as orphaned too, or a baseline entry for it
+		// reads as a local deletion — exercised against the real scan, not FakeLocalVault,
+		// which takes orphanedScanPrefixes as a given and never runs this code.
+		it('reports a pruned file (not just a pruned dir) as an orphaned scan prefix', async () => {
+			stubAdapterListing({
+				'/': { files: ['.mytool/.git', '.mytool/config'], folders: [] },
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes } = await localVault.readFromSource();
+
+			expect({ paths: Object.keys(state), orphanedScanPrefixes }).toEqual({
+				paths: ['.mytool/config'], // Ordinary hidden file, still scanned
+				// '.mytool/.git' absent from paths (pruned) but present here, so a baseline entry for it isn't read as deleted
+				orphanedScanPrefixes: new Set(['.mytool/.git']),
+			});
+		});
+
 		// Real symlink detection (#389's content-fidelity scope) — distinct from the
 		// stubbed-listing cycle guard above: this exercises the actual `isSymlink` lstat
 		// check via a real filesystem symlink, not a simulated repeating listing.
@@ -1206,7 +1226,7 @@ describe('LocalVault', () => {
 				// line, no separate per-skipped-path log call with a full path array.
 				expect(consoleLogSpy).toHaveBeenCalledWith(
 					'[LocalVault] Hidden paths discovered via adapter scan',
-					expect.objectContaining({ prunedDirsSkipped: 1, symlinksSkipped: 1 })
+					expect.objectContaining({ prunedPathsSkipped: 1, symlinksSkipped: 1 })
 				);
 				const ownLogCall = consoleLogSpy.mock.calls.find(
 					([tag]) => typeof tag === 'string' && (tag.includes('VCS metadata') || tag.includes('Symlinked dirs'))
