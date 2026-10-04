@@ -17,15 +17,14 @@ import { hasExtension } from '@/util/filePath';
 export interface FitAttributeRule {
 	/**
 	 * "text": opts this tracked path into whole-file sync — full content
-	 * replace, ordinary `_fit/` clash on both-sides-changed, no merge attempt
-	 * yet. Required for any non-JSON tracked path (e.g. .obsidian/snippets/
-	 * *.css) to actually sync; without it, a tracked non-JSON path is
+	 * replace, ordinary `_fit/` clash on both-sides-changed. Only needed for a
+	 * filetype with no default (see below); without a format, a tracked path is
 	 * detected/logged but never read or written.
 	 * "json": opts this tracked path into structural JSON merge (src/util/jsonMerge.ts)
 	 * instead of whole-file opaque replace — concurrent edits to different keys (or,
 	 * for `.canvas`, different id-keyed array elements) merge automatically instead of
-	 * clashing to `_fit/`. For a protected `.obsidian/` path, `format: "json"` alone is
-	 * incomplete — pair it with an explicit `scope` (see below) to actually activate it.
+	 * clashing to `_fit/`. For a protected `.obsidian/` path `scope` defaults to "subset".
+	 * See docs/sync-logic.md § .fitattributes.json.
 	 */
 	format?: 'json' | 'text';
 	/**

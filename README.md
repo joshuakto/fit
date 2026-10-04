@@ -121,8 +121,8 @@ NOTE: A few denylisted paths are always excluded regardless (FIT's own settings 
 }
 ```
 
-- `"format": "text"` — syncs the file as opaque whole-file content, with an ordinary conflict file on both-sides-changed. The only mode available today.
-- `"format": "json"` — field-level sync for a single JSON file, leaving fields you don't list alone. Reserved for a future release, not usable yet.
+- `"format": "text"` — syncs the file as opaque whole-file content, with an ordinary conflict file on both-sides-changed.
+- `"format": "json"` — syncs a JSON file field by field. Edits to different fields on two devices merge instead of producing a conflict file. By default only the fields already present in your GitHub copy are synced, so device-local fields in the same file stay local. Add `"scope": "full"` to sync every field.
 
 </details>
 
@@ -186,7 +186,7 @@ You should also take care with security tokens you use to ensure they don't leak
 **Solution:**
 1. Check file history in GitHub to find bad changes
 2. Use git to restore previous versions OR manually copy from history
-3. Update to v1.4 stable when available or a different beta version
+3. Update to v1.4 or later
 4. Re-sync - files will upload correctly
 
 **Note:** This only affected beta versions. Images and PDFs sync correctly in v1.4+.

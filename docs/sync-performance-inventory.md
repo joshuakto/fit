@@ -70,8 +70,3 @@ happens to *one very large* file, on either side of the previous tables.
 **Worked example:** a 150 MB video file dropped into the vault. Local size check flags it before
 any network call; push is skipped, the path is added to `unpushedFiles`, and the sync notice
 reports it rather than silently dropping it or retrying every sync indefinitely.
-
-## Cross-references
-
-- [sync-logic.md](./sync-logic.md), § Performance Characteristics: the general prose description
-  this doc's rows give real numbers for.

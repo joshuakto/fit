@@ -54,6 +54,8 @@ export type TreeNode = {
  * - No filtering logic: Caller (Fit) is responsible for filtering paths before calling vault methods
  *
  * Future: Create RemoteGitLabVault, RemoteGiteaVault as additional implementations.
+ *
+ * See docs/architecture.md for how vaults fit into the sync engine.
  */
 export class RemoteGitHubVault implements IVault<"remote"> {
 	private octokit: Octokit;

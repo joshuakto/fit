@@ -1,6 +1,7 @@
 import ignore, { Ignore } from "ignore";
 import { DataAdapter } from "obsidian";
 
+/** Applies the vault's `.gitignore` files as a sync filter (docs/sync-logic.md § Path Filtering and Safety). */
 export class GitignoreFilter {
 	private constructor(private readonly filters: Map<string, Ignore>) {}
 

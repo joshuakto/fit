@@ -33,6 +33,9 @@ If you use [jj](https://jj-vcs.github.io/jj/), install [jj-hooks](https://crates
 - **[architecture.md](./architecture.md)** - System design, data flow, component relationships
 - **[sync-logic.md](./sync-logic.md)** - SHA caching, change detection, conflict resolution, edge cases
 - **[api-compatibility.md](./api-compatibility.md)** - Web API safety, cross-platform compatibility, forbidden patterns
+- **[sync-scenario-matrix.md](./sync-scenario-matrix.md)** - Sync scenarios and which tests cover them
+- **[sync-performance-inventory.md](./sync-performance-inventory.md)** - Where sync spends network and local cost
+- **[guidelines/testing.md](./guidelines/testing.md)** - Testing standards
 
 ## Roadmap & Priorities
 
@@ -52,7 +55,7 @@ _These priorities operationalize the philosophy in [architecture.md § Design Pr
 - **Performance** - Fast syncs, efficient API usage, mobile optimization
 
 **🚀 Platform Expansion**:
-- **Selective `.obsidian/` sync** - v1 shipped in 1.6 (replace-strategy + field tracking); v2: field-level exclusion (#67)
+- **Selective `.obsidian/` sync** - shipped in 1.6; remaining: array-valued fields
 - **Multi-platform backends** - GitLab or Gitea
 - **Multi-repo sync** - Multiple vaults or vault partitions
 
@@ -72,7 +75,7 @@ _These priorities operationalize the philosophy in [architecture.md § Design Pr
 ### Browse Issues by Category
 
 **By priority:**
-- [Current milestone](https://github.com/joshuakto/fit/milestone/2) - Active release work
+- [Current milestone](https://github.com/joshuakto/fit/milestone/3) - Active release work
 - [Help wanted](https://github.com/joshuakto/fit/labels/help%20wanted) - Community contribution opportunities
 - [Good first issue](https://github.com/joshuakto/fit/labels/good%20first%20issue) - Newcomer-friendly tasks
 
@@ -122,7 +125,7 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 - **Handle errors gracefully** especially for GitHub API calls
 - **Preserve user data** during sync conflicts
 - **Test edge cases** (large files, network issues, invalid credentials)
-- **Mobile compatibility is normative, not optional** — no Node.js built-ins, no `Buffer`, no non-fatal `TextDecoder`. See [api-compatibility.md](./api-compatibility.md) for the full list; violations cause silent failures or crashes on mobile
+- **Mobile compatibility is normative, not optional** — no Node.js built-ins, no `Buffer`, no non-fatal `TextDecoder`. See [api-compatibility.md](./api-compatibility.md) for the full list; violations cause silent failures or crashes on mobile. The one narrow exception mechanism is described there too
 
 ## Release Process
 
@@ -181,12 +184,13 @@ See [Obsidian Hub release guide](https://publish.obsidian.md/hub/04+-+Guides%2C+
 
 Apply these manually when cutting stable, then clear the list. Add to this list as you ship features that change what README says.
 
-- **Remove "still in beta" note** (line ~20): delete the `**Note:** This plugin is still in beta...` line.
-- **Remove "Coming soon" section**: the "Explain Sync Status" command shipped in 1.6 — delete the entire `## Coming soon` block (the heading, description, and preview image).
-- **Update `.obsidian/` bullet** (under "NOT synced"): remove the `(selective opt-in coming in 1.6)` qualifier — it shipped.
-- **Convert "Coming in the 1.6 release" callout** to present tense: the hidden-files, selective `.obsidian/` sync, and canvas auto-merge features are all live. Rewrite as "New in 1.6:" rather than "Coming in the 1.6 release:". Also move the canvas auto-merge bullet into the conflict handling section as a permanent feature description (remove the "coming in" framing).
-- **Retake the settings screenshot** (line ~39): the current screenshot predates 1.5 UI changes. Capture a fresh screenshot of the FIT settings panel and replace the image at that line.
-- **Update GitHub Enterprise Server note** (Setup section): once GHE support ships in stable, reword "The plugin defaults to github.com. GitHub Enterprise Server support is coming soon." to state it's supported (e.g. "The plugin defaults to github.com, but also supports GitHub Enterprise Server hosts.").
+- **Remove "still in beta" note**: delete the `**Note:** This plugin is still in beta...` line.
+- **Fold the "Coming soon" section into the feature descriptions**: Explain Sync Status and sync on save / on open both shipped, so move each description (and the preview image) to where it belongs, then delete the `## Coming soon` block rather than losing the sync on save / on open text.
+- **Update `.obsidian/` bullet** (under "NOT synced"): remove the `(selective opt-in coming in 1.6)` qualifier. Also reword the Security section's "FIT itself never syncs `.obsidian/`" to "by default" / "unless the path exists in your repo".
+- **Convert the "Coming in the 1.6 release" callout** to present tense ("New in 1.6:"), and drop the "(coming in 1.6)" label on the "Advanced sync configuration" heading. Describe the other shipped merge behavior too: line-based text auto-merge, JSON auto-merge, and the `_fit/` re-check in Explain. Move canvas auto-merge into the conflict handling section as a permanent feature.
+- **Retake the settings screenshot**: the current one predates 1.5 UI changes.
+- **Update GitHub Enterprise Server note** (Setup section): reword "GitHub Enterprise Server support is coming soon." to state it is supported.
+- **Clean up the v1.4 beta bug section** under Common Issues: stable is past 1.4, so drop the "update to v1.4 stable when available" advice.
 
 ---
 

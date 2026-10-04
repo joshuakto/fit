@@ -1213,16 +1213,16 @@ export class FitSync implements IFitSync {
 			});
 		}
 
-		// 3b'. Track protected path SHA arrivals for opt-in reconciliation.
-		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not opted in).
-		// Only the remote SHA is recorded — no content download, no _fit/ write.
-		// When the user later opts in a path, the reconciliation pre-sync step reads
-		// protectedPathShas to establish a baseline and avoid junk clashes.
+		// 3b'. Passively record protected path SHA arrivals.
+		// Remote changes to paths excluded by shouldSyncPath (e.g. .obsidian/ not yet tracked).
+		// Only the remote SHA is recorded — no content download, no _fit/ write. Diagnostic
+		// only: the pre-sync reconcile step takes its candidates from lastFetchedRemoteShas.
 		//
 		// scope: "subset" paths are excluded — they have their own reconciliation
 		// (syncSubsetScopePaths runs every sync, unconditionally, not opt-in-triggered),
 		// and the generic reconcile block below compares RAW file SHAs, which would
 		// wrongly clobber a masked-view baseline the moment it ran.
+		// See docs/sync-logic.md § Path Filtering and Safety.
 		for (const change of protectedRemote) {
 			if (this.fit.resolveSyncFormat(change.path) === 'json' && this.fit.resolveScope(change.path) === 'subset') continue;
 			if (change.type === 'REMOVED') {

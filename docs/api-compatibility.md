@@ -16,14 +16,11 @@ Obsidian updates Electron versions periodically, and users update sporadically. 
 
 **Status:** Safe - Available since January 2020
 
-- **Usage:** [src/util/contentEncoding.ts:97](../src/util/contentEncoding.ts#L97), [src/util/obsidianHelpers.ts:50](../src/util/obsidianHelpers.ts#L50)
+- **Usage:** [src/util/contentEncoding.ts](../src/util/contentEncoding.ts), [src/util/obsidianHelpers.ts](../src/util/obsidianHelpers.ts)
 - **Browser support:** Chrome 38+, Safari 10.1+, Firefox 36+
 - **Mobile:** Full support on iOS/Android WebView
 - **Critical option:** `fatal: true` - Throws TypeError on invalid UTF-8 instead of silently inserting replacement characters (`U+FFFD`)
-- **Obsidian compatibility:**
-  - **Verified:** Works in Obsidian 1.4.13+ (Electron 25, September 2023)
-  - **minAppVersion 1.4.0:** Likely safe (July 2023, Electron version unclear but TextDecoder widely supported since 2018)
-  - **Risk:** LOW - TextDecoder with `fatal` option standardized before Obsidian 1.0 (October 2022)
+- **Obsidian compatibility:** `fatal` was standardized long before Obsidian's current `minAppVersion` (see `manifest.json`), so there is no version risk
 
 **Example:**
 ```typescript
@@ -59,8 +56,7 @@ const str = Array.from(uint8Array, byte => String.fromCharCode(byte)).join('');
 
 **Status:** Safe - Cross-platform guaranteed by Obsidian
 
-- `arrayBufferToBase64()` - [src/util/obsidianHelpers.ts:9](../src/util/obsidianHelpers.ts#L9)
-- `base64ToArrayBuffer()` - [src/util/obsidianHelpers.ts:5](../src/util/obsidianHelpers.ts#L5)
+- `arrayBufferToBase64()` and `base64ToArrayBuffer()` - wrapped by `arrayBufferToContent()` / `contentToArrayBuffer()` in [src/util/obsidianHelpers.ts](../src/util/obsidianHelpers.ts)
 - `Vault.readBinary()` - Always use this instead of `vault.read()` for reliable binary detection
 
 ## Unsafe Patterns to Avoid
@@ -112,7 +108,7 @@ const hasNullByte = new Uint8Array(arrayBuffer).some(b => b === 0);
 
 **Issue:** Issue #156 - `vault.read()` succeeded on JPEG files on iOS, returning corrupted text.
 
-**Fix:** [src/util/obsidianHelpers.ts:26-60](../src/util/obsidianHelpers.ts#L26-L60) - Always use `readBinary()` + null byte heuristic
+**Fix:** `readFileContent` in [src/util/obsidianHelpers.ts](../src/util/obsidianHelpers.ts) - Always use `readBinary()` + null byte heuristic
 
 ### ⚠️ Reading Untracked Files (Hidden Files)
 
@@ -149,7 +145,7 @@ const arrayBuffer = await vault.adapter.readBinary(path);
 // ... decode as needed
 ```
 
-**Example:** [src/localVault.ts:310-340](../src/localVault.ts#L310-L340) - `readFileContentDirect()` implements this pattern
+**Example:** `readFileContent` in [src/util/obsidianHelpers.ts](../src/util/obsidianHelpers.ts) implements this pattern
 
 **Related:** Issue #169 - Baseline tracking for untracked files requires reading hidden files for SHA comparison
 
@@ -182,13 +178,6 @@ Real symlink detection is the motivating example, since `DataAdapter` cannot do 
 
 Use `require('fs')` for the load: in Obsidian's renderer a bare `import('fs')` is left as a native dynamic import and fails to resolve, while `require` works.
 
-### Remaining TODOs
-
-**TODO:** Add CI check for Electron/Chromium minimum version assumptions:
-- Document minimum Electron version supported
-- Add test to verify APIs used are available in that version
-- Reference: [Can I Use TextEncoder](https://caniuse.com/textencoder)
-
 ## Known Electron Compatibility Issues
 
 ### TextDecoder Global Shadowing (Electron Renderer)
@@ -203,30 +192,7 @@ Use `require('fs')` for the load: in Obsidian's renderer a bare `import('fs')` i
 
 ## Testing Strategy
 
-### Current Coverage
-
-- ✅ Binary detection via `fatal: true` ([src/localVault.test.ts:206-221](../src/localVault.test.ts#L206-L221))
-- ✅ Base64 encoding/decoding round-trips ([src/util/contentEncoding.test.ts](../src/util/contentEncoding.test.ts))
-- ✅ Large file handling (multi-MB text) ([src/util/contentEncoding.test.ts:45-70](../src/util/contentEncoding.test.ts#L45-L70))
-- ✅ Implicit `fatal: true` validation - Tests pass on binary files, confirming exception handling works
-
-### Missing Coverage (TODO)
-
-**TODO:** Add explicit test for `fatal: true` throwing on binary data:
-```typescript
-it('should throw when decoding binary data with fatal:true', () => {
-  const binaryData = new Uint8Array([0xFF, 0xD8, 0xFF, 0x00]); // JPEG header
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  expect(() => decoder.decode(binaryData)).toThrow(TypeError);
-});
-```
-
-**TODO:** Verify minAppVersion 1.4.0 compatibility
-- Test on Obsidian 1.4.0 installer (July 2023) if possible
-- Verify TextDecoder `fatal` option works on that Electron version
-- Risk is LOW (API standardized 2018+) but explicit verification preferred
-
-**TODO:** Add test for cross-platform compatibility (if mobile CI available)
+The mechanical checks under [Automated Validation](#automated-validation) enforce these rules. Binary detection and base64 round-trips are covered by [src/util/contentEncoding.test.ts](../src/util/contentEncoding.test.ts) and [src/localVault.test.ts](../src/localVault.test.ts), and mobile behavior by the Android E2E run in CI.
 
 ## References
 

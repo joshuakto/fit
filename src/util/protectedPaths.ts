@@ -82,5 +82,6 @@ export const FIT_OWN_SETTINGS_DENYLIST = [
 	"pendingClashes",
 	"lastSyncedAt",
 	"protectedPathShas",
+	// No longer a LocalStores field; kept so a stale value in an old data.json never syncs.
 	"pendingUntrackedPaths",
 ] as const;
