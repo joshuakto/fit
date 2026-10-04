@@ -16,7 +16,6 @@ import { tryLineMerge } from './util/lineMerge';
 import { hasNullByte } from './util/obsidianHelpers';
 import { extractMask, overlayMask, parseJsonObject } from './util/protectedPathMask';
 import { UNIVERSAL_SECRET_FIELD_DENYLIST } from './util/protectedPaths';
-import { isUnderAnyPrefix } from './util/filePath';
 import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes, resolveSyncFormat as resolveSyncFormatPure, resolveScope as resolveScopePure } from '@/fitAttributes';
 
 /** Resolution outcome for one scope:"subset" path — see FitSync.resolveSubsetScopePath. */
@@ -1404,7 +1403,7 @@ export class FitSync implements IFitSync {
 			}
 
 			// Both succeeded, extract values
-			const {changes: localChanges, state: currentLocalState, orphanedScanPrefixes, unlistablePaths} = localResult.value;
+			const {changes: localChanges, state: currentLocalState, scanCoverage, unlistablePaths} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 
@@ -1590,12 +1589,13 @@ export class FitSync implements IFitSync {
 					.filter(c => !subsetScopeHandledPaths.has(c.path)),
 				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),
 			];
-			// Paths the local scan pruned are out of scope in both directions this sync: local
-			// side is excluded in Fit.getLocalChanges, and a remote change here would be applied
-			// against a local state this sync never looked at (e.g. a remote deletion removing
-			// a local edit nobody scanned). See docs/sync-logic.md § Scan-time pruning.
+			// Paths the local scan did not look at are out of scope in both directions this
+			// sync: local side is excluded in Fit.getLocalChanges, and a remote change here
+			// would be applied against a local state this sync never looked at (e.g. a remote
+			// deletion removing a local edit nobody scanned). See docs/sync-logic.md §
+			// Scan-time pruning.
 			const filteredRemoteChanges = remoteChanges.filter(c =>
-				!subsetScopeHandledPaths.has(c.path) && !isUnderAnyPrefix(c.path, orphanedScanPrefixes));
+				!subsetScopeHandledPaths.has(c.path) && scanCoverage.statusOf(c.path) !== 'unknown');
 
 			// Log detected changes for diagnostics
 			const localCount = filteredLocalChanges.length;

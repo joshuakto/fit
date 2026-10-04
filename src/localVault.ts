@@ -68,8 +68,19 @@ function shouldPruneScanFolder(path: string): boolean {
 	return containsPrunedComponent(path) || isPluginNodeModulesRoot(path);
 }
 
-interface HiddenPathScanResult {
-	paths: string[];
+/** The paths Obsidian's index (vault.getFiles()/getAllFolders()) knows about. */
+interface VaultIndex {
+	files: ReadonlySet<string>;
+	folders: ReadonlySet<string>;
+}
+
+interface UnindexedScanResult {
+	// Unindexed hidden paths: listed by the adapter, absent from Obsidian's index.
+	unindexedPaths: string[];
+	// Unindexed non-hidden files and folders. Observed in Obsidian 1.13.4: the index skips
+	// every symlink while adapter.list follows them, so these are probably symlinks. They
+	// are ignored for sync (also added to skippedPaths).
+	ignoredPaths: string[];
 	// Every file or folder the scan did not look at: pruned components (including a
 	// plugin's node_modules), and directories the adapter could not list. Returned as
 	// orphanedScanPrefixes so the baseline comparison can tell "not scanned" from
@@ -81,26 +92,44 @@ interface HiddenPathScanResult {
 }
 
 /**
- * Recursively scan vault adapter for hidden file paths (any path component starts with '.').
- * vault.getFiles() does not return hidden files, so this adapter-based scan is needed
- * when syncHiddenFiles is enabled. Results are vault-relative paths.
+ * Recursively walk the vault adapter and return the unindexed hidden file paths (those absent
+ * from the index), so no path is reported twice. The index omits hidden files, so this overlay
+ * is how they are found when syncHiddenFiles is enabled.
+ *
+ * An unindexed non-hidden file or folder is not admitted and not walked into: it is
+ * probably a symlink, which adapter.list would follow and flatten (or loop on). It is
+ * reported in `ignoredPaths` and `skippedPaths` instead. Results are vault-relative paths.
  */
-async function scanHiddenPaths(adapter: DataAdapter): Promise<HiddenPathScanResult> {
-	const scan: HiddenPathScanResult = { paths: [], skippedPaths: [], unlistablePaths: [] };
-	await collectHiddenInDir(adapter, '/', scan);
+async function scanUnindexedPaths(
+	adapter: DataAdapter,
+	index: VaultIndex
+): Promise<UnindexedScanResult> {
+	const scan: UnindexedScanResult = { unindexedPaths: [], ignoredPaths: [], skippedPaths: [], unlistablePaths: [] };
+	await collectUnindexedInDir(adapter, index, '/', scan);
 	return scan;
 }
 
-async function collectHiddenInDir(
+// TODO: shouldTrackState, ensureFolderExists, fitStatusExplainer and utils each repeat this
+// dotted-segment test; share one helper.
+function isHiddenPath(path: string): boolean {
+	return FilePath.isHidden(FilePath.create(path));
+}
+
+async function collectUnindexedInDir(
 	adapter: DataAdapter,
+	index: VaultIndex,
 	dir: string,
-	scan: HiddenPathScanResult,
-	dirIsHidden = false,
+	scan: UnindexedScanResult,
 	visited = new Set<string>()
 ): Promise<void> {
-	// Obsidian resolves a symlinked directory while reporting the link's own path, and
-	// DataAdapter exposes no lstat/realpath to tell the two apart, so re-entering a path
-	// already walked is the only signal available that this walk is looping.
+	// Backstop against an adapter that returns the same directory path twice. It does not catch
+	// symlink cycles: Obsidian lists a symlinked directory under the link's own path, so each hop
+	// is a new string (non-hidden links are never entered, see above; a hidden cycle ends only
+	// when the OS link-depth limit makes a listing fail).
+	// TODO: a desktop-only Node readdir (entry types) behind a listing seam would report symlinks
+	// directly. One bad entry would then fail alone instead of hiding its directory, hidden
+	// symlinks would stop being followed and flattened, unindexed non-hidden paths proven to be
+	// regular could be admitted, and this guard could become a depth cap or realpath check.
 	if (visited.has(dir)) return;
 	visited.add(dir);
 
@@ -132,20 +161,28 @@ async function collectHiddenInDir(
 			scan.skippedPaths.push(file);
 			continue;
 		}
-		// Skip per-file check when already inside a hidden directory — all paths are hidden
-		if (dirIsHidden || file.split('/').some(part => part.startsWith('.'))) {
-			scan.paths.push(file);
+		if (index.files.has(file)) continue;
+		if (isHiddenPath(file)) {
+			scan.unindexedPaths.push(file);
+		} else {
+			scan.ignoredPaths.push(file);
+			scan.skippedPaths.push(file);
 		}
 	}
 
-	const [pruned, walked] = partition(listing.folders, shouldPruneScanFolder);
+	const [pruned, candidates] = partition(listing.folders, shouldPruneScanFolder);
 	scan.skippedPaths.push(...pruned);
+	// A hidden folder is never in the index, so it is always walked; a non-hidden one only
+	// if the index has it (a real folder that may hold hidden files).
+	// TODO: confirm adapter and index folder paths agree on macOS (NFD vs NFC): a mismatch
+	// would skip a real folder's hidden files. The same skip happens while the index lags
+	// (e.g. sync-on-open from onload) until a later sync.
+	const [walked, ignored] = partition(candidates, folder => isHiddenPath(folder) || index.folders.has(folder));
+	scan.ignoredPaths.push(...ignored);
+	scan.skippedPaths.push(...ignored);
 
 	await Promise.all(
-		walked.map(folder => {
-			const folderIsHidden = dirIsHidden || folder.split('/').some(p => p.startsWith('.'));
-			return collectHiddenInDir(adapter, folder, scan, folderIsHidden, visited);
-		})
+		walked.map(folder => collectUnindexedInDir(adapter, index, folder, scan, visited))
 	);
 }
 
@@ -258,30 +295,44 @@ export class LocalVault implements IVault<"local"> {
 		const allFiles = this.vault.getFiles();
 		const vaultIndexPaths = allFiles.map(f => f.path);
 
-		// When syncHiddenFiles is enabled, also discover hidden paths via adapter
-		// (vault.getFiles() only returns non-hidden files due to Obsidian API limitations).
+		// When syncHiddenFiles is enabled, also walk the adapter for paths the index lacks
+		// (vault.getFiles() omits hidden files due to Obsidian API limitations).
 		// This involves a full recursive directory scan and has performance overhead.
-		let hiddenPaths: string[] = [];
+		let unindexedPaths: string[] = [];
 		let orphanedScanPrefixes: string[] = [];
 		let unlistablePaths: string[] = [];
 		if (this.syncHiddenFiles) {
-			const scanResult = await scanHiddenPaths(this.vault.adapter);
-			hiddenPaths = scanResult.paths;
+			const scanResult = await scanUnindexedPaths(this.vault.adapter, {
+				files: new Set(vaultIndexPaths),
+				folders: new Set(this.vault.getAllFolders().map(f => f.path)),
+			});
+			unindexedPaths = scanResult.unindexedPaths;
 			orphanedScanPrefixes = scanResult.skippedPaths;
 			unlistablePaths = scanResult.unlistablePaths;
-			if (hiddenPaths.length > 0) {
-				fitLogger.log('[LocalVault] Hidden paths discovered via adapter scan', {
-					count: hiddenPaths.length, paths: hiddenPaths
+			if (scanResult.ignoredPaths.length > 0) {
+				fitLogger.log('[LocalVault] Ignoring unindexed non-hidden paths (likely symlinks, or not yet indexed)', {
+					count: scanResult.ignoredPaths.length, paths: scanResult.ignoredPaths
+				});
+			}
+			if (unindexedPaths.length > 0) {
+				fitLogger.log('[LocalVault] Unindexed (hidden) paths discovered via adapter scan', {
+					count: unindexedPaths.length, paths: unindexedPaths
 				});
 			}
 		}
 
+		// TODO: when syncHiddenFiles is off the scan above never runs, so every hidden path is
+		// unknown to it; model that in ScanCoverage and revisit the stat safeguards (apply and
+		// delete paths in FitSync) and the tracked-path probes below.
+		// TODO: build one record per path (path, sha, what the scan learned, e.g. symlink kind)
+		// here, instead of the parallel path arrays below.
+		//
 		// .fitattributes.json is hidden (leading dot) so vault.getFiles() never returns
 		// it — must be discovered explicitly when the hidden-path scan above is skipped,
 		// or shouldTrackState's special-case for it (below) never gets a chance to run.
 		// Only add it if it actually exists locally: injecting a path that doesn't exist
 		// would make the SHA-computation step below fail it and abort the whole sync.
-		let allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...hiddenPaths] : vaultIndexPaths;
+		let allPaths = this.syncHiddenFiles ? [...vaultIndexPaths, ...unindexedPaths] : vaultIndexPaths;
 		if (!this.syncHiddenFiles && !allPaths.includes(FITATTRIBUTES_PATH)) {
 			if (await this.vault.adapter.stat(FITATTRIBUTES_PATH)) {
 				allPaths = [...allPaths, FITATTRIBUTES_PATH];

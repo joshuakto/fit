@@ -18,7 +18,7 @@ import { computeSha1 } from './util/hashing';
 
 // Type-safe mock that includes only the methods LocalVault uses
 type MockVault = Pick<Vault,
-	'getFiles' | 'getAbstractFileByPath' | 'createFolder' |
+	'getFiles' | 'getAllFolders' | 'getAbstractFileByPath' | 'createFolder' |
 	'read' | 'readBinary' | 'cachedRead' |
 	'create' | 'createBinary' | 'modify' | 'modifyBinary' | 'delete'
 > & {
@@ -49,6 +49,7 @@ describe('LocalVault', () => {
 	beforeEach(() => {
 		mockVault = {
 			getFiles: vi.fn(),
+			getAllFolders: vi.fn().mockReturnValue([]), // Default: no folders in the index
 			read: vi.fn(),
 			readBinary: vi.fn(),
 			cachedRead: vi.fn(),
@@ -1179,6 +1180,59 @@ describe('LocalVault', () => {
 				// '.mytool/.git' absent from paths (pruned) but present here, so a baseline entry for it isn't read as deleted
 				orphanedScanPrefixes: new Set(['.mytool/.git']),
 				unlistablePaths: [], // Pruned on purpose, nothing to tell the user
+			});
+		});
+
+		// The adapter walk is an overlay on Obsidian's index: it adds unindexed hidden paths and
+		// never re-reports an indexed one. It must NOT add an unindexed non-hidden path:
+		// observed in Obsidian 1.13.4, that is exactly what a symlink (file or folder) looks
+		// like — getFiles()/getAllFolders() skip it while adapter.list follows it, so admitting
+		// it would sync a flattened copy of the target (and, for a link cycle, a copy per
+		// nesting level until the OS gives up).
+		it('adds an unindexed hidden path, but not an unindexed non-hidden one (which looks like a symlink)', async () => {
+			mockVault.getFiles.mockReturnValue([StubTFile.ofPath('indexed.md')] as TFile[]);
+			mockVault.readBinary.mockResolvedValue(new TextEncoder().encode('content').buffer);
+			stubAdapterListing({
+				'/': { files: ['indexed.md', 'linked.md', '.hidden.md'], folders: [] },
+			});
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes, unlistablePaths } = await localVault.readFromSource();
+
+			expect({ paths: Object.keys(state).sort(), orphanedScanPrefixes, unlistablePaths }).toEqual({
+				paths: [
+					'.hidden.md', // Hidden: only the adapter knows it
+					'indexed.md', // From the index, and listed by the adapter too: counted once
+					// 'linked.md' absent: not hidden, not in the index, so possibly a symlink
+				],
+				// Reported as not scanned, so a baseline entry for it is never read as a deletion
+				orphanedScanPrefixes: new Set(['linked.md']),
+				unlistablePaths: [], // A decision, not an error: nothing to tell the user
+			});
+			expect(consoleLogSpy).toHaveBeenCalledWith(
+				'[LocalVault] Ignoring unindexed non-hidden paths (likely symlinks, or not yet indexed)',
+				{ count: 1, paths: ['linked.md'] }
+			);
+		});
+
+		it('does not walk into an unindexed non-hidden folder, and reports it as not scanned', async () => {
+			const visited = stubAdapterListing({
+				'/': { files: [], folders: ['linkdir', 'real'] },
+				// Only reachable if the walk followed the symlinked folder.
+				'linkdir': { files: ['linkdir/.secret'], folders: [] },
+				'real': { files: ['real/.note'], folders: [] },
+			});
+			mockVault.getAllFolders.mockReturnValue([{ path: 'real' }]); // Index has `real`, not the link
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			localVault.configure({ syncHiddenFiles: true });
+			const { state, orphanedScanPrefixes } = await localVault.readFromSource();
+
+			expect({ visited, paths: Object.keys(state), orphanedScanPrefixes }).toEqual({
+				visited: ['/', 'real'], // `linkdir` never listed
+				paths: ['real/.note'], // Hidden file inside an indexed folder: still found
+				orphanedScanPrefixes: new Set(['linkdir']),
 			});
 		});
 
