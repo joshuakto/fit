@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
+import builtins from 'builtin-modules';
 import { obsidianExternals } from '../esbuild.externals.mjs';
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -59,26 +60,59 @@ describe('mobile API compatibility: ESLint', () => {
 	});
 });
 
+const nodeBuiltins = new Set(builtins.map(name => name.replace(/^node:/, '')));
+
+/**
+ * Fails resolution of any Node built-in, even one whose bare name is also an installed npm
+ * package (`buffer`, `events`, `process`, `string_decoder`): without this, esbuild would bundle
+ * the package for a browser target and hide an import the real build leaves as a bare
+ * `require()`, which throws on mobile. To allow a desktop-only file (see eslint.config.js),
+ * return `{ path: args.path, external: true }` here only when args.importer is that file, and
+ * assert the built-ins left in the output are exactly the ones it may use.
+ */
+const rejectNodeBuiltins: esbuild.Plugin = {
+	name: 'reject-node-builtins',
+	setup(build) {
+		build.onResolve({ filter: /^[^./]/ }, args => {
+			if (!nodeBuiltins.has(args.path.replace(/^node:/, ''))) return undefined;
+			return { errors: [{ text: `Node built-in "${args.path}" imported from ${args.importer}` }] };
+		});
+	},
+};
+
+/** Bundles for a browser-like target, with the real build's externals minus Node built-ins. */
+async function bundleErrors(entry: esbuild.BuildOptions): Promise<string[]> {
+	const result = await esbuild.build({
+		...entry,
+		bundle: true,
+		write: false,
+		format: 'cjs',
+		target: 'es2018',
+		logLevel: 'silent',
+		external: obsidianExternals,
+		platform: 'browser',
+		plugins: [rejectNodeBuiltins],
+	}).catch((error: esbuild.BuildFailure) => error);
+	return 'errors' in result ? result.errors.map(e => e.text) : [];
+}
+
 describe('mobile API compatibility: bundle', () => {
 	it('bundles the plugin without importing any Node built-in', async () => {
-		const result = await esbuild.build({
-			entryPoints: [path.join(repoRoot, 'main.ts')],
-			bundle: true,
-			write: false,
-			format: 'cjs',
-			target: 'es2018',
-			logLevel: 'silent',
-			external: obsidianExternals,
-			// Built-ins are deliberately NOT external here: the real build marks them external
-			// (so a stray import would load fine on desktop and only fail on mobile); resolving
-			// them for a browser target turns the same import into a build error.
-			// To allow a desktop-only file (see eslint.config.js): add an esbuild plugin whose
-			// onResolve marks a built-in external only when args.importer is that file, and assert
-			// the built-ins left in the output are exactly the ones it may use.
-			platform: 'browser',
-		}).catch((error: esbuild.BuildFailure) => error);
-
-		const errors = 'errors' in result ? result.errors.map(e => e.text) : [];
-		expect(errors).toEqual([]);
+		expect(await bundleErrors({ entryPoints: [path.join(repoRoot, 'main.ts')] })).toEqual([]);
 	}, 60000);
+
+	it.each([
+		['fs', 'import "fs";'],
+		['a node: prefixed built-in', 'import "node:path";'],
+		['a built-in subpath', 'import "fs/promises";'],
+		['a built-in that is also an installed npm package', 'import "events";'],
+	])('rejects a stray import of %s', async (_label, code) => {
+		const errors = await bundleErrors({ stdin: { contents: code, resolveDir: repoRoot } });
+		expect(errors).toEqual([expect.stringContaining('Node built-in')]);
+	});
+
+	it('allows a package whose name merely starts like a built-in', async () => {
+		const errors = await bundleErrors({ stdin: { contents: 'import "events/";', resolveDir: repoRoot } });
+		expect(errors).toEqual([]);
+	});
 });
