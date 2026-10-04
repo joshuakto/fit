@@ -971,10 +971,10 @@ The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault
 | Never-synced notice | `lastFetchedCommitSha === null` | First launch before any sync |
 | Conflicted files | `pendingClashes`, re-checked against disk | A pending path whose `_fit/` copy still exists and differs from (or has no) local file |
 | Oversized files | `unpushedFiles` + live size check on local changes | File exceeds GitHub's 100 MB limit |
-| Pending local changes | `getLocalChanges()` diff | Local edits not yet pushed |
+| Pending local changes | `getLocalChanges()` diff, plus the deletions of resolved clashes | Local edits not yet pushed, and a clash whose local file and `_fit/` copy are both gone (the next sync pushes that deletion) |
 | All-clear / commit SHA | all of the above empty | Everything in sync |
 
-The conflicted-files list uses the same resolved-or-pending rules as Phase 0 of a sync (`FitSync.resolvePendingClashes`, read-only), so a clash the user has already resolved on disk (deleted its `_fit/` copy, or made the local file match it) stops showing without a sync in between; a stat or read failure keeps it listed.
+The conflicted-files list uses the same resolved-or-pending rules as Phase 0 of a sync (`FitSync.resolvePendingClashes`, read-only), so a clash the user has already resolved on disk (deleted its `_fit/` copy, or made the local file match it) stops showing without a sync in between; a stat or read failure keeps it listed. If the user deleted both the local file and its `_fit/` copy, the clash is resolved and Phase 0 pushes the deletion, so Explain lists that path under pending local changes as a removal (it has no baseline, so the local scan would not report it).
 
 ### Auto-merge and Explain
 
