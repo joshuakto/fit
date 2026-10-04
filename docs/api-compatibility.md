@@ -1,7 +1,5 @@
 # API Compatibility & Dependency Safety
 
-**Last Updated:** 2025-12-24
-
 This document tracks Web APIs and patterns that may have compatibility issues across Obsidian's supported platforms (Desktop/Mobile) and provides guidelines for safe usage.
 
 ## Overview
@@ -157,19 +155,34 @@ const arrayBuffer = await vault.adapter.readBinary(path);
 
 ## Automated Validation
 
-Currently, compatibility issues are caught by:
-1. ✅ **CI test matrix** - Detects missing Node.js APIs at runtime
-2. ✅ **ESLint `no-restricted-globals`** - Bans non-mobile-compatible `Buffer`, `require`, `process` in plugin code
-3. ⚠️ **Manual code review** - Catches other unsafe patterns
+Compatibility issues are caught mechanically by:
+1. ✅ **ESLint rules for plugin source** (`eslint.config.js`, `src/**` excluding tests), each checked by a snippet test in [src/apiCompatibility.test.ts](../src/apiCompatibility.test.ts):
+   - `no-restricted-globals`: `Buffer`, `require`, `process`
+   - `no-restricted-imports` and a dynamic-`import()` selector: every Node built-in, with or without the `node:` prefix
+   - `new TextDecoder()` must pass a literal `{ fatal: true }`
+   - no spreading into `String.fromCharCode(...)` (stack overflow on large arrays)
+   - no `vault.read()` / `vault.cachedRead()` (use `readBinary()`, or `adapter.read()` for non-indexed paths)
+2. ✅ **Bundle check** (same test file): the plugin entry point is bundled for a browser target, with Node built-ins resolvable nowhere, so a transitive dependency pulling one in fails the test. The real build marks built-ins external, which would hide such an import until it fails on mobile.
+3. ✅ **CI test matrix** - Detects missing Node.js APIs at runtime
+4. ⚠️ **Manual code review** - Catches everything else (for example Node-only globals other than the three above, or runtime behavior that differs per platform)
+
+### Desktop-only exceptions
+
+None exist today, and an exception is a special case, not a convenience. It is acceptable only when the Node access is loaded conditionally and is load-bearing in exactly the situations where the API exists, so the fallbacks cover every other case:
+
+- It is never reached at module load, only lazily, behind a gate that is false on mobile (an `instanceof FileSystemAdapter` check).
+- Everything it enables degrades gracefully without it: the feature is skipped or reports "unsupported", and nothing else depends on its result.
+- Every failure path (API absent, module fails to resolve, call throws) takes that same fallback.
+
+Real symlink detection is the motivating example, since `DataAdapter` cannot do it. Isolate such code in one module, then allow that one file in both mechanical checks, instead of adding inline disables:
+
+1. In `eslint.config.js`, add a per-file block after the `src/**` block (see the comment there).
+2. In `src/apiCompatibility.test.ts`, let the bundle check treat built-ins as external only when imported from that file.
+3. List the file and the modules it may use here.
+
+Use `require('fs')` for the load: in Obsidian's renderer a bare `import('fs')` is left as a native dynamic import and fails to resolve, while `require` works.
 
 ### Remaining TODOs
-
-**TODO:** Add eslint rule to detect TextDecoder without fatal:
-```javascript
-// Custom rule to enforce `fatal: true` in TextDecoder constructor
-// Pattern: new TextDecoder() or new TextDecoder('utf-8')
-// Should require: new TextDecoder('utf-8', { fatal: true })
-```
 
 **TODO:** Add CI check for Electron/Chromium minimum version assumptions:
 - Document minimum Electron version supported
