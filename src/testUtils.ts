@@ -536,6 +536,12 @@ export class FakeLocalVault implements IVault<"local"> {
 		this.files.delete(path);
 	}
 
+	/** Mirrors LocalVault.getFileSizeBytes: size in bytes, or null if the path is not a file. */
+	getFileSizeBytes(path: string): number | null {
+		const content = this.files.get(path);
+		return content ? content.toBytes().byteLength : null;
+	}
+
 	/**
 	 * Get all files as raw PlainTextContent or Base64Content (for test assertions).
 	 */
