@@ -352,15 +352,17 @@ export class Fit {
 				// A denylisted path's config has no effect either way (safeFieldDenylist),
 				// so drop it here just to avoid it silently looking "applied". Scoped to
 				// just that entry — every other rule here is independently valid.
+				const messages: string[] = [];
+				if (parsed.invalidRules.length > 0) {
+					messages.push(`.fitattributes.json: ${parsed.invalidRules.length === 1 ? 'this rule is' : 'these rules are'} invalid and ignored (${parsed.invalidRules.map(r => r.error).join('; ')}) — every other rule still applies`);
+				}
 				const nonConfigurablePaths = Object.keys(parsed.value).filter(path => this.safeFieldDenylist(path));
 				if (nonConfigurablePaths.length > 0) {
 					for (const path of nonConfigurablePaths) delete parsed.value[path];
-					const message = `.fitattributes.json: ${nonConfigurablePaths.map(p => `"${p}"`).join(', ')} ${nonConfigurablePaths.length === 1 ? 'is' : 'are'} not configurable (sync behavior fixed internally) — ${nonConfigurablePaths.length === 1 ? 'this entry has' : 'these entries have'} no effect and should be removed`;
-					fitLogger.log(`[Fit] ${message}`);
-					this.fitAttributesWarning = message;
-				} else {
-					this.fitAttributesWarning = null;
+					messages.push(`.fitattributes.json: ${nonConfigurablePaths.map(p => `"${p}"`).join(', ')} ${nonConfigurablePaths.length === 1 ? 'is' : 'are'} not configurable (sync behavior fixed internally) — ${nonConfigurablePaths.length === 1 ? 'this entry has' : 'these entries have'} no effect and should be removed`);
 				}
+				for (const message of messages) fitLogger.log(`[Fit] ${message}`);
+				this.fitAttributesWarning = messages.length > 0 ? messages.join('\n') : null;
 				this.setFitAttributes(parsed.value);
 			} else {
 				const message = `.fitattributes.json is malformed — no .obsidian/ paths will sync until it's fixed (${parsed.error})`;

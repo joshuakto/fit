@@ -620,8 +620,26 @@ export default class FitPlugin extends Plugin {
 		let current: FitAttributesFile = {};
 		try {
 			const text = await this.app.vault.adapter.read(FITATTRIBUTES_PATH);
-			const parsed = parseFitAttributes(text);
-			if (parsed.ok) current = parsed.value;
+			// Only migrate into a file we can interpret in full: rewriting one with
+			// a bad rule or bad JSON would erase what the user wrote.
+			if (text.trim() !== '') {
+				const parsed = parseFitAttributes(text);
+				if (!parsed.ok || parsed.invalidRules.length > 0) {
+					fitLogger.log('⚠️ [Plugin] Skipping obsidianSyncRules migration: existing .fitattributes.json is not fully valid.');
+					// The next save drops the legacy setting, so this cannot be retried. Paths the
+					// file already configures validly need nothing added (and keep their own choice).
+					const unmigrated = Object.keys(legacyRules).filter(path => !(parsed.ok && parsed.value[path]));
+					if (unmigrated.length > 0) {
+						new Notice(
+							'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+							`Fix it, then add { "format": "text" } entries for: ${unmigrated.join(', ')}`,
+							0
+						);
+					}
+					return;
+				}
+				current = parsed.value;
+			}
 		} catch { /* .fitattributes.json doesn't exist locally yet */ }
 
 		let migratedAny = false;

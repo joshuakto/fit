@@ -438,6 +438,94 @@ describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
 		});
 	});
 
+	// The legacy setting is dropped from data.json by the next save, so a skipped migration
+	// cannot be retried: the user has to be told which paths to add by hand.
+	it.each([
+		['has an invalid rule', JSON.stringify({ '.obsidian/hotkeys.json': { format: 'yaml' } })],
+		['is not valid JSON', '{not valid json'],
+	])('skips migration and tells the user which paths to add by hand when the file %s', async (_label, existing) => {
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: {
+				'.obsidian/appearance.json': { sync: 'replace' },
+				'.obsidian/hotkeys.json': { sync: 'replace' },
+			}
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({
+			writes: {}, // The existing file is left untouched
+			notices: [[
+				'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+				'Fix it, then add { "format": "text" } entries for: .obsidian/appearance.json, .obsidian/hotkeys.json',
+				0,
+			]],
+		});
+	});
+
+	// A path the user already configured with a valid rule needs nothing added, and its
+	// deliberate choice (here format:"json") must not be suggested for replacement.
+	it('names only the legacy paths with no valid rule in the file', async () => {
+		const existing = JSON.stringify({
+			'.obsidian/appearance.json': { format: 'json' },
+			'.obsidian/graph.json': { format: 'yaml' },
+		});
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: {
+				'.obsidian/appearance.json': { sync: 'replace' },
+				'.obsidian/hotkeys.json': { sync: 'replace' },
+			}
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({
+			writes: {},
+			notices: [[
+				'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+				'Fix it, then add { "format": "text" } entries for: .obsidian/hotkeys.json',
+				0,
+			]],
+		});
+	});
+
+	it('shows no Notice when the file has an invalid rule but every legacy path already has a valid one', async () => {
+		const existing = JSON.stringify({
+			'.obsidian/appearance.json': { format: 'json' },
+			'.obsidian/graph.json': { format: 'yaml' },
+		});
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({ writes: {}, notices: [] });
+	});
+
+	it('migrates into an existing but empty .fitattributes.json', async () => {
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: '  \n' });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+
+		await plugin.loadSettings();
+
+		expect(JSON.parse(writes[FITATTRIBUTES_PATH])).toEqual({
+			'.obsidian/appearance.json': { format: 'text' },
+		});
+	});
+
 	it('is a no-op when there is no legacy obsidianSyncRules setting', async () => {
 		const { plugin, writes } = makePluginWithAdapter();
 		mockLoad(plugin, { pat: 'token', owner: 'alice', repo: 'notes' });
