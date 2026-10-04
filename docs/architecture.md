@@ -84,14 +84,16 @@ Both local and remote caches use the canonical Git blob SHA format: `SHA1("blob 
 - **Fit**: Coordinator between vaults with clean abstractions
   - Owns 💾 LocalVault and ☁️ RemoteVault instances (currently RemoteGitHubVault)
   - Provides `getLocalChanges()` / `getRemoteChanges()` abstractions
-  - Implements sync policy via `shouldSyncPath()` (ignores paths like 📁 `_fit/` and `.obsidian/`)
-  - Detects clashes between local and remote changes via `getClashedChanges()`
+  - Implements sync policy via `shouldSyncPath()` (excludes 📁 `_fit/` and `.obsidian/` paths that are untracked or have no sync format; see [sync-logic.md § Path Filtering and Safety](sync-logic.md#path-filtering-and-safety))
+  - Resolves each path's `.fitattributes.json` format and scope (see [sync-logic.md § `.fitattributes.json`](sync-logic.md#fitattributesjson))
 
 - **FitSync**: High-level sync workflow and 🔀 conflict resolution
   - Orchestrates unified bidirectional sync with 🔀 conflict handling
-  - All clash detection happens inline at the start of sync
-  - Phases: detect clashes → batch stat filesystem → resolve conflicts → push → pull → persist
+  - Clashes are found by comparing local and remote changes (`resolveAllChanges` in `src/util/changeTracking.ts`)
+  - Phases: resolve pending clashes → detect changes → batch stat filesystem → resolve conflicts (merging where a merge engine applies) → push → pull → persist; see [sync-logic.md](sync-logic.md) for the full sequence
   - Handles both sync and push-only operations
+- **Merge engines** (`src/util/jsonMerge.ts`, `src/util/lineMerge.ts`): structural JSON merge (`.canvas`, `format: "json"`) and line-based diff3 for text, so safely mergeable clashes never reach `_fit/`
+- **Scan coverage** (`LocalVault.readFromSource`, `ScanCoverage`): the Obsidian index plus a scan of unindexed paths find hidden files; a path the scan could not look at is treated as unknown, not deleted
 
 **Remote Backend Integration**:
 - Current implementation: GitHub backend with two components:
@@ -128,12 +130,8 @@ sequenceDiagram
 
     Sync->>Sync: Detect conflicts
 
-    alt No Conflicts
-        Sync->>Local: Apply remote changes
-        Sync->>Remote: Push local changes
-    else Conflicts Found
-        Sync->>Local: Save conflicts to 📁 _fit/
-    end
+    Sync->>Remote: Push local changes (except clashed paths)
+    Sync->>Local: Apply remote changes (clashed paths: save remote copy to 📁 _fit/)
 
     Sync-->>Plugin: Sync result
     Plugin->>User: Show notification
@@ -162,13 +160,14 @@ sequenceDiagram
 │   ├── 🔒 pat (GitHub Personal Access Token)
 │   ├── owner, repo, branch
 │   ├── deviceName, avatarUrl
-│   ├── autoSync preferences
+│   ├── autoSync preferences (interval, on save, on open)
+│   ├── syncHiddenFiles, githubHost
 │   └── notification settings
-└── localStore (sync state cache)
+└── localStore (sync state cache; fields documented in src/localStores.ts)
     ├── localShas (file path -> canonical git blob SHA)
-    ├── localSha? (legacy field, present only during migration from pre-v1.6)
     ├── lastFetchedCommitSha
-    └── lastFetchedRemoteShas (remote file path -> git blob SHA)
+    ├── lastFetchedRemoteShas (remote file path -> git blob SHA)
+    └── pending clashes, unpushed files, last sync time, legacy migration fields
 
 .obsidian/plugins/fit/debug.log:
 └── Debug logs (when enabled in settings)
@@ -195,8 +194,8 @@ Obsidian Vault:
 
 ### 🔀 Conflict Handling
 - **Non-destructive**: Original files never overwritten during conflicts
-- **User Control**: All conflict resolution is manual and user-directed
-- **Audit Trail**: Conflicted files preserved in 📁 `_fit/` with timestamps
+- **User Control**: A clash that cannot be merged safely is left to the user: the remote version goes to 📁 `_fit/` and the user decides
+- **Audit Trail**: The remote version of a conflicted file is preserved in 📁 `_fit/` until the user resolves it
 
 ## Performance Characteristics
 
@@ -212,24 +211,7 @@ Obsidian Vault:
 ## Extension Points
 
 ### Adding Sync Backends
-Implement the `IVault` interface to support additional remote backends:
-
-```typescript
-interface IVault {
-    // Read operations
-    readFromSource(): Promise<VaultReadResult>;
-    readFileContent(path: string): Promise<FileContent>;
-
-    // Write operations
-    applyChanges(
-        filesToWrite: Array<{path: string, content: FileContent}>,
-        filesToDelete: Array<string>
-    ): Promise<FileOpRecord[]>;
-
-    // Metadata
-    shouldTrackState(path: string): boolean;
-}
-```
+Implement the generic `IVault` interface ([`src/vault.ts`](../src/vault.ts)) to support additional remote backends. It has `readFromSource()` and `readFileContent()` for reading, `applyChanges()` for writing, and `shouldTrackState()` for metadata.
 
 **Example**: Create `RemoteGitLabVault` by:
 1. Implement `IVault` interface
@@ -243,8 +225,7 @@ interface IVault {
 - `RemoteGitHubVault`: GitHub repositories
 
 ### Custom Conflict Resolution
-Extend `FitSync` class to implement custom conflict resolution strategies:
-- Auto-merge for specific file types
+Auto-merge for specific file types is added through the merge engines (`mergeSpecForPath` in `src/util/jsonMerge.ts`). Other possible extensions:
 - Integration with external diff tools
 - Custom conflict markers or formats
 
@@ -266,7 +247,7 @@ Extend notification system for:
 
 ### Minimal Friction
 - Manual intervention is reserved for genuine ambiguity — safely automatable merges (e.g. canvas auto-merge) resolve without blocking sync
-- Special/config paths (`.obsidian/`) sync only when explicitly opted in — nothing ambiguous syncs by default
+- Special/config paths (`.obsidian/`) sync only once content for them exists in the remote git repo, in a supported format — nothing ambiguous syncs by default
 - Sync design minimizes churn between multiple syncing clients (baseline/SHA caching avoids re-triggering the same change back and forth)
 - ✅ *e.g.* two devices editing different, non-overlapping fields of the same `.canvas` file merge automatically — no prompt
 - ❌ *not this* — requiring manual approval for every field change even when local and remote touched entirely disjoint fields

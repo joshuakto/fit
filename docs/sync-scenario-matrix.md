@@ -3,9 +3,8 @@
 Decision table mapping sync/merge correctness scenarios exhaustively across a small set of
 dimensions, instead of reasoning about cases one at a time. A test suite alone can't answer
 "what's *not* tested" - cross-cutting dimension combinations are easy to silently undercover even
-when every individual axis has its own passing tests, which is exactly how the rule-disagreement
-bug family (now fixed - see the exceptional-path table's cross-device rule disagreement and
-self-clash rows) stayed hidden. See
+when every individual axis has its own passing tests, which is how rule-disagreement bugs
+(see the exceptional-path table's cross-device rule disagreement and self-clash rows) stay hidden. See
 [sync-logic.md](./sync-logic.md) for the authoritative description of current behavior and
 mechanism; this doc is the *test-planning* artifact, not a second copy of that reference. In
 particular, sync-logic.md's § Sync Operation Types documents the per-file mechanism each row
@@ -37,12 +36,12 @@ the header to be readable, the label is wrong.
 | Dimension | Values | Notes |
 |---|---|---|
 | Resolved-rule agreement | 🟢 rules agree / 🟡 rules differ (fitattributes lag) | Whether local's resolution of its own bytes and remote's resolution of its own bytes actually diverge - not a raw config-value diff (configs can differ with identical resulting logical content, which isn't a clash). Version-driven rule drift is a related but distinct concern - see Known compatibility factors below. |
-| Tracking state | 🆕 untracked, never observed / 👻 untracked, observed while ineligible / 👀 tracked | Onboarding state. Distinguishes true first-contact from the "was excluded, now eligible" reconcile case (the `protectedPathShas` bug family, GitHub #67). |
+| Tracking state | 🆕 untracked, never observed / 👻 untracked, observed while ineligible / 👀 tracked | Onboarding state. Distinguishes true first-contact from the "was excluded, now eligible" reconcile case. |
 | Local edit | ✏️ local edited / ⚪ local unchanged / 🗑️ local deleted / n/a | |
 | Remote edit | ✏️ remote edited / ⚪ remote unchanged / 🗑️ remote deleted / n/a | |
 | Pre-existing clash | 🔀 clash pending / ⚪ no clash | Must never be silently overridden by an unrelated reconcile/observe pass. |
 | Mid-sync failure | ⚪ no failure / 💥 local write fails / 💥 remote push skipped or rate-limited / 💥 fetch fails | Baseline must not advance past a confirmed operation - a documented invariant, easy to violate case-by-case. |
-| Path category | ordinary vault path / hidden vault path (non-`.obsidian/`) / `.obsidian/` (`format:"text"`) / `.obsidian/` (`format:"json"`) / `.fitattributes.json` itself / `_fit/` itself | `_fit/` is FIT's own scratchpad - unconditionally excluded both directions (`shouldSyncPath`), regardless of every other dimension, including on remote if another device or a manual git push puts real content there. Reflects the *resolved* category only - whether a path landed there via an explicit `.fitattributes.json` rule or a heuristic default doesn't change behavior, so it doesn't get a separate value here. `.canvas` is called out explicitly where it appears because it's the one path shape with a dedicated merge spec (id-keyed `nodes`/`edges` set-union, `mergeSpecForPath` in `jsonMerge.ts`) - it goes through the exact same `format:"json"` dispatch as any other JSON path, it just doesn't share the generic key-level spec everything else gets. `.fitattributes.json`'s own sync is a special case of every other dimension (self-clash on its own copy) rather than exempt from them. This is a real table column below, not just a Dimensions-table entry - a row should be identifiable from its input cells alone, without reading Status. |
+| Path category | ordinary vault path / hidden vault path (non-`.obsidian/`) / `.obsidian/` (`format:"text"`) / `.obsidian/` (`format:"json"`) / `.fitattributes.json` itself / `_fit/` itself / symlink (on disk, or a remote `mode 120000` entry) | `_fit/` is FIT's own scratchpad - unconditionally excluded both directions (`shouldSyncPath`), regardless of every other dimension, including on remote if another device or a manual git push puts real content there. Reflects the *resolved* category only - whether a path landed there via an explicit `.fitattributes.json` rule or a heuristic default doesn't change behavior, so it doesn't get a separate value here. `.canvas` is called out explicitly where it appears because it's the one path shape with a dedicated merge spec (id-keyed `nodes`/`edges` set-union, `mergeSpecForPath` in `jsonMerge.ts`) - it goes through the exact same `format:"json"` dispatch as any other JSON path, it just doesn't share the generic key-level spec everything else gets. `.fitattributes.json`'s own sync is a special case of every other dimension (self-clash on its own copy) rather than exempt from them. This is a real table column below, not just a Dimensions-table entry - a row should be identifiable from its input cells alone, without reading Status. |
 
 ### Categories not modeled here
 
@@ -75,7 +74,7 @@ middle state.
 | ordinary vault path | 👀 tracked | ⚪ unchanged | ✏️ edited | ✅ ordinary pull path, exercised throughout `fitSync.realFit.test.ts` (e.g. `'should write remote hidden files directly when no local version exists'`) |
 | ordinary vault path | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ ordinary push path (same file, symmetric case) |
 | ordinary vault path | 👀 tracked | ✏️ edited | ✏️ edited | ✅ `'should report file as conflict when saved to _fit/ for any safety reason'` |
-| hidden vault path (non-`.obsidian/`) | 🆕 untracked, never observed | n/a | ✏️ edited | ✅ `'should write remote hidden files directly when no local version exists (#...'`; two-sync onboarding shape documented in [sync-logic.md § Protected Paths](./sync-logic.md) |
+| hidden vault path (non-`.obsidian/`) | 🆕 untracked, never observed | n/a | ✏️ edited | ✅ `'should write remote hidden files directly when no local version exists (#...'` |
 | hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ **Baseline path (or its folder) pruned from this sync's scan.** Not pushed as a deletion; see [sync-logic.md § Scan-time pruning vs. the stored baseline](./sync-logic.md#scan-time-pruning-vs-the-stored-baseline). `'does not push a deletion for a baseline path this sync pruned'`. The scan also skips a path it fails to list (logged), reported the same way: `'reports a path whose listing fails as an orphaned scan prefix'` |
 | hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ✏️ edited | ✅ **Same, remote side edited.** Ignored this sync: no clash, no pull. `'does not pull a remote edit over a path this sync could not see'` |
 | hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | 🗑️ deleted | ✅ **Same, remote side deleted.** Local copy kept. `'does not apply a remote deletion to a path this sync could not see'` |
@@ -93,6 +92,10 @@ middle state.
 | `.obsidian/` (`format:"text"`) | 👀 tracked | ✏️ edited | 🗑️ deleted | ✅ `'treats a locally-edited .obsidian/ path as an ordinary clash (not an untrack...'` |
 | `_fit/` itself | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ `'should exclude 📁 _fit/ directory from sync operations'` - never pushed, regardless of content |
 | `_fit/` itself | 👀 tracked | ⚪ unchanged | ✏️ edited (a real `_fit/` path exists on remote - another device, or a manual git push) | ✅ same test - SHA cached in `lastFetchedRemoteShas` (to detect future changes) but never written locally, no `_fit/_fit/` nesting. Internal wrinkle, not a correctness gap: `fitSync.ts` has a TODO noting this relies on a post-hoc `filterSyncedState` scrub rather than upfront filtering earlier in the pipeline - safe today, just not the cleanest shape. |
+| symlink, non-hidden (on disk only) | 🆕 untracked | ⚪ link present | n/a | ✅ `'adds an unindexed hidden path, but not an unindexed non-hidden one (which looks like a symlink)'` - ignored and logged, never flattened into copies of its target |
+| symlink under a hidden path (on disk only) | 🆕 untracked | ⚪ link present | n/a | 🔴 **Gap.** `adapter.list` follows the link, so the scan admits flattened copies of the target (a cycle recurses until the OS link-depth limit). Bounded by the walk caps in `'hidden-path scan walk bounds (#389)'`, not prevented |
+| symlink, dangling, inside a hidden folder | 🆕 untracked | ⚪ link present | n/a | 🔴 **Gap.** The adapter rejects the whole listing, so the folder is skipped and surfaced as unlistable. Safe (`'logs a path whose listing fails instead of silently dropping it'`), but its other hidden files do not sync that sync |
+| symlink on disk, regular file at the same path on remote | 🆕 untracked | ⚪ link present | ✏️ remote added/edited | ✅ `'does not pull a remote edit over a path this sync could not see'` - the ignored link's path has unknown scan coverage, so the remote change is dropped rather than written through the link (test covers an unscannable path in general, not a link specifically) |
 
 Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, and mid-sync failure is
 ⚪ no failure, every row - all three columns dropped.
@@ -186,6 +189,8 @@ fitSync.realFit.test.ts
 
 localVault.test.ts
 └ LocalVault › hidden-path scan walk bounds
+  ├ 'adds an unindexed hidden path, but not an unindexed non-hidden one (which looks like a symlink)'
+  ├ 'logs a path whose listing fails instead of silently dropping it'
   └ 'reports a path whose listing fails as an orphaned scan prefix'
 ```
 

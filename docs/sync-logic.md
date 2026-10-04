@@ -55,6 +55,8 @@ FIT uses SHA-based change detection to maintain **baseline state** versions (`Lo
 }
 ```
 
+This is the core of the cache. The full set of persisted fields (pending clashes, unpushed files, last sync time, legacy migration fields) is documented in [`src/localStores.ts`](../src/localStores.ts).
+
 ### SHA Cache Lifecycle
 
 ```mermaid
@@ -233,16 +235,7 @@ If a cache becomes stale or corrupted:
 - Files might be recreated instead of deleted
 - Conflicts might not be recognized
 
-**Example Bug Scenario:**
-```typescript
-// User deletes file locally, but localShas cache is lost/corrupted
-localShas = {}  // STALE: Should have "deleted.md"
-
-currentLocalSha = {}  // File doesn't exist
-
-// No change detected! (both empty)
-// File on remote won't be deleted - BUG
-```
+For example, if a local deletion happens while `localShas` has been lost, both the cache and the scan are empty for that path, so no deletion is detected and the remote file stays. See [Lost SHA Cache](#lost-sha-cache) and [Stale Deletion State](#stale-deletion-state).
 
 ## Path Filtering and Safety
 
@@ -258,6 +251,7 @@ FIT implements three layers of path filtering:
 
 **Hard denylist, `Fit.isHardDenylistedPath()`** ([`src/util/protectedPaths.ts`](../src/util/protectedPaths.ts)) — checked before any tracked-content logic, wins unconditionally even for a path with matching remote git content and an explicit `.fitattributes.json` entry:
 - Plugin-managed code assets — `main.js`, `manifest.json`, `styles.css` under any `.obsidian/plugins/<id>/`, including FIT's own — owned by Obsidian's plugin loader, not a preferences file at all; writing them via git-driven sync fights the plugin manager. This one *is* permanent — there's no "safe subset of fields" concept for a JS bundle, field-level masking doesn't change anything here.
+- A plugin's `node_modules/` folder (`.obsidian/plugins/<id>/node_modules/`), which is never something to sync.
 
 **FIT's own `<pluginDir>/data.json` is NOT on the hard denylist** — it gets `format:"json"` + `scope:"subset"` the same way any other protected path gets a default. `<pluginDir>` is resolved dynamically from the actual install dir, not a hardcoded literal, so this follows an alternate install name (e.g. `fit-dev`) correctly.
 
@@ -320,7 +314,7 @@ explanatory `note` (not REMOVED, since nothing was deleted), folded into the ord
 
 **When `syncHiddenFiles = false`:**
 - Hidden paths excluded from `localShas` (can't reliably scan via Vault API)
-- Remote hidden files saved to `_fit/` for safety (can't verify local state)
+- A remote hidden file is written directly when no local copy exists, and clashes to `_fit/` when one does (local state can't be baseline-checked)
 - Local hidden files never pushed
 
 **Note:** `shouldTrackState` controls LocalVault's scanning capability. Sync policy decisions (e.g. never push `.obsidian/`) are handled separately by `Fit.shouldSyncPath()`.
@@ -374,31 +368,17 @@ node_modules/
 
 ### Combined Filtering: `.obsidian/` Files
 
-By default, `.obsidian/` files are excluded by `shouldSyncPath` regardless of `syncHiddenFiles`.
-Once a path becomes git-tracked (see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded)
-above) and is format-eligible for sync (currently: `format: "text"` in `.fitattributes.json`), two
-additional rules apply:
+`.obsidian/` paths are excluded by `shouldSyncPath` unless git-tracked and format-eligible (see
+[Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded) and
+[`.fitattributes.json`](#fitattributesjson) for which paths get which format). Untracked
+ones are never synced in either direction: their remote SHA is only recorded passively, with no
+download and no `_fit/` write, and they are filtered out before change detection.
 
-- `shouldTrackState` returns `true` for tracked `.obsidian/` paths even when `syncHiddenFiles = false`,
-  so they are scanned and hashed like regular files.
-- `shouldSyncPath` returns `true` for tracked, format-eligible paths not in the hard denylist (see above).
-
-**Result for untracked (no remote content) `.obsidian/` paths:**
-- Never synced in either direction
-- Remote SHA passively recorded in `protectedPathShas` (see above) — no content download, no `_fit/` write
-- Excluded from `lastFetchedRemoteShas`; present in local scan but filtered before change detection
-
-**Result for tracked paths with no `.fitattributes.json` `format: "text"` entry** (JSON or not):
-detection-only — logged, never read or written. See [Explain Sync Status](#explain-sync-status).
-
-**Result for tracked, format-eligible (`format: "text"`) `.obsidian/` paths:**
-- Tracked in `localShas` and synced bidirectionally like any regular file (whole-file replace,
-  `_fit/` clash on both-sides-changed — no merge attempted yet)
-- `syncHiddenFiles = false` does not suppress them once tracked (tracking overrides the hidden-file
-  default) via `Fit.trackedObsidianPaths()` feeding `LocalVault.configure({trackedHiddenPaths})` —
-  the local hidden-path scan proactively probes the known tracked set directly, the same pattern
-  `.fitattributes.json` itself already uses to guarantee its own discovery, so local edits to a
-  tracked path are picked up for push even when the broader recursive hidden-file scan is off.
+A tracked, eligible path is synced like any regular file, and `syncHiddenFiles = false` does not
+suppress it: `Fit.trackedObsidianPaths()` feeds `LocalVault.configure({trackedHiddenPaths})`, so
+the local scan probes that known set directly even when the recursive hidden-file scan is off
+(the same way `.fitattributes.json` itself is always discovered). A tracked path with no format
+is detection-only: logged, never read or written. See [Explain Sync Status](#explain-sync-status).
 
 ### Implementation Locations
 
@@ -446,7 +426,7 @@ compareFileStates(newScan, localShas) // → reports ".gitignore" as REMOVED
 **Solution:** Before pushing ANY deletion, verify file is physically absent from filesystem:
 
 ```typescript
-// In FitSync.performSync()
+// In FitSync.compareAndResolveChanges()
 // Phase 2b: Batch stat all paths needing verification (including deletions)
 const pathsToStat = new Set<string>();
 localChanges
@@ -480,7 +460,7 @@ for (const change of safeLocal) {
 - **Protection ADDED**: Local filtered before push, remote saved to `_fit/`
 - **Protection REMOVED**: Files appear as new on both sides → clash detection handles it
 
-**Implementation:** [src/fitSync.ts:387-396](../src/fitSync.ts#L387-L396) (path collection), [src/fitSync.ts:726-743](../src/fitSync.ts#L726-L743) (safeguard check)
+**Implementation:** `FitSync.collectFilesystemState` and the REMOVED safeguard in `FitSync.compareAndResolveChanges` ([src/fitSync.ts](../src/fitSync.ts))
 
 Test coverage and related compatibility factors (legacy SHA migration, `obsidianSyncRules`
 migration): [Sync Scenario Matrix](./sync-scenario-matrix.md), § Known compatibility factors.
@@ -552,10 +532,9 @@ flowchart TD
 **Key Benefits:**
 - **Principled boundaries**: Each phase has clear inputs/outputs
 - **Efficient batching**: Single filesystem stat for all verification needs
-- **Future-proof**: Supports planned features (continuous sync, explicit tracking)
 - **Testable**: Phases can be tested independently
 
-**Implementation:** [`FitSync.performSync()` in fitSync.ts](../src/fitSync.ts)
+**Implementation:** `FitSync.sync()` / `_doSync()` in [fitSync.ts](../src/fitSync.ts)
 
 ### Pending Clash State Machine
 
@@ -697,7 +676,7 @@ flowchart TD
 
     CheckScenario -->|✏️ Both MODIFIED,<br/>different content| SaveBoth[⬇️📁 Pull remote to _fit/<br/>Keep local in place]
     CheckScenario -->|💾❌ vs ☁️✏️<br/>Removed vs Modified| SaveRemote[⬇️📁 Pull remote to _fit/<br/>Keep local deleted]
-    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Removed| KeepLocal[⬆️ Push local<br/>Restore on remote]
+    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Removed| KeepLocal[Keep local in place<br/>Not pushed: known gap]
 
     CheckScenario -->|✏️ Both MODIFIED,<br/>same content| AutoResolve2[✓ Auto-resolved<br/>Content identical]
     CheckScenario -->|❌ Both REMOVED| AutoResolve1[✓ Auto-resolved<br/>Both sides agree]
@@ -775,7 +754,7 @@ interface JsonMergeSpec {
 
 `mergeJson(base, local, remote, spec)` returns `{ merged: true, value }` or `{ merged: false, reason }`. `base` is `null` when unavailable; the engine degrades to two-way merge in that case (same-id item difference → immediate conflict, no three-way resolution). `mergeSpecForPath(path)` picks the spec: `CANVAS_MERGE_SPEC` (id-keyed `nodes`/`edges`) for `.canvas` paths, `GENERIC_JSON_MERGE_SPEC` (no keyed arrays, plain key-level merge) for every other `format: "json"` path. Per-file keyed-array config beyond `.canvas` (e.g. for a specific `.obsidian/` JSON file) is future work, not yet in the schema.
 
-### `.fitattributes.json` (#337, #67, #358)
+### `.fitattributes.json`
 
 `.fitattributes.json` (schema: [`src/fitAttributes.ts`](../src/fitAttributes.ts)) is a vault-root JSON file, always synced regardless of `syncHiddenFiles`. It maps `.obsidian/` paths to a rule object and only modulates how an already-tracked path is handled — **its presence never triggers tracking** (see [Protected Paths](#1-protected-paths-shouldsyncpath---default-excluded) above for what does: git content presence).
 
@@ -788,137 +767,29 @@ interface FitAttributeRule {
 
 **`format: "text"`** — opaque whole-file sync regardless of content shape: full-content replace, `_fit/` clash on both-sides-changed (diff3 line merge still applies, see below). No field awareness, JSON-shaped or not — deliberately identical to the retired `obsidianSyncRules`'s `"replace"` strategy (see Migration below). `.obsidian/` paths ending `.css`/`.md`/`.txt` (#358) default to this with no `.fitattributes.json` entry needed; an explicit entry still overrides either direction.
 
-**`format: "json"` + `scope: "full"`** — whole-file structural merge via [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts), the same engine `.canvas` uses (see [Semantic JSON Merge](#semantic-json-merge) above). Concurrent edits to different top-level keys merge instead of clashing; a device-local field mixed into an otherwise-shared file still syncs along with everything else — that's what `scope: "subset"` is for. For an ordinary vault `.json`/`.canvas` path this is real and active today (explicit entry, or the filetype default, `scope` irrelevant there). For a protected `.obsidian/` path, `format: "json"` alone is incomplete — pair it with an explicit `scope` to activate it; without one, it's treated as unconfigured (logged/`classifyObsidianPathsForLog`-bucketed the same as no rule at all), not defaulted to whole-file sync.
+**`format: "json"` + `scope: "full"`** — whole-file structural merge via [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts), the same engine `.canvas` uses (see [Semantic JSON Merge](#semantic-json-merge) above). Concurrent edits to different top-level keys merge instead of clashing; a device-local field mixed into an otherwise-shared file still syncs along with everything else — that's what `scope: "subset"` is for. For an ordinary vault `.json`/`.canvas` path this applies by default (`scope` is irrelevant there). For a protected `.obsidian/` path, whole-file sync needs an explicit `scope: "full"`; the default is `"subset"`.
 
 **`format: "json"` + `scope: "subset"`** (the default `scope` for a protected `.obsidian/` json path when unspecified) — syncs only the top-level keys currently present in the tracked git blob at that path; every other local key (device-local state, fields no device tracks) is never read for push and never overwritten by pull. The tracked field set is derived purely from remote content each sync — mirrors the whole-path git-as-mask trigger: a local edit can never introduce a newly-tracked field, only pick up one that already exists in git. Implementation: [`src/util/protectedPathMask.ts`](../src/util/protectedPathMask.ts) (`extractMask`/`overlayMask`, pure projection/overlay helpers) wired into a dedicated sync lane, [`FitSync.syncSubsetScopePaths`](../src/fitSync.ts) — these paths are excluded from the normal SHA-diff pipeline entirely (`Fit.shouldSyncPath`), since whole-file SHA comparison can't work when a local file's untracked fields always differ from remote's. `localShas[path]` keeps the same meaning here as for every other path (raw whole-file git-blob SHA) — it's used only as a coarse "did the file change at all since last touched" signal, never to decide which fields differ; that's answered separately by comparing real masked content each time. `lastFetchedRemoteShas[path]` keeps its normal meaning too. Both-changed reuses `GENERIC_JSON_MERGE_SPEC` on the masked view — which means the same scalar-conflict rule applies: a shared tracked field with different values on both sides always clashes (`_fit/` preview, full file with remote's incoming value overlaid, not a raw masked fragment), only a brand-new field addition merges cleanly, and since new fields only ever originate from remote, a genuinely clean "different fields, no conflict" both-changed outcome isn't really reachable — the both-changed case realistically always clashes.
 
 **Known limitations of the `scope: "subset"` lane** (not blocking, see `syncSubsetScopePaths`'s doc comment):
 - Always re-fetches remote content for every candidate every sync — no SHA-based skip yet. Fine for a handful of paths; concrete cost in [Sync Performance Inventory](./sync-performance-inventory.md) § `.obsidian/` subset-scope masking.
 - If remote deletes a subset-scope path entirely, it's simply left alone (safe, no data loss, but no user-visible notice either). `format:"text"`/`scope:"full"` paths get a one-time `changeGroups` notice for the equivalent situation; extending that to `scope:"subset"` is the natural next step, not done yet.
-- The pre-sync `protectedPathShas` reconcile mechanism (for opt-in transitions on `format`/`scope: "full"` paths) explicitly excludes `scope: "subset"` paths — that reconcile logic compares raw file SHAs, which would immediately corrupt a masked-view baseline the moment it ran.
-- ~~Local deletion is indistinguishable from first contact~~ — **fixed.** `resolveSubsetScopePath` used to always treat local absence as first contact, never checking whether a confirmed baseline existed — so deleting a tracked path silently self-healed via re-pull instead of propagating. Fixed as part of the classification rework below (see Architecture note): a confirmed baseline with no concurrent remote change now propagates the deletion; a confirmed baseline *with* a concurrent remote edit clashes instead of silently destroying it. Verified via `fitSync.realFit.test.ts`'s `'deleting a tracked scope:"subset" path locally propagates the deletion to remote instead of self-healing via re-pull'`, its `format:"text"` comparison case, and `'deleting a tracked scope:"subset" path locally while remote concurrently edits the tracked field clashes instead of silently deleting remote's edit'`.
-- ~~A resolved clash isn't picked up as resolved~~ — **fixed.** The `'clash'` branch in `syncSubsetScopePaths` never advanced `localShas`/`lastFetchedRemoteShas` for that path, so the next sync's `resolveSubsetScopePath` re-derived `localChanged`/`remoteChanged` against the same stale pre-conflict baseline and reached the same both-changed conclusion again — deleting `_fit/<path>` and committing to a specific local edit (the normal resolution signal everywhere else in this codebase) didn't clear it; it just got rewritten. Fixed by reordering `syncSubsetScopePaths` to run *after* the pending-clash reconcile step ("Phase 0" in `FitSync._doSync`, which already checks `_fit/<path>`'s real existence against the current filesystem and removes a resolved path from `pendingClashes`) instead of before it, and passing a snapshot of which paths were pending *before* that step (`previouslyPendingClashPaths`) into `resolveSubsetScopePath` — a path present in the snapshot but absent from the live `pendingClashes` list was just resolved this sync, and pushes local's current masked view unconditionally (the same "no baseline → ADDED → pushed" convention the normal pipeline uses for a resolved clash) instead of re-deriving against the stale baseline. Verified via a real regression test (`fitSync.realFit.test.ts`, `'a resolved subset-scope clash (deleted _fit/ copy + local edit) is picked up as resolved and pushes local's edit'`).
+- The pre-sync tracking-transition reconcile (for `format: "text"`/`scope: "full"` paths) excludes `scope: "subset"` paths — that reconcile logic compares raw file SHAs, which would immediately corrupt a masked-view baseline the moment it ran.
+**Design of the lane:** `syncSubsetScopePaths` is a parallel lane that shares classification but not the apply step. `resolveSubsetScopePath` feeds `localShas`/`lastFetchedRemoteShas` through `compareFileStates` + `resolveAllChanges`, the same functions the normal pipeline uses, so deletion and resolved-clash handling follow the ordinary rules: a confirmed baseline with no concurrent remote change propagates a local deletion, and with a concurrent remote edit it clashes. Payload construction (masking, overlaying, the 3-way JSON merge) is subset-specific, and the lane calls `applyChanges` directly because the normal pipeline's SHA-equality shortcut cannot work when local always carries untracked fields. It runs after Phase 0's pending-clash reconcile and receives a snapshot of the previously pending paths (`previouslyPendingClashPaths`): a path in the snapshot but no longer pending was just resolved, so the lane pushes local's current masked view unconditionally, like any resolved clash.
 
-**Architecture note — `syncSubsetScopePaths` is a parallel lane, sharing classification but not the apply step.** `resolveSubsetScopePath` decides push/pull/clash/in-sync by feeding `localShas`/`lastFetchedRemoteShas` through `compareFileStates` + `resolveAllChanges` — the same functions the normal pipeline uses — rather than hand-rolled booleans. This was a deliberate correction: two real bugs here (the deletion fix above, and an earlier resolved-clash bug) shared one root cause, hand-rolled classification reimplementing what those functions already get right for every path category. *Payload construction* once a decision is reached (masking, overlaying, the 3-way JSON merge attempt) stays bespoke — genuinely subset-scope-specific, applied after the shared classification. The apply step also stays separate: `syncSubsetScopePaths` calls `LocalVault`/`RemoteGitHubVault.applyChanges` directly instead of routing through `pushChangedFilesToRemote`/`applyRemoteChanges`, since the normal pipeline's SHA-equality shortcut can't work here (local always carries untracked fields) — folding the apply step in would mean threading a content-view transform through that pipeline's hot path for every ordinary file, for one path category's benefit. A cleaner unification there — one apply path, parameterized by a pluggable content view — is available but only worth it if a second masked-scope consumer shows up.
+**Baseline:** `localShas[path]` is the raw whole-file blob SHA here too, so a path can move between `format:"text"`/`scope:"full"` and `scope:"subset"` freely. It only signals "did this file change at all"; which fields differ is always decided by comparing masked content (`extractMask`). A false positive (an edit to an untracked field only) costs one extra base-blob fetch for the 3-way merge, never a wrong result.
 
-**Baseline model for `scope: "subset"`:** `localShas[path]` holds exactly the same quantity
-here as it does for every other path — the raw whole-file git-blob SHA — never a
-masked-projection SHA. It is consulted only as a coarse "has this file changed at all since we
-last touched it" signal; it is never used to decide *which* fields differ, which is always
-answered separately by comparing real masked content (`extractMask`/`stableStringify`)
-directly. This coarseness is deliberate and safe: a real change to a shared tracked field is
-always caught (the mask-vs-remote content comparison can't miss it), and the only cost of a
-false positive (an edit to an untracked field only) is that `resolveSubsetScopePath` takes the
-3-way-merge branch (one extra base-blob fetch) instead of the cheaper "pull" branch a precise
-flag would have chosen — `mergeJson`'s own base-comparison rules resolve to the identical
-content either way, so this is a bounded efficiency cost, never a correctness one. One
-consequence: a path can move between `format:"text"`/`scope:"full"` and `scope:"subset"`
-freely, since there is only one SHA scheme for `localShas[path]` regardless of mode.
+**Results and failures:** the lane returns `{ localOps, remoteOps, clashes, commitSha }`, reported through the same `changeGroups`/`SyncResult.clash` as the normal pipeline. `commitSha` (set only when the lane pushed) is the fallback for `latestRemoteCommitSha` when nothing else pushed, so Explain does not keep showing the pre-push commit. A skipped or rate-limited push, or a failed local write, never advances either baseline for that path, so it retries next sync. Unlike the normal pipeline, a size-limit skip is not tracked in `unpushedFiles`; an oversized `.obsidian/` config is not a realistic case.
 
-`FitSync.syncSubsetScopePaths` returns `{ localOps, remoteOps, clashes, commitSha }`, folded
-into the same `changeGroups`/`SyncResult.clash` the normal pipeline's
-`localOps`/`remoteOps`/`conflicts` feed (`FitSync.sync`) — a push/pull/clash on a subset-scope
-path is reported through the same post-sync Notice and conflict handling as any other path,
-not just logged. `commitSha` (set only when the lane pushed) lets the caller use it as
-`latestRemoteCommitSha`'s fallback when the normal pipeline itself has nothing to push this
-sync — otherwise a subset-only sync would persist the commit SHA fetched *before* the subset
-lane's own push ran, and Explain Sync Status would keep showing the pre-push commit despite a
-real, successful push.
+**Explain:** [Explain Sync Status](#explain-sync-status) lists a tracked subset-scope path (one with a real remote baseline in `lastFetchedRemoteShas`) whose raw content changed since the last sync, from the same `localShas` comparison as every other file. It cannot tell whether the change landed in a tracked field, so it appears in its own "changed since last sync (unconfirmed)" section. A subset-scope clash shows up in the ordinary `pendingClashes` section. There is no preview of a push/pull/merge outcome, since those resolve within the sync.
 
-A skipped or rate-limited push, or a failed local write, must never advance
-`localShas`/`lastFetchedRemoteShas` for the affected path — `syncSubsetScopePaths` checks
-`ApplyChangesResult`'s `skippedPaths`/`rateLimitedPaths` (remote pushes) and
-`failedPaths` (local writes, via `LocalVault.applyChanges`'s return value) before committing
-either baseline, leaving a failed path's baseline untouched so it retries automatically on the
-next sync — the same contract `pushChangedFilesToRemote`/`applyRemoteChanges` already enforce
-for the normal pipeline. Unlike the normal pipeline, a skipped (size-limit) push isn't tracked
-in `unpushedFiles`/surfaced with a sticky manual-git-push notice — an oversized `.obsidian/`
-config path isn't a realistic scenario worth that extra UX, so it just retries silently every
-sync like a rate-limited one would.
+**Cross-device rule disagreement.** Each device resolves `format`/`scope` from its own loaded `.fitattributes.json`, which is an ordinary synced file with the usual propagation lag. So device A can add a `format:"text"` override while device B, not yet synced, still treats the path as `scope:"subset"` and pushes only its tracked-field subset as the new remote blob. Pulling that under A's opaque replace would silently drop any fields A has that were not in B's subset. Two checks prevent this:
+- **Explicit rules:** `FitSync.resolveRemoteFitAttributes` fetches remote's committed `.fitattributes.json` once per sync and compares its *explicit* entries with local's resolution. Defaults are not compared, since a default is a pure function of the path and cannot disagree.
+- **Content:** rules alone miss content produced under masked semantics with no remote config (an older second device, a manual git edit). `needsMaskedOverlayForPull` asks the question that matters regardless of config: would an opaque pull drop a top-level key that local's file has and remote's blob lacks? If so, a masked overlay is used. It applies only to `.obsidian/` paths whose remote SHA changed this sync (a pull would happen anyway), and not to first contact or pure pushes, which cannot lose data this way.
 
-[Explain Sync Status](#explain-sync-status) flags a *tracked* subset-scope path (one with a
-real remote baseline in `lastFetchedRemoteShas` — a `.json` `.obsidian/` path that merely
-defaults to `format:"json"`/`scope:"subset"` but has never had remote content observed for it
-is untracked, same as any other git-mask path, and must never be flagged regardless of local
-content) whose raw content has changed since the last sync touched it, using the same
-`localShas[path]` raw SHA and the same `compareFileStates()` every other file's Explain
-detection uses — zero extra I/O, since the local scan already computes this for every readable
-path. It deliberately cannot say *whether*
-the change landed in a tracked field (only a live remote fetch, i.e. an actual sync, can answer
-that), so it is reported in its own honestly-worded "changed since last sync (unconfirmed)"
-section rather than folded into the ordinary Pending local changes list, which would overclaim
-certainty. A subset-scope clash is not duplicated here — it already surfaces via the generic
-`pendingClashes` section. There is still no Explain preview of a pending subset-scope
-*push/pull* outcome (push vs. pull vs. merge) — only that *something* changed — since those are
-resolved eagerly within the sync itself, not deferred.
-
-**Cross-device rule disagreement — fixed, content-based, not rule-based.** Every
-format/scope decision (`Fit.resolveSyncFormat`/`resolveScope`) reads this device's own
-currently-loaded `.fitattributes.json`, refreshed from local content each sync — there is no
-association between a rule and the commit/blob SHA of the path it governs, and
-`.fitattributes.json` is itself an ordinary synced file with the same propagation lag as any
-other. So two devices can disagree about a path's `format`/`scope` for the length of that lag —
-concretely, device A adds a `format:"text"` override for a path device B still (pre-sync)
-believes defaults to `format:"json"`+`scope:"subset"`, device B keeps treating the file as
-maskable and pushes only its locally-tracked-field subset as the new remote blob. Pulling that
-under device A's opaque `format:"text"` replace semantics would silently discard whatever fields
-device A's real content had that weren't in device B's subset.
-
-An **explicit** rule mismatch (`FitSync.resolveRemoteFitAttributes` fetches and parses remote's
-currently-committed `.fitattributes.json` once per sync, compared against local's own resolution
-in `syncSubsetScopePaths`' candidate filter) catches this whenever remote's config actually says
-so — but comparing *rules* alone is incomplete: remote may have no `.fitattributes.json` at all
-yet (nothing to compare against) while its content was still produced under masked semantics by
-something else entirely (a real second device on an older baseline, a manual git edit — from a
-rule-comparison's perspective these look identical to "remote agrees with local's default").
-Rule comparison also has to be gated to *explicit* entries only, not remote's own default
-resolution — the default heuristic is a pure function of the path alone, so it can never
-actually disagree with local's own default; treating an empty remote ruleset as "resolves to
-subset by default, therefore disagrees with local's explicit text override" produced a real
-false-positive regression (a local `format:"text"` path with no remote config at all got wrongly
-diverted into the masked lane).
-
-The case rule comparison can't reach is instead caught by content: `needsMaskedOverlayForPull`
-asks the question that actually matters, independent of any rule metadata — would an opaque pull
-(the normal pipeline's whole-file replace) drop a top-level key local's current file has that
-remote's blob doesn't? If yes, a masked overlay (preserving that key) is required regardless of
-what either side's config claims; if no, opaque replacement and a masked overlay produce the
-identical result, so the cheaper normal pipeline is correct and nothing needs protecting. Bounded
-to `.obsidian/` paths whose remote SHA actually changed this sync (a pull would happen anyway, so
-this doesn't add a fetch beyond what pulling would already cost) and not already caught by the
-rule-based check. First contact (local has no file yet) and pure pushes (remote unchanged) are
-out of scope for this specific check — an opaque push just uploads everything local has, and a
-first-time pull has no existing local content to drop — so neither can lose data this way.
-Verified via a real regression test using no remote `.fitattributes.json` entry at all
-(`fitSync.realFit.test.ts`'s `'cross-device rule disagreement: an opaque format:"text" pull
-that would drop an untracked local field is caught and overlaid instead...'`).
-
-Distinct from the self-clash gap below (about `.fitattributes.json` itself being mid-clash, not
-about two devices' non-clashing-but-not-yet-converged copies disagreeing) — same underlying
-mechanism, same fix, no separate design needed.
-
-A single-device variant was suspected — deleting a locally-tracked path while its rule flaps
-between `format:"text"` and `scope:"subset"` with no intervening sync, then flipping back —
-but on inspection this isn't actually a bug: the file really was deleted, and the normal
-pipeline correctly propagates that deletion once it next observes the absence, regardless of
-what the rule did in between (raw-SHA comparison is rule-agnostic by construction). Not tracked
-as an open gap.
+Because the content check compares the target path's own bytes, a clash on `.fitattributes.json` itself cannot corrupt routing for other paths: each side's rule comes from that side's own bytes, and the `_fit/.fitattributes.json` copy is never consulted.
 
 **Malformed `.fitattributes.json`:** a file that cannot be used at all (invalid JSON, non-object root) degrades to "treat as empty — nothing syncs." **Invalid individual rules fail only themselves:** a rule that is not an object, or has an unrecognized `format` or `scope` value, is dropped whole (not partially applied), that path is treated as unconfigured, and every other rule keeps working (`parseFitAttributes` returns them as `invalidRules`). Both cases surface as a sync notice (`Fit.fitAttributesWarning`) and a persistent [Explain Sync Status](#explain-sync-status) entry (`fitAttributesNote`) rather than just a debug-log line, since this file is the sole enable-switch for `.obsidian/` sync. An unreadable-but-present file (I/O error) is debug-logged only — `LocalVault.readFromSource()`'s own scan already aborts the whole sync on any unreadable tracked file before that warning path would run.
-
-**Self-clash — confirmed resolved, same fix as cross-device rule disagreement above, no separate design needed.** The original
-framing worried that the local copy is read and applied unconditionally every sync, even while
-`.fitattributes.json` itself has an unresolved clash with remote sitting in
-`_fit/.fitattributes.json`. That's structurally fine already: local's live `this.fitAttributes`
-always governs local's own decisions (unavoidable, and correct — it's local's own bytes), while
-`FitSync.resolveRemoteFitAttributes` separately fetches and parses *remote's* currently-committed
-`.fitattributes.json` blob for the remote-side half of the comparison above — each side's rule
-comes from that side's own actual bytes, with no dependency on one "true" reconciled rule, so a
-clash on the rules file itself doesn't corrupt routing for any other path. The content-based check
-above reinforces this further: it doesn't consult `.fitattributes.json` content at all, comparing
-the target path's own local/remote bytes directly — so it stays correct even if a rule-resolution
-step were ever wrong. `_fit/.fitattributes.json`'s own clash copy is not itself consulted by
-either check — it isn't relevant to this comparison.
 
 **Not yet implemented:**
 - Array-valued field handling (set-union instead of clash) beyond `.canvas`'s hardcoded `nodes`/`edges` — not in the schema. A flat `unordered: string[]` shape was tried and dropped before landing; nested field targeting needs real design, left undecided rather than shipped half-right. Would also help `scope: "subset"`'s both-changed case above, which currently just clashes on any shared scalar difference.
@@ -974,13 +845,13 @@ The "Explain Sync Status" command (`fitSync.explainStatus()`) surfaces the vault
 | Pending local changes | `getLocalChanges()` diff, plus the deletions of resolved clashes | Local edits not yet pushed, and a clash whose local file and `_fit/` copy are both gone (the next sync pushes that deletion) |
 | All-clear / commit SHA | all of the above empty | Everything in sync |
 
+It also shows notes alongside the sections: a scan note when the local scan was incomplete, a `.fitattributes.json` warning, the auto-sync state, and the tracked-but-unconfirmed subset-scope paths described below.
+
 The conflicted-files list uses the same resolved-or-pending rules as Phase 0 of a sync (`FitSync.resolvePendingClashes`, read-only), so a clash the user has already resolved on disk (deleted its `_fit/` copy, or made the local file match it) stops showing without a sync in between; a stat or read failure keeps it listed. If the user deleted both the local file and its `_fit/` copy, the clash is resolved and Phase 0 pushes the deletion, so Explain lists that path under pending local changes as a removal (it has no baseline, so the local scan would not report it).
 
 ### Auto-merge and Explain
 
-When `array-merge` (or any future auto-resolving strategy) resolves a conflict silently, no entry is added to `pendingClashes` — the merged content is written locally and the push deferred. This means **Explain will not surface auto-merged files as conflicts**. If a user asks "why did my plugin list change?", the answer is in the sync log, not the status modal. This is intentional: the file is not in a broken state.
-
-If `autoMerge: false` is set on a rule, the clash file IS written to `_fit/` and the path IS added to `pendingClashes`, so it will appear in the Explain modal under "conflicted files".
+When an auto-merge (canvas/json structural merge, or text diff3) resolves a clash, no entry is added to `pendingClashes`: the merged content is written locally as a normal file and pushed on the next sync. **Explain does not surface auto-merged files as conflicts.** If a user asks "why did my file change?", the answer is in the sync log, not the status modal. This is intentional: the file is not in a broken state.
 
 ### Protected-path detection (not yet in the modal)
 
@@ -1002,7 +873,7 @@ When changing what state is stored in `pendingClashes`, `unpushedFiles`, or the 
 ```typescript
 localShas = {}  // No baseline yet
 lastFetchedRemoteShas = {}  // No baseline yet
-lastFetchedCommitSha = "initial"
+lastFetchedCommitSha = null
 ```
 
 **Behavior:**
@@ -1057,116 +928,17 @@ FIT uses a specialized SHA computation approach during sync operations to maximi
 - **When:** While writing remote changes to local vault
 - **Method:** Compute SHAs from in-memory content (fetched from GitHub API)
 - **Purpose:** Update cache for written files only, avoiding full re-scan
-- **Implementation:** [`LocalVault.writeFile()` + `getAndClearWrittenFileShas()`](../src/localVault.ts)
+- **Implementation:** `LocalVault.writeFile()` starts each computation; `applyChanges()` returns the pending SHAs as `newBaselineStates` ([`src/localVault.ts`](../src/localVault.ts), [`src/vault.ts`](../src/vault.ts))
 
 ### Why Compute from In-Memory Content?
 
-When files are written during sync, FIT computes their SHAs from the **in-memory content received from GitHub API**, not by re-reading files from disk. This provides three critical benefits:
+Written files' SHAs come from the content received from the GitHub API, not from re-reading disk:
 
-**1. Performance - Avoids Redundant I/O**
+- **Performance:** no second read of every written file, and the computation overlaps the push and state persistence.
+- **Race avoidance:** an edit the user makes *during* sync is not captured into the new baseline. Without this, a write of "version A" followed by a user edit to "version B" would record SHA("B") against a remote holding "A"; with it, the baseline is SHA("A") and the next sync sees the edit as a local change.
+- **Fidelity:** Obsidian writes content exactly as provided (checked 2025-11-05 for CRLF, LF, mixed line endings, Unicode, trailing whitespace, binary and very long lines), so SHA(in-memory content) equals SHA(re-read file). A read-after-write alternative would double the I/O and still race with user edits.
 
-During sync, we already have the file content in memory (fetched from GitHub API). Re-reading all files from disk would:
-- Double the I/O operations (write + read for each file)
-- Block the main thread with synchronous file reads
-- Significantly slow down large syncs (100+ files)
-
-With in-memory computation:
-- SHA computation overlaps with push to remote and state persistence
-- Better CPU utilization through parallelism
-- No blocking the main thread during sync
-
-**2. Race Condition Avoidance**
-
-Computing SHAs from the content we're writing (not from files on disk) ensures:
-- Any local file edits **during** sync are not accidentally captured in the new baseline
-- Those edits will be properly detected on the **next** sync
-- SHA cache accurately reflects the state we just synced, not any intervening changes
-
-**Example race condition prevented:**
-```typescript
-// Without in-memory SHA computation:
-await localVault.applyChanges([{path: "file.md", content: "version A"}]);
-// User edits file.md → "version B" (during sync)
-const shas = await computeWrittenFileShas(); // Would capture "version B"
-// BUG: SHA cache now says file.md = SHA("version B")
-// but remote has "version A" → sync broken
-
-// With in-memory SHA computation:
-await localVault.applyChanges([{path: "file.md", content: "version A"}]);
-// SHA computed from "version A" immediately (before user edit)
-// User edits file.md → "version B" (during sync)
-// Next sync properly detects local change (compares current "version B" to cached SHA of "version A")
-```
-
-**3. Content Fidelity - No Normalization in Obsidian**
-
-**Safety concern:** Does Obsidian normalize content when writing files (line endings, whitespace, etc.)? If so, we'd need to re-read files to get accurate SHAs.
-
-**Alternative considered:** Read-after-write approach (rejected):
-```typescript
-// Write file, then immediately read it back to compute SHA
-await this.vault.modifyBinary(file, content);
-const readBack = await this.vault.cachedRead(file);
-const sha = computeSha1(path + readBack);
-```
-This would handle any Obsidian normalization, but adds significant overhead (doubles I/O per file) and still vulnerable to race conditions (user edits between write and cachedRead).
-
-**Empirical testing (2025-11-05)** with 8 file types on Linux (Obsidian 1.x) confirmed:
-- **CRLF files** - No normalization (preserved exactly)
-- **LF files** - No normalization
-- **Mixed line endings** - No normalization
-- **Emoji/Unicode** - No normalization
-- **Trailing whitespace** - No normalization
-- **Binary content** - No normalization
-- **Long lines (1700+ chars)** - No normalization
-
-**Result:** Obsidian writes files **exactly as provided**, with no line ending conversion or content transformation. SHA computed from in-memory content = SHA computed from re-read file.
-
-### Implementation
-
-**Location:** [LocalVault.writeFile() in localVault.ts](../src/localVault.ts#L217-L224)
-
-```typescript
-// Compute SHA from in-memory content if file should be tracked
-let shaPromise: Promise<BlobSha> | null = null;
-if (this.shouldTrackState(path)) {
-    shaPromise = LocalVault.fileSha1(path, originalContent);
-}
-```
-
-**SHA promises collected in applyChanges():**
-```typescript
-// LocalVault.applyChanges() returns result with writtenStates promise
-const result = await localVault.applyChanges(filesToWrite, filesToDelete);
-
-// result = {
-//   changes: FileChange[],
-//   writtenStates: Promise<FileStates>  // SHAs computed in parallel
-// }
-
-// SHA computation started during file writes, continues in background
-```
-
-**Retrieval in FitSync:**
-```typescript
-// Await SHA promise when ready to update local state
-// (allows SHA computation to run in parallel with other sync operations)
-const writtenFileShas = await localFileOpsRecord.writtenStates;
-
-// Merge with current state (specialized update, not full re-scan)
-const newLocalState = {
-    ...currentLocalState,
-    ...writtenFileShas
-};
-```
-
-**Log output:** [FitSync.performSync() in fitSync.ts](../src/fitSync.ts)
-```
-[2025-11-05T10:37:19.456Z] [FitSync] Computed SHAs from in-memory content (skipped re-reading files): {
-  "filesProcessed": 195,
-  "totalFilesInState": 195
-}
-```
+`FitSync` awaits `newBaselineStates` when it is ready to persist and merges it into the current local state, a targeted update rather than a re-scan.
 
 ## SHA Normalization
 
@@ -1318,160 +1090,40 @@ The "before commit created" case is covered by a real regression test - see
 **Problem:**
 Obsidian's `getAbstractFileByPath()` returns truthy for both files and folders, causing naive existence checks to miss type mismatches.
 
-**Original Error:**
-"Error: Failed to write to _fit/.obsidian/workspace.json: Folder already exists."
+`ensureFolderExists()` checks `instanceof TFile` / `instanceof TFolder` and fails fast with a clear error when a file blocks folder creation, instead of Obsidian's confusing "Folder already exists" (issue #153; related PR #108).
 
-This confusing message comes from Obsidian's Vault API when `createBinary()` finds a file blocking the folder path.
-
-**Fix:**
-`ensureFolderExists()` now validates type with `instanceof TFile` / `instanceof TFolder` checks, explicitly failing fast with clear error message when a file blocks folder creation.
-
-**Failure isolation:** `LocalVault.applyChanges()` writes files concurrently via `Promise.allSettled` and does not abort the batch when one file fails — the failing path is reported via `failedPaths` (excluded from the sync baseline so it's retried next sync) while every other file in the batch still lands normally. This also covers the more common trigger of this class of error: two files landing in the same not-yet-created folder race to create it, and one loses. Before this, `applyChanges()` treated any single per-file failure as cause to throw for the entire batch, discarding already-successful writes and — because nothing gets persisted on a thrown/failed sync — leaving the whole batch stuck retrying forever if the failure was deterministic (see "First sync downloads nothing" below).
-
-**Related:** PR #108 (race condition fix)
-
-### First sync downloads nothing beyond later edits
-
-**Scenario:** A brand-new (empty) local vault connects to an existing, populated remote repo. The first sync correctly detects every remote file as `ADDED` (see [Initial Sync](#initial-sync)), but none of them appear locally — only files edited by another client *after* that point ever show up.
-
-**Root cause:** `LocalVault.applyChanges()` used to throw a single `VaultError` for the *entire* write batch whenever any one file failed to write (see `ensureFolderExists()` race above) — even though writes run concurrently via `Promise.allSettled` specifically to isolate per-file failures. That throw aborted `FitSync._doSync()` before the sync-state persistence step, so nothing was saved — not even the files that wrote successfully moments earlier. Since a failed sync leaves the baseline untouched, every retry re-detected the exact same file set and was liable to hit the exact same race again, appearing to "never" download the pre-existing content. A later edit from another client syncs a single file in isolation, well clear of any folder-creation race, and goes through — which is why edits appear to work while the original bulk content never does.
-
-**Fix:** local write/delete failures are now reported per-file via `failedPaths` instead of throwing (see above). `FitSync.executeSync()` excludes `failedPaths` from the persisted baseline (`lastFetchedRemoteShas` for write failures; the file's existing `localShas` entry is preserved, not deleted, for delete failures) so those specific paths are re-detected as changed and retried on the next sync, while every other file in the batch is written and tracked normally in the same sync. A "Sync incomplete — N file(s) couldn't be written locally... They will be retried automatically on the next sync" notice surfaces this instead of it failing silently.
+**Failure isolation:** `LocalVault.applyChanges()` writes files concurrently via `Promise.allSettled` and never aborts the batch for one failure. A failing path is reported in `failedPaths` and every other file still lands. This also covers the more common trigger, two files racing to create the same new folder. `FitSync.executeSync()` leaves a failed path out of the persisted baseline (`lastFetchedRemoteShas` for a failed write; the existing `localShas` entry is kept for a failed delete), so it is re-detected and retried on the next sync, and a "Sync incomplete — N file(s) couldn't be written locally" notice says so. Throwing for the whole batch would discard the successful writes and leave a deterministic failure retrying forever, which is why a brand-new vault could appear to download nothing from a populated repo.
 
 ### Encoding Corruption (Issue #51)
 
-**Scenario:** Filenames with non-ASCII characters (Turkish, etc.) get corrupted during sync on Windows
+**Symptom:** on Windows, filenames with non-ASCII characters can arrive corrupted (`Küçük.md` becomes `K眉莽眉k.md`: UTF-8 bytes read as GBK), leaving duplicate files in the repository and clashes on later syncs. The cause is not confirmed; the HTTP client may be using a system charset instead of UTF-8.
 
-**Example:**
-- Correct filename: `Küçük.md` (Turkish)
-- Corrupted: `K眉莽眉k.md` (mojibake - Chinese characters)
+**Diagnostics:** a path-pattern check ([src/util/pathPattern.ts](../src/util/pathPattern.ts)) flags two paths that differ only in a non-ASCII run between alphanumerics.
+- **Upload:** compares intended paths with GitHub's echo-back ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts)). Logs `🔴 [RemoteVault] Encoding corruption detected during upload!`
+- **Download:** compares incoming remote paths with existing local files ([src/localVault.ts](../src/localVault.ts)). Logs `⚠️ [LocalVault] Suspicious filenames detected during sync!`
 
-**Root Cause:**
-UTF-8 bytes of filename misinterpreted as GBK (Chinese charset):
-```
-Original: "Küçük" → UTF-8 bytes: 0x4B C3BC C3A7 C3BC 6B
-Corrupted: Same bytes decoded as GBK → "K眉莽眉k"
-```
-
-**Evidence from user reports:**
-- Files **already existed correctly in GitHub** before using FIT
-- Corruption appears **only on Windows**, not Linux
-- Corrupted filenames appear in **GitHub's web interface** after sync
-- "Duplicated files don't appear inside Obsidian (on Windows), but they do appear in the file system" (Windows filesystem aliasing)
-- GitHub shows both original AND corrupted versions after sync
-
-**Likely cause:**
-- Node.js/Electron HTTP client on Windows may default to system charset for JSON encoding/decoding
-- Octokit may not explicitly force UTF-8 for request/response bodies
-- Unknown which system locale triggers this (possibly Chinese, but could be other non-UTF-8 defaults)
-
-**Effect:**
-- Creates duplicate files in remote repository
-- Files appear in GitHub but may not show in Obsidian UI on Windows
-- Subsequent syncs see both versions, creating conflicts
-
-**Detection & Logging:**
-FIT includes a diagnostic system that detects suspicious filename patterns using an ASCII-sandwich algorithm ([src/util/pathPattern.ts](../src/util/pathPattern.ts)): if a wildcard (non-ASCII run) has alphanumeric characters on both sides, two paths sharing that pattern but differing in non-ASCII content are flagged as suspicious.
-
-- **Upload detection** ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts)): compares intended paths vs GitHub's echo-back response — ground-truth evidence of corruption. Logs: `🔴 [RemoteVault] Encoding corruption detected during upload!`
-- **Download detection** ([src/localVault.ts](../src/localVault.ts)): checks incoming remote paths against existing local files for suspicious pattern matches. Logs: `⚠️ [LocalVault] Suspicious filenames detected during sync!`
-
-When detected, FIT logs to debug log and shows a user notification with a link to issue #51.
-
-**To help isolate the issue:**
-- Enable debug logging in FIT settings
-- Check `.obsidian/plugins/fit/debug.log` for corruption warnings
-- Look for patterns like `"Küçük.md" ↔ "K眉莽眉k.md"`
-- Report findings with system locale info to issue #51
-
-**Status:** Diagnostics implemented, root fix pending (requires custom fetch with explicit UTF-8)
-
-**References:**
-- GitHub issue: https://github.com/joshuakto/fit/issues/51
+A detection also shows a notice linking to issue #51; reports should include the debug log and the system locale. **Status:** diagnostics only, root fix pending (likely a custom fetch with explicit UTF-8).
 
 ### Binary File Content Corruption (Issue #156)
 
-**Scenario:** Binary files (JPG, PNG, PDF, etc.) corrupted during sync, appearing as gibberish text in GitHub
+**Symptom:** binary files (JPG, PNG, PDF) appear in GitHub as gibberish text, because `vault.read()` can succeed on binary content on some platforms (notably iOS) and return text with replacement characters.
 
-**Example:**
-- Local file: `photo.jpg` (valid JPEG image)
-- After sync: GitHub shows text like `����JFIF��4ExifMM*�i�0232���http:`
-- Cause: File read as text instead of binary, then base64-encoded corrupted text
+**Current behavior:** file content is always read with `readBinary()`, then classified like Git does: a null byte in the first 8KB, or invalid UTF-8 under `TextDecoder` with `fatal: true`, means binary and is sent as base64. The detection and why it must not use `vault.read()` are in [api-compatibility.md](./api-compatibility.md); code in [`src/util/obsidianHelpers.ts`](../src/util/obsidianHelpers.ts).
 
-**Root Cause:**
-PR #161 changed binary detection from extension-based to dynamic (try `vault.read()` first, fallback to `vault.readBinary()`). However, Obsidian's `vault.read()` can **succeed** on binary files on some platforms (particularly iOS), returning corrupted "text" data with replacement characters.
+**Recovery:** files corrupted by an affected version stay corrupted in GitHub. Restore them from history and re-sync.
 
-**Flow of Corruption:**
-```typescript
-// BEFORE FIX (PR #161 behavior)
-1. vault.read(photo.jpg) → succeeds (should fail!)
-2. Returns corrupted string: "����JFIF��..."
-3. FileContent.fromPlainText() → encoding='plaintext'
-4. Push to GitHub → sends corrupted text as UTF-8
-5. GitHub displays garbage text instead of image
+**References:** issue #156 (PR #161 introduced the regression).
 
-// AFTER FIX (Issue #156)
-1. vault.readBinary(photo.jpg) → raw bytes
-2. Check for null bytes in first 8KB
-3. Found 0x00 byte → it's binary
-4. FileContent.fromBase64() → encoding='base64'
-5. Push to GitHub → sends proper base64
-6. GitHub displays image correctly
-```
+## Auto-Sync Triggers
 
-**Fix (v1.4.0):**
-Uses Git's proven null byte heuristic for binary detection:
-
-```typescript
-// Always read as binary first
-const arrayBuffer = await vault.readBinary(file);
-
-// Check first ~8KB for null bytes (0x00)
-const bytes = new Uint8Array(arrayBuffer.slice(0, Math.min(8192, arrayBuffer.byteLength)));
-const hasNullByte = bytes.some(b => b === 0);
-
-if (hasNullByte) {
-  // Binary file - return as base64
-  return FileContent.fromBase64(base64);
-}
-
-// No null bytes - try UTF-8 decode
-try {
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(arrayBuffer);
-  return FileContent.fromPlainText(text);
-} catch {
-  // Invalid UTF-8 - treat as binary
-  return FileContent.fromBase64(base64);
-}
-```
-
-**Why This Works:**
-- **Git uses the same approach** - null bytes reliably indicate binary content
-- Works for all common binary formats:
-  - Images: JPEG (has null bytes at offset 4), PNG, GIF, BMP
-  - Documents: PDF, Office files
-  - Archives: ZIP, RAR, tar.gz
-  - Executables: .exe, .dll, .so
-- Handles edge cases where `vault.read()` incorrectly succeeds
-- Fast single read operation (no try/catch fallback needed)
-
-**Recovery:**
-If you have corrupted binary files in GitHub:
-1. Delete the corrupted versions from GitHub
-2. Update to v1.4.0+ with the fix
-3. Re-sync - files will upload correctly as binary
-
-**Future Enhancement:**
-GitHub's tree API includes a `mode` field indicating binary vs text. Could use this metadata to override local detection for already-tracked files, but null byte heuristic is sufficient.
-
-**References:**
-- GitHub issue: https://github.com/joshuakto/fit/issues/156
-- Fix PR: (pending)
-- Related: PR #161 (introduced the bug)
+Entry points in [src/fitPlugin.ts](../src/fitPlugin.ts), all running a full sync through the same guarded path as a manual one:
+- **Interval:** every `checkEveryXMinutes` when `autoSync` is `on` (or `muted`, which suppresses the notices); `remind` only prompts.
+- **On open:** one sync at launch when `syncOnOpen` is set.
+- **On save:** `syncOnSave` listens for vault `modify` events and runs a sync 30 seconds after the last save (a trailing debounce, so a burst of saves coalesces). The `isActive` check matters: FIT's own pull writes fire `modify` too, and without it every sync would schedule another no-op sync.
 
 ## 🔒 Concurrency Control
 
-**Only one sync executes at a time** within a single Obsidian instance, enforced by boolean flags in [src/fitPlugin.ts](../src/fitPlugin.ts) entry points.
+**Only one sync executes at a time** within a single Obsidian instance, enforced by `FitSync.syncPromise` ([src/fitSync.ts](../src/fitSync.ts)): `FitSync.sync()` returns an `already-syncing` error while one is in flight, and the entry points in [src/fitPlugin.ts](../src/fitPlugin.ts) check `FitSync.isActive` first.
 
 ```mermaid
 sequenceDiagram
@@ -1483,10 +1135,10 @@ sequenceDiagram
     User->>Entry: Trigger sync
 
     alt Sync already in progress
-        Entry-->>User: ❌ Silent early return<br/>syncing flag prevents concurrent access
+        Entry-->>User: ❌ Silent early return<br/>FitSync.isActive prevents concurrent access
     else Sync available
         rect rgba(0, 0, 0, 0.05)
-            Note over Entry,Vaults: syncing flag set during this scope
+            Note over Entry,Vaults: FitSync.syncPromise set during this scope
             Entry->>Sync: Orchestrate sync
             Sync->>Vaults: Read/write operations
             Vaults-->>Sync: Results
@@ -1524,8 +1176,8 @@ sequenceDiagram
    - GitHub API calls taking > 10 seconds
    - Local SHA computation taking > 10 seconds (hundreds of files on mobile)
 
-Conditional extra-cost mechanisms beyond this general model (per-clash base-blob fetches, the
-uncapped debug-log path-array dumps): [Sync Performance Inventory](./sync-performance-inventory.md).
+Conditional extra-cost mechanisms beyond this general model (e.g. per-clash base-blob fetches):
+[Sync Performance Inventory](./sync-performance-inventory.md).
 
 ### Optimizations
 
@@ -1534,7 +1186,7 @@ uncapped debug-log path-array dumps): [Sync Performance Inventory](./sync-perfor
 - ✅ **Parallel local + remote fetch** - Scans local vault while fetching remote state
 - ✅ **Batched filesystem operations** - Groups safety checks for efficiency
 
-**Implementation:** [src/remoteGitHubVault.ts:605-640](../src/remoteGitHubVault.ts#L605-L640), [src/fitSync.ts:697-707](../src/fitSync.ts#L697-L707)
+**Implementation:** `RemoteGitHubVault.readFromSource` ([src/remoteGitHubVault.ts](../src/remoteGitHubVault.ts)) and `FitSync.compareAndResolveChanges` ([src/fitSync.ts](../src/fitSync.ts))
 
 ## Debug Logging
 
@@ -1572,71 +1224,18 @@ Arrays in a logged value are capped at 100 entries, with a
 }
 ```
 
-**Performance insights from timestamps:**
-- Local scan: ~10ms (5 files, very fast)
-- Remote fetch: ~466ms (GitHub API call - cache hit, 1 API call)
-- Parallel execution visible: both operations start at :543ms
-- Push operation: ~577ms (GitHub API to create commit)
-- Total sync: ~1 second
+The timestamps show the local scan and the remote fetch starting together, and the push taking most of the time.
 
-**Example** — sync with `.obsidian/` protected-path detection (hard-denylisted, tracked-but-unconfigured, and text-mode-tracked paths present). Continues the same vault as the earlier `.fitattributes.json` groundwork example above: `.obsidian/graph.json` was already `format:"text"`-configured there and now actually syncs since the format gate has landed; `.obsidian/plugins/obsidian42-brat/data.json` is still unconfigured, unchanged; `.obsidian/app.json` is the file that used to sync via the now-retired `obsidianSyncRules` (see [Migrating from obsidianSyncRules](#migrating-from-obsidiansyncrules-alpha) above) and continues syncing here because it was migrated to a `format:"text"` entry. `.obsidian/plugins/some-plugin/main.js` is a plugin-managed code asset (permanently hard-denylisted — unlike FIT's own `data.json`, which is masked rather than denylisted, see above):
+**Protected-path detection** adds one line per sync after change detection, listing `.obsidian/` paths that are not actively syncing, plus a hint line when some are:
 ```
-[timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
-[timestamp] .. 💾 [LocalVault] Scanning files...
-[timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
-[timestamp] ... 💾 [LocalVault] Scanned 7 files
-[timestamp] ... ☁️ [RemoteVault] Fetched 9 files
-[timestamp] .. ✅ [Sync] Change detection complete
 [timestamp] [FitSync] Protected-path detection: {
   "trackedSyncing": [".obsidian/app.json", ".obsidian/graph.json"],
   "hardDenylisted": [".obsidian/plugins/some-plugin/main.js"],
   "trackedUnconfigured": [".obsidian/plugins/obsidian42-brat/data.json"],
   "untracked": [".obsidian/hotkeys.json"]
 }
-[timestamp] [FitSync] Note: to stop syncing any of the above trackedSyncing paths, remove them from your GitHub repo — .fitattributes.json only changes how a tracked path syncs, not whether it is tracked.
-[timestamp] 🔄 [FitSync] Syncing changes (1 local, 1 remote): {
-  "local": { "MODIFIED": [".obsidian/app.json"] },
-  "remote": { "MODIFIED": ["note.md"] }
-}
-[timestamp] [FitSync] Conflict detection complete: {
-  "safeLocal": 1, "safeRemote": 1, "clashes": 0
-}
-[timestamp] .. ⬆️ [Push] Pushed 1 changes to remote
-[timestamp] .. ⬇️ [Pull] Applied remote changes to local: {
-  "filesWritten": 1, "filesDeleted": 0, "clashesWrittenToFit": 0
-}
 ```
-`.obsidian/plugins/some-plugin/main.js` and `.obsidian/plugins/obsidian42-brat/data.json` never appear in the
-local/remote change sets above regardless of their remote content — `shouldSyncPath` filters them out
-before change detection runs. `.obsidian/app.json` and `.obsidian/graph.json` (both `format: "text"` in
-`.fitattributes.json`) are the only `.obsidian/` paths treated as ordinary files here. `.obsidian/hotkeys.json`
-has no remote content yet, so it's plain "untracked" — not distinguished from any other file FIT has
-simply never seen, no `protectedPathShas` entry exists for it. (FIT's own `data.json`, if present, would
-show in `trackedSyncing` too — like any `scope: "subset"` path, it's excluded from this local/remote
-change-set pipeline and handled by the dedicated subset-scope lane instead, see § `.fitattributes.json`
-above.)
-
-`untracked` can be long (full local `.obsidian/` scan); like any logged array it is cut to the
-first 100 entries followed by a `... [truncated N more entries, M total]` entry.
-
-**Example initial sync pulling 195 files (slower ~2-3s due to network + tree fetch):**
-```
-[timestamp] 🔄 [Sync] Checking local and remote changes (parallel)...
-[timestamp] .. 💾 [LocalVault] Scanning files...
-[timestamp] .. ☁️ [RemoteVault] Fetching from GitHub...
-[timestamp] ... 💾 [LocalVault] Scanned 0 files
-[timestamp] ... ⬇️ [RemoteVault] Fetching initial state from GitHub (a1b2c3d)...
-[timestamp] ... ☁️ [RemoteVault] Fetched 195 files
-[timestamp] .. ✅ [Sync] Change detection complete
-[timestamp] 🔄 [FitSync] Syncing changes (0 local, 195 remote): { ... }
-[timestamp] [FitSync] Conflict detection complete: {
-  "safeLocal": 0, "safeRemote": 195, "clashes": 0
-}
-[timestamp] .. ⬇️ [Pull] Applied remote changes to local: {
-  "filesWritten": 195, "filesDeleted": 0, "clashesWrittenToFit": 0
-}
-[timestamp] .. 📦 [Cache] Updating SHA cache after sync: { ... }
-```
+`untracked` can be long; like any logged array it is cut to the first 100 entries. See [Path Filtering and Safety](#path-filtering-and-safety) for what each bucket means.
 
 **Example log trace with conflicts:**
 ```
