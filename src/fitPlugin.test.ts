@@ -438,29 +438,32 @@ describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
 		});
 	});
 
-	it('skips migration instead of rewriting a file that has an invalid rule, so the rule is not erased', async () => {
-		const existing = JSON.stringify({ '.obsidian/hotkeys.json': { format: 'yaml' } });
+	// The legacy setting is dropped from data.json by the next save, so a skipped migration
+	// cannot be retried: the user has to be told which paths to add by hand.
+	it.each([
+		['has an invalid rule', JSON.stringify({ '.obsidian/hotkeys.json': { format: 'yaml' } })],
+		['is not valid JSON', '{not valid json'],
+	])('skips migration and tells the user which paths to add by hand when the file %s', async (_label, existing) => {
 		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
 		mockLoad(plugin, {
 			pat: 'token', owner: 'alice', repo: 'notes',
-			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+			obsidianSyncRules: {
+				'.obsidian/appearance.json': { sync: 'replace' },
+				'.obsidian/hotkeys.json': { sync: 'replace' },
+			}
 		});
+		NoticeCtor.mockClear();
 
 		await plugin.loadSettings();
 
-		expect(writes).toEqual({});
-	});
-
-	it('skips migration instead of overwriting a file that is not valid JSON', async () => {
-		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: '{not valid json' });
-		mockLoad(plugin, {
-			pat: 'token', owner: 'alice', repo: 'notes',
-			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({
+			writes: {}, // The existing file is left untouched
+			notices: [[
+				'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+				'Fix it, then add { "format": "text" } entries for: .obsidian/appearance.json, .obsidian/hotkeys.json',
+				0,
+			]],
 		});
-
-		await plugin.loadSettings();
-
-		expect(writes).toEqual({});
 	});
 
 	it('migrates into an existing but empty .fitattributes.json', async () => {
