@@ -845,6 +845,7 @@ describe('FitSync', () => {
 			const laterResult = await syncAndHandleResult(fitSync, createMockNotice());
 			expect(laterResult).toEqual(expect.objectContaining({ success: true, clash: [] }));
 			expect(remoteVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
+			// Nothing recorded: a pending entry would make Explain advertise a _fit/ copy that was never written.
 			expect(localStoreState.pendingClashes).toEqual([]);
 
 			// A further local edit is a plain change against the stale baseline: pushed, re-creating the file.
