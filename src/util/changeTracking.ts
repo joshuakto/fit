@@ -254,6 +254,16 @@ export function resolveAllChanges(
 				continue;
 			}
 
+			// A local edit beats a remote deletion: push it back, as there is no remote copy to
+			// preserve. Not for git-mask-tracked paths, where removal can mean "stop syncing".
+			if (
+				localChange.type === "MODIFIED" && remoteChange.type === "REMOVED" &&
+				!gitMaskTrackedPaths.has(localChange.path)
+			) {
+				safeLocal.push(localChange);
+				continue;
+			}
+
 			// Both sides changed - definite clash
 			clashes.push({
 				path: localChange.path,

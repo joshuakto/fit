@@ -822,19 +822,38 @@ describe('FitSync', () => {
 
 			localVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
 			await remoteVault.applyChanges([], ['.obsidian/appearance.json']);
-			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			const notice = createMockNotice();
+			const result = await syncAndHandleResult(fitSync, notice);
 
 			expect(result).toEqual(expect.objectContaining({
 				success: true,
 				changeGroups: [
 					{ heading: expect.stringContaining('Local file updates'), changes: [] },
 					{ heading: expect.stringContaining('Remote file updates'), changes: [] }
-				]
+				],
+				clash: [{ path: '.obsidian/appearance.json', localState: 'MODIFIED', remoteOp: 'REMOVED' }]
 			}));
+			expect(notice._calls.at(-1)?.args[0]).toContain('ignored remote deletion of locally changed files');
 			// Local edit preserved, not silently deleted or re-baselined without record.
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"light"}',
 				[FITATTRIBUTES_PATH]: fitAttributesContent
+			});
+
+			// Known limitation (no data lost): reported only on this sync, never recorded, and the
+			// edit is baselined as if synced. Not pushed on purpose: removal can mean "stop syncing".
+			const laterResult = await syncAndHandleResult(fitSync, createMockNotice());
+			expect(laterResult).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ [FITATTRIBUTES_PATH]: fitAttributesContent });
+			// Nothing recorded: a pending entry would make Explain advertise a _fit/ copy that was never written.
+			expect(localStoreState.pendingClashes).toEqual([]);
+
+			// A further local edit is a plain change against the stale baseline: pushed, re-creating the file.
+			localVault.setFile('.obsidian/appearance.json', '{"theme":"edited again"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': '{"theme":"edited again"}'
 			});
 		});
 
@@ -1690,6 +1709,35 @@ describe('FitSync', () => {
 
 			// === VERIFY: Remote state updated ===
 			expect(remoteVault.getFile('.gitignore')).toBeUndefined();
+		});
+
+		it('given a tracked file edited locally and deleted remotely, should push the local edit back instead of leaving the paths diverged', async () => {
+			// Scenario matrix row "ordinary vault path, local edited, remote deleted".
+			localVault.setFile('note.md', 'v1');
+			remoteVault.setFile('note.md', 'v1');
+			const { state: initialLocalState } = await localVault.readFromSource();
+			const { state: initialRemoteState } = await remoteVault.readFromSource();
+			localStoreState = makeLocalStore({
+				localShas: initialLocalState,
+				lastFetchedRemoteShas: initialRemoteState,
+				lastFetchedCommitSha: remoteVault.getCommitSha()
+			});
+
+			localVault.setFile('note.md', 'v2 edited locally');
+			await remoteVault.applyChanges([], ['note.md']);
+
+			const fitSync = createFitSync();
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({ 'note.md': 'v2 edited locally' });
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'note.md': 'v2 edited locally' });
+			expect(localStoreState.pendingClashes).toEqual([]);
+
+			// Both sides now agree, so a later sync has nothing to do.
+			await syncAndHandleResult(createFitSync(), createMockNotice());
+			expect(localVault.getAllFilesAsRaw()).toEqual({ 'note.md': 'v2 edited locally' });
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'note.md': 'v2 edited locally' });
 		});
 
 		it('should treat remote file as new when missing from lastFetchedRemoteSha cache', async () => {

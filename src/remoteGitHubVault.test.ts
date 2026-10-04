@@ -116,6 +116,25 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
+			it("given a tree with a symlink entry (mode 120000), should not report it as an ordinary file (BUG: returned as a plain path with its sha)", async () => {
+				// Asserts today's (buggy) behavior for the scenario matrix row "symlink on remote".
+				// The state keeps only path -> sha, so a symlink is indistinguishable from a file
+				// and callers pull it as a regular file holding the target text. When symlinks are
+				// handled, replace this expectation with the intended one.
+				const mockTree: TreeNode[] = [
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA },
+					{ path: "link.md", type: "blob", mode: "120000", sha: BLOB2_SHA }
+				];
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, mockTree);
+
+				const { state } = await vault.readFromSource();
+
+				expect(state).toEqual({
+					"file1.md": BLOB1_SHA,
+					"link.md": BLOB2_SHA
+				});
+			});
+
 			it("should not wrap missing-global errors as network errors", async () => {
 				// Simulates a mobile runtime where an assumed global (e.g. Buffer, TextEncoder)
 				// is missing — the resulting ReferenceError should propagate as-is rather than
@@ -301,6 +320,24 @@ describe("RemoteGitHubVault", () => {
 						mode: "100644"
 					})
 				]));
+			});
+
+			it("given a symlink entry (mode 120000) and content pushed to its path, should not convert it to a regular file (BUG: the node is created as 100644)", async () => {
+				// Asserts today's (buggy) behavior for the scenario matrix row "symlink on remote,
+				// pulled earlier as a regular file": every pushed node is created as 100644, so the
+				// remote symlink is converted. When symlinks are handled, replace this expectation.
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, [
+					{ path: "link.md", type: "blob", mode: "120000", sha: "linkblob" as BlobSha }
+				]);
+
+				await vault.applyChanges(
+					[{ path: "link.md", content: FileContent.fromPlainText("edited text") }],
+					[]
+				);
+
+				expect(fakeOctokit.getCurrentTree()).toEqual([
+					expect.objectContaining({ path: "link.md", type: "blob", mode: "100644" })
+				]);
 			});
 
 			it("should handle file modifications", async () => {

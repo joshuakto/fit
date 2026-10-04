@@ -108,26 +108,34 @@ export function showUnappliedConflicts(clashedFiles: Array<FileClash>): void {
 	});
 	footer.setText("Note:");
 	footer.style.fontWeight = "bold";
-	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-		.setText("Remote version saved to _fit/ — file held pending until resolved");
-	conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-		.setText("Resolve: delete _fit/ copy (keep local), or edit either file until they match");
+	for (const note of conflictNoticeNotes(clashedFiles)) {
+		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"}).setText(note);
+	}
+}
 
-	// Add explanatory notes for special local states
-	const hasPending = clashedFiles.some(c => c.localState === 'pending');
-	const hasUntracked = clashedFiles.some(c => c.localState === 'untracked');
-	const hasHidden = clashedFiles.some(c => c.path.split('/').some(p => p.startsWith('.')));
+/** Footer notes for the conflicts notice. A clash against a remote deletion has no `_fit/` copy. */
+export function conflictNoticeNotes(clashedFiles: Array<FileClash>): string[] {
+	const deletedRemotely = clashedFiles.filter(c => c.remoteOp === 'REMOVED' && c.localState !== 'pending');
+	const savedToFit = clashedFiles.filter(c => !deletedRemotely.includes(c));
+	const notes: string[] = [];
 
-	if (hasPending) {
-		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-			.setText("Pending: unresolved from a prior sync — will keep appearing and local changes won't sync until resolved");
+	if (savedToFit.length > 0) {
+		notes.push("Remote version saved to _fit/ — file held pending until resolved");
+		notes.push("Resolve: delete _fit/ copy (keep local), or edit either file until they match");
 	}
-	if (hasUntracked) {
-		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-			.setText("Untracked: Could not verify local state - check logs for details");
+	if (deletedRemotely.length > 0) {
+		notes.push("Deleted on remote: the remote file was removed but a local copy was changed or could not be verified. The local file was kept and nothing was saved to _fit/");
 	}
-	if (hasHidden) {
-		conflictNotice.noticeEl.createEl("li", {cls: "file-conflict-note"})
-			.setText("Hidden file conflict: Obsidian won't show the _fit/ copy in its file explorer. Resolve on desktop using a file manager, or open the _fit/ folder directly.");
+
+	// Explanatory notes for special local states
+	if (savedToFit.some(c => c.localState === 'pending')) {
+		notes.push("Pending: unresolved from a prior sync — will keep appearing and local changes won't sync until resolved");
 	}
+	if (clashedFiles.some(c => c.localState === 'untracked')) {
+		notes.push("Untracked: Could not verify local state - check logs for details");
+	}
+	if (savedToFit.some(c => c.path.split('/').some(p => p.startsWith('.')))) {
+		notes.push("Hidden file conflict: Obsidian won't show the _fit/ copy in its file explorer. Resolve on desktop using a file manager, or open the _fit/ folder directly.");
+	}
+	return notes;
 }
