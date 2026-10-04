@@ -626,12 +626,16 @@ export default class FitPlugin extends Plugin {
 				const parsed = parseFitAttributes(text);
 				if (!parsed.ok || parsed.invalidRules.length > 0) {
 					fitLogger.log('⚠️ [Plugin] Skipping obsidianSyncRules migration: existing .fitattributes.json is not fully valid.');
-					// The next save drops the legacy setting, so this cannot be retried.
-					new Notice(
-						'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
-						`Fix it, then add { "format": "text" } entries for: ${Object.keys(legacyRules).join(', ')}`,
-						0
-					);
+					// The next save drops the legacy setting, so this cannot be retried. Paths the
+					// file already configures validly need nothing added (and keep their own choice).
+					const unmigrated = Object.keys(legacyRules).filter(path => !(parsed.ok && parsed.value[path]));
+					if (unmigrated.length > 0) {
+						new Notice(
+							'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+							`Fix it, then add { "format": "text" } entries for: ${unmigrated.join(', ')}`,
+							0
+						);
+					}
 					return;
 				}
 				current = parsed.value;

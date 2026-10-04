@@ -466,6 +466,52 @@ describe('FitPlugin.loadSettings — obsidianSyncRules migration', () => {
 		});
 	});
 
+	// A path the user already configured with a valid rule needs nothing added, and its
+	// deliberate choice (here format:"json") must not be suggested for replacement.
+	it('names only the legacy paths with no valid rule in the file', async () => {
+		const existing = JSON.stringify({
+			'.obsidian/appearance.json': { format: 'json' },
+			'.obsidian/graph.json': { format: 'yaml' },
+		});
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: {
+				'.obsidian/appearance.json': { sync: 'replace' },
+				'.obsidian/hotkeys.json': { sync: 'replace' },
+			}
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({
+			writes: {},
+			notices: [[
+				'FIT: could not move your old .obsidian/ sync settings to .fitattributes.json because the existing file is not fully valid. ' +
+				'Fix it, then add { "format": "text" } entries for: .obsidian/hotkeys.json',
+				0,
+			]],
+		});
+	});
+
+	it('shows no Notice when the file has an invalid rule but every legacy path already has a valid one', async () => {
+		const existing = JSON.stringify({
+			'.obsidian/appearance.json': { format: 'json' },
+			'.obsidian/graph.json': { format: 'yaml' },
+		});
+		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: existing });
+		mockLoad(plugin, {
+			pat: 'token', owner: 'alice', repo: 'notes',
+			obsidianSyncRules: { '.obsidian/appearance.json': { sync: 'replace' } }
+		});
+		NoticeCtor.mockClear();
+
+		await plugin.loadSettings();
+
+		expect({ writes, notices: NoticeCtor.mock.calls }).toEqual({ writes: {}, notices: [] });
+	});
+
 	it('migrates into an existing but empty .fitattributes.json', async () => {
 		const { plugin, writes } = makePluginWithAdapter({ [FITATTRIBUTES_PATH]: '  \n' });
 		mockLoad(plugin, {
