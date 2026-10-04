@@ -168,7 +168,13 @@ Compatibility issues are caught mechanically by:
 
 ### Desktop-only exceptions
 
-None exist today. If a feature genuinely needs Node (for example real symlink detection, which `DataAdapter` cannot do), isolate it in one module that is only reached on desktop (an `instanceof FileSystemAdapter` gate, lazy loading, and a try/catch fallback to "unsupported"), then allow that one file in both mechanical checks, instead of adding inline disables:
+None exist today, and an exception is a special case, not a convenience. It is acceptable only when the Node access is loaded conditionally and is load-bearing in exactly the situations where the API exists, so the fallbacks cover every other case:
+
+- It is never reached at module load, only lazily, behind a gate that is false on mobile (an `instanceof FileSystemAdapter` check).
+- Everything it enables degrades gracefully without it: the feature is skipped or reports "unsupported", and nothing else depends on its result.
+- Every failure path (API absent, module fails to resolve, call throws) takes that same fallback.
+
+Real symlink detection is the motivating example, since `DataAdapter` cannot do it. Isolate such code in one module, then allow that one file in both mechanical checks, instead of adding inline disables:
 
 1. In `eslint.config.js`, add a per-file block after the `src/**` block (see the comment there).
 2. In `src/apiCompatibility.test.ts`, let the bundle check treat built-ins as external only when imported from that file.
