@@ -1274,6 +1274,9 @@ export class FitSync implements IFitSync {
 		// Untracked clashes are excluded — they use the #169 baseline mechanism instead.
 		// Auto-merged canvas clashes are resolved — they don't enter pending state.
 		// Paths already in pendingClashes (localState === 'pending') stay there.
+		// Clashes against a remote removal (only git-mask-tracked paths, see resolveAllChanges)
+		// are reported once but not recorded, so Explain and later syncs forget them. Accepted
+		// since no data is lost; if confusing, consider an empty `_fit/` placeholder as a pending entry.
 		for (const clash of clashes) {
 			if (clash.remoteOp !== 'REMOVED' &&
 				clash.localState !== 'untracked' &&

@@ -73,6 +73,7 @@ middle state.
 |---|---|---|---|---|
 | ordinary vault path | 👀 tracked | ⚪ unchanged | ✏️ edited | ✅ ordinary pull path, exercised throughout `fitSync.realFit.test.ts` (e.g. `'should write remote hidden files directly when no local version exists'`) |
 | ordinary vault path | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ ordinary push path (same file, symmetric case) |
+| ordinary vault path | 👀 tracked | ✏️ edited | 🗑️ deleted | ✅ `'given a tracked file edited locally and deleted remotely, should push the local edit back instead of leaving the paths diverged'` - the edit wins and is pushed (see [sync-logic.md § Conflict Types](./sync-logic.md)) |
 | ordinary vault path | 👀 tracked | ✏️ edited | ✏️ edited | ✅ `'should report file as conflict when saved to _fit/ for any safety reason'` |
 | hidden vault path (non-`.obsidian/`) | 🆕 untracked, never observed | n/a | ✏️ edited | ✅ `'should write remote hidden files directly when no local version exists (#...'` |
 | hidden vault path (non-`.obsidian/`) | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ **Baseline path (or its folder) pruned from this sync's scan.** Not pushed as a deletion; see [sync-logic.md § Scan-time pruning vs. the stored baseline](./sync-logic.md#scan-time-pruning-vs-the-stored-baseline). `'does not push a deletion for a baseline path this sync pruned'`. The scan also skips a path it fails to list (logged), reported the same way: `'reports a path whose listing fails as an orphaned scan prefix'` |
@@ -89,13 +90,15 @@ middle state.
 | `.obsidian/` (`format:"text"`) | 👀 tracked | 🗑️ deleted | ⚪ unchanged | ✅ Comparison case for the two rows above — same mechanism, predates `scope:"subset"` field-level masking. `'deleting a tracked format:"text" .obsidian/ path locally pushes the deletion to remote'`. |
 | `.obsidian/` (`format:"text"`) | 🆕 untracked, never observed | n/a (local absent) | ✏️ edited (first content) | ✅ **Fresh-install / no-baseline default.** No prior `localShas`/`lastFetchedRemoteShas` entry for this path (true first contact, e.g. right after a plugin upgrade with no tracking history at all) - local-absent-remote-present reads as ADDED, not a deletion signal, same convention `resolveSubsetScopePath`'s own first-sync check (`priorRemoteSha === undefined && priorRawSha === undefined`) already uses. Two-sync shape (`isTracked` gate, see [sync-logic.md § Protected Paths](./sync-logic.md)): `'syncs a previously-observed .obsidian/ file directly (not to _fit/) once tracked and format-eligible'`. |
 | `.obsidian/` (`format:"text"`) | 👀 tracked | n/a | 🗑️ deleted | ✅ `'leaves an unedited .obsidian/ file on disk when remote removes it, instead of...'` (untrack, not delete) |
-| `.obsidian/` (`format:"text"`) | 👀 tracked | ✏️ edited | 🗑️ deleted | ✅ `'treats a locally-edited .obsidian/ path as an ordinary clash (not an untrack...'` |
+| `.obsidian/` (`format:"text"`) | 👀 tracked | ✏️ edited | 🗑️ deleted | ✅ `'treats a locally-edited .obsidian/ path as an ordinary clash (not an untrack...'` - reported once, not recorded (known limitation, see the test) |
 | `_fit/` itself | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ `'should exclude 📁 _fit/ directory from sync operations'` - never pushed, regardless of content |
 | `_fit/` itself | 👀 tracked | ⚪ unchanged | ✏️ edited (a real `_fit/` path exists on remote - another device, or a manual git push) | ✅ same test - SHA cached in `lastFetchedRemoteShas` (to detect future changes) but never written locally, no `_fit/_fit/` nesting. Internal wrinkle, not a correctness gap: `fitSync.ts` has a TODO noting this relies on a post-hoc `filterSyncedState` scrub rather than upfront filtering earlier in the pipeline - safe today, just not the cleanest shape. |
 | symlink, non-hidden (on disk only) | 🆕 untracked | ⚪ link present | n/a | ✅ `'adds an unindexed hidden path, but not an unindexed non-hidden one (which looks like a symlink)'` - ignored and logged, never flattened into copies of its target |
 | symlink under a hidden path (on disk only) | 🆕 untracked | ⚪ link present | n/a | 🔴 **Gap.** `adapter.list` follows the link, so the scan admits flattened copies of the target (a cycle recurses until the OS link-depth limit). Bounded by the walk caps in `'hidden-path scan walk bounds (#389)'`, not prevented |
 | symlink, dangling, inside a hidden folder | 🆕 untracked | ⚪ link present | n/a | 🔴 **Gap.** The adapter rejects the whole listing, so the folder is skipped and surfaced as unlistable. Safe (`'logs a path whose listing fails instead of silently dropping it'`), but its other hidden files do not sync that sync |
 | symlink on disk, regular file at the same path on remote | 🆕 untracked | ⚪ link present | ✏️ remote added/edited | ✅ `'does not pull a remote edit over a path this sync could not see'` - the ignored link's path has unknown scan coverage, so the remote change is dropped rather than written through the link (test covers an unscannable path in general, not a link specifically) |
+| symlink on remote (`mode 120000`), nothing local | 🆕 untracked | n/a | ✏️ remote added | 🔴 **Gap.** The remote read keeps only `path → sha`, so the entry looks like an ordinary file and is pulled as a regular file holding the target text. The read half is pinned by `'given a tree with a symlink entry (mode 120000), should not report it as an ordinary file (BUG: ...'` |
+| symlink on remote (`mode 120000`), pulled earlier as a regular file | 👀 tracked | ✏️ edited | ⚪ unchanged | 🔴 **Gap.** The push writes the blob as `100644`, converting the remote symlink into a regular file. Pinned by `'given a symlink entry (mode 120000) and content pushed to its path, should not convert it to a regular file (BUG: ...'` |
 
 Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, and mid-sync failure is
 ⚪ no failure, every row - all three columns dropped.
@@ -155,6 +158,7 @@ fitSync.realFit.test.ts
   │ └ 'does not apply a remote deletion to a path this sync could not see'
   ├ 🚨 Data loss prevention (safety nets for bugs/migrations)
   │ ├ 'should report file as conflict when saved to _fit/ for any safety reason'
+  │ ├ 'given a tracked file edited locally and deleted remotely, should push the local edit back instead of leaving the paths diverged'
   │ ├ clash lifecycle: pending resolution across multiple syncs
   │ │ └ 'A:' ... 'I:' series (remote-changes-during-clash, user-resolves variants, reload-survival, delete/modify #283)
   │ └ 'must NOT delete remote files when tracking capabilities removed (version migration safety)'
@@ -192,5 +196,9 @@ localVault.test.ts
   ├ 'adds an unindexed hidden path, but not an unindexed non-hidden one (which looks like a symlink)'
   ├ 'logs a path whose listing fails instead of silently dropping it'
   └ 'reports a path whose listing fails as an orphaned scan prefix'
+
+remoteGitHubVault.test.ts
+├ 'given a tree with a symlink entry (mode 120000), should not report it as an ordinary file (BUG: ...'
+└ 'given a symlink entry (mode 120000) and content pushed to its path, should not convert it to a regular file (BUG: ...'
 ```
 

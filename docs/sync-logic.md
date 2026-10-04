@@ -676,13 +676,12 @@ flowchart TD
 
     CheckScenario -->|✏️ Both MODIFIED,<br/>different content| SaveBoth[⬇️📁 Pull remote to _fit/<br/>Keep local in place]
     CheckScenario -->|💾❌ vs ☁️✏️<br/>Removed vs Modified| SaveRemote[⬇️📁 Pull remote to _fit/<br/>Keep local deleted]
-    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Removed| KeepLocal[Keep local in place<br/>Not pushed: known gap]
+    CheckScenario -->|💾✏️ vs ☁️❌<br/>Modified vs Removed| KeepLocal[⬆️ Push local<br/>Restore on remote]
 
     CheckScenario -->|✏️ Both MODIFIED,<br/>same content| AutoResolve2[✓ Auto-resolved<br/>Content identical]
     CheckScenario -->|❌ Both REMOVED| AutoResolve1[✓ Auto-resolved<br/>Both sides agree]
 
     SaveRemote --> Manual[🔀 Manual resolution needed]
-    KeepLocal --> Manual
     SaveBoth --> Manual
 ```
 
@@ -705,8 +704,8 @@ flowchart TD
 - User can manually restore from 📁 `_fit/` if needed
 
 **☁️ Remote deleted, 💾 local MODIFIED:**
-- Keep local version in original location (not deleted)
-- ⚠️ Local MODIFIED is in `clashes`, not `safeLocal` — it is **not** pushed. The file ends up locally present but remotely absent with the divergence invisible to subsequent syncs. Tracked as a known bug.
+- The local edit wins: it stays in place and is pushed back (`resolveAllChanges` routes it to `safeLocal`), restoring the file on the remote. Nothing is saved to `_fit/`, since the remote has no content to preserve.
+- Exception: a git-mask-tracked `.obsidian/` path stays a clash, because there a remote removal can mean "stop syncing this path" and pushing would re-track it. That clash is reported once, in the sync notice ("ignored remote deletion of locally changed files") and the conflicts notice, but it records nothing: no `_fit/` copy, no `pendingClashes` entry, so Explain never shows it, and the edit stays in the baseline as if synced. The paths stay diverged and later syncs say nothing, until a further local edit pushes the file back. No data is lost, so this is accepted behavior with a known limitation.
 
 **Both sides MODIFIED (different content):**
 - Keep 💾 local version in original location
