@@ -716,6 +716,11 @@ export class FitSync implements IFitSync {
 	 *   deleting the `_fit/` copy is the only unambiguous resolution signal.
 	 * - Both present: resolved only if their contents match.
 	 * - A stat or read failure: pending, conservatively.
+	 *
+	 * TODO: the both-present case re-reads and re-hashes both files on every call, with no
+	 * memory of the last verdict (cost shape: docs/sync-performance-inventory.md). Remembering
+	 * each clash's (size, mtime) for both files and the verdict would make a repeat call
+	 * O(stat); statPaths would have to return size and mtime instead of dropping them.
 	 */
 	private async resolvePendingClashes(paths: string[]): Promise<Map<string, PendingClashResolution>> {
 		// All paths here are tracked (non-hidden, non-protected), so vault index would suffice for
