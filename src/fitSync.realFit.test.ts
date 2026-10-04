@@ -4556,6 +4556,40 @@ describe('FitSync', () => {
 			}));
 		});
 
+		it('keeps listing the clash when the local file is gone but the _fit/ copy remains', async () => {
+			// Same state a delete/modify clash starts in, so deleting the local file is not a resolution.
+			const fitSync = await syncIntoPendingClash();
+			localVault.deleteFile('image.png');
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					heading: '1 conflicted file need resolution',
+					items: [expect.objectContaining({ path: 'image.png', detail: '_fit/image.png' })],
+				})],
+			}));
+		});
+
+		it('shows the deletion the next sync will push when both the local file and the _fit/ copy are deleted', async () => {
+			// Phase 0 treats this as a resolved clash and pushes the deletion, so Explain must
+			// not report "all in sync" while that is pending.
+			const fitSync = await syncIntoPendingClash();
+			localVault.deleteFile('image.png');
+			localVault.deleteFile('_fit/image.png');
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual(expect.objectContaining({
+				kind: 'issues',
+				sections: [expect.objectContaining({
+					heading: '1 local change pending next sync',
+					items: [expect.objectContaining({ path: 'image.png' })],
+				})],
+			}));
+		});
+
 		it('stops listing the clash once the user deletes its _fit/ copy, without a sync in between', async () => {
 			const fitSync = await syncIntoPendingClash();
 			localVault.deleteFile('_fit/image.png');

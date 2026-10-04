@@ -767,10 +767,21 @@ export class FitSync implements IFitSync {
 		return resolutions;
 	}
 
-	/** The stored pending clashes that are still unresolved on disk right now (read-only). */
-	private async stillPendingClashes(): Promise<string[]> {
+	/**
+	 * The stored pending clashes as they stand on disk right now (read-only): the ones still
+	 * unresolved, and the resolved ones whose local file and `_fit/` copy are both gone, which
+	 * the next sync pushes as deletions (Phase 0's `pendingDeletions`).
+	 */
+	private async pendingClashView(): Promise<{ pending: string[]; deletions: string[] }> {
 		const resolutions = await this.resolvePendingClashes(this.fit.pendingClashes);
-		return this.fit.pendingClashes.filter(path => resolutions.get(path)?.status !== 'resolved');
+		const pending: string[] = [];
+		const deletions: string[] = [];
+		for (const path of this.fit.pendingClashes) {
+			const resolution = resolutions.get(path);
+			if (resolution === undefined || resolution.status === 'pending') pending.push(path);
+			else if (!resolution.fitCopyExists && !resolution.localExists) deletions.push(path);
+		}
+		return { pending, deletions };
 	}
 
 	/**
@@ -1986,12 +1997,13 @@ export class FitSync implements IFitSync {
 	async explainStatus(): Promise<StatusExplanation> {
 		fitLogger.log('[ExplainStatus] Checking sync status...');
 
+		// Re-checked against disk, as Phase 0 would: a clash whose _fit/ copy the user has
+		// since deleted is no longer pending, even though no sync has recorded that yet.
+		const clashView = await this.pendingClashView();
 		const snapshot: SyncStatusSnapshot = {
 			lastFetchedCommitSha: this.fit.lastFetchedCommitSha,
 			trackedFileCount: Object.keys(this.fit.localShas).length,
-			// Re-checked against disk, as Phase 0 would: a clash whose _fit/ copy the user has
-			// since deleted is no longer pending, even though no sync has recorded that yet.
-			pendingClashes: await this.stillPendingClashes(),
+			pendingClashes: clashView.pending,
 			oversizedFilePaths: Object.keys(this.fit.unpushedFiles ?? {}),
 			fitAttributesWarning: this.fit.fitAttributesWarning,
 			possiblyChangedSubsetScopePaths: [],
@@ -2006,7 +2018,15 @@ export class FitSync implements IFitSync {
 
 		try {
 			const result = await this.fit.getLocalChanges();
-			localChanges = result.changes;
+			// A resolved clash whose local file is also gone has no baseline, so the scan reports
+			// nothing for it, but the next sync pushes the deletion.
+			const reportedPaths = new Set(result.changes.map(c => c.path));
+			localChanges = [
+				...result.changes,
+				...clashView.deletions
+					.filter(path => !reportedPaths.has(path))
+					.map(path => ({ path, type: 'REMOVED' as const })),
+			];
 			// getLocalChanges() may have just refreshed fitAttributesWarning (lazy hook) —
 			// use the post-scan value so Explain reflects the current file, not last sync's.
 			snapshot.fitAttributesWarning = this.fit.fitAttributesWarning;
