@@ -67,11 +67,8 @@ describe('FIT Plugin E2E Tests', function() {
 			// 2. Execute FIT sync command
 			await browser.executeObsidianCommand("fit:fit-sync");
 
-			// 3. Give a moment for notices to appear
-			await browser.pause(1000);
-
-			// 4. Verify expected behavior before notices auto-dismiss
-			const notices = await browser.executeObsidian(() => {
+			// 3. Wait for the config notice (not a fixed pause: how long it takes varies by device)
+			const readNotices = () => browser.executeObsidian(() => {
 				const noticeContainer = document.querySelector('.notice-container');
 				if (!noticeContainer) return [];
 
@@ -81,11 +78,18 @@ describe('FIT Plugin E2E Tests', function() {
 					type: notice.className || ''
 				}));
 			});
-
-			// 5. Capture screenshot with timestamp
-			await takeScreenshot('fit-sync-result');
-
-			console.log('Notices after sync:', notices);
+			let notices = await readNotices();
+			try {
+				// 4. Verify expected behavior before notices auto-dismiss
+				await browser.waitUntil(async () => {
+					notices = await readNotices();
+					return notices.some((n: any) => n.text.includes('Settings not configured'));
+				}, { timeout: 10000, interval: 250, timeoutMsg: 'Settings not configured notice did not appear' });
+			} finally {
+				// 5. Capture screenshot with timestamp, and the notices seen, even on timeout
+				await takeScreenshot('fit-sync-result');
+				console.log('Notices after sync:', notices);
+			}
 
 			// 6. Assertions
 			const errorNotices = notices.filter((n: any) => n.type.includes('notice-error'));
