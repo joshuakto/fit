@@ -78,13 +78,27 @@ describe('FIT Plugin E2E Tests', function() {
 					type: notice.className || ''
 				}));
 			});
-			let notices = await readNotices();
+			// Notices can disappear between polls (seen on Android), so keep every one seen
+			// instead of trusting the last read.
+			const notices: Array<{ text: string; type: string }> = [];
+			const collectNotices = async () => {
+				for (const n of await readNotices()) {
+					const seen = notices.find(prior => prior.text === n.text);
+					if (seen) {
+						seen.type = n.type;
+					} else {
+						notices.push(n);
+					}
+				}
+				return notices;
+			};
+			await collectNotices();
 			try {
-				// 4. Verify expected behavior before notices auto-dismiss
-				await browser.waitUntil(async () => {
-					notices = await readNotices();
-					return notices.some((n: any) => n.text.includes('Settings not configured'));
-				}, { timeout: 10000, interval: 250, timeoutMsg: 'Settings not configured notice did not appear' });
+				// 4. Verify expected behavior
+				await browser.waitUntil(
+					async () => (await collectNotices()).some(n => n.text.includes('Settings not configured')),
+					{ timeout: 10000, interval: 250, timeoutMsg: 'Settings not configured notice did not appear' }
+				);
 			} finally {
 				// 5. Capture screenshot with timestamp, and the notices seen, even on timeout
 				await takeScreenshot('fit-sync-result');
