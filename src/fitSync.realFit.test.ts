@@ -11,7 +11,7 @@ import type { MockInstance } from 'vitest';
 import { FitSync } from './fitSync';
 import { Fit } from './fit';
 import { Vault } from 'obsidian';
-import { FakeLocalVault, FakeRemoteVault } from './testUtils';
+import { FakeLocalVault, FakeObsidianVault, FakeRemoteVault, StubTFile } from './testUtils';
 import { LocalVault } from './localVault';
 import { DEFAULT_SETTINGS, FitSettings } from '@/fitSettings';
 import { FITATTRIBUTES_PATH } from '@/fitAttributes';
@@ -4926,6 +4926,221 @@ describe('FitSync', () => {
 					remote: { [notePath]: 'v2 from local' },
 				});
 			});
+		});
+	});
+
+	// The sections above use FakeLocalVault, which simulates scan outcomes. These run FitSync over
+	// the real LocalVault scan (on an in-memory Obsidian vault) for behavior that comes from what the
+	// scan itself reports, such as `.gitignore` filtering (docs/sync-logic.md § Gitignore Patterns).
+	describe('Real LocalVault scan — .gitignore against tracked and untracked paths', () => {
+		const ORDINARY = { name: 'ordinary', path: 'scratch.log', ignoreRule: '*.log\n' };
+		const HIDDEN = { name: 'hidden', path: '.cursor/hooks.json', ignoreRule: '.cursor/\n' };
+		const PATH_KINDS = [ORDINARY, HIDDEN];
+
+		let vault: FakeObsidianVault;
+
+		beforeEach(() => {
+			vault = new FakeObsidianVault();
+			// The fake adapter has no list(), which the hidden-path scan needs to find `.cursor/` and
+			// `.gitignore`: list direct children of a folder ('' or '/' = root).
+			(vault.adapter as any).list = async (dir: string) => {
+				const prefix = dir === '' || dir === '/' ? '' : dir.replace(/\/$/, '') + '/';
+				const files: string[] = [];
+				const folders = new Set<string>();
+				for (const path of (vault as any).filesOnDisk.keys() as Iterable<string>) {
+					if (!path.startsWith(prefix)) continue;
+					const rest = path.slice(prefix.length);
+					const slash = rest.indexOf('/');
+					if (slash === -1) files.push(path);
+					else folders.add(prefix + rest.slice(0, slash));
+				}
+				return { files, folders: [...folders] };
+			};
+			localStoreState = makeLocalStore({ lastFetchedCommitSha: null });
+		});
+
+		function createRealScanFit(): Fit {
+			const fit = new Fit({ ...DEFAULT_SETTINGS, ...testSettings } as FitSettings, localStoreState, vault as any);
+			fit.remoteVault = remoteVault as any;
+			return fit;
+		}
+
+		async function syncRealScan(notice = createMockNotice()) {
+			const fit = createRealScanFit();
+			const fitSync = new FitSync(fit, async (updates: Partial<LocalStores>) => {
+				Object.assign(localStoreState, updates);
+				fit.loadLocalStore(localStoreState);
+			});
+			return syncAndHandleResult(fitSync, notice);
+		}
+
+		const isHidden = (path: string) => path.split('/').some(part => part.startsWith('.'));
+
+		async function readLocal(path: string): Promise<string | undefined> {
+			try {
+				return await vault.adapter.read(path);
+			} catch {
+				return undefined;
+			}
+		}
+
+		async function writeLocal(path: string, content: string) {
+			if (isHidden(path) || await readLocal(path) !== undefined) {
+				await vault.adapter.write(path, content);
+			} else {
+				await vault.create(path, content);
+			}
+		}
+
+		async function deleteLocal(path: string) {
+			if (isHidden(path)) {
+				await vault.adapter.remove(path);
+			} else {
+				await vault.delete(StubTFile.ofPath(path) as any);
+			}
+		}
+
+		/** A path both sides have synced, which a .gitignore rule now matches (not yet synced). */
+		async function trackedThenIgnored(kind: typeof ORDINARY) {
+			await remoteVault.setFile(kind.path, 'v1');
+			await syncRealScan();
+			expect(await readLocal(kind.path)).toBe('v1');
+			await writeLocal('.gitignore', kind.ignoreRule);
+		}
+
+		describe.each(PATH_KINDS)('$name path', (kind) => {
+			it('given a path never synced and matched by .gitignore, should never push it', async () => {
+				await writeLocal('.gitignore', kind.ignoreRule);
+				await writeLocal(kind.path, 'local only');
+
+				await syncRealScan();
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ '.gitignore': kind.ignoreRule });
+			});
+
+			it('given a remote file at the path of a local file that .gitignore matches, should keep the local file and save the remote copy to _fit/', async () => {
+				await writeLocal('.gitignore', kind.ignoreRule);
+				await writeLocal(kind.path, 'local only');
+				await remoteVault.setFile(kind.path, 'remote added');
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe('local only');
+				expect(await readLocal(`_fit/${kind.path}`)).toBe('remote added');
+			});
+
+			it('given a tracked path later matched by .gitignore and deleted locally, should push the deletion', async () => {
+				await trackedThenIgnored(kind);
+				await deleteLocal(kind.path);
+
+				await syncRealScan();
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ '.gitignore': kind.ignoreRule });
+			});
+
+			it('given a tracked path later matched by .gitignore and unchanged, should leave it on both sides', async () => {
+				await trackedThenIgnored(kind);
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe('v1');
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ [kind.path]: 'v1', '.gitignore': kind.ignoreRule });
+			});
+
+			it('given a tracked path later matched by .gitignore and edited locally, should push the edit like any tracked path', async () => {
+				await trackedThenIgnored(kind);
+				await writeLocal(kind.path, 'v2 local');
+
+				await syncRealScan();
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ [kind.path]: 'v2 local', '.gitignore': kind.ignoreRule });
+			});
+
+			it('given a tracked path later matched by .gitignore and edited remotely, should pull the edit like any tracked path', async () => {
+				await trackedThenIgnored(kind);
+				await remoteVault.setFile(kind.path, 'v2 remote');
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe('v2 remote');
+				expect(await readLocal(`_fit/${kind.path}`)).toBeUndefined();
+			});
+
+			it('given a tracked path later matched by .gitignore and edited on both sides, should keep the local edit and save the remote copy to _fit/', async () => {
+				await trackedThenIgnored(kind);
+				await writeLocal(kind.path, 'v2 local');
+				await remoteVault.setFile(kind.path, 'v2 remote');
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe('v2 local');
+				expect(await readLocal(`_fit/${kind.path}`)).toBe('v2 remote');
+			});
+
+			it.each([
+				['unedited', undefined],
+				['edited', 'v2 local'],
+			])('given a tracked path later matched by .gitignore, %s locally and deleted remotely, should keep the local file, untracked', async (_label, localEdit) => {
+				await trackedThenIgnored(kind);
+				if (localEdit) await writeLocal(kind.path, localEdit);
+				await remoteVault.applyChanges([], [kind.path]);
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe(localEdit ?? 'v1');
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ '.gitignore': kind.ignoreRule });
+			});
+
+			it('given a tracked path later matched by .gitignore and deleted remotely, should then treat the kept file as untracked', async () => {
+				await trackedThenIgnored(kind);
+				await remoteVault.applyChanges([], [kind.path]);
+				await syncRealScan();
+				await writeLocal(kind.path, 'v2 local');
+				const notice = createMockNotice();
+
+				await syncRealScan(notice);
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ '.gitignore': kind.ignoreRule });
+				expect(notice._calls.at(-1)?.args[0]).not.toContain('still syncing');
+			});
+
+			it('given a tracked path later matched by .gitignore and deleted remotely, should tell the user the local file was left in place', async () => {
+				await trackedThenIgnored(kind);
+				await remoteVault.applyChanges([], [kind.path]);
+
+				const result = await syncRealScan();
+
+				expect(result).toEqual(expect.objectContaining({
+					changeGroups: expect.arrayContaining([
+						{
+							heading: expect.stringContaining('Local file updates'),
+							changes: [{ path: kind.path, type: 'MODIFIED', note: 'no longer tracked remotely, left in place' }]
+						}
+					])
+				}));
+			});
+		});
+
+		it.each(PATH_KINDS)('given a tracked $name path a new .gitignore rule matches, should report no change for it and list it as still syncing', async (kind) => {
+			// The Explain view lists what getLocalChanges() returns.
+			await trackedThenIgnored(kind);
+
+			const { changes, ignoredTrackedPaths } = await createRealScanFit().getLocalChanges();
+
+			expect({ changes, ignoredTrackedPaths }).toEqual({
+				changes: [{ path: '.gitignore', type: 'ADDED' }],
+				ignoredTrackedPaths: [kind.path],
+			});
+		});
+
+		it.each(PATH_KINDS)('given a tracked $name path a .gitignore rule matches, should tell the user in the sync notice that it is still syncing', async (kind) => {
+			await trackedThenIgnored(kind);
+			const notice = createMockNotice();
+
+			await syncRealScan(notice);
+
+			expect(notice._calls.at(-1)?.args[0]).toContain(`match .gitignore but are still syncing`);
+			expect(notice._calls.at(-1)?.args[0]).toContain(`• ${kind.path}`);
 		});
 	});
 });

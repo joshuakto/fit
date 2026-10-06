@@ -457,7 +457,7 @@ export class FakeLocalVault implements IVault<"local"> {
 	}
 
 	/** Mirrors LocalVault.configure() — Fit calls this every sync. */
-	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[]; baselinePaths?: Iterable<string> }): void {
 		if (opts.syncHiddenFiles !== undefined) this.syncHiddenFiles = opts.syncHiddenFiles;
 		if (opts.trackedHiddenPaths !== undefined) this.trackedHiddenPaths = opts.trackedHiddenPaths;
 	}
@@ -607,7 +607,8 @@ export class FakeLocalVault implements IVault<"local"> {
 		return {
 			state,
 			orphanedScanPrefixes: new Set(this.orphanedScanPrefixes),
-			unlistablePaths: [...this.unlistablePaths]
+			unlistablePaths: [...this.unlistablePaths],
+			ignoredTrackedPaths: []
 		};
 	}
 

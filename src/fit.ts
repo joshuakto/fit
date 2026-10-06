@@ -413,10 +413,15 @@ export class Fit {
 		changes: FileChange[],
 		state: FileStates,
 		scanCoverage: ScanCoverage,
-		unlistablePaths: string[]
+		unlistablePaths: string[],
+		ignoredTrackedPaths: string[]
 	}> {
-		// Feed the tracked-path set to local hidden-path discovery before scanning.
-		this.localVault.configure({ trackedHiddenPaths: this.trackedObsidianPaths() });
+		// Feed the tracked-path set to local hidden-path discovery before scanning, and the
+		// baseline so a .gitignore rule only gates adding new paths.
+		this.localVault.configure({
+			trackedHiddenPaths: this.trackedObsidianPaths(),
+			baselinePaths: Object.keys(this.localShas)
+		});
 
 		fitLogger.log('.. 💾 [LocalVault] Scanning files...');
 		const readResult = await this.localVault.readFromSource();
@@ -502,7 +507,11 @@ export class Fit {
 			}
 		}
 		const changes = compareFileStates(trackableCurrentState, trackableLocalShas);
-		return { changes, state: currentState, scanCoverage, unlistablePaths: readResult.unlistablePaths };
+		return {
+			changes, state: currentState, scanCoverage,
+			unlistablePaths: readResult.unlistablePaths,
+			ignoredTrackedPaths: readResult.ignoredTrackedPaths
+		};
 	}
 
 	/**

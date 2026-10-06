@@ -223,9 +223,10 @@ export function resolveAllChanges(
 	protectedRemote: FileChange[];
 	/**
 	 * REMOVED remote changes for a git-mask-tracked `.obsidian/` path with no local edit —
-	 * ambiguous between "file deleted" and "stop tracking this path". Not applied locally;
-	 * re-tagged as MODIFIED with a `note` and folded into the ordinary changeGroups report
-	 * (see showFileChanges) instead of shown as a real REMOVED.
+	 * ambiguous between "file deleted" and "stop tracking this path" (TODO(#406): an Explain
+	 * "to triage" item). Not applied locally; re-tagged as MODIFIED with a `note` and folded
+	 * into the ordinary changeGroups report (see showFileChanges) instead of shown as a real
+	 * REMOVED.
 	 */
 	untrackNotices: FileChange[];
 } {
@@ -256,6 +257,7 @@ export function resolveAllChanges(
 
 			// A local edit beats a remote deletion: push it back, as there is no remote copy to
 			// preserve. Not for git-mask-tracked paths, where removal can mean "stop syncing".
+			// TODO(#406): offer this as an Explain "to triage" choice (push the edit, or delete locally).
 			if (
 				localChange.type === "MODIFIED" && remoteChange.type === "REMOVED" &&
 				!gitMaskTrackedPaths.has(localChange.path)
