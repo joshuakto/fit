@@ -39,7 +39,4 @@ The plugin must run on Obsidian mobile, which has no Node.js. This is enforced m
 
 ## README maintenance
 
-`README.md` always reflects the **current stable release**. When something is fixed in a beta but not yet in stable:
-- Do not remove or update README sections describing the unfixed behavior
-- You may note the fix is available in beta, but don't present beta status as current general-availability status
-- Clean up stale bug/workaround sections only once the stable release ships
+`README.md` always reflects the **current stable release**, not unreleased work: see [docs/CONTRIBUTING.md § Documentation](docs/CONTRIBUTING.md#documentation).

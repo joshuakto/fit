@@ -127,6 +127,11 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 - **Test edge cases** (large files, network issues, invalid credentials)
 - **Mobile compatibility is normative, not optional** — no Node.js built-ins, no `Buffer`, no non-fatal `TextDecoder`. See [api-compatibility.md](./api-compatibility.md) for the full list; violations cause silent failures or crashes on mobile. The one narrow exception mechanism is described there too
 
+### Documentation
+
+- **Update the docs in the same PR as a behavior change.** A change to sync logic or other user-visible behavior updates the docs that describe it: [sync-logic.md](./sync-logic.md) for how a mechanism works, [sync-scenario-matrix.md](./sync-scenario-matrix.md) for a scenario's row and the test backing it, [architecture.md](./architecture.md) for component structure, [api-compatibility.md](./api-compatibility.md) for allowed APIs. Test-only changes, refactors with no behavior change, and logging or UI text don't need doc updates.
+- **`README.md` tracks the current stable release, not unreleased work.** When something is fixed or added in a beta or alpha but not yet in stable, leave the README sections describing the unfixed behavior in place (a note that the fix is in a beta is fine, but don't present beta status as general availability), and clean up stale bug or workaround sections only once the stable release ships.
+
 ## Release Process
 
 **Rules that apply to all releases:**
