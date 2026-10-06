@@ -213,17 +213,23 @@ export class LocalVault implements IVault<"local"> {
 	// recursive hidden-path scan is skipped (syncHiddenFiles = false), same pattern
 	// already used for .fitattributes.json itself below.
 	private trackedHiddenPaths: string[] = [];
+	// Paths already in the sync baseline, set by the caller every sync. A .gitignore rule only
+	// gates adding new paths (as in git), so these stay in the scan even when a rule matches.
+	private baselinePaths = new Set<string>();
 
 	constructor(vault: Vault) {
 		this.vault = vault;
 	}
 
-	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[] }): void {
+	configure(opts: { syncHiddenFiles?: boolean; trackedHiddenPaths?: string[]; baselinePaths?: Iterable<string> }): void {
 		if (opts.syncHiddenFiles !== undefined) {
 			this.syncHiddenFiles = opts.syncHiddenFiles;
 		}
 		if (opts.trackedHiddenPaths !== undefined) {
 			this.trackedHiddenPaths = opts.trackedHiddenPaths;
+		}
+		if (opts.baselinePaths !== undefined) {
+			this.baselinePaths = new Set(opts.baselinePaths);
 		}
 	}
 
@@ -378,13 +384,22 @@ export class LocalVault implements IVault<"local"> {
 		const allPathsSet = new Set(allPaths);
 		const gitignoreFilter = await GitignoreFilter.load(this.vault.adapter, trackedPaths, allPathsSet);
 
-		// Filter out paths matched by .gitignore patterns
+		// Filter out new paths matched by .gitignore patterns. A path already in the baseline stays
+		// (a rule only gates adding, as in git), else it would read as a local deletion.
 		let pathsToScan: string[];
+		const ignoredTrackedPaths: string[] = [];
 		if (!gitignoreFilter.isEmpty) {
 			const { kept, ignored } = gitignoreFilter.filter(trackedPaths);
-			pathsToScan = kept;
-			if (ignored.length > 0) {
-				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { count: ignored.length, paths: ignored });
+			const ignoredNew = ignored.filter(path => !this.baselinePaths.has(path));
+			ignoredTrackedPaths.push(...ignored.filter(path => this.baselinePaths.has(path)));
+			pathsToScan = [...kept, ...ignoredTrackedPaths];
+			if (ignoredNew.length > 0) {
+				fitLogger.log('[LocalVault] Paths ignored by .gitignore', { count: ignoredNew.length, paths: ignoredNew });
+			}
+			if (ignoredTrackedPaths.length > 0) {
+				fitLogger.log('[LocalVault] Already-tracked paths matched by .gitignore, still syncing', {
+					count: ignoredTrackedPaths.length, paths: ignoredTrackedPaths
+				});
 			}
 		} else {
 			pathsToScan = trackedPaths;
@@ -459,7 +474,8 @@ export class LocalVault implements IVault<"local"> {
 		return {
 			state: { ...newState },
 			orphanedScanPrefixes: new Set(orphanedScanPrefixes),
-			unlistablePaths
+			unlistablePaths,
+			ignoredTrackedPaths
 		};
 	}
 

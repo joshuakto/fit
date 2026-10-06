@@ -350,7 +350,7 @@ Skipped paths that an earlier version synced stay on the remote and on disk unto
 - Only probes paths derived from the tracked file set — no full filesystem scan
 
 **Behavior:**
-- Files matched by any applicable `.gitignore` are excluded from `localShas` and never pushed
+- Files matched by any applicable `.gitignore` are excluded from `localShas` and never pushed, unless already in the baseline: as in git, a rule only gates adding new paths, so an already-tracked path keeps syncing both ways. The sync notice lists such paths. To stop syncing one, move it aside, sync, then move it back; to remove it everywhere, delete it and sync. If the remote removes one, the local file is kept and leaves the baseline (untracked, reported as left in place), the same ambiguity as a git-masked `.obsidian/` path. A never-tracked ignored local file is never overwritten by a remote file at its path (the remote copy goes to `_fit/`)
 - Patterns scope correctly: a `build/.gitignore` only affects files under `build/`
 - If no `.gitignore` files exist, this layer is a no-op
 

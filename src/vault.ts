@@ -28,6 +28,11 @@ type VaultReadResultMap = {
 		 * user, since files under them are silently not syncing.
 		 */
 		unlistablePaths: string[];
+		/**
+		 * Already-tracked paths that a `.gitignore` rule now matches. They stay in `state`
+		 * (a rule only gates adding new paths, as in git); reported so the user is told.
+		 */
+		ignoredTrackedPaths: string[];
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {

@@ -801,7 +801,8 @@ export class FitSync implements IFitSync {
 		localScanPaths: Set<string>,
 		remoteScanPaths: Set<string>,
 		currentLocalState: FileStates,
-		remoteTreeSha: FileStates
+		remoteTreeSha: FileStates,
+		ignoredTrackedPaths: Set<string>
 	) {
 		// Diagnostic: Check if any clashes are due to Unicode normalization mismatches
 		detectNormalizationMismatches(Array.from(localScanPaths), Array.from(remoteScanPaths));
@@ -880,9 +881,13 @@ export class FitSync implements IFitSync {
 		);
 
 		// Phase 2c: Simple clash detection
+		// A remote removal is ambiguous for a git-mask path and for a tracked path that .gitignore
+		// matches here: both can mean "stop syncing", so the local file is kept.
+		// TODO(#406): also list these in Explain as "to triage" (untrack / delete / dismiss).
 		const gitMaskTrackedPaths = new Set(
 			remoteChanges
-				.filter(c => c.type === 'REMOVED' && this.fit.isGitMaskTrackedPath(c.path))
+				.filter(c => c.type === 'REMOVED' &&
+					(this.fit.isGitMaskTrackedPath(c.path) || ignoredTrackedPaths.has(c.path)))
 				.map(c => c.path)
 		);
 		const { safeLocal, safeRemote, clashes, protectedRemote, untrackNotices } = resolveAllChanges(
@@ -1277,6 +1282,7 @@ export class FitSync implements IFitSync {
 		// Clashes against a remote removal (only git-mask-tracked paths, see resolveAllChanges)
 		// are reported once but not recorded, so Explain and later syncs forget them. Accepted
 		// since no data is lost; if confusing, consider an empty `_fit/` placeholder as a pending entry.
+		// TODO(#406): record these as Explain "to triage" items instead.
 		for (const clash of clashes) {
 			if (clash.remoteOp !== 'REMOVED' &&
 				clash.localState !== 'untracked' &&
@@ -1491,7 +1497,7 @@ export class FitSync implements IFitSync {
 			}
 
 			// Both succeeded, extract values
-			const {changes: localChanges, state: currentLocalState, scanCoverage, unlistablePaths} = localResult.value;
+			const {changes: localChanges, state: currentLocalState, scanCoverage, unlistablePaths, ignoredTrackedPaths} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 
@@ -1668,13 +1674,15 @@ export class FitSync implements IFitSync {
 			// Phase 2: Compare & Resolve - determine safe vs clashed changes
 			const localScanPaths = new Set(Object.keys(currentLocalState));
 			const remoteScanPaths = new Set(Object.keys(remoteTreeSha));
+			const ignoredTrackedPathSet = new Set(ignoredTrackedPaths);
 			const { safeLocal, safeRemote: initialSafeRemote, clashes: initialClashes, protectedRemote, untrackNotices, existenceMap } = await this.compareAndResolveChanges(
 				filteredLocalChanges,
 				filteredRemoteChanges,
 				localScanPaths,
 				remoteScanPaths,
 				currentLocalState,
-				remoteTreeSha
+				remoteTreeSha,
+				ignoredTrackedPathSet
 			);
 
 			// Reclassify safeRemote items for active pending paths — new remote changes must
@@ -1712,8 +1720,16 @@ export class FitSync implements IFitSync {
 			// the wrong "Synced to commit" in Explain Sync Status even though the push
 			// succeeded.
 			const remoteCommitShaAfterSubsetPush = subsetScopeResult.commitSha ?? remoteCommitSha;
+			// An ignored path whose remote copy was removed is now untracked: its local file is kept,
+			// and dropping it from the persisted baseline lets the ignore rule apply to it again.
+			const untrackedIgnoredPaths = new Set([
+				...untrackNotices.map(c => c.path),
+				...clashes.filter(c => c.remoteOp === 'REMOVED').map(c => c.path),
+			].filter(path => ignoredTrackedPathSet.has(path)));
+			const stateToPersist = Object.fromEntries(
+				Object.entries(currentLocalState).filter(([path]) => !untrackedIgnoredPaths.has(path)));
 			const { localOps, remoteOps, conflicts: executedConflicts, newlySkippedPaths, skippedWarning, rateLimitedPaths, localFailedPaths } = await this.executeSync(
-				currentLocalState,
+				stateToPersist,
 				{
 					remoteChanges: filteredRemoteChanges,
 					remoteTreeSha,
@@ -1779,6 +1795,17 @@ export class FitSync implements IFitSync {
 				detailBlocks.push(
 					`${unlistablePaths.length} path(s) couldn't be scanned for hidden files, possibly due to an ` +
 					`unreadable entry inside, so hidden files under them are not syncing:\n${pathList}`
+				);
+			}
+
+			if (ignoredTrackedPaths.length > 0) {
+				// TODO(#406): an Explain "to triage" item per path (untrack / delete / dismiss).
+				const shown = ignoredTrackedPaths.slice(0, 10).map(p => `• ${p}`);
+				if (ignoredTrackedPaths.length > shown.length) shown.push(`• ...and ${ignoredTrackedPaths.length - shown.length} more`);
+				detailBlocks.push(
+					`${ignoredTrackedPaths.length} file(s) match .gitignore but are still syncing, since an ` +
+					`ignore rule doesn't untrack them. To stop syncing one, move it aside, sync, then move it back; ` +
+					`to remove it everywhere, delete it and sync:\n${shown.join('\n')}`
 				);
 			}
 
