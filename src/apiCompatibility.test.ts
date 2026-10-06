@@ -15,8 +15,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import { ESLint } from 'eslint';
 import * as esbuild from 'esbuild';
-import builtins from 'builtin-modules';
-import { obsidianExternals } from '../esbuild.externals.mjs';
+import { obsidianExternals, nodeBuiltinNames } from '../esbuild.externals.mjs';
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -60,7 +59,7 @@ describe('mobile API compatibility: ESLint', () => {
 	});
 });
 
-const nodeBuiltins = new Set(builtins.map(name => name.replace(/^node:/, '')));
+const nodeBuiltins = new Set(nodeBuiltinNames);
 
 /**
  * Fails resolution of any Node built-in, even one whose bare name is also an installed npm
