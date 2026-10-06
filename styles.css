@@ -119,28 +119,6 @@
     }
 }
 
-.fit-notice.error::after {
-    content: var(--gray-cat); /* Add content to pseudo-element */
-    position: absolute; /* Set position to absolute */
-    width: 24px; /* Set width of the pseudo-element */
-    height: 24px; /* Set height of the pseudo-element */
-    top: 47%; /* Position at the center vertically */
-    left: 5.7%; /* Position at the center horizontally */
-    animation: shake 0.5s forwards; /* Apply shake animation, forwards keep the last keyframe state */
-}
-
-@keyframes shake {
-    0%, 100% {
-        transform: translate(-50%, -50%) rotate(0);
-    }
-    10%, 30%, 50%, 70%, 90% {
-        transform: translate(-50%, -50%) rotate(-10deg);
-    }
-    20%, 40%, 60%, 80% {
-        transform: translate(-50%, -50%) rotate(10deg);
-    }
-}
-
 .fit-notice.loading::after {
     content: var(--gray-cat); /* Add content to pseudo-element */
     position: absolute; /* Set position to absolute */
@@ -439,9 +417,6 @@
     vertical-align: middle;
 }
 
-.file-conflict-protected::after {
-    content: "🚫";
-}
 .file-conflict-delete::after {
     background-image: var(--file-delete);
     background-color: rgba(255, 99, 71, 0.3);

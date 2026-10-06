@@ -3,11 +3,9 @@ import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 import stylisticPlugin from '@stylistic/eslint-plugin';
 import globals from 'globals';
-import builtins from 'builtin-modules';
+import { nodeBuiltinNames as bareBuiltinNames, nodeBuiltinSpecifiers as nodeBuiltinModules } from './esbuild.externals.mjs';
 
 // Node built-ins, with and without the `node:` prefix. Obsidian mobile has no Node.js runtime.
-const bareBuiltinNames = [...new Set(builtins.map(name => name.replace(/^node:/, '')))];
-const nodeBuiltinModules = bareBuiltinNames.flatMap(name => [name, `node:${name}`]);
 const nodeBuiltinMessage = 'Node.js built-ins do not exist on Obsidian mobile. Use Web APIs or Obsidian\'s API instead (docs/api-compatibility.md).';
 // esquery regex source matching a module specifier that is a Node built-in. esquery cannot
 // express a literal '/' inside a regex, so the slash of e.g. 'fs/promises' becomes '.'.

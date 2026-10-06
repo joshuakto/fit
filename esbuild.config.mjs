@@ -1,7 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import builtins from "builtin-modules";
-import { obsidianExternals } from "./esbuild.externals.mjs";
+import { obsidianExternals, nodeBuiltinSpecifiers } from "./esbuild.externals.mjs";
 
 const banner =
 `/*
@@ -18,7 +17,7 @@ const context = await esbuild.context({
 	},
 	entryPoints: ["main.ts"],
 	bundle: true,
-	external: [...obsidianExternals, ...builtins],
+	external: [...obsidianExternals, ...nodeBuiltinSpecifiers],
 	format: "cjs",
 	target: "es2018",
 	logLevel: "info",
