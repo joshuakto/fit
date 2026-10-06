@@ -149,7 +149,10 @@ describe('FIT Plugin E2E Tests', function() {
 			});
 			expect(storedToken).toBe('ghp_test');
 
-			// 1. Open Obsidian settings
+			// 1. Open Obsidian settings. A modal left open by an earlier test would keep a pane
+			// rendered before the seed (no token, Authenticate disabled), so close it first.
+			await browser.executeObsidian(({ app }) => (app as any).setting?.close?.());
+			await browser.pause(300);
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
 
