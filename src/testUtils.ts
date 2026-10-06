@@ -63,6 +63,27 @@ export class StubTFile extends TFile {
  *
  * This is more realistic than simple mocks and can be used across test files.
  */
+/** In-memory stand-in for Obsidian's `app.secretStorage`. */
+export class FakeSecretStorage {
+	/** Make the next `setSecret` calls throw, to simulate a store that rejects writes. */
+	failWrites = false;
+
+	constructor(private secrets: Record<string, string> = {}) {}
+
+	getSecret(id: string): string | null {
+		return this.secrets[id] ?? null;
+	}
+
+	setSecret(id: string, secret: string): void {
+		if (this.failWrites) throw new Error('secret storage unavailable');
+		this.secrets[id] = secret;
+	}
+
+	listSecrets(): string[] {
+		return Object.keys(this.secrets);
+	}
+}
+
 export class FakeObsidianVault {
 	private filesOnDisk = new Map<string, ArrayBuffer>(); // path -> binary content
 	private vaultIndex = new Set<string>(); // Paths in vault index (non-hidden)

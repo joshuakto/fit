@@ -13,6 +13,7 @@ import { GitHubConnection } from '@/remotes/githubConnection';
 import { treeUrl } from '@/remotes/githubHost';
 import * as Encryption from "@/encryption";
 import { FitSettings, DEFAULT_SETTINGS } from '@/fitSettings';
+import { readPat, storeLegacyPat } from '@/patSecret';
 import { FitAttributesFile, FITATTRIBUTES_PATH, parseFitAttributes } from '@/fitAttributes';
 
 /**
@@ -122,6 +123,7 @@ export default class FitPlugin extends Plugin {
 	}
 
 	checkSettingsConfigured(): boolean {
+		this.refreshPat();
 		const actionItems: Array<string> = [];
 		if (this.settings.pat === "") {
 			actionItems.push("provide GitHub personal access token");
@@ -602,7 +604,59 @@ export default class FitPlugin extends Plugin {
 			}, {} as FitSettings);
 		this.settings = settingsObj;
 
+		await this.migratePatToSecretStorage(userSetting);
 		await this.migrateObsidianSyncRules(userSetting);
+	}
+
+	/**
+	 * Moves a plaintext token from an older version's data.json into secret storage, then
+	 * resolves the stored secret name to the runtime token. The plaintext is only dropped once
+	 * the secret reads back, so a failed store keeps it for the next load.
+	 */
+	private async migratePatToSecretStorage(userSetting: unknown): Promise<void> {
+		const store = this.app.secretStorage;
+		if (this.settings.pat) {
+			const name = storeLegacyPat(store, this.settings.pat);
+			if (name === null) {
+				fitLogger.log('⚠️ [Plugin] Could not move the GitHub token to secret storage; keeping it in data.json for now.');
+				return;
+			}
+			this.settings.patSecretName = name;
+			// userSetting carries the sync state fields saved alongside settings; keep them, minus the token.
+			const stored: Record<string, unknown> = { ...(userSetting as object) };
+			delete stored.pat;
+			await this.saveData({ ...stored, ...this.settingsWithoutPat() });
+			return;
+		}
+		this.settings.pat = readPat(store, this.settings.patSecretName);
+	}
+
+	/**
+	 * Re-reads the token so a change made in Obsidian's secret settings applies to the next sync.
+	 * Without a secret name the token is a plaintext one whose migration failed: leave it alone.
+	 */
+	private refreshPat(): void {
+		if (!this.settings.patSecretName) return;
+		this.settings.pat = readPat(this.app.secretStorage, this.settings.patSecretName);
+	}
+
+	/**
+	 * What data.json holds: settings plus sync state. The token is left out once a secret backs it;
+	 * a plaintext token with no secret (failed migration) is kept rather than lost.
+	 */
+	private persistedData() {
+		const keepPlaintext = !this.settings.patSecretName;
+		return {
+			...this.settingsWithoutPat(),
+			...(keepPlaintext ? { pat: this.settings.pat } : {}),
+			...this.localStore,
+		};
+	}
+
+	private settingsWithoutPat(): Partial<FitSettings> {
+		const settings: Partial<FitSettings> = { ...this.settings };
+		delete settings.pat;
+		return settings;
 	}
 
 	/**
@@ -669,13 +723,13 @@ export default class FitPlugin extends Plugin {
 
 	// allow saving of local stores property, passed in properties will override existing stored value
 	async saveLocalStore() {
-		await this.saveData({...this.settings, ...this.localStore});
+		await this.saveData(this.persistedData());
 		// sync local store to Fit class as well upon saving
 		this.fit.loadLocalStore(this.localStore);
 	}
 
 	async saveSettings() {
-		await this.saveData({...this.settings, ...this.localStore});
+		await this.saveData(this.persistedData());
 		// update auto sync interval with new setting
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving

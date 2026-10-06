@@ -10,6 +10,7 @@ import { DEFAULT_SETTINGS } from '@/fitSettings';
 import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import type { LocalStores } from '@/localStores';
 import type { BlobSha } from '@/util/hashing';
+import { FakeSecretStorage } from './testUtils';
 
 vi.mock('@/fitStatusModal', () => ({
 	// Must use a regular function (not arrow) so it can be used as a constructor with `new`.
@@ -59,7 +60,9 @@ class StubFitSync {
 
 function makePlugin() {
 	const plugin = new FitPlugin({} as any, {} as any);
-	plugin.fit = { loadLocalStore: vi.fn() } as any;
+	(plugin.app as any).secretStorage = new FakeSecretStorage();
+	plugin.settings = { ...DEFAULT_SETTINGS };
+	plugin.fit = { loadLocalStore: vi.fn(), loadSettings: vi.fn() } as any;
 	plugin.fitSync = new StubFitSync(plugin.saveLocalStoreCallback) as any;
 	return plugin;
 }
@@ -225,6 +228,70 @@ describe('FitPlugin persistence lifecycle', () => {
 			expect(plugin.settings.syncOnSave).toBe(true);
 			expect(plugin.settings.syncOnOpen).toBe(true);
 		});
+	});
+});
+
+describe('FitPlugin GitHub token in secret storage', () => {
+	const secrets = (plugin: FitPlugin) => (plugin.app as any).secretStorage as FakeSecretStorage;
+	const lastSaved = (plugin: FitPlugin) => (plugin.saveData as Mock).mock.lastCall?.[0];
+
+	it('given a plaintext token from an older version, should move it into secret storage and use it', async () => {
+		const plugin = makePlugin();
+		mockLoad(plugin, { pat: 'ghp_old', owner: 'alice' });
+		await plugin.loadSettings();
+		expect(secrets(plugin).getSecret(plugin.settings.patSecretName)).toBe('ghp_old');
+		expect(plugin.settings.pat).toBe('ghp_old');
+	});
+
+	it('given a plaintext token from an older version, should rewrite data.json without it, keeping sync state', async () => {
+		const plugin = makePlugin();
+		mockLoad(plugin, { pat: 'ghp_old', owner: 'alice', localShas: { 'a.md': 's1' } });
+		await plugin.loadSettings();
+		const saved = lastSaved(plugin);
+		expect(saved).toEqual(expect.objectContaining({
+			patSecretName: plugin.settings.patSecretName, owner: 'alice', localShas: { 'a.md': 's1' },
+		}));
+		expect(saved).not.toHaveProperty('pat');
+	});
+
+	it('given a stored secret name, should resolve the token from secret storage without rewriting data.json', async () => {
+		const plugin = makePlugin();
+		secrets(plugin).setSecret('my-token', 'ghp_new');
+		mockLoad(plugin, { patSecretName: 'my-token' });
+		await plugin.loadSettings();
+		expect(plugin.settings.pat).toBe('ghp_new');
+		expect(plugin.saveData).not.toHaveBeenCalled();
+	});
+
+	it('given secret storage rejects the move, should keep the plaintext token in use and in data.json', async () => {
+		const plugin = makePlugin();
+		secrets(plugin).failWrites = true;
+		mockLoad(plugin, { pat: 'ghp_old' });
+		await plugin.loadSettings();
+		await plugin.saveSettings();
+		expect(plugin.settings.pat).toBe('ghp_old');
+		expect(lastSaved(plugin)).toEqual(expect.objectContaining({ pat: 'ghp_old', patSecretName: '' }));
+	});
+
+	it('given a token backed by a secret, should not write it to data.json on save', async () => {
+		const plugin = makePlugin();
+		secrets(plugin).setSecret('my-token', 'ghp_new');
+		mockLoad(plugin, { patSecretName: 'my-token' });
+		await plugin.loadSettings();
+		await plugin.saveSettings();
+		const saved = lastSaved(plugin);
+		expect(saved).toEqual(expect.objectContaining({ patSecretName: 'my-token' }));
+		expect(saved).not.toHaveProperty('pat');
+	});
+
+	it('given the secret changes after load, should use the new value at the next sync', async () => {
+		const plugin = makePlugin();
+		secrets(plugin).setSecret('my-token', 'ghp_new');
+		mockLoad(plugin, { patSecretName: 'my-token', owner: 'alice', repo: 'notes', branch: 'main' });
+		await plugin.loadSettings();
+		secrets(plugin).setSecret('my-token', 'ghp_rotated');
+		expect(plugin.checkSettingsConfigured()).toBe(true);
+		expect(plugin.settings.pat).toBe('ghp_rotated');
 	});
 });
 
