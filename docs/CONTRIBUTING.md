@@ -147,7 +147,7 @@ Please try to avoid breaking functionality (on desktop or mobile), and test majo
 ./scripts/release.sh alpha 1.6.0-alpha.5   # explicit version override
 ```
 
-The script runs pre-flight checks, bumps version files, commits and tags, pushes, and creates a draft GitHub release. The CI workflow `release-assets.yml` then builds and attaches `main.js`, `styles.css`, and `manifest.json` automatically.
+The script runs pre-flight checks, bumps version files, commits and tags, pushes, and creates a draft GitHub release. The CI workflow `release-assets.yml` then builds and attaches `main.js`, `styles.css`, and `manifest.json` automatically, with a build provenance attestation for each (check one with `gh attestation verify main.js --repo joshuakto/fit`).
 
 After the script completes:
 1. **Stable only:** apply the pending README changes listed in [Pending README changes for next stable release](#pending-readme-changes-for-next-stable-release) below, then commit

@@ -20,17 +20,17 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Setup Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
         cache-dependency-path: 'package-lock.json'
 
     - name: Cache Obsidian and WebDriver downloads
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           .obsidian-cache
@@ -66,7 +66,7 @@ jobs:
 
     - name: Upload test artifacts
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: e2e-test-results
         path: test-results/
@@ -92,10 +92,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22.x
           cache: 'npm'
@@ -118,7 +118,7 @@ jobs:
           OBSIDIAN_PASSWORD: ${{ secrets.OBSIDIAN_PASSWORD }}
 
       - name: Cache .obsidian-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .obsidian-cache
           key: obsidian-cache-android-${{ hashFiles('obsidian-versions-lock.txt') }}
@@ -131,7 +131,7 @@ jobs:
 
       - name: AVD cache
         id: avd-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.android/avd/*
@@ -158,7 +158,7 @@ jobs:
 
       - name: Upload Android test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-test-results-${{ matrix.obsidian-version }}
           path: |
