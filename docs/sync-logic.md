@@ -259,6 +259,7 @@ Two denylists apply, at different scopes (`src/util/protectedPaths.ts`):
 - **`UNIVERSAL_SECRET_FIELD_DENYLIST`** (`pat`, `encryptionPassword`) — every `scope: "subset"` path, not just FIT's own file.
 - **`FIT_OWN_SETTINGS_DENYLIST`** — additional fields, only for FIT's own data.json:
   - Connection identity (`githubHost`, `owner`, `repo`, `branch`, `deviceName`, `avatarUrl`) — `owner`/`repo`/`branch` identify the sync target itself, so a synced change could silently redirect a device's sync target.
+  - `patSecretName` — not sensitive, but each device picks its own secret name and the secret's value is never synced, so a name from another device would point at a secret that may not exist.
   - All of `LocalStores` (per-device sync bookkeeping) — meaningless, actively corrupting, on any other device by construction.
 
 `FitSync.resolveSubsetScopePath` strips both from the parsed remote object immediately after parsing, before push/pull/merge/clash-preview can see them.

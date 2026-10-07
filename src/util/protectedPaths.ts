@@ -61,8 +61,15 @@ export const UNIVERSAL_SECRET_FIELD_DENYLIST = [
  *   mechanism exists today.
  * - All of `LocalStores` (`localShas`, `pendingClashes`, ...) — per-device sync state,
  *   meaningless (corrupting) on any other device by construction. Never an opt-in candidate.
+ * - `patSecretName` is a different case: not sensitive, but each device picks its own secret
+ *   name and the secret's value is never synced, so overwriting the name with another device's
+ *   would only point at a secret that may not exist there.
  *
- * Keep in sync with `FitSettings` (src/fitSettings.ts) and `LocalStores` (src/localStores.ts).
+ * When adding a field to `FitSettings` (src/fitSettings.ts) or `LocalStores`
+ * (src/localStores.ts), list it here only if syncing it is logically unsafe (it would redirect or
+ * corrupt another device) or uniquely disruptive and unhelpful (like `patSecretName` above).
+ * Being device-specific is not enough on its own; secrets belong in
+ * `UNIVERSAL_SECRET_FIELD_DENYLIST`.
  */
 export const FIT_OWN_SETTINGS_DENYLIST = [
 	// FitSettings — connection/device identity
@@ -72,6 +79,8 @@ export const FIT_OWN_SETTINGS_DENYLIST = [
 	"repo",
 	"branch",
 	"deviceName",
+	// FitSettings — per-device pointer to the token's secret
+	"patSecretName",
 	// LocalStores — per-device sync bookkeeping
 	"localShas",
 	"localSha",

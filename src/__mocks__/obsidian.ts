@@ -356,6 +356,31 @@ export class Setting {
 		cb(new TextAreaComponent(this.controlEl));
 		return this;
 	}
+
+	addComponent<T>(cb: (el: HTMLElement) => T) {
+		cb(this.controlEl);
+		return this;
+	}
+}
+
+/**
+ * Stand-in for Obsidian's secret picker: a text input holding the secret's name, so tests
+ * choose a secret by typing its name.
+ */
+export class SecretComponent {
+	inputEl: HTMLInputElement;
+
+	constructor(_app: unknown, containerEl: HTMLElement) {
+		this.inputEl = document.createElement('input');
+		this.inputEl.type = 'text';
+		containerEl.appendChild(this.inputEl);
+	}
+
+	setValue(value: string) { this.inputEl.value = value; return this; }
+	onChange(cb: (value: string) => unknown) {
+		this.inputEl.addEventListener('input', () => cb(this.inputEl.value));
+		return this;
+	}
 }
 
 /**

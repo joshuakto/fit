@@ -16,6 +16,7 @@ import type { MockInstance } from 'vitest';
 import FitSettingTab from './fitSettingTab';
 import { FitLogger } from './logger';
 import { DEFAULT_SETTINGS } from '@/fitSettings';
+import { FakeSecretStorage } from './testUtils';
 
 const EMPTY_SETTINGS = { ...DEFAULT_SETTINGS };
 
@@ -149,7 +150,8 @@ describe('FitSettingTab - GitHub settings', () => {
 			logger: mockLogger
 		};
 
-		const settingTab = new FitSettingTab({} as any, fakePlugin);
+		const secretStorage = new FakeSecretStorage({ 'my-github-token': 'ghp_test' });
+		const settingTab = new FitSettingTab({ secretStorage } as any, fakePlugin);
 
 		// Build UI
 		settingTab.githubUserInfoBlock();
@@ -164,12 +166,14 @@ describe('FitSettingTab - GitHub settings', () => {
 		expect(ownerInput.placeholder).toBe('Authenticate above to auto-fill');
 		expect(repoInput.placeholder).toBe('Authenticate above for suggestions');
 
-		// When: User enters PAT
-		patInput.value = 'ghp_test';
+		// When: User picks the secret holding their PAT
+		patInput.value = 'my-github-token';
 		patInput.dispatchEvent(new Event('input', { bubbles: true }));
 		await vi.advanceTimersByTimeAsync(0);  // Wait for async saveSettings
 
-		// Then: GitHubConnection created, placeholders updated
+		// Then: the secret's name is saved and its value resolved, GitHubConnection created, placeholders updated
+		expect(fakePlugin.settings.patSecretName).toBe('my-github-token');
+		expect(fakePlugin.settings.pat).toBe('ghp_test');
 		expect(fakePlugin.githubConnection).not.toBeNull();
 		expect(ownerInput.placeholder).toBe('owner-username');
 		expect(repoInput.placeholder).toBe('repo-name');

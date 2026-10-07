@@ -157,7 +157,8 @@ sequenceDiagram
 ```
 .obsidian/plugins/fit/data.json (plain text):
 ├── settings
-│   ├── 🔒 pat (GitHub Personal Access Token)
+│   ├── patSecretName (name of the secret holding the GitHub token; the token itself
+│   │   lives in Obsidian's secret storage, never in this file)
 │   ├── owner, repo, branch
 │   ├── deviceName, avatarUrl
 │   ├── autoSync preferences (interval, on save, on open)

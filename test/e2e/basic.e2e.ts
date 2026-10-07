@@ -24,6 +24,7 @@
 
 import { browser } from '@wdio/globals';
 import { obsidianPage } from 'wdio-obsidian-service';
+import allure from '@wdio/allure-reporter';
 import * as fs from 'fs';
 import { setupGitHubStub, cleanupGitHubStub } from './github-stub';
 
@@ -43,6 +44,13 @@ async function takeScreenshot(name: string) {
 	console.log(`📸 Screenshot saved: ${screenshotPath}`);
 }
 
+// The combined Allure report merges every job's results. Without these parameters the same test
+// from different jobs would be folded together as retries of one test.
+function tagAllureRun() {
+	allure.addArgument('platform', browser.isAndroid ? 'android' : 'desktop');
+	allure.addArgument('obsidian', browser.getObsidianVersion());
+}
+
 describe('FIT Plugin E2E Tests', function() {
 	this.timeout(60000); // 60 second timeout
 
@@ -59,6 +67,7 @@ describe('FIT Plugin E2E Tests', function() {
 
 	describe('Core Functionality', function() {
 		it('should run FIT sync and capture complete result', async () => {
+			tagAllureRun();
 			// Single comprehensive test covering plugin loading, sync execution, and screenshot capture
 
 			// 1. Verify plugin loads (implicit test - if this runs, plugin loaded without crashing)
@@ -130,6 +139,7 @@ describe('FIT Plugin E2E Tests', function() {
 		});
 
 		it('should authenticate with PAT and populate owner and repo fields', async () => {
+			tagAllureRun();
 			// Test PAT authentication flow with stubbed GitHub API
 			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
 
@@ -155,7 +165,22 @@ describe('FIT Plugin E2E Tests', function() {
 				console.warn('settingsPopoutWindow workaround call itself failed:', String(e));
 			}
 
-			// 1. Open Obsidian settings
+			// 0. Store the token in Obsidian's secret storage and point FIT's settings at it
+			// (the token is picked from there, not typed). Also checks the storage works at all.
+			const storedToken = await browser.executeObsidian(async ({ app }) => {
+				const fit = (app as any).plugins.plugins['fit'];
+				app.secretStorage.setSecret('fit-e2e-token', 'ghp_test');
+				fit.settings.patSecretName = 'fit-e2e-token';
+				fit.settings.pat = app.secretStorage.getSecret('fit-e2e-token');
+				await fit.saveSettings();
+				return fit.settings.pat;
+			});
+			expect(storedToken).toBe('ghp_test');
+
+			// 1. Open Obsidian settings. A modal left open by an earlier test would keep a pane
+			// rendered before the seed (no token, Authenticate disabled), so close it first.
+			await browser.executeObsidian(({ app }) => (app as any).setting?.close?.());
+			await browser.pause(300);
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
 
@@ -168,7 +193,8 @@ describe('FIT Plugin E2E Tests', function() {
 			// visible at all in that case), so check whether we're already
 			// looking at FIT's pane before assuming there's a tab left to click.
 			const fitTabFound = await browser.executeObsidian(() => {
-				if (document.querySelector('input[placeholder*="personal access token"]')) {
+				if (Array.from(document.querySelectorAll('.setting-item-name'))
+					.some(el => el.textContent === 'Github personal access token')) {
 					return true;
 				}
 				// Find FIT tab in settings sidebar (case-insensitive search)
@@ -187,11 +213,9 @@ describe('FIT Plugin E2E Tests', function() {
 
 			await browser.pause(500);
 
-			// 3. Wait for settings UI to render and enter test PAT
-			const patInput = await browser.$('input[placeholder*="personal access token"]');
-			await patInput.waitForExist({ timeout: 5000 }); // Wait up to 5s for input to appear
-			await patInput.setValue('ghp_test');
-			await browser.pause(200); // Allow settings to update
+			// 3. Wait for settings UI to render, including the token's secret picker
+			const patSetting = await browser.$('//div[contains(@class, "setting-item-name") and text()="Github personal access token"]');
+			await patSetting.waitForExist({ timeout: 5000 });
 
 			// 4. Click Authenticate button
 			const authButton = await browser.$('button*=Authenticate user');
