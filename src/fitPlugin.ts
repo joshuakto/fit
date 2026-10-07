@@ -632,12 +632,14 @@ export default class FitPlugin extends Plugin {
 	}
 
 	/**
-	 * Re-reads the token so a change made in Obsidian's secret settings applies to the next sync.
+	 * Re-reads the token so a change made in Obsidian's secret settings applies to the next sync
+	 * and to the settings page's GitHub connection.
 	 * Without a secret name the token is a plaintext one whose migration failed: leave it alone.
 	 */
 	private refreshPat(): void {
 		if (!this.settings.patSecretName) return;
 		this.settings.pat = readPat(this.app.secretStorage, this.settings.patSecretName);
+		this.updateGithubConnection();
 	}
 
 	/**
@@ -734,8 +736,11 @@ export default class FitPlugin extends Plugin {
 		this.startOrUpdateAutoSyncInterval();
 		// sync settings to Fit class as well upon saving
 		this.fit.loadSettings(this.settings);
+		this.updateGithubConnection();
+	}
 
-		// Update GitHubConnection only when PAT or host changes
+	/** Rebuilds the GitHubConnection only when the token or host changed. */
+	private updateGithubConnection(): void {
 		if (this.settings.pat !== this.lastGithubConnectionPat
 			|| this.settings.githubHost !== this.lastGithubConnectionHost) {
 			if (this.settings.pat) {

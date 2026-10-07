@@ -284,14 +284,28 @@ describe('FitPlugin GitHub token in secret storage', () => {
 		expect(saved).not.toHaveProperty('pat');
 	});
 
-	it('given the secret changes after load, should use the new value at the next sync', async () => {
+	it('given the secret value changes after load, should read the new value when settings are next checked', async () => {
 		const plugin = makePlugin();
 		secrets(plugin).setSecret('my-token', 'ghp_new');
 		mockLoad(plugin, { patSecretName: 'my-token', owner: 'alice', repo: 'notes', branch: 'main' });
 		await plugin.loadSettings();
+		// Changed outside the plugin, e.g. in Obsidian's secret settings.
 		secrets(plugin).setSecret('my-token', 'ghp_rotated');
+		// Every sync starts with this check, so the new value is picked up before the sync runs.
 		expect(plugin.checkSettingsConfigured()).toBe(true);
 		expect(plugin.settings.pat).toBe('ghp_rotated');
+	});
+
+	it('given the secret value changes after load, should rebuild the GitHub connection with the new value', async () => {
+		const plugin = makePlugin();
+		secrets(plugin).setSecret('my-token', 'ghp_new');
+		mockLoad(plugin, { patSecretName: 'my-token', owner: 'alice', repo: 'notes', branch: 'main' });
+		await plugin.loadSettings();
+		await plugin.saveSettings();
+		secrets(plugin).setSecret('my-token', 'ghp_rotated');
+		plugin.checkSettingsConfigured();
+		// The settings page authenticates through this connection.
+		expect(plugin.githubConnection?.['pat']).toBe('ghp_rotated');
 	});
 });
 
