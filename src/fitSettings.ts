@@ -7,6 +7,9 @@ export interface FitSettings {
 	// This would allow type-safe, provider-specific settings.
 	// See RemoteVaultProvider type in src/vault.ts for provider enum.
 	encryptionPassword: string;
+	/** Name of the secret in Obsidian's secret storage that holds the token. */
+	patSecretName: string;
+	/** The token itself, resolved from `patSecretName` at runtime. Never written to data.json. */
 	pat: string;
 	githubHost: string;
 	owner: string;       // Owner of the repo (may differ from authenticated user for contributor repos)
@@ -28,6 +31,7 @@ export interface FitSettings {
 
 export const DEFAULT_SETTINGS: FitSettings = {
 	encryptionPassword: "",
+	patSecretName: "",
 	pat: "",
 	githubHost: "github.com",
 	owner: "",

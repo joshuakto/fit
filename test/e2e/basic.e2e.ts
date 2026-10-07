@@ -147,7 +147,22 @@ describe('FIT Plugin E2E Tests', function() {
 				console.warn('settingsPopoutWindow workaround call itself failed:', String(e));
 			}
 
-			// 1. Open Obsidian settings
+			// 0. Store the token in Obsidian's secret storage and point FIT's settings at it
+			// (the token is picked from there, not typed). Also checks the storage works at all.
+			const storedToken = await browser.executeObsidian(async ({ app }) => {
+				const fit = (app as any).plugins.plugins['fit'];
+				app.secretStorage.setSecret('fit-e2e-token', 'ghp_test');
+				fit.settings.patSecretName = 'fit-e2e-token';
+				fit.settings.pat = app.secretStorage.getSecret('fit-e2e-token');
+				await fit.saveSettings();
+				return fit.settings.pat;
+			});
+			expect(storedToken).toBe('ghp_test');
+
+			// 1. Open Obsidian settings. A modal left open by an earlier test would keep a pane
+			// rendered before the seed (no token, Authenticate disabled), so close it first.
+			await browser.executeObsidian(({ app }) => (app as any).setting?.close?.());
+			await browser.pause(300);
 			await browser.executeObsidianCommand('app:open-settings');
 			await browser.pause(500);
 
@@ -160,7 +175,8 @@ describe('FIT Plugin E2E Tests', function() {
 			// visible at all in that case), so check whether we're already
 			// looking at FIT's pane before assuming there's a tab left to click.
 			const fitTabFound = await browser.executeObsidian(() => {
-				if (document.querySelector('input[placeholder*="personal access token"]')) {
+				if (Array.from(document.querySelectorAll('.setting-item-name'))
+					.some(el => el.textContent === 'Github personal access token')) {
 					return true;
 				}
 				// Find FIT tab in settings sidebar (case-insensitive search)
@@ -179,11 +195,9 @@ describe('FIT Plugin E2E Tests', function() {
 
 			await browser.pause(500);
 
-			// 3. Wait for settings UI to render and enter test PAT
-			const patInput = await browser.$('input[placeholder*="personal access token"]');
-			await patInput.waitForExist({ timeout: 5000 }); // Wait up to 5s for input to appear
-			await patInput.setValue('ghp_test');
-			await browser.pause(200); // Allow settings to update
+			// 3. Wait for settings UI to render, including the token's secret picker
+			const patSetting = await browser.$('//div[contains(@class, "setting-item-name") and text()="Github personal access token"]');
+			await patSetting.waitForExist({ timeout: 5000 });
 
 			// 4. Click Authenticate button
 			const authButton = await browser.$('button*=Authenticate user');

@@ -1,5 +1,6 @@
 import FitPlugin from "@/fitPlugin";
-import { App, PluginSettingTab, Setting, TextComponent } from "obsidian";
+import { App, PluginSettingTab, SecretComponent, Setting, TextComponent } from "obsidian";
+import { readPat } from "./patSecret";
 import { setEqual } from "./utils";
 import { GitHubOwnerSuggest, GitHubRepoSuggest } from "./util/obsidianHelpers";
 import { tokenCreationUrl, treeUrl, webBaseUrl } from "./remotes/githubHost";
@@ -310,16 +311,16 @@ export default class FitSettingTab extends PluginSettingTab {
 
 		this.patSetting = new Setting(containerEl)
 			.setName('Github personal access token')
-			.setDesc('Fine-grained token: Permissions needs Contents: "Read and write". Classic token: the "repo" scope. Recommended: Limit to selected repository, adjust expiration.')
-			.addText(text => text
-				.setPlaceholder('GitHub personal access token')
-				.setValue(this.plugin.settings.pat)
-				.onChange(async (value) => {
+			.setDesc('Choose or create a secret holding your token (kept in Obsidian\'s secret storage, not in the plugin\'s data file). Fine-grained token: Permissions needs Contents: "Read and write". Classic token: the "repo" scope. Recommended: Limit to selected repository, adjust expiration.')
+			.addComponent(el => new SecretComponent(this.app, el)
+				.setValue(this.plugin.settings.patSecretName)
+				.onChange(async (secretName) => {
 					const hadPat = !!this.plugin.settings.pat;
-					this.plugin.settings.pat = value;
+					this.plugin.settings.patSecretName = secretName;
+					this.plugin.settings.pat = readPat(this.app.secretStorage, secretName);
 
 					// Clear authentication state when PAT is removed
-					if (hadPat && !value) {
+					if (hadPat && !this.plugin.settings.pat) {
 						this.clearAuthState();
 						// When PAT is explicitly removed, also clear repo settings
 						this.plugin.settings.owner = "";
