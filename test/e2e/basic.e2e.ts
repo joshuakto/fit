@@ -24,6 +24,7 @@
 
 import { browser } from '@wdio/globals';
 import { obsidianPage } from 'wdio-obsidian-service';
+import allure from '@wdio/allure-reporter';
 import * as fs from 'fs';
 import { setupGitHubStub, cleanupGitHubStub } from './github-stub';
 
@@ -43,6 +44,13 @@ async function takeScreenshot(name: string) {
 	console.log(`📸 Screenshot saved: ${screenshotPath}`);
 }
 
+// The combined Allure report merges every job's results. Without these parameters the same test
+// from different jobs would be folded together as retries of one test.
+function tagAllureRun() {
+	allure.addArgument('platform', browser.isAndroid ? 'android' : 'desktop');
+	allure.addArgument('obsidian', browser.getObsidianVersion());
+}
+
 describe('FIT Plugin E2E Tests', function() {
 	this.timeout(60000); // 60 second timeout
 
@@ -59,6 +67,7 @@ describe('FIT Plugin E2E Tests', function() {
 
 	describe('Core Functionality', function() {
 		it('should run FIT sync and capture complete result', async () => {
+			tagAllureRun();
 			// Single comprehensive test covering plugin loading, sync execution, and screenshot capture
 
 			// 1. Verify plugin loads (implicit test - if this runs, plugin loaded without crashing)
@@ -112,6 +121,7 @@ describe('FIT Plugin E2E Tests', function() {
 		});
 
 		it('should authenticate with PAT and populate owner and repo fields', async () => {
+			tagAllureRun();
 			// Test PAT authentication flow with stubbed GitHub API
 			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
 
