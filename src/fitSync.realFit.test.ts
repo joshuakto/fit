@@ -3849,6 +3849,56 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('remote widening the mask over a field local already holds with another value clashes instead of overwriting local', async () => {
+			// The field was untracked at the last sync, so local's value was never synced and a
+			// pull would lose it: remote's copy goes to _fit/ and local is kept.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			// A local-only (untracked) field, then a sync that settles the baseline.
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Remote starts tracking windowWidth with another value; local is unchanged since.
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1500}');
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // local kept
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1500 }), // remote's copy
+			});
+		});
+
+		it('remote widening the mask over a field local already holds with the same value syncs without a clash', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1200}');
+			const commitBefore = remoteVault.getCommitSha();
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(remoteVault.getCommitSha()).toBe(commitBefore); // nothing redundant pushed
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent,
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }),
+			});
+		});
+
 		it('push: only the changed tracked field is pushed, an untracked local field is never sent', async () => {
 			const fitSync = createFitSync();
 			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';

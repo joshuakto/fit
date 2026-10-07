@@ -518,21 +518,23 @@ export class FitSync implements IFitSync {
 			new Set(), new Set()
 		);
 
-		if (clashes.length > 0) {
-			if (localText === null) return buildClashPreview();
-
-			// Both changed — attempt a 3-way merge on the masked view, same engine .canvas/
-			// ordinary format:"json" paths already use. Also reached on a genuine first sync
-			// (no baseline, so baseText below stays null) — confirmed safe, doesn't merge over
-			// a real conflict: mergeJson with a null base is conservative enough to still clash.
-			let baseText: string | null = null;
-			if (priorRemoteSha) {
-				try {
-					baseText = (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText();
-				} catch (e) {
-					fitLogger.log('[FitSync] subset-scope: base blob fetch failed, falling back to clash', { path, error: String(e) });
-				}
+		// The previous remote blob, the base of the 3-way merge below; null when there is none
+		// (genuine first sync) or it cannot be fetched, which mergeJson treats conservatively.
+		const readBaseText = async (): Promise<string | null> => {
+			if (!priorRemoteSha) return null;
+			try {
+				return (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText();
+			} catch (e) {
+				fitLogger.log('[FitSync] subset-scope: base blob fetch failed, falling back to clash', { path, error: String(e) });
+				return null;
 			}
+		};
+
+		// Attempt a 3-way merge on the masked view, same engine .canvas/ordinary format:"json"
+		// paths already use. Also reached on a genuine first sync (no baseline, so baseText stays
+		// null) — confirmed safe, doesn't merge over a real conflict: mergeJson with a null base
+		// is conservative enough to still clash.
+		const mergeBothChanged = (localTextNow: string, baseText: string | null): SubsetPathAction => {
 			let mergeResult: MergeResult;
 			try {
 				mergeResult = mergeJson(baseText, stableStringify(localMaskedObj), stableStringify(remoteObj), GENERIC_JSON_MERGE_SPEC);
@@ -543,12 +545,17 @@ export class FitSync implements IFitSync {
 			if (!mergeResult.merged) return buildClashPreview();
 
 			const mergedObj = mergeResult.value as Record<string, unknown>;
-			const overlaid = overlayMask(localText, mergedObj);
+			const overlaid = overlayMask(localTextNow, mergedObj);
 			if (!overlaid.ok) return buildClashPreview();
 			return {
 				path, kind: 'push-and-pull', trackedObj: mergedObj,
 				localFullContent: JSON.stringify(overlaid.value, null, '\t'),
 			};
+		};
+
+		if (clashes.length > 0) {
+			if (localText === null) return buildClashPreview();
+			return mergeBothChanged(localText, await readBaseText());
 		}
 
 		if (safeLocal.length > 0) {
@@ -565,6 +572,15 @@ export class FitSync implements IFitSync {
 			// content so untracked fields survive.
 			if (localText === null) {
 				return { path, kind: 'pull', trackedObj: remoteObj, localFullContent: JSON.stringify(remoteObj, null, '\t'), localOpType: 'ADDED' };
+			}
+			// The raw SHA says local is unchanged, but the mask may have widened: if remote now
+			// tracks a field local holds that the previous remote blob did not, local's masked
+			// view has changed relative to it, and its value was never synced. Treat that as
+			// both-changed, so the same 3-way merge decides (differing values clash, equal ones merge).
+			const baseText = await readBaseText();
+			const baseMasked = baseText === null ? null : extractMask(baseText, trackedFields);
+			if (!baseMasked?.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
+				return mergeBothChanged(localText, baseText);
 			}
 			const overlaid = overlayMask(localText, remoteObj);
 			if (!overlaid.ok) return buildClashPreview();
