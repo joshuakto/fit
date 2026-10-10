@@ -454,7 +454,8 @@ export class LocalVault implements IVault<"local"> {
 		if (failedPaths.length > 0) {
 			throw new VaultError(
 				'filesystem',
-				`Failed to read ${failedPaths.length} file(s) from local vault: ${failedPaths.map(f => f.path).join(', ')}`,
+				// Paths live in details; listing them here would flood the sync notice and the log.
+				`Failed to read ${failedPaths.length} file(s) from local vault`,
 				{
 					failedPaths: failedPaths.map(f => f.path),
 					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))

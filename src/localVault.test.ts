@@ -306,6 +306,23 @@ describe('LocalVault', () => {
 				'.gitignore': sha40
 			});
 		});
+
+		it('should keep the error message short when many files fail to read, with every path in details (#415)', async () => {
+			const paths = Array.from({ length: 12 }, (_, i) => `.obsidian/plugins/p${i}/data.json`);
+			const mockFiles = paths.map(p => StubTFile.ofPath(p));
+			mockVault.getFiles.mockReturnValue(mockFiles as TFile[]);
+			mockVault.readBinary.mockRejectedValue(new Error('File system operation timed out.'));
+
+			const localVault = new LocalVault(mockVault as any as Vault);
+			const error = await localVault.readFromSource().catch(e => e);
+
+			expect(error).toMatchObject({
+				name: 'VaultError',
+				type: 'filesystem',
+				message: 'Failed to read 12 file(s) from local vault',
+				details: { failedPaths: paths },
+			});
+		});
 	});
 
 	describe('readFileContent', () => {
