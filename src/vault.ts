@@ -8,7 +8,8 @@
 
 import { FileChange, FileStates } from "./util/changeTracking";
 import { FileContent } from "./util/contentEncoding";
-import { CommitSha, TreeSha } from "./util/hashing";
+import { BlobSha, CommitSha, TreeSha } from "./util/hashing";
+import type { LocalStores } from "./localStores";
 
 /** Discriminated return types for readFromSource() based on vault category */
 type VaultReadResultMap = {
@@ -266,4 +267,23 @@ export interface IVault<T extends VaultCategory> {
 	 * @returns true if this vault implementation can reliably track the path
 	 */
 	shouldTrackState(path: string): boolean;
+}
+
+/**
+ * What FitSync needs from the remote side beyond IVault. `Fit.remoteVault` is always one of
+ * these, so callers never null-check it: before credentials exist it is an
+ * UnconfiguredRemoteVault, and `isConfigured` says which one it is.
+ */
+export interface IRemoteVault extends IVault<"remote"> {
+	/** False only for UnconfiguredRemoteVault, whose every operation throws. */
+	readonly isConfigured: boolean;
+
+	/** @param ignoreCache - Refetch even when the remote commit matches the cached one */
+	readFromSource(ignoreCache?: boolean): Promise<VaultReadResult<"remote">>;
+
+	/** Read a file's content by blob SHA rather than by its current path */
+	readFileBlobBySha(sha: BlobSha): Promise<FileContent>;
+
+	/** Replace the remote tree with an empty commit; null if it was already empty */
+	clear(): Promise<LocalStores | null>;
 }

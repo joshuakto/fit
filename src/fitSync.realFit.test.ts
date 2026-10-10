@@ -13,6 +13,7 @@ import { Fit } from './fit';
 import { Vault } from 'obsidian';
 import { FakeLocalVault, FakeObsidianVault, FakeRemoteVault, StubTFile } from './testUtils';
 import { LocalVault } from './localVault';
+import { RemoteGitHubVault } from './remoteGitHubVault';
 import { DEFAULT_SETTINGS, FitSettings } from '@/fitSettings';
 import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import { LocalStores } from '@/localStores';
@@ -2950,6 +2951,44 @@ describe('FitSync', () => {
 	});
 
 	describe('Fit settings - GitHub config', () => {
+		const githubVault = (fit: Fit): RemoteGitHubVault => {
+			expect(fit.remoteVault).toBeInstanceOf(RemoteGitHubVault);
+			return fit.remoteVault as RemoteGitHubVault;
+		};
+
+		it('should have an unconfigured remoteVault when there is no PAT', () => {
+			const fit = new Fit(
+				{ ...testSettings, pat: '' } as FitSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			expect(fit.remoteVault.isConfigured).toBe(false);
+		});
+
+		it('should fail clearly, not with a TypeError, when an unconfigured remoteVault is used', async () => {
+			const fit = new Fit(
+				{ ...testSettings, pat: '' } as FitSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+
+			await expect(fit.remoteVault.readFromSource()).rejects.toThrow('Remote vault is not configured');
+		});
+
+		it('should have an unconfigured remoteVault after clearRemoteVault', () => {
+			const fit = new Fit(
+				{ ...testSettings, pat: 'token', owner: 'valid-owner' } as FitSettings,
+				localStoreState,
+				{} as unknown as Vault
+			);
+			expect(fit.remoteVault.isConfigured).toBe(true);
+
+			fit.clearRemoteVault();
+
+			expect(fit.remoteVault.isConfigured).toBe(false);
+		});
+
 		it('should update remoteVault when loadSettings is called with new owner', () => {
 			const initialSettings = {
 				...testSettings,
@@ -2962,7 +3001,7 @@ describe('FitSync', () => {
 				{} as unknown as Vault
 			);
 
-			expect(fit.remoteVault.getOwner()).toBe('initial-owner');
+			expect(githubVault(fit).getOwner()).toBe('initial-owner');
 
 			// Update settings with new owner
 			fit.loadSettings({
@@ -2970,7 +3009,7 @@ describe('FitSync', () => {
 				owner: 'new-owner'
 			});
 
-			expect(fit.remoteVault.getOwner()).toBe('new-owner');
+			expect(githubVault(fit).getOwner()).toBe('new-owner');
 		});
 
 		it('should recreate remoteVault after clearRemoteVault is called (re-authentication scenario)', () => {
@@ -2987,7 +3026,7 @@ describe('FitSync', () => {
 				{} as unknown as Vault
 			);
 
-			expect(fit.remoteVault.getOwner()).toBe('valid-owner');
+			expect(githubVault(fit).getOwner()).toBe('valid-owner');
 
 			// Simulate auth failure - clearRemoteVault is called
 			fit.clearRemoteVault();
@@ -3000,7 +3039,7 @@ describe('FitSync', () => {
 			});
 
 			// New vault should have empty owner (will be set after getUser() succeeds)
-			expect(fit.remoteVault.getOwner()).toBe('');
+			expect(githubVault(fit).getOwner()).toBe('');
 		});
 
 		it('should not recreate remoteVault when PAT is empty', () => {
@@ -3048,9 +3087,9 @@ describe('FitSync', () => {
 			);
 
 			// Then: The remoteVault should be created with the correct owner etc.
-			expect(fit.remoteVault.getOwner()).toBe(v13settings.owner);
-			expect(fit.remoteVault.getRepo()).toBe(v13settings.repo);
-			expect(fit.remoteVault.getBranch()).toBe(v13settings.branch);
+			expect(githubVault(fit).getOwner()).toBe(v13settings.owner);
+			expect(githubVault(fit).getRepo()).toBe(v13settings.repo);
+			expect(githubVault(fit).getBranch()).toBe(v13settings.branch);
 		});
 	});
 

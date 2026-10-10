@@ -29,12 +29,13 @@ type RefreshCheckPoint = "repo(0)" | "branch(1)" | "link(2)" | "initialize" | "w
 export default class FitSettingTab extends PluginSettingTab {
 	plugin: FitPlugin;
 	authenticating: boolean;
-	authUserAvatar: HTMLDivElement;
-	authUserHandle: HTMLSpanElement;
-	patSetting: Setting;
-	authUserSetting: Setting;
-	ownerSetting: Setting;
-	repoSetting: Setting;
+	// Created in display(), which Obsidian runs before the tab is interacted with.
+	authUserAvatar!: HTMLDivElement;
+	authUserHandle!: HTMLSpanElement;
+	patSetting!: Setting;
+	authUserSetting!: Setting;
+	ownerSetting!: Setting;
+	repoSetting!: Setting;
 	existingRepos: Array<string>;
 	existingBranches: Array<string>;
 	repoLink: string;
@@ -42,7 +43,6 @@ export default class FitSettingTab extends PluginSettingTab {
 	private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private repoFetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private suggestedOwners: Array<string> = [];
-	private suggestedRepos: Array<string> = [];
 	private authenticateButtonComponent: { setDisabled: (disabled: boolean) => void } | null = null;
 	private refreshButton: HTMLElement | null = null;
 	private ownerInputComponent: { setPlaceholder: (placeholder: string) => void; setValue: (value: string) => void } | null = null;

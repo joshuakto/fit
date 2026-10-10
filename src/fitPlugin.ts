@@ -1,4 +1,4 @@
-import { Notice, Plugin, SettingTab, TFile } from 'obsidian';
+import { Notice, Plugin, SettingTab, TAbstractFile } from 'obsidian';
 import { FitStatusModal } from '@/fitStatusModal';
 import { renderExplanation, type AutoSyncInfo } from '@/fitStatusExplainer';
 import { Fit } from '@/fit';
@@ -49,16 +49,17 @@ type SyncOutcome =
 const SAVE_SYNC_DEBOUNCE_MS = 30000;
 
 export default class FitPlugin extends Plugin {
-	settings: FitSettings;
-	settingTab: FitSettingTab;
-	localStore: LocalStores;
-	fit: Fit;
-	fitSync: FitSync;
-	githubConnection: GitHubConnection | null;
-	autoSyncIntervalId: number | null;
-	fitPullRibbonIconEl: HTMLElement;
-	fitPushRibbonIconEl: HTMLElement;
-	fitSyncRibbonIconEl: HTMLElement;
+	// Assigned in onload(), which Obsidian runs before anything else uses the plugin.
+	settings!: FitSettings;
+	settingTab!: FitSettingTab;
+	localStore!: LocalStores;
+	fit!: Fit;
+	fitSync!: FitSync;
+	githubConnection: GitHubConnection | null = null;
+	autoSyncIntervalId: number | null = null;
+	fitPullRibbonIconEl!: HTMLElement;
+	fitPushRibbonIconEl!: HTMLElement;
+	fitSyncRibbonIconEl!: HTMLElement;
 	logger = fitLogger; // Explicit reference to singleton for future refactoring
 	private activeSyncRequests = 0; // Track number of active sync attempts
 	private lastGithubConnectionPat: string | null = null; // Track PAT changes
@@ -484,7 +485,7 @@ export default class FitPlugin extends Plugin {
 	 * vault.modify/create), so without it every sync would re-arm a redundant
 	 * no-op sync 30 seconds later.
 	 */
-	onVaultFileSaved = (_file: TFile): void => {
+	onVaultFileSaved = (_file: TAbstractFile): void => {
 		if (!this.settings?.syncOnSave || this.fitSync?.isActive) return;
 
 		if (this.saveSyncDebounceTimer !== null) {
@@ -552,7 +553,7 @@ export default class FitPlugin extends Plugin {
 			});
 
 			// This adds a settings tab so the user can configure various aspects of the plugin
-			this.addSettingTab(new FitSettingTab(this.app, this));
+			this.addSettingTab(this.settingTab);
 
 			// register interval to repeat auto check
 			await this.startOrUpdateAutoSyncInterval();
@@ -587,7 +588,7 @@ export default class FitPlugin extends Plugin {
 	async loadSettings() {
 		const userSetting = await this.loadData();
 		const settings = Object.assign({}, DEFAULT_SETTINGS, userSetting);
-		const settingsObj: FitSettings = Object.keys(DEFAULT_SETTINGS).reduce(
+		const settingsObj: FitSettings = (Object.keys(DEFAULT_SETTINGS) as Array<keyof FitSettings>).reduce(
 			(obj, key: keyof FitSettings) => {
 				if (settings.hasOwnProperty(key)) {
 					if (key == "checkEveryXMinutes" || key == "fileChangesNoticeDurationSec") {

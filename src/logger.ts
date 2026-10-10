@@ -280,14 +280,19 @@ export class Logger {
  * Writing to plugin directory keeps logs out of vault and user's way.
  */
 export class FitLogger extends Logger {
-	private vault: Vault;
-	private pluginDir: string;
+	// Set by configure(); until then (or if the plugin dir is unknown) there is no disk logging.
+	private vault: Vault | null = null;
+	private pluginDir: string | null = null;
 	private enabled: boolean = false;
 
 	private _setupAdapter() {
-		const logPath = `${this.pluginDir}/debug.log`;
 		const vault = this.vault;
-		this.adapter = !this.enabled ? null : {
+		if (!this.enabled || !vault || this.pluginDir === null) {
+			this.adapter = null;
+			return;
+		}
+		const logPath = `${this.pluginDir}/debug.log`;
+		this.adapter = {
 			async read(): Promise<string | null> {
 				if (!await vault.adapter.exists(logPath)) return null;
 				return vault.adapter.read(logPath);

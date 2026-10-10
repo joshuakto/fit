@@ -39,6 +39,8 @@ A "vault" represents a complete collection of synced files, whether stored local
   - **Write operations**: `applyChanges(filesToWrite, filesToDelete)` - batch operations
   - **Metadata**: `shouldTrackState(path)` - filter paths during sync
 
+- **IRemoteVault Interface**: `IVault<"remote">` plus `isConfigured`, `readFileBlobBySha()` and `clear()`. `Fit.remoteVault` is always one, so callers never null-check it: until a PAT is set (and after an auth failure clears it) it is an `UnconfiguredRemoteVault`, whose operations reject with "Remote vault is not configured".
+
 - **💾 LocalVault**: Obsidian vault implementation
   - Computes SHA-1 hashes from vault files
   - Owns local state
@@ -212,7 +214,7 @@ Obsidian Vault:
 ## Extension Points
 
 ### Adding Sync Backends
-Implement the generic `IVault` interface ([`src/vault.ts`](../src/vault.ts)) to support additional remote backends. It has `readFromSource()` and `readFileContent()` for reading, `applyChanges()` for writing, and `shouldTrackState()` for metadata.
+Implement the `IRemoteVault` interface (extends the generic `IVault`, [`src/vault.ts`](../src/vault.ts)) to support additional remote backends. `IVault` has `readFromSource()` and `readFileContent()` for reading, `applyChanges()` for writing, and `shouldTrackState()` for metadata.
 
 **Example**: Create `RemoteGitLabVault` by:
 1. Implement `IVault` interface

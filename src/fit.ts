@@ -12,6 +12,8 @@ import { FileChange, FileStates, compareFileStates } from "./util/changeTracking
 import { Vault } from "obsidian";
 import { LocalVault } from "./localVault";
 import { RemoteGitHubVault } from "./remoteGitHubVault";
+import { UnconfiguredRemoteVault } from "./unconfiguredRemoteVault";
+import { IRemoteVault } from "./vault";
 import { fitLogger } from "./logger";
 import { CommitSha } from "./util/hashing";
 import { ScanCoverage } from "./util/scanCoverage";
@@ -32,20 +34,21 @@ import { isHardDenylistedObsidianPath, FIT_OWN_SETTINGS_DENYLIST } from "./util/
  * @see RemoteGitHubVault - Remote GitHub repository operations
  */
 export class Fit {
-	localShas: FileStates;                  // Canonical git blob SHA cache (primary, v2)
-	localSha: FileStates;                   // Legacy path+content SHA cache (migration source)
-	lastFetchedCommitSha: CommitSha | null; // Last synced commit SHA
-	lastFetchedRemoteShas: FileStates;      // Canonical remote SHA cache
-	unpushedFiles: FileStates;              // Files skipped due to API size limit (422)
-	pendingClashes: string[];               // Paths with unresolved _fit/ copies
-	protectedPathShas: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
+	// The next seven are assigned by loadLocalStore() from the constructor.
+	localShas!: FileStates;                  // Canonical git blob SHA cache (primary, v2)
+	localSha!: FileStates;                   // Legacy path+content SHA cache (migration source)
+	lastFetchedCommitSha!: CommitSha | null; // Last synced commit SHA
+	lastFetchedRemoteShas!: FileStates;      // Canonical remote SHA cache
+	unpushedFiles!: FileStates;              // Files skipped due to API size limit (422)
+	pendingClashes!: string[];               // Paths with unresolved _fit/ copies
+	protectedPathShas!: FileStates;          // Remote SHAs for paths excluded by shouldSyncPath (dedup cache)
 	fitAttributes: FitAttributesFile = {};  // Parsed from local .fitattributes.json; refreshed each sync
 	// Set when the last .fitattributes.json parse attempt failed; null when it parsed fine or
 	// the file doesn't exist. FitSync surfaces this as a visible Notice — a malformed file
 	// silently means "no .obsidian/ path syncs", which is worse than noisy to leave log-only.
 	fitAttributesWarning: string | null = null;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
-	remoteVault: RemoteGitHubVault;
+	remoteVault: IRemoteVault = new UnconfiguredRemoteVault(); // Real vault once a PAT is configured (see loadSettings)
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
 	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
 	// current sync. Needed because the reconcile block's own "local absent" branch clears
@@ -82,7 +85,7 @@ export class Fit {
 		// Example: User types "alice" → onChange fires 5 times with partial values ("a", "al", ...)
 		// Note: clearRemoteVault() should be called on auth failure to allow re-creation
 		// TODO: Shouldn't this be validated when SAVING settings vs LOADING?
-		if (!setting.owner && this.remoteVault) {
+		if (!setting.owner && this.remoteVault.isConfigured) {
 			return;
 		}
 
@@ -101,7 +104,7 @@ export class Fit {
 	 * Call this on authentication failure to allow re-creation on next attempt.
 	 */
 	clearRemoteVault() {
-		this.remoteVault = undefined as unknown as RemoteGitHubVault;
+		this.remoteVault = new UnconfiguredRemoteVault();
 	}
 
 	loadLocalStore(localStore: LocalStores) {
