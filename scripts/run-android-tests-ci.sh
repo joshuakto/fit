@@ -22,7 +22,14 @@ while [ "$i" -lt 30 ]; do
     sleep 2
 done
 
+# Keep the device log for the whole run. Obsidian's WebView console (plugin load errors, crashes,
+# out-of-memory kills) only shows up here; the Appium log and the report never see it.
+adb logcat -c > /dev/null 2>&1 || true
+adb logcat -v threadtime > logcat.txt 2>&1 &
+LOGCAT_PID=$!
+
 EXTERNAL_APPIUM=1 npm run test:android
 STATUS=$?
+kill "$LOGCAT_PID" 2>/dev/null || true
 kill "$APPIUM_PID" 2>/dev/null || true
 exit "$STATUS"

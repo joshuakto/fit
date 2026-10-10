@@ -29,19 +29,27 @@ jobs:
         cache: 'npm'
         cache-dependency-path: 'package-lock.json'
 
+    - name: Install dependencies
+      run: npm ci --legacy-peer-deps
+
+    # Key the cache on the concrete version, or it keeps serving the old download after "latest" moves.
+    # "latest" must match the version in test/e2e/wdio.conf.mts.
+    - name: Resolve Obsidian version
+      id: obsidian
+      run: echo "version=$(node scripts/obsidian-version.mjs "$OBSIDIAN_LABEL")" >> "$GITHUB_OUTPUT"
+      env:
+        OBSIDIAN_LABEL: latest
+
     - name: Cache Obsidian and WebDriver downloads
       uses: actions/cache@v6
       with:
         path: |
           .obsidian-cache
           ~/.cache
-        key: obsidian-cache-${{ runner.os }}-node${{ matrix.node-version }}-v1
+        key: obsidian-cache-${{ runner.os }}-node${{ matrix.node-version }}-obsidian${{ steps.obsidian.outputs.version }}
         restore-keys: |
           obsidian-cache-${{ runner.os }}-node${{ matrix.node-version }}-
           obsidian-cache-${{ runner.os }}-
-
-    - name: Install dependencies
-      run: npm ci --legacy-peer-deps
 
     - name: Build plugin
       run: npm run build
@@ -115,21 +123,18 @@ jobs:
       - name: Build plugin
         run: npm run build
 
-      - name: Get Obsidian cache key
-        shell: bash
-        run: |
-          node test/e2e/wdio.mobile.conf.mjs | grep 'obsidian-cache-key:' > obsidian-versions-lock.txt
-          rm -rf .obsidian-cache
+      # Key the cache on the concrete version: a label like "latest" never changes when the version moves.
+      - name: Resolve Obsidian version
+        id: obsidian
+        run: echo "version=$(node scripts/obsidian-version.mjs "$OBSIDIAN_LABEL")" >> "$GITHUB_OUTPUT"
         env:
-          OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
-          OBSIDIAN_EMAIL: ${{ secrets.OBSIDIAN_EMAIL }}
-          OBSIDIAN_PASSWORD: ${{ secrets.OBSIDIAN_PASSWORD }}
+          OBSIDIAN_LABEL: ${{ matrix.obsidian-version }}
 
       - name: Cache .obsidian-cache
         uses: actions/cache@v6
         with:
           path: .obsidian-cache
-          key: obsidian-cache-android-${{ hashFiles('obsidian-versions-lock.txt') }}
+          key: obsidian-cache-android-${{ steps.obsidian.outputs.version }}
 
       - name: Enable KVM
         run: |
@@ -172,6 +177,7 @@ jobs:
           path: |
             test-results/
             appium-server.log
+            logcat.txt
           retention-days: 30
 
       - name: Upload Allure results

@@ -8,11 +8,6 @@ const cacheDir = path.resolve("../../.obsidian-cache");
 // Read Obsidian version from environment (for matrix testing latest vs earliest)
 const obsidianVersion = process.env.OBSIDIAN_VERSIONS || "latest";
 
-// Always output cache key for CI to use
-console.log("obsidian-cache-key:", JSON.stringify({
-	[obsidianVersion]: obsidianVersion
-}));
-
 // In CI, appium is started externally before wdio to avoid tsx hooks propagating
 // to the appium subprocess (wdio adds tsx to NODE_OPTIONS for .ts spec loading).
 // When EXTERNAL_APPIUM=1, skip the appium service; connect to the already-running server.
