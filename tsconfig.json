@@ -14,7 +14,9 @@
 		"moduleResolution": "bundler",
 		"importHelpers": true,
 		"isolatedModules": true,
-		"strictNullChecks": true,
+		"strict": true,
+		"noEmit": true,
+		"noUnusedLocals": true,
 		"lib": [
 			"DOM",
 			"ES5",
@@ -28,6 +30,7 @@
 		]
 	},
 	"include": [
-		"**/*.ts"
+		"**/*.ts",
+		"**/*.mts"
 	]
 }

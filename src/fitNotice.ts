@@ -4,7 +4,7 @@ import { Fit } from "./fit";
 export default class FitNotice {
 	fit: Fit;
 	muted: boolean;
-	notice: null | Notice;
+	notice: null | Notice = null;
 	classes: Array<string>;
 
 	constructor(fit: Fit, addClasses: Array<string> = [], initialMessage?: string, duration = 0, muted = false) {

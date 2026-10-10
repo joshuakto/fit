@@ -601,4 +601,16 @@ describe('FitLogger', () => {
 		expect(files.get(rotatedPath)).toBe(currentLog);
 		expect(files.get(logPath)).toContain('New entry');
 	});
+
+	it('does not try to write a log file when enabled but never configured with a vault and plugin dir', async () => {
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const logger = new FitLogger({ adapter: null, maxLogSize: 1 });
+
+		logger.setEnabled(true);
+		logger.log('No place to write this');
+		await logger.flush();
+
+		expect(consoleError).not.toHaveBeenCalled();
+		consoleError.mockRestore();
+	});
 });

@@ -9,7 +9,7 @@ import { LocalStores } from "@/localStores";
 import { Octokit } from "@octokit/core";
 import { retry } from "@octokit/plugin-retry";
 import { apiBaseUrl } from "./remotes/githubHost";
-import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from "./vault";
+import { ApplyChangesResult, IRemoteVault, VaultError, VaultReadResult } from "./vault";
 import { FileChange, FileStates } from "./util/changeTracking";
 import { BlobSha, CommitSha, EMPTY_TREE_SHA, TreeSha } from "./util/hashing";
 import { Content, FileContent } from "./util/contentEncoding";
@@ -57,7 +57,8 @@ export type TreeNode = {
  *
  * See docs/architecture.md for how vaults fit into the sync engine.
  */
-export class RemoteGitHubVault implements IVault<"remote"> {
+export class RemoteGitHubVault implements IRemoteVault {
+	readonly isConfigured = true;
 	private octokit: Octokit;
 	private owner: string;
 	private repo: string;
