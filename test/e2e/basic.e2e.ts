@@ -69,7 +69,8 @@ describe('FIT Plugin E2E Tests', function() {
 			console.log('Notices after sync:', notices);
 
 			// 4. Assertions
-			const errorNotices = notices.filter(n => n.classes.includes('notice-error'));
+			// FIT marks error notices with the class `error` (FitNotice.setMessage)
+			const errorNotices = notices.filter(n => n.classes.split(/\s+/).includes('error'));
 			const configNotice = notices.find(n =>
 				n.text.includes('Settings not configured') &&
 				n.text.includes('provide GitHub personal access token')
