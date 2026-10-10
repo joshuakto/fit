@@ -5,7 +5,7 @@
  * and wdio-obsidian-service to test in a real Obsidian environment.
  *
  * Test Environment:
- * - Real Obsidian instance (latest version)
+ * - Real Obsidian instance (desktop, and the Android app via wdio.mobile.conf.mjs)
  * - Test vault: test/vaults/basic/
  * - Plugin loaded from current directory
  *
@@ -14,7 +14,12 @@
  * - FIT sync command executes successfully
  * - Expected notices appear (config not set up)
  * - No error notices are generated
+ * - PAT authentication populates the settings fields
  * - Screenshots capture test results
+ *
+ * Conventions (see ui-actions.ts and diagnostics.ts):
+ * - Never wait a fixed time for UI: wait on a condition, with a timeout that only bounds failure.
+ * - Notices are recorded in the page, not polled; they disappear faster than a slow driver can poll.
  *
  * Prerequisites:
  * - WebdriverIO and wdio-obsidian-service installed
@@ -24,32 +29,9 @@
 
 import { browser } from '@wdio/globals';
 import { obsidianPage } from 'wdio-obsidian-service';
-import allure from '@wdio/allure-reporter';
-import * as fs from 'fs';
 import { setupGitHubStub, cleanupGitHubStub } from './github-stub';
-
-const OUTPUTS_PATH = 'test-results/';
-
-async function takeScreenshot(name: string) {
-	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-	const screenshotPath = `${OUTPUTS_PATH}/${name}-${timestamp}.png`;
-
-	// Ensure test-results directory exists
-	if (!fs.existsSync(OUTPUTS_PATH)) {
-		fs.mkdirSync(OUTPUTS_PATH, { recursive: true });
-	}
-
-	// Take screenshot showing the result
-	await browser.saveScreenshot(screenshotPath);
-	console.log(`📸 Screenshot saved: ${screenshotPath}`);
-}
-
-// The combined Allure report merges every job's results. Without these parameters the same test
-// from different jobs would be folded together as retries of one test.
-function tagAllureRun() {
-	allure.addArgument('platform', browser.isAndroid ? 'android' : 'desktop');
-	allure.addArgument('obsidian', browser.getObsidianVersion());
-}
+import { tagAllureRun, takeScreenshot } from './diagnostics';
+import { openFitSettings, readSettingInput, startNoticeRecorder, waitForSettingInput } from './ui-actions';
 
 describe('FIT Plugin E2E Tests', function() {
 	this.timeout(60000); // 60 second timeout
@@ -73,50 +55,22 @@ describe('FIT Plugin E2E Tests', function() {
 			// 1. Verify plugin loads (implicit test - if this runs, plugin loaded without crashing)
 			console.log('📱 FIT plugin environment loaded successfully');
 
-			// 2. Execute FIT sync command
+			// 2. Execute FIT sync command, recording notices from before it runs
+			const recorder = await startNoticeRecorder();
 			await browser.executeObsidianCommand("fit:fit-sync");
 
-			// 3. Wait for the config notice (not a fixed pause: how long it takes varies by device)
-			const readNotices = () => browser.executeObsidian(() => {
-				const noticeContainer = document.querySelector('.notice-container');
-				if (!noticeContainer) return [];
-
-				const notices = Array.from(noticeContainer.querySelectorAll('.notice'));
-				return notices.map(notice => ({
-					text: notice.textContent?.trim() || '',
-					type: notice.className || ''
-				}));
-			});
-			// Notices can disappear between polls (seen on Android), so keep every one seen
-			// instead of trusting the last read.
-			const notices: Array<{ text: string; type: string }> = [];
-			const collectNotices = async () => {
-				for (const n of await readNotices()) {
-					const seen = notices.find(prior => prior.text === n.text);
-					if (seen) {
-						seen.type = n.type;
-					} else {
-						notices.push(n);
-					}
-				}
-				return notices;
-			};
-			await collectNotices();
+			// 3. Verify expected behavior; the screenshot is taken even if this times out
+			let notices;
 			try {
-				// 4. Verify expected behavior
-				await browser.waitUntil(
-					async () => (await collectNotices()).some(n => n.text.includes('Settings not configured')),
-					{ timeout: 10000, interval: 250, timeoutMsg: 'Settings not configured notice did not appear' }
-				);
+				notices = await recorder.waitFor('Settings not configured');
 			} finally {
-				// 5. Capture screenshot with timestamp, and the notices seen, even on timeout
 				await takeScreenshot('fit-sync-result');
-				console.log('Notices after sync:', notices);
 			}
+			console.log('Notices after sync:', notices);
 
-			// 6. Assertions
-			const errorNotices = notices.filter((n: any) => n.type.includes('notice-error'));
-			const configNotice = notices.find((n: any) =>
+			// 4. Assertions
+			const errorNotices = notices.filter(n => n.classes.includes('notice-error'));
+			const configNotice = notices.find(n =>
 				n.text.includes('Settings not configured') &&
 				n.text.includes('provide GitHub personal access token')
 			);
@@ -143,28 +97,6 @@ describe('FIT Plugin E2E Tests', function() {
 			// Test PAT authentication flow with stubbed GitHub API
 			// Verifies: PAT input → Authenticate → Owner populated → Repos fetched and displayed
 
-			// Obsidian 1.13+ defaults to opening Settings in a separate OS window
-			// on desktop (app.vault.getConfig('settingsPopoutWindow')), and on
-			// Android too — both stopped rendering settings in this test's
-			// same-window DOM. Force it off so Settings renders in-page, matching
-			// pre-1.13 behavior. Neither this config key nor app.setting.close()
-			// can be assumed to exist/behave safely on every platform, so this
-			// must not throw and block the actual open-settings command below.
-			try {
-				await browser.executeObsidian(({ app }) => {
-					try {
-						(app.vault as any).setConfig?.('settingsPopoutWindow', false);
-						if ((app as any).setting?.popout) {
-							(app as any).setting.close();
-						}
-					} catch (e) {
-						console.warn('settingsPopoutWindow workaround failed in-page:', String(e));
-					}
-				});
-			} catch (e) {
-				console.warn('settingsPopoutWindow workaround call itself failed:', String(e));
-			}
-
 			// 0. Store the token in Obsidian's secret storage and point FIT's settings at it
 			// (the token is picked from there, not typed). Also checks the storage works at all.
 			const storedToken = await browser.executeObsidian(async ({ app }) => {
@@ -177,139 +109,53 @@ describe('FIT Plugin E2E Tests', function() {
 			});
 			expect(storedToken).toBe('ghp_test');
 
-			// 1. Open Obsidian settings. A modal left open by an earlier test would keep a pane
-			// rendered before the seed (no token, Authenticate disabled), so close it first.
-			await browser.executeObsidian(({ app }) => (app as any).setting?.close?.());
-			await browser.pause(300);
-			await browser.executeObsidianCommand('app:open-settings');
-			await browser.pause(500);
-
-			// Take screenshot of settings page before trying to find FIT tab
+			// 1. Open FIT's settings pane
+			await openFitSettings();
 			await takeScreenshot('settings-opened');
 
-			// 2. Navigate to FIT plugin settings.
-			// Screenshot-confirmed: on Android, Settings can open directly onto
-			// the last-active tab's content (no .vertical-tab-nav-item list
-			// visible at all in that case), so check whether we're already
-			// looking at FIT's pane before assuming there's a tab left to click.
-			const fitTabFound = await browser.executeObsidian(() => {
-				if (Array.from(document.querySelectorAll('.setting-item-name'))
-					.some(el => el.textContent === 'Github personal access token')) {
-					return true;
-				}
-				// Find FIT tab in settings sidebar (case-insensitive search)
-				const fitTab = Array.from(document.querySelectorAll('.vertical-tab-nav-item'))
-					.find(el => el.textContent?.toLowerCase().includes('fit'));
-				if (fitTab) {
-					(fitTab as HTMLElement).click();
-					return true;
-				}
-				return false;
-			});
-
-			if (!fitTabFound) {
-				throw new Error('FIT plugin settings tab not found - is the plugin loaded?');
-			}
-
-			await browser.pause(500);
-
-			// 3. Wait for settings UI to render, including the token's secret picker
-			const patSetting = await browser.$('//div[contains(@class, "setting-item-name") and text()="Github personal access token"]');
-			await patSetting.waitForExist({ timeout: 5000 });
-
-			// 4. Click Authenticate button
+			// 2. Click Authenticate button
 			const authButton = await browser.$('button*=Authenticate user');
 			await authButton.click();
 
-			// 5. Wait for authentication to complete
-			// GitHub API stub will return 'testowner' user
-			await browser.pause(500);
-
-			// 6. Verify owner field populated with stubbed user
-			// Find input by the Repository owner label
-			const ownerInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository owner"]/following::input[1]');
-			const ownerValue = await ownerInput.getValue();
-			const ownerAttribute = await ownerInput.getAttribute('value');
-			const ownerProperty = await browser.executeObsidian(() => {
-				// Find the owner input by its setting label
-				const settingItems = Array.from(document.querySelectorAll('.setting-item'));
-				const ownerSetting = settingItems.find(item =>
-					item.querySelector('.setting-item-name')?.textContent === 'Repository owner'
-				);
-				const input = ownerSetting?.querySelector('input') as HTMLInputElement;
-				return input?.value || null;
-			});
-
-			// Use whichever method actually returns a value
-			const actualOwnerValue = ownerProperty || ownerAttribute || ownerValue;
-			expect(actualOwnerValue).toBe('testowner');
-
-			// 7. Take screenshot of authenticated state
+			// 3. Wait for authentication to complete: the GitHub API stub returns 'testowner'
+			await waitForSettingInput('Repository owner', 'testowner');
 			await takeScreenshot('settings-auth-success');
 
-			// 8. Wait for repo dropdown to populate (debounced fetch)
-			await browser.pause(800);
-
-			// 9. Focus on repo input (now uses AbstractInputSuggest, not datalist)
-			const repoInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository name"]/following::input[1]');
-
-			// 10. Click to focus
-			await repoInput.click();
-			await browser.pause(200);
-
-			// 11. Verify repo suggestions are populated (via AbstractInputSuggest)
-			const repoOptions = await browser.executeObsidian(() => {
-				// Access the FitSettingTab instance to get suggestions
+			// 4. Wait for the repo suggestions to be fetched (debounced). The repo input uses
+			// AbstractInputSuggest, not datalist. The stub's fixtures give 'testowner' 2 repos.
+			const getRepoOptions = () => browser.executeObsidian(() => {
 				const settingsTab = (window as any).app?.setting?.pluginTabs?.find((tab: any) => tab.id === 'fit');
-				if (!settingsTab?.repoSuggest) return [];
-				return settingsTab.repoSuggest.getSuggestions('');
+				return (settingsTab?.repoSuggest?.getSuggestions('') ?? []) as string[];
 			});
+			let repoOptions: string[] = [];
+			await browser.waitUntil(
+				async () => (repoOptions = await getRepoOptions()).length > 0,
+				{ timeout: 15000, interval: 250, timeoutMsg: 'Repo suggestions were not populated' }
+			);
+			expect([...repoOptions].sort()).toEqual(['private-repo', 'testrepo']);
 
-			// Should have 2 repos for 'testowner' (from fixtures: testrepo, private-repo)
-			expect(repoOptions.sort()).toEqual(['private-repo', 'testrepo']);
-
-			// 12. Trigger the AbstractInputSuggest popover by typing
-			// This should open the suggestion list that we can screenshot
+			// 5. Typing a partial match opens the suggestion popover (screenshottable, unlike a datalist)
+			const repoInput = await browser.$('//div[contains(@class, "setting-item-name") and text()="Repository name"]/following::input[1]');
 			await repoInput.click();
-			await repoInput.setValue('test'); // Type partial match to trigger suggestions
-			await browser.pause(300); // Wait for suggestion popover to appear
-
-			// 13. Take screenshot showing the suggestion popover
-			// (Unlike datalists, AbstractInputSuggest popovers ARE visible and screenshottable!)
+			await repoInput.setValue('test');
+			await browser.waitUntil(
+				() => browser.executeObsidian(() =>
+					Array.from(document.querySelectorAll('.suggestion-item')).some(el => el.textContent?.includes('testrepo'))
+				),
+				{ timeout: 10000, timeoutMsg: 'testrepo suggestion did not appear in the popover' }
+			);
 			await takeScreenshot('repo-suggestions-visible');
 
-			// 14. Select 'testrepo' from the suggestions by clicking on it
+			// 6. Select 'testrepo' from the suggestions by clicking on it
 			await browser.executeObsidian(() => {
-				// Find the suggestion element in the popover and click it
-				const suggestionElements = Array.from(document.querySelectorAll('.suggestion-item'));
-				const testrepoSuggestion = suggestionElements.find(el =>
-					el.textContent?.includes('testrepo')
-				) as HTMLElement;
-
-				if (!testrepoSuggestion) {
-					throw new Error('testrepo suggestion not found in popover');
-				}
-
-				// Click the suggestion to select it
-				testrepoSuggestion.click();
+				const suggestion = Array.from(document.querySelectorAll('.suggestion-item'))
+					.find(el => el.textContent?.includes('testrepo')) as HTMLElement | undefined;
+				suggestion?.click();
 			});
 
-			await browser.pause(500); // Wait for any UI updates
-
-			// Verify the input was populated with 'testrepo' (use DOM property like owner field)
-			const repoProperty = await browser.executeObsidian(() => {
-				// Find the repo input by its setting label
-				const settingItems = Array.from(document.querySelectorAll('.setting-item'));
-				const repoSetting = settingItems.find(item =>
-					item.querySelector('.setting-item-name')?.textContent === 'Repository name'
-				);
-				const input = repoSetting?.querySelector('input') as HTMLInputElement;
-				return input?.value || null;
-			});
-			console.log('Repo value (via DOM property):', repoProperty);
-			expect(repoProperty).toBe('testrepo');
-
-			// Take screenshot showing the populated input (proof that suggestion selection worked)
+			// 7. The input holds the selected repo (read as a DOM property, like the owner field)
+			await waitForSettingInput('Repository name', 'testrepo');
+			expect(await readSettingInput('Repository name')).toBe('testrepo');
 			await takeScreenshot('settings-repo-selected');
 		});
 	});

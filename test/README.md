@@ -36,7 +36,9 @@ npm run test:android
 - For CI: Automatically set up via GitHub Actions workflow
 
 ### Test Structure
-- **Test files**: `test/e2e/*.e2e.ts` - WebdriverIO test specifications
+- **Test files**: `test/e2e/*.e2e.ts` - WebdriverIO test specifications (desktop and Android run the same specs)
+- **UI actions and waits**: `test/e2e/ui-actions.ts` - notice recording, opening FIT's settings, settings inputs
+- **Diagnostics**: `test/e2e/diagnostics.ts` - screenshots, Allure grouping, failure snapshot
 - **Test data**: `test/vaults/basic/` - Minimal test vault with sample markdown files
 - **Screenshots**: `test-results/` - Screenshots captured during test execution
 
@@ -72,11 +74,17 @@ HTML report — with a per-test step timeline and durations — is built by the
   page, unzip it, then serve it locally — Allure's report loads its data via `fetch()`,
   which browsers block over `file://`, so opening `index.html` directly won't work:
   ```shell
-  gh run download <run-id> -n allure-report -D /tmp/allure-report
-  npx allure-commandline open /tmp/allure-report
+  d=$(mktemp -d /tmp/allure-report.XXXXXX)
+  gh run download <run-id> -n allure-report -D "$d"
+  npx allure-commandline open "$d"
   ```
   Each test shows its steps (command execution, DOM queries, screenshots) with timing,
   so you can see exactly which step stalled or failed without re-reading raw CI logs.
+  The Suites tab groups results by `<platform> <Obsidian version>` (e.g. `android 1.14.4`).
+- **Failed waits**: a timed-out wait in `ui-actions.ts` throws an error listing what it saw
+  (e.g. the notices) and attaches a `failure-snapshot` to the test in the report: recorded
+  notices, what is on screen, whether a settings modal is open, FIT's settings (secrets
+  masked) and page freezes seen by a heartbeat.
 - **Debugging without the HTML report** (e.g. scripted/agent investigation): download
   the raw `allure-results-*` artifact instead and read the `*-result.json` files
   directly — each one has `name`, `status`, `statusDetails.message`/`trace`,
@@ -87,6 +95,15 @@ HTML report — with a per-test step timeline and durations — is built by the
   gh run download <run-id> -n allure-results-desktop -D /tmp/allure
   jq '{name, status, start, stop, steps: [.steps[] | {name, status}]}' /tmp/allure/*-result.json
   ```
+
+### Writing Tests
+- Never wait a fixed time for UI. Wait on a condition (`browser.waitUntil`, helpers in
+  `ui-actions.ts`); the timeout only bounds failure, so make it generous. Emulator speed varies
+  by Obsidian version and runner, and a fixed pause tuned to one is a flake on the next.
+- Notices are short-lived and driver calls can stall for seconds on a slow emulator, so
+  don't poll for them: `startNoticeRecorder()` records them in the page from before the action.
+- Obsidian version caches are keyed on the concrete version (`scripts/obsidian-version.mjs`),
+  so "latest" moving gets a fresh download instead of a stale cache.
 
 ### Troubleshooting
 When E2E tests fail:
