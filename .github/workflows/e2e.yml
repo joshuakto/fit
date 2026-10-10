@@ -177,6 +177,7 @@ jobs:
           path: |
             test-results/
             appium-server.log
+            logcat.txt
           retention-days: 30
 
       - name: Upload Allure results
