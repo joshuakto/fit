@@ -316,12 +316,12 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const error = await localVault.readFromSource().catch(e => e);
 
-			expect(error).toMatchObject({
+			expect(error).toEqual(expect.objectContaining({
 				name: 'VaultError',
 				type: 'filesystem',
 				message: 'Failed to read 12 file(s) from local vault',
-				details: { failedPaths: paths },
-			});
+				details: expect.objectContaining({ failedPaths: paths }),
+			}));
 		});
 	});
 
