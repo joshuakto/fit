@@ -135,6 +135,21 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
+			it("given a tree with a symlink entry (mode 120000), should log that it is synced as a regular file", async () => {
+				const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, [
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA },
+					{ path: "link.md", type: "blob", mode: "120000", sha: BLOB2_SHA }
+				]);
+
+				await vault.readFromSource();
+
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining('1 remote symlink(s) (mode 120000) are synced as regular files'),
+					{ paths: ["link.md"] }
+				);
+			});
+
 			it("should not wrap missing-global errors as network errors", async () => {
 				// Simulates a mobile runtime where an assumed global (e.g. Buffer, TextEncoder)
 				// is missing — the resulting ReferenceError should propagate as-is rather than
@@ -178,6 +193,21 @@ describe("RemoteGitHubVault", () => {
 				const content = await vault.readFileContent("test.md");
 
 				expect(content).toEqual(FileContent.fromBase64("base64content"));
+			});
+
+			it("given a symlink entry (mode 120000), should log that its content is the link target", async () => {
+				const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, [
+					{ path: "link.md", mode: "120000", type: "blob", sha: BLOB123_SHA }
+				]);
+				fakeOctokit.addBlob(BLOB123_SHA, "base64content");
+				await vault.readFromSource();
+
+				await vault.readFileContent("link.md");
+
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining("Reading remote symlink 'link.md' as a regular file")
+				);
 			});
 
 			it("should return content only from last FETCHED readFromSource", async () => {
@@ -338,6 +368,35 @@ describe("RemoteGitHubVault", () => {
 				expect(fakeOctokit.getCurrentTree()).toEqual([
 					expect.objectContaining({ path: "link.md", type: "blob", mode: "100644" })
 				]);
+			});
+
+			it("given content pushed to a symlink path, should log that the symlink is replaced by a regular file", async () => {
+				const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, [
+					{ path: "link.md", type: "blob", mode: "120000", sha: "linkblob" as BlobSha }
+				]);
+
+				await vault.applyChanges(
+					[{ path: "link.md", content: FileContent.fromPlainText("edited text") }],
+					[]
+				);
+
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining("Pushing 'link.md' over a remote symlink")
+				);
+			});
+
+			it("given a symlink path deleted, should log the deletion", async () => {
+				const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, [
+					{ path: "link.md", type: "blob", mode: "120000", sha: "linkblob" as BlobSha }
+				]);
+
+				await vault.applyChanges([], ["link.md"]);
+
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining("Deleting remote symlink 'link.md'")
+				);
 			});
 
 			it("should handle file modifications", async () => {

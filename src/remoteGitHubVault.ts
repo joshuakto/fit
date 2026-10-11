@@ -71,6 +71,9 @@ export class RemoteGitHubVault implements IRemoteVault {
 	// Avoids redundant API calls when remote hasn't changed
 	private latestKnownCommitSha: CommitSha | null = null;
 	private latestKnownState: FileStates | null = null;
+	// Paths in latestKnownState whose tree entry is a symlink (mode 120000). Diagnostic only:
+	// they are still synced as regular files holding the link target (see docs/sync-scenario-matrix.md).
+	private latestKnownSymlinkPaths: Set<string> = new Set();
 
 	/** @param githubHost - Hostname to sync with, e.g. "github.com" or a GitHub Enterprise Server */
 	constructor(
@@ -295,6 +298,11 @@ export class RemoteGitHubVault implements IRemoteVault {
 			throw new Error(
 				`File '${path}' does not exist in remote repository ` +
 				`(commit ${this.latestKnownCommitSha || 'unknown'} on ${this.owner}/${this.repo}).`
+			);
+		}
+		if (this.latestKnownSymlinkPaths.has(path)) {
+			fitLogger.log(
+				`⚠️ [RemoteVault] Reading remote symlink '${path}' as a regular file: its content is the link target path, not the target's content`
 			);
 		}
 
@@ -626,6 +634,13 @@ export class RemoteGitHubVault implements IRemoteVault {
 		// Get current state using cache when available
 		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
+		for (const path of filesToWrite.map(f => f.path).filter(p => this.latestKnownSymlinkPaths.has(p))) {
+			fitLogger.log(`⚠️ [RemoteVault] Pushing '${path}' over a remote symlink: it will be replaced by a regular file (mode 100644)`);
+		}
+		for (const path of filesToDelete.filter(p => this.latestKnownSymlinkPaths.has(p))) {
+			fitLogger.log(`⚠️ [RemoteVault] Deleting remote symlink '${path}'`);
+		}
+
 		// Create tree nodes for all changes, tracking metadata for error handling
 		const operations: Array<{
 			path: string;
@@ -796,6 +811,8 @@ export class RemoteGitHubVault implements IRemoteVault {
 		// Update cache to avoid redundant fetches later
 		this.latestKnownCommitSha = newCommitSha;
 		this.latestKnownState = newState;
+		// Pushed nodes are regular files now (or gone)
+		for (const { path } of changes) this.latestKnownSymlinkPaths.delete(path);
 
 		return {
 			changes,
@@ -863,7 +880,7 @@ export class RemoteGitHubVault implements IRemoteVault {
 			fitLogger.log(`... ⬇️ [RemoteVault] New commit detected (${commitSha.slice(0, 7)}), fetching tree...`);
 		}
 		// Monitor for slow GitHub API operations
-		const newState = await withSlowOperationMonitoring(
+		const { state: newState, symlinkPaths } = await withSlowOperationMonitoring(
 			this.buildStateFromTree(treeSha),
 			`Remote vault tree fetch from GitHub`,
 			{ warnAfterMs: 10000 }
@@ -872,6 +889,16 @@ export class RemoteGitHubVault implements IRemoteVault {
 		// Update cache
 		this.latestKnownCommitSha = commitSha;
 		this.latestKnownState = newState;
+		this.latestKnownSymlinkPaths = symlinkPaths;
+
+		if (symlinkPaths.size > 0) {
+			const MAX_LISTED = 10;
+			const listed = [...symlinkPaths].slice(0, MAX_LISTED);
+			fitLogger.log(
+				`⚠️ [RemoteVault] ${symlinkPaths.size} remote symlink(s) (mode 120000) are synced as regular files holding the link target path`,
+				{ paths: listed, ...(symlinkPaths.size > MAX_LISTED && { omitted: symlinkPaths.size - MAX_LISTED }) }
+			);
+		}
 
 		// Log completion with normalization diagnostics
 		const normalizationInfo = detectNormalizationIssues(Object.keys(newState), 'remote (GitHub)');
@@ -888,15 +915,16 @@ export class RemoteGitHubVault implements IRemoteVault {
 	 * Used after applyChanges() to construct state from the new tree.
 	 *
 	 * @param treeSha - Tree SHA to read
-	 * @returns FileStates mapping paths to blob SHAs
+	 * @returns FileStates mapping paths to blob SHAs, plus the subset of those paths that are symlinks
 	 */
-	private async buildStateFromTree(treeSha: TreeSha): Promise<FileStates> {
+	private async buildStateFromTree(treeSha: TreeSha): Promise<{ state: FileStates; symlinkPaths: Set<string> }> {
 		// Check if this is the empty tree - skip getTree() call (would return 404)
 		const remoteTree: TreeNode[] = treeSha === EMPTY_TREE_SHA
 			? []
 			: await this.getTree(treeSha);
 
 		const state: FileStates = {};
+		const symlinkPaths = new Set<string>();
 		const failedPaths: Array<{path: string, error: unknown}> = [];
 
 		for (const node of remoteTree) {
@@ -909,6 +937,7 @@ export class RemoteGitHubVault implements IRemoteVault {
 					}
 					// TODO: Should this notice if there's a collision overwriting same path?
 					state[path] = node.sha;
+					if (node.mode === "120000") symlinkPaths.add(path);
 				} catch (error) {
 					if (error instanceof ReferenceError) throw error;
 					failedPaths.push({ path: path, error });
@@ -930,7 +959,7 @@ export class RemoteGitHubVault implements IRemoteVault {
 			);
 		}
 
-		return state;
+		return { state, symlinkPaths };
 	}
 
 }
