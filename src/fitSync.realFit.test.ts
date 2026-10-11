@@ -3849,6 +3849,89 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('remote widening the mask over a field local already holds with another value clashes instead of overwriting local', async () => {
+			// The field was untracked at the last sync, so local's value was never synced and a
+			// pull would lose it: remote's copy goes to _fit/ and local is kept.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			// A local-only (untracked) field, then a sync that settles the baseline.
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// Remote starts tracking windowWidth with another value; local is unchanged since.
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1500}');
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // local kept
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1500 }), // remote's copy
+			});
+		});
+
+		it('remote widening the mask over a field local already holds with the same value syncs without a clash', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1200}');
+			const commitBefore = remoteVault.getCommitSha();
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(remoteVault.getCommitSha()).toBe(commitBefore); // nothing redundant pushed
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // already equal to remote's value, so unchanged
+				// no _fit/ copy: equal values are not a conflict
+			});
+		});
+
+		it('a failed read of the previous remote blob skips a remote-only subset edit instead of clashing, and the next sync pulls it', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			// An ordinary remote edit of the already-tracked field, while the base blob read fails once.
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			const blobRead = vi.spyOn(remoteVault, 'readFileBlobBySha').mockRejectedValue(new Error('network down'));
+			const failedResult = await syncAndHandleResult(fitSync, createMockNotice());
+			blobRead.mockRestore();
+
+			expect(failedResult).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // skipped, not overwritten
+				// no _fit/ copy: skipping is not a clash
+			});
+
+			const retryResult = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(retryResult).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', windowWidth: 1200 }), // pulled once the read works, untracked windowWidth kept
+			});
+		});
+
 		it('push: only the changed tracked field is pushed, an untracked local field is never sent', async () => {
 			const fitSync = createFitSync();
 			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';

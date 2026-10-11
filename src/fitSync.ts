@@ -518,21 +518,24 @@ export class FitSync implements IFitSync {
 			new Set(), new Set()
 		);
 
-		if (clashes.length > 0) {
-			if (localText === null) return buildClashPreview();
-
-			// Both changed — attempt a 3-way merge on the masked view, same engine .canvas/
-			// ordinary format:"json" paths already use. Also reached on a genuine first sync
-			// (no baseline, so baseText below stays null) — confirmed safe, doesn't merge over
-			// a real conflict: mergeJson with a null base is conservative enough to still clash.
-			let baseText: string | null = null;
-			if (priorRemoteSha) {
-				try {
-					baseText = (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText();
-				} catch (e) {
-					fitLogger.log('[FitSync] subset-scope: base blob fetch failed, falling back to clash', { path, error: String(e) });
-				}
+		// The previous remote blob, the base of the 3-way merge below. `text` is null when there is
+		// none (no prior remote sha) or it could not be fetched; callers tell those apart by
+		// `fetchFailed`, since mergeJson treats a null base conservatively but a skip is cheaper.
+		const readBaseText = async (): Promise<{ text: string | null; fetchFailed: boolean }> => {
+			if (!priorRemoteSha) return { text: null, fetchFailed: false };
+			try {
+				return { text: (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText(), fetchFailed: false };
+			} catch (e) {
+				fitLogger.log('[FitSync] subset-scope: base blob fetch failed', { path, error: String(e) });
+				return { text: null, fetchFailed: true };
 			}
+		};
+
+		// Attempt a 3-way merge on the masked view, same engine .canvas/ordinary format:"json"
+		// paths already use. Also reached on a genuine first sync (no baseline, so baseText stays
+		// null) — confirmed safe, doesn't merge over a real conflict: mergeJson with a null base
+		// is conservative enough to still clash.
+		const mergeBothChanged = (localTextNow: string, baseText: string | null): SubsetPathAction => {
 			let mergeResult: MergeResult;
 			try {
 				mergeResult = mergeJson(baseText, stableStringify(localMaskedObj), stableStringify(remoteObj), GENERIC_JSON_MERGE_SPEC);
@@ -543,12 +546,17 @@ export class FitSync implements IFitSync {
 			if (!mergeResult.merged) return buildClashPreview();
 
 			const mergedObj = mergeResult.value as Record<string, unknown>;
-			const overlaid = overlayMask(localText, mergedObj);
+			const overlaid = overlayMask(localTextNow, mergedObj);
 			if (!overlaid.ok) return buildClashPreview();
 			return {
 				path, kind: 'push-and-pull', trackedObj: mergedObj,
 				localFullContent: JSON.stringify(overlaid.value, null, '\t'),
 			};
+		};
+
+		if (clashes.length > 0) {
+			if (localText === null) return buildClashPreview();
+			return mergeBothChanged(localText, (await readBaseText()).text);
 		}
 
 		if (safeLocal.length > 0) {
@@ -565,6 +573,20 @@ export class FitSync implements IFitSync {
 			// content so untracked fields survive.
 			if (localText === null) {
 				return { path, kind: 'pull', trackedObj: remoteObj, localFullContent: JSON.stringify(remoteObj, null, '\t'), localOpType: 'ADDED' };
+			}
+			// The raw SHA says local is unchanged, but the mask may have widened: if remote now
+			// tracks a field local holds that the previous remote blob did not, local's masked
+			// view has changed relative to it, and its value was never synced. Treat that as
+			// both-changed, so the same 3-way merge decides (differing values clash, equal ones merge).
+			// With no previous remote blob there is nothing to compare against, so it pulls as
+			// before; if that blob cannot be fetched, skip and retry next sync rather than guess.
+			const base = await readBaseText();
+			if (base.fetchFailed) return { path, kind: 'skip' };
+			if (base.text !== null) {
+				const baseMasked = extractMask(base.text, trackedFields);
+				if (!baseMasked.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
+					return mergeBothChanged(localText, base.text);
+				}
 			}
 			const overlaid = overlayMask(localText, remoteObj);
 			if (!overlaid.ok) return buildClashPreview();
