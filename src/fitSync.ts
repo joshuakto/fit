@@ -518,15 +518,16 @@ export class FitSync implements IFitSync {
 			new Set(), new Set()
 		);
 
-		// The previous remote blob, the base of the 3-way merge below; null when there is none
-		// (genuine first sync) or it cannot be fetched, which mergeJson treats conservatively.
-		const readBaseText = async (): Promise<string | null> => {
-			if (!priorRemoteSha) return null;
+		// The previous remote blob, the base of the 3-way merge below. `text` is null when there is
+		// none (no prior remote sha) or it could not be fetched; callers tell those apart by
+		// `fetchFailed`, since mergeJson treats a null base conservatively but a skip is cheaper.
+		const readBaseText = async (): Promise<{ text: string | null; fetchFailed: boolean }> => {
+			if (!priorRemoteSha) return { text: null, fetchFailed: false };
 			try {
-				return (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText();
+				return { text: (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText(), fetchFailed: false };
 			} catch (e) {
-				fitLogger.log('[FitSync] subset-scope: base blob fetch failed, falling back to clash', { path, error: String(e) });
-				return null;
+				fitLogger.log('[FitSync] subset-scope: base blob fetch failed', { path, error: String(e) });
+				return { text: null, fetchFailed: true };
 			}
 		};
 
@@ -555,7 +556,7 @@ export class FitSync implements IFitSync {
 
 		if (clashes.length > 0) {
 			if (localText === null) return buildClashPreview();
-			return mergeBothChanged(localText, await readBaseText());
+			return mergeBothChanged(localText, (await readBaseText()).text);
 		}
 
 		if (safeLocal.length > 0) {
@@ -577,10 +578,15 @@ export class FitSync implements IFitSync {
 			// tracks a field local holds that the previous remote blob did not, local's masked
 			// view has changed relative to it, and its value was never synced. Treat that as
 			// both-changed, so the same 3-way merge decides (differing values clash, equal ones merge).
-			const baseText = await readBaseText();
-			const baseMasked = baseText === null ? null : extractMask(baseText, trackedFields);
-			if (!baseMasked?.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
-				return mergeBothChanged(localText, baseText);
+			// With no previous remote blob there is nothing to compare against, so it pulls as
+			// before; if that blob cannot be fetched, skip and retry next sync rather than guess.
+			const base = await readBaseText();
+			if (base.fetchFailed) return { path, kind: 'skip' };
+			if (base.text !== null) {
+				const baseMasked = extractMask(base.text, trackedFields);
+				if (!baseMasked.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
+					return mergeBothChanged(localText, base.text);
+				}
 			}
 			const overlaid = overlayMask(localText, remoteObj);
 			if (!overlaid.ok) return buildClashPreview();
