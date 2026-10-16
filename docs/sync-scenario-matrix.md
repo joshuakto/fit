@@ -102,6 +102,7 @@ middle state.
 | symlink on remote (`mode 120000`), pulled earlier as a regular file | 👀 tracked | ✏️ edited | ⚪ unchanged | 🔴 **Gap.** The push writes the blob as `100644`, converting the remote symlink into a regular file. Pinned by `'given a symlink entry (mode 120000) and content pushed to its path, should not convert it to a regular file (BUG: ...'` |
 | gitignored path | 🆕 untracked, never observed | ⚪ local file present | n/a | ✅ `'given a path never synced and matched by .gitignore, should never push it'` |
 | gitignored path | 🆕 untracked, never observed | ⚪ local file present | ✏️ remote added | ✅ `'given a remote file at the path of a local file that .gitignore matches, should keep the local file and save the remote copy to _fit/'` - untracked content is never overwritten |
+| gitignored path | 🆕 untracked, never observed | ⚪ no local file | ✏️ remote added | ✅ `'given a remote-only file at a path .gitignore matches, should pull it like any remote add'` - a rule only gates what the local scan pushes |
 | gitignored path (rule added after syncing) | 👀 tracked | ⚪ unchanged | ⚪ unchanged | ✅ `'given a tracked $name path a new .gitignore rule matches, should report no change for it and list it as still syncing'` - a rule only gates adding new paths, as in git, so a baselined path keeps syncing like any tracked path (no phantom deletion in Explain). The sync notice says so (`'... should tell the user in the sync notice that it is still syncing'`) |
 | gitignored path (rule added after syncing) | 👀 tracked | ✏️ edited | ⚪ unchanged | ✅ `'given a tracked path later matched by .gitignore and edited locally, should push the edit like any tracked path'` |
 | gitignored path (rule added after syncing) | 👀 tracked | 🗑️ deleted | ⚪ unchanged | ✅ `'given a tracked path later matched by .gitignore and deleted locally, should push the deletion'` - the way to remove a path everywhere |
@@ -122,6 +123,7 @@ Invariants: rule agreement is 🟢 agree, pre-existing clash is ⚪ no clash, an
 | ordinary vault path | 🟢 agree | 👀 tracked | ✏️ edited | ⚪ unchanged | ⚪ no clash | 💥 local write fails | ✅ `'should retry a failed local delete next sync instead of losing track of...'` |
 | ordinary vault path | 🟢 agree | 👀 tracked | ⚪ unchanged | ✏️ edited | ⚪ no clash | 💥 remote push skipped/rate-limited (unrelated file) | ✅ `'rate-limited file: localShas cleared so it is re-detected on next sync'` and siblings |
 | ordinary vault path | 🟢 agree | 👀 tracked | ✏️ edited | ⚪ unchanged | 🔀 clash pending | ⚪ no failure, sync repeated | ✅ clash lifecycle series `'A:'`...`'H:'` |
+| ordinary vault path | 🟢 agree | 👀 tracked | ✏️ edited (merged by hand) | ✏️ edited | 🔀 clash pending | ⚪ no failure, `_fit/` copy deleted, real scan | ✅ `'given a clash the user merged by hand and whose _fit/ copy they deleted, should push the merge and list no _fit/ path'` (real scan: `_fit/` is never listed as a change; the push itself is clash test B) |
 | ordinary vault path | 🟢 agree | 👀 tracked | 🗑️ deleted | ✏️ edited | 🔀 clash pending | ⚪ no failure, sync repeated | ✅ **Fixed (#283).** Doesn't fold into the row above — a delete/modify clash's own creation state (local absent, `_fit/` present) was indistinguishable from "user deleted local to resolve," so the very next sync silently pushed the deletion and cleaned up the `_fit/` copy with zero user action. `'I: delete/modify clash left untouched — next sync must NOT push the deletion or clear the pending clash (#283)'`. |
 | n/a (whole-sync failure, not path-specific) | 🟢 agree | 👀 tracked | n/a | n/a | n/a | 💥 fetch fails entirely this sync | ✅ `'a whole-sync remote fetch failure leaves localShas/lastFetchedRemoteShas/protectedPathShas untouched'` - already a guaranteed no-op by `_doSync`'s error-path rollback (`fitSync.ts`), this test just confirms it; see [sync-logic.md § Network Interruption](./sync-logic.md), the "before commit created" case |
 
@@ -165,6 +167,8 @@ fitSync.realFit.test.ts
   │ ├ untracked: 'given a path never synced ...', 'given a remote file at the path of a local file that .gitignore matches ...'
   │ └ tracked, rule added later: unchanged (and the sync notice), edited locally, deleted locally, edited remotely,
   │   edited on both sides, deleted remotely (kept untracked, reported)
+  │ ├ 'given a remote-only file at a path .gitignore matches ...'
+  │ └ 'given a clash the user merged by hand and whose _fit/ copy they deleted ...'
   ├ Hidden-path scan pruning — baseline safety (#389)
   │ ├ 'does not push a deletion for a baseline path this sync pruned'
   │ ├ 'does not pull a remote edit over a path this sync could not see'

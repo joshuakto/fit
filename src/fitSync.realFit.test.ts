@@ -5264,5 +5264,67 @@ describe('FitSync', () => {
 			expect(notice._calls.at(-1)?.args[0]).toContain(`match .gitignore but are still syncing`);
 			expect(notice._calls.at(-1)?.args[0]).toContain(`• ${kind.path}`);
 		});
+
+		it('given a clash the user merged by hand and whose _fit/ copy they deleted, should push the merge and list no _fit/ path', async () => {
+			await remoteVault.setFile('Day/d.md', 'base');
+			await syncRealScan();
+			await writeLocal('Day/d.md', 'local edit');
+			await remoteVault.setFile('Day/d.md', 'remote edit');
+			await syncRealScan();
+			expect(await readLocal('_fit/Day/d.md')).toBe('remote edit');
+			await writeLocal('Day/d.md', 'merged');
+			await deleteLocal('_fit/Day/d.md');
+
+			const result = await syncRealScan();
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: [],
+				changeGroups: [
+					{ heading: 'Local file updates:', changes: [] }, // Nothing written locally, so no _fit/ path is listed
+					// The label is ADDED although the remote already had the path (cosmetic, TODO(#406))
+					{ heading: 'Remote file updates:', changes: [{ path: 'Day/d.md', type: 'ADDED' }] },
+				],
+			}));
+		});
+
+		describe.each(PATH_KINDS)('$name path, ignore rule lifecycle', (kind) => {
+			it('given a remote-only file at a path .gitignore matches, should pull it like any remote add', async () => {
+				await writeLocal('.gitignore', kind.ignoreRule);
+				await remoteVault.setFile(kind.path, 'from other device');
+
+				await syncRealScan();
+
+				expect(await readLocal(kind.path)).toBe('from other device');
+			});
+
+			it('given an untracked ignored file whose rule is then removed, should push it', async () => {
+				await writeLocal('.gitignore', kind.ignoreRule);
+				await writeLocal(kind.path, 'local only');
+				await syncRealScan();
+				await writeLocal('.gitignore', '');
+
+				await syncRealScan();
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({
+					'.gitignore': '', // Pushed with the rule removed
+					[kind.path]: 'local only', // No longer ignored, so pushed like a new file
+				});
+			});
+
+			it('given a kept-untracked file whose remote copy was deleted and whose rule is then removed, should push it again', async () => {
+				await trackedThenIgnored(kind);
+				await remoteVault.applyChanges([], [kind.path]);
+				await syncRealScan();
+				await writeLocal('.gitignore', '');
+
+				await syncRealScan();
+
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({
+					'.gitignore': '', // Pushed with the rule removed
+					[kind.path]: 'v1', // Kept locally after the remote delete, pushed again once not ignored
+				});
+			});
+		});
 	});
 });
