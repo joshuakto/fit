@@ -578,15 +578,14 @@ export class FitSync implements IFitSync {
 			// tracks a field local holds that the previous remote blob did not, local's masked
 			// view has changed relative to it, and its value was never synced. Treat that as
 			// both-changed, so the same 3-way merge decides (differing values clash, equal ones merge).
-			// With no previous remote blob there is nothing to compare against, so it pulls as
-			// before; if that blob cannot be fetched, skip and retry next sync rather than guess.
+			// With no previous remote blob (local baselined but remote never was) there is nothing
+			// to compare against, so the merge decides with a null base, which clashes on any
+			// difference; if that blob cannot be fetched, skip and retry next sync rather than guess.
 			const base = await readBaseText();
 			if (base.fetchFailed) return { path, kind: 'skip' };
-			if (base.text !== null) {
-				const baseMasked = extractMask(base.text, trackedFields);
-				if (!baseMasked.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
-					return mergeBothChanged(localText, base.text);
-				}
+			const baseMasked = base.text === null ? null : extractMask(base.text, trackedFields);
+			if (!baseMasked?.ok || stableStringify(baseMasked.value) !== stableStringify(localMaskedObj)) {
+				return mergeBothChanged(localText, base.text);
 			}
 			const overlaid = overlayMask(localText, remoteObj);
 			if (!overlaid.ok) return buildClashPreview();

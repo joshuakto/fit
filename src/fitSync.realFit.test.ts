@@ -3900,6 +3900,33 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('a remote value for a tracked field local holds differently, with no remote baseline for the path, clashes instead of overwriting local', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			// Local is baselined but the remote baseline is gone: the path looks like a remote add.
+			delete localStoreState.lastFetchedRemoteShas['.obsidian/appearance.json'];
+			fitSync.fit.loadLocalStore(localStoreState);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1500}');
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // local kept
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1500 }), // remote's copy
+			});
+		});
+
 		it('a failed read of the previous remote blob skips a remote-only subset edit instead of clashing, and the next sync pulls it', async () => {
 			const fitSync = createFitSync();
 			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
@@ -3912,9 +3939,9 @@ describe('FitSync', () => {
 
 			// An ordinary remote edit of the already-tracked field, while the base blob read fails once.
 			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
-			const blobRead = vi.spyOn(remoteVault, 'readFileBlobBySha').mockRejectedValue(new Error('network down'));
+			remoteVault.setFailure(new Error('network down'), 'readBlob', { persistent: true });
 			const failedResult = await syncAndHandleResult(fitSync, createMockNotice());
-			blobRead.mockRestore();
+			remoteVault.clearFailure('readBlob');
 
 			expect(failedResult).toEqual(expect.objectContaining({ success: true, clash: [] }));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
