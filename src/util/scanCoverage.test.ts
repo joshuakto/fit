@@ -1,6 +1,7 @@
 /**
- * Covers ScanCoverage.statusOf only: how a local scan's state and its unscanned prefixes
- * combine into present / absent / unknown for one path. Not covered here: how Fit and
+ * Covers ScanCoverage only: how a local scan's state and its unscanned prefixes combine into
+ * present / absent / unknown for one path (statusOf), and which prefixes that hid a path
+ * (prefixesConsulted, which feeds the unlistable-paths notice). Not covered here: how Fit and
  * FitSync act on each status — see fitSync.realFit.test.ts "Hidden-path scan pruning".
  */
 import { describe, it, expect } from 'vitest';
@@ -28,5 +29,29 @@ describe('ScanCoverage.statusOf', () => {
 		const coverage = new ScanCoverage(state, new Set(unscannedPrefixes));
 
 		expect({ path, status: coverage.statusOf(path) }).toEqual({ path, status: expected });
+	});
+});
+
+describe('ScanCoverage.prefixesConsulted', () => {
+	const state: FileStates = { '.mytool/seen.json': 'sha-seen' as BlobSha };
+
+	it.each([
+		['nothing before any lookup', [] as string[], []],
+		['nothing for a path the scan saw', ['.mytool/seen.json'], []],
+		['nothing for a path outside every unscanned prefix', ['other/b.md'], []],
+		['the prefix that hid an unseen path', ['.mytool/gone.json'], ['.mytool']],
+		['every prefix that hid the same path', ['.mytool/gone.json', '.mytool/x/y.json'], ['.mytool']],
+	])('reports %s', (_label, lookups, expected) => {
+		const coverage = new ScanCoverage(state, new Set(['.mytool', '.other']));
+		lookups.forEach(path => coverage.statusOf(path));
+
+		expect([...coverage.prefixesConsulted()]).toEqual(expected);
+	});
+
+	it('reports both a folder and the root when a hidden path sits under both', () => {
+		const coverage = new ScanCoverage(state, new Set(['.mytool', '/']));
+		coverage.statusOf('.mytool/gone.json');
+
+		expect([...coverage.prefixesConsulted()].sort()).toEqual(['.mytool', '/']);
 	});
 });

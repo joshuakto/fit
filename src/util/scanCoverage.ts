@@ -1,5 +1,5 @@
 import type { FileStates } from '@/util/changeTracking';
-import { isUnderAnyPrefix } from '@/util/filePath';
+import { isUnderPrefix } from '@/util/filePath';
 
 /**
  * What a local scan can say about one path:
@@ -17,6 +17,10 @@ export type PathScanStatus = 'present' | 'absent' | 'unknown';
  * from a prefix set (docs/sync-logic.md § Scan-time pruning vs. the stored baseline).
  */
 export class ScanCoverage {
+	// Unscanned prefixes that made some statusOf call answer 'unknown', i.e. ones the sync
+	// actually needed to see through. Filled lazily by the same calls that make the decision.
+	private readonly consultedPrefixes = new Set<string>();
+
 	constructor(
 		private readonly state: FileStates,
 		private readonly unscannedPrefixes: ReadonlySet<string>
@@ -24,6 +28,18 @@ export class ScanCoverage {
 
 	statusOf(path: string): PathScanStatus {
 		if (Object.prototype.hasOwnProperty.call(this.state, path)) return 'present';
-		return isUnderAnyPrefix(path, this.unscannedPrefixes) ? 'unknown' : 'absent';
+		let unknown = false;
+		for (const prefix of this.unscannedPrefixes) {
+			if (isUnderPrefix(path, prefix)) {
+				this.consultedPrefixes.add(prefix);
+				unknown = true;
+			}
+		}
+		return unknown ? 'unknown' : 'absent';
+	}
+
+	/** The unscanned prefixes that hid a path from some statusOf call so far. */
+	prefixesConsulted(): ReadonlySet<string> {
+		return this.consultedPrefixes;
 	}
 }

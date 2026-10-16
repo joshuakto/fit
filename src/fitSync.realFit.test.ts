@@ -2506,37 +2506,124 @@ describe('FitSync', () => {
 	});
 
 	describe('Per-File Error Handling', () => {
-		it('should handle per-file read failures from local vault with detailed error message', async () => {
-			// Arrange
-			const fitSync = createFitSync();
-			localVault.setFile('good-file.md', 'good content');
-			localVault.setFile('bad-file.md', 'bad content');
-			localVault.setFile('another-bad.md', 'more bad content');
+		describe('a tracked file that cannot be read locally', () => {
+			// Whatever the file type, local state is unknown: a remote change clashes (a remote
+			// deletion without a _fit/ copy), and otherwise the file is left alone and reported.
+			const failReadOf = (badPath: string) => localVault.setUnreadableFiles([badPath]);
 
-			// Mock writeFile to throw errors for specific files
-			localVault.setMockWriteFile(async (path) => {
-				if (path === 'bad-file.md') {
-					throw new Error('EACCES: permission denied');
-				}
-				if (path === 'another-bad.md') {
-					throw new Error('EIO: input/output error');
-				}
+			it('given no remote change, should sync the other files, leave it alone and report it', async () => {
+				const fitSync = createFitSync();
+				localVault.setFile('good-file.md', 'good content');
+				localVault.setFile('bad-file.md', 'bad content');
+				await syncAndHandleResult(fitSync, createMockNotice()); // baselines both
+				localVault.setFile('good-file.md', 'good edited');
+				failReadOf('bad-file.md');
+				const mockNotice = createMockNotice();
+
+				const result = await syncAndHandleResult(fitSync, mockNotice);
+
+				expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw(), shas: Object.keys(localStoreState.localShas).sort() }).toEqual({
+					result: expect.objectContaining({ success: true, clash: [] }),
+					remote: { 'good-file.md': 'good edited', 'bad-file.md': 'bad content' }, // not deleted, not re-uploaded
+					local: { 'good-file.md': 'good edited', 'bad-file.md': 'bad content' },
+					shas: ['bad-file.md', 'good-file.md'], // the unreadable file keeps its baseline
+				});
+				expect(mockNotice._calls.at(-1)).toEqual({
+					method: 'setMessage',
+					args: [expect.stringMatching(/^Sync incomplete[\s\S]*couldn't be read locally[\s\S]*• bad-file\.md/)],
+				});
+
+				localVault.setUnreadableFiles([]);
+				const retry = await syncAndHandleResult(fitSync, createMockNotice());
+				expect({ retry, remote: remoteVault.getAllFilesAsRaw() }).toEqual({
+					retry: expect.objectContaining({ success: true, clash: [] }),
+					remote: { 'good-file.md': 'good edited', 'bad-file.md': 'bad content' },
+				});
 			});
 
-			const mockNotice = createMockNotice();
+			it('given an unreadable .fitattributes.json, should not delete the tracked .obsidian/ files it enables from the remote', async () => {
+				const fitSync = createFitSync();
+				const fitAttributesContent = '{".obsidian/foo":{"format":"text"}}';
+				localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+				localVault.setSyncHiddenFiles(true);
+				await remoteVault.applyChanges([{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') }], []);
+				await syncAndHandleResult(fitSync, createMockNotice());
+				await syncAndHandleResult(fitSync, createMockNotice()); // baselines .obsidian/foo
+				failReadOf(FITATTRIBUTES_PATH);
 
-			// Act
-			await syncAndHandleResult(fitSync, mockNotice);
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
 
-			// Assert - Verify error message includes failed file paths
-			expect(mockNotice._calls).toEqual([
-				{ method: 'setMessage', args: ['Checking for changes...'] },
-				{
-					method: 'setMessage', args: [
-						expect.stringMatching(/^Sync failed:.*Failed to read 2 file\(s\) from local vault[\s\S]*(bad-file\.md[\s\S]*another-bad\.md|another-bad\.md[\s\S]*bad-file\.md)/),
-						true]
-				}
-			]);
+				expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({ success: true, clash: [] }),
+					remote: { [FITATTRIBUTES_PATH]: fitAttributesContent, '.obsidian/foo': '{"theme":"dark"}' },
+					local: { [FITATTRIBUTES_PATH]: fitAttributesContent, '.obsidian/foo': '{"theme":"dark"}' },
+				});
+			});
+
+			it('given a local edit that becomes unreadable after the scan, should not push it and retry next sync', async () => {
+				const fitSync = createFitSync();
+				localVault.setFile('bad-file.md', 'bad content');
+				await syncAndHandleResult(fitSync, createMockNotice());
+				localVault.setFile('bad-file.md', 'bad edited');
+				localVault.setUnreadableFiles(['bad-file.md'], { inScan: false });
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect({ result, remote: remoteVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({ success: true, clash: [] }),
+					remote: { 'bad-file.md': 'bad content' }, // not pushed
+				});
+
+				localVault.setUnreadableFiles([]);
+				await syncAndHandleResult(fitSync, createMockNotice());
+				expect(remoteVault.getAllFilesAsRaw()).toEqual({ 'bad-file.md': 'bad edited' }); // the edit was not lost
+			});
+
+			it('given a remote edit, should clash: keep the local file and save the remote copy to _fit/', async () => {
+				const fitSync = createFitSync();
+				localVault.setFile('bad-file.md', 'bad content');
+				await syncAndHandleResult(fitSync, createMockNotice());
+				await remoteVault.setFile('bad-file.md', 'remote edit');
+				failReadOf('bad-file.md');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({
+						success: true,
+						clash: [expect.objectContaining({ path: 'bad-file.md', remoteOp: 'MODIFIED' })],
+					}),
+					remote: { 'bad-file.md': 'remote edit' }, // not overwritten by the unreadable local file
+					local: { 'bad-file.md': 'bad content', '_fit/bad-file.md': 'remote edit' },
+				});
+
+				localVault.setUnreadableFiles([]);
+				// Once it reads again the clash is still pending, so local does not silently overwrite remote's edit.
+				await syncAndHandleResult(fitSync, createMockNotice());
+				expect({ remote: remoteVault.getAllFilesAsRaw(), pending: localStoreState.pendingClashes }).toEqual({
+					remote: { 'bad-file.md': 'remote edit' },
+					pending: ['bad-file.md'],
+				});
+			});
+
+			it('given a remote deletion, should clash without deleting the local file or writing a _fit/ copy', async () => {
+				const fitSync = createFitSync();
+				localVault.setFile('bad-file.md', 'bad content');
+				await syncAndHandleResult(fitSync, createMockNotice());
+				await remoteVault.applyChanges([], ['bad-file.md']);
+				failReadOf('bad-file.md');
+
+				const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+				expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw() }).toEqual({
+					result: expect.objectContaining({
+						success: true,
+						clash: [expect.objectContaining({ path: 'bad-file.md', remoteOp: 'REMOVED' })],
+					}),
+					remote: {},
+					local: { 'bad-file.md': 'bad content' },
+				});
+			});
 		});
 
 		it('should write successful files despite other per-file local write failures, and retry the failed ones next sync', async () => {
@@ -3900,6 +3987,32 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('a subset path under an unlistable folder still syncs and is not reported as unscanned', async () => {
+			// The subset lane reads local content by path, never through the scan, so the folder
+			// being unlistable hides nothing from it.
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			localVault.setUnlistablePaths(['.obsidian']);
+			const notice = createMockNotice();
+
+			await syncAndHandleResult(fitSync, notice);
+
+			expect({ files: localVault.getAllFilesAsRaw(), message: notice._calls.at(-1) }).toEqual({
+				files: {
+					[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+					'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', windowWidth: 1200 }), // pulled despite the unlistable folder, untracked windowWidth kept
+				},
+				message: { method: 'setMessage', args: ['Sync successful'] }, // no unscanned-paths warning
+			});
+		});
+
 		it('a failed read of the previous remote blob skips a remote-only subset edit instead of clashing, and the next sync pulls it', async () => {
 			const fitSync = createFitSync();
 			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
@@ -4066,6 +4179,87 @@ describe('FitSync', () => {
 			expect(remoteVault.getAllFilesAsRaw()).toEqual({
 				'.obsidian/appearance.json': '{"theme":"sepia"}', // Remote's edit survives - not silently deleted.
 				[FITATTRIBUTES_PATH]: fitAttributesContent,
+			});
+		});
+
+		it('a baselined subset file whose local read fails is left alone this sync, not deleted from the remote', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setUnreadableFiles(['.obsidian/appearance.json']);
+			const mockNotice = createMockNotice();
+
+			const result = await syncAndHandleResult(fitSync, mockNotice);
+
+			expect(mockNotice._calls.at(-1)).toEqual({
+				method: 'setMessage',
+				args: [expect.stringMatching(/^Sync incomplete[\s\S]*couldn't be read locally[\s\S]*• \.obsidian\/appearance\.json/)],
+			});
+			expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw() }).toEqual({
+				result: expect.objectContaining({ success: true, clash: [] }),
+				remote: {
+					[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+					'.obsidian/appearance.json': '{"theme":"dark"}', // not deleted: the file is still there, only unreadable
+				},
+				local: {
+					[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+					'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark' }), // untouched
+				},
+			});
+		});
+
+		it('an opaque format:"text" pull over a local file whose read fails clashes instead of overwriting it', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"text"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/appearance.json', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: establishes the tracked baseline
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice()); // Opaque push of the untracked field
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}'); // Masked subset pushed elsewhere
+			localVault.setUnreadableFiles(['.obsidian/appearance.json']);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setUnreadableFiles([]);
+
+			expect({ result, local: localVault.getAllFilesAsRaw(), remote: remoteVault.getAllFilesAsRaw() }).toEqual({
+				result: expect.objectContaining({
+					success: true,
+					clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+				}),
+				local: {
+					[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+					'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // untouched: an opaque pull would have dropped windowWidth
+					'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'light' }), // remote's copy, for the user to merge
+				},
+				remote: {
+					[FITATTRIBUTES_PATH]: fitAttributesContent,
+					'.obsidian/appearance.json': '{"theme":"light"}', // untouched
+				},
+			});
+		});
+
+		it('a baselined subset file deleted locally is still deleted from the remote', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.deleteFile('.obsidian/appearance.json');
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				// '.obsidian/appearance.json' absent: confirmed gone locally, so the deletion is pushed
 			});
 		});
 
@@ -4972,10 +5166,11 @@ describe('FitSync', () => {
 			});
 		});
 
-		it('tells the user which paths the hidden-path scan could not list', async () => {
+		it('tells the user which paths the hidden-path scan could not list, when a remote file sits under them', async () => {
 			const fitSync = createFitSync();
 			localVault.setUnlistablePaths(['.mytool', '/']);
 			await remoteVault.setFile('note.md', 'x'); // Gives the sync something to do
+			await remoteVault.setFile('.mytool/config', 'x'); // Under both unlistable paths
 			const notice = createMockNotice();
 
 			await syncAndHandleResult(fitSync, notice);
@@ -4986,6 +5181,52 @@ describe('FitSync', () => {
 				'inside, so hidden files under them are not syncing:\n' +
 				'• .mytool\n' +
 				'• / (the whole hidden-file scan)'
+			] });
+		});
+
+		it('does not tell the user about an unlistable path with nothing tracked or on the remote under it', async () => {
+			const fitSync = createFitSync();
+			localVault.setUnlistablePaths(['.unrelated-tool', '/']);
+			await remoteVault.setFile('note.md', 'x'); // Gives the sync something to do; not a hidden path
+			const notice = createMockNotice();
+
+			await syncAndHandleResult(fitSync, notice);
+
+			expect(notice._calls.at(-1)).toEqual({ method: 'setMessage', args: ['Sync successful'] });
+		});
+
+		it('tells the user about an unlistable path that holds a synced file, even when nothing changed remotely', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			localVault.setFile('.mytool/config', 'x');
+			await remoteVault.setFile('.mytool/config', 'x');
+			await syncAndHandleResult(fitSync, createMockNotice()); // Baselines the file
+			localVault.setUnlistablePaths(['.mytool']);
+			const notice = createMockNotice();
+
+			await syncAndHandleResult(fitSync, notice);
+
+			expect(notice._calls.at(-1)).toEqual({ method: 'setMessage', args: [
+				'Sync successful\n\n' +
+				"1 path(s) couldn't be scanned for hidden files, possibly due to an unreadable entry " +
+				'inside, so hidden files under them are not syncing:\n' +
+				'• .mytool'
+			] });
+		});
+
+		it('tells the user only about the unlistable paths that something tracked or remote sits under', async () => {
+			const fitSync = createFitSync();
+			localVault.setUnlistablePaths(['.mytool', '.unrelated-tool']);
+			await remoteVault.setFile('.mytool/config', 'x');
+			const notice = createMockNotice();
+
+			await syncAndHandleResult(fitSync, notice);
+
+			expect(notice._calls.at(-1)).toEqual({ method: 'setMessage', args: [
+				'Sync successful\n\n' +
+				"1 path(s) couldn't be scanned for hidden files, possibly due to an unreadable entry " +
+				'inside, so hidden files under them are not syncing:\n' +
+				'• .mytool'
 			] });
 		});
 
