@@ -438,6 +438,9 @@ export class FakeOctokit {
  */
 type FailureScenario = 'read' | 'stat' | 'write';
 
+/** Operations FakeRemoteVault.setFailure can target; see its doc for what each matches. */
+type RemoteFailureScenario = 'any' | 'readBlob';
+
 /**
  * Fake implementation of IVault for local testing.
  * Simulates a local vault with in-memory file storage.
@@ -868,7 +871,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	private files: Map<string, FileContent> = new Map();
 	private blobShas: Map<BlobSha, Base64Content> = new Map(); // blob SHA -> content
 	private commitSha: CommitSha = 'initial-commit' as CommitSha;
-	private failureError: Error | null = null;
+	private failures: Map<RemoteFailureScenario, { error: Error, persistent: boolean }> = new Map();
 	private _skippedPaths: Set<string> = new Set(); // Paths that return 422 on next applyChanges
 	private _rateLimitedPaths: Set<string> = new Set(); // Paths returned as rateLimitedPaths on next applyChanges
 	private owner: string;
@@ -882,17 +885,31 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	}
 
 	/**
-	 * Set the vault to fail on the next operation.
+	 * Make the next matching operation throw `error`, once (or every time until cleared, with
+	 * `persistent`). `'any'` (default) matches readFromSource, readFileContent or applyChanges;
+	 * `'readBlob'` matches only readFileBlobBySha, so a sync can get past its tree read first.
 	 */
-	setFailure(error: Error): void {
-		this.failureError = error;
+	setFailure(error: Error, scenario: RemoteFailureScenario = 'any', options: { persistent?: boolean } = {}): void {
+		this.failures.set(scenario, { error, persistent: options.persistent ?? false });
 	}
 
 	/**
-	 * Clear any pending failure.
+	 * Clear a pending failure, or all of them if no scenario is given.
 	 */
-	clearFailure(): void {
-		this.failureError = null;
+	clearFailure(scenario?: RemoteFailureScenario): void {
+		if (scenario) {
+			this.failures.delete(scenario);
+		} else {
+			this.failures.clear();
+		}
+	}
+
+	/** Throws the pending failure for `scenario`, if any, clearing it unless it is persistent. */
+	private throwPendingFailure(scenario: RemoteFailureScenario): void {
+		const failure = this.failures.get(scenario);
+		if (!failure) return;
+		if (!failure.persistent) this.failures.delete(scenario);
+		throw failure.error;
 	}
 
 	/**
@@ -1005,11 +1022,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	}
 
 	async readFromSource(): Promise<VaultReadResult<"remote">> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
-			throw error;
-		}
+		this.throwPendingFailure('any');
 
 		const state = await this.buildCurrentState(true);
 		// Mock tree SHA - not accurate but sufficient for testing
@@ -1018,11 +1031,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
-			throw error;
-		}
+		this.throwPendingFailure('any');
 
 		const content = this.files.get(path);
 		if (content === undefined) {
@@ -1033,6 +1042,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 	}
 
 	async readFileBlobBySha(sha: BlobSha): Promise<FileContent> {
+		this.throwPendingFailure('readBlob');
 		const base64 = this.blobShas.get(sha);
 		if (base64 === undefined) {
 			throw new Error(`Blob SHA not found: ${sha}`);
@@ -1045,11 +1055,7 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		filesToDelete: Array<string>,
 		_options?: { clashPaths?: Set<string> }
 	): Promise<ApplyChangesResult<"remote">> {
-		if (this.failureError) {
-			const error = this.failureError;
-			this.clearFailure();
-			throw error;
-		}
+		this.throwPendingFailure('any');
 
 		const changes: FileChange[] = [];
 		const skippedPaths: string[] = [];
