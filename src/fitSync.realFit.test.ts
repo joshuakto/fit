@@ -5295,7 +5295,10 @@ describe('FitSync', () => {
 
 				await syncRealScan();
 
-				expect(await readLocal(kind.path)).toBe('from other device');
+				expect(vault.getAllFilesAsRaw()).toEqual({
+					'.gitignore': kind.ignoreRule, // Untouched: the local rule that matches the remote path
+					[kind.path]: 'from other device', // Pulled despite the rule, which only gates local adds
+				});
 			});
 
 			it('given an untracked ignored file whose rule is then removed, should push it', async () => {

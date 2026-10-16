@@ -88,6 +88,12 @@ export class FakeObsidianVault {
 	private filesOnDisk = new Map<string, ArrayBuffer>(); // path -> binary content
 	private vaultIndex = new Set<string>(); // Paths in vault index (non-hidden)
 
+	/** Every file on disk, indexed or hidden, as UTF-8 text (for whole-state test assertions). */
+	getAllFilesAsRaw(): Record<string, string> {
+		return Object.fromEntries([...this.filesOnDisk].map(
+			([path, content]) => [path, new TextDecoder().decode(content)]));
+	}
+
 	getAbstractFileByPath(path: string) {
 		// Simulate: vault index never returns hidden files
 		if (path.startsWith('.') || !this.vaultIndex.has(path)) return null;
