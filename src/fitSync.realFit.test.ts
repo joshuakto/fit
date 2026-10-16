@@ -3909,7 +3909,8 @@ describe('FitSync', () => {
 			await syncAndHandleResult(fitSync, createMockNotice());
 			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
 			await syncAndHandleResult(fitSync, createMockNotice());
-			// Local is baselined but the remote baseline is gone: the path looks like a remote add.
+			// Local is baselined but the remote baseline is gone, so the path looks like a remote add.
+			// Hand-built because no vault operation produces it (a remote delete and re-add keeps both).
 			delete localStoreState.lastFetchedRemoteShas['.obsidian/appearance.json'];
 			fitSync.fit.loadLocalStore(localStoreState);
 			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark","windowWidth":1500}');
@@ -3956,6 +3957,31 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
 				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', windowWidth: 1200 }), // pulled once the read works, untracked windowWidth kept
+			});
+		});
+
+		it('a previous remote blob that no longer exists (404) clashes a remote-only subset edit instead of skipping forever', async () => {
+			const fitSync = createFitSync();
+			const fitAttributesContent = '{".obsidian/appearance.json":{"format":"json"}}';
+			localVault.setFile(FITATTRIBUTES_PATH, fitAttributesContent);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"dark"}');
+			await syncAndHandleResult(fitSync, createMockNotice());
+			localVault.setFile('.obsidian/appearance.json', JSON.stringify({ theme: 'dark', windowWidth: 1200 }));
+			await syncAndHandleResult(fitSync, createMockNotice());
+			await remoteVault.setFile('.obsidian/appearance.json', '{"theme":"light"}');
+			remoteVault.setFailure(Object.assign(new Error('Not Found'), { status: 404 }), 'readBlob', { persistent: true });
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({
+				success: true,
+				clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+			}));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: fitAttributesContent, // the rules file, untouched
+				'.obsidian/appearance.json': expect.stringOfJson({ theme: 'dark', windowWidth: 1200 }), // local kept
+				'_fit/.obsidian/appearance.json': expect.stringOfJson({ theme: 'light', windowWidth: 1200 }), // remote's copy
 			});
 		});
 

@@ -519,13 +519,20 @@ export class FitSync implements IFitSync {
 		);
 
 		// The previous remote blob, the base of the 3-way merge below. `text` is null when there is
-		// none (no prior remote sha) or it could not be fetched; callers tell those apart by
-		// `fetchFailed`, since mergeJson treats a null base conservatively but a skip is cheaper.
+		// none (no prior remote sha, or it no longer exists) or it could not be fetched; callers tell
+		// those apart by `fetchFailed`, since mergeJson treats a null base conservatively but a skip
+		// is cheaper.
 		const readBaseText = async (): Promise<{ text: string | null; fetchFailed: boolean }> => {
 			if (!priorRemoteSha) return { text: null, fetchFailed: false };
 			try {
 				return { text: (await this.fit.remoteVault.readFileBlobBySha(priorRemoteSha)).toPlainText(), fetchFailed: false };
 			} catch (e) {
+				// A 404 means the blob is gone, so retrying never helps: treat it as no base, which the
+				// merge clashes on when the values differ, instead of skipping the path every sync.
+				if ((e as { status?: number }).status === 404) {
+					fitLogger.log('[FitSync] subset-scope: base blob no longer exists, merging without a base', { path });
+					return { text: null, fetchFailed: false };
+				}
 				fitLogger.log('[FitSync] subset-scope: base blob fetch failed', { path, error: String(e) });
 				return { text: null, fetchFailed: true };
 			}
