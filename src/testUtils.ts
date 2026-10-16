@@ -91,7 +91,7 @@ export class FakeObsidianVault {
 	/** Every file on disk, indexed or hidden, as UTF-8 text (for whole-state test assertions). */
 	getAllFilesAsRaw(): Record<string, string> {
 		return Object.fromEntries([...this.filesOnDisk].map(
-			([path, content]) => [path, new TextDecoder().decode(content)]));
+			([path, content]) => [path, new TextDecoder('utf-8', { fatal: true }).decode(content)]));
 	}
 
 	getAbstractFileByPath(path: string) {
