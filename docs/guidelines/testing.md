@@ -63,4 +63,16 @@ Stack is Vitest + `src/__mocks__/obsidian.ts` (aliased as `'obsidian'` in `vites
   }));
   ```
 
+  "Complete value" means a value the code under test actually produced or holds (the sync result, a vault's `getAllFilesAsRaw()`), asserted whole. It does not mean packaging several of them into a made-up object just to get one `expect()` call. A wrapper like `{ result, remote, local }` is not something the code returns, so a failure reports against a structure nobody wrote and the reader has to unwrap it. Assert each real value on its own line instead; each is still compared whole.
+
+  ```ts
+  // Bad — throwaway wrapper that exists only for this assertion:
+  expect({ result, remote: remoteVault.getAllFilesAsRaw(), local: localVault.getAllFilesAsRaw() }).toEqual({ ... });
+
+  // Good — each real value asserted whole, on its own:
+  expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+  expect(remoteVault.getAllFilesAsRaw()).toEqual({ ... });
+  expect(localVault.getAllFilesAsRaw()).toEqual({ ... });
+  ```
+
 - **Scope-document each test file.** A short header comment stating what the file covers, and how it differs from siblings, saves readers from having to diff two similarly-named test files to find out.
