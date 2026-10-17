@@ -990,6 +990,33 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('does not push a re-eligible path over remote when only the reconcile read fails and the scan then reads it', async () => {
+			// The two reads are independent: if the reconcile cannot compare local with what was last
+			// seen on remote, the scan reading it successfully must not turn it into a local-only ADDED.
+			const fitSync = createFitSync();
+			const textRule = JSON.stringify({ '.obsidian/foo': { format: 'text' } });
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			localVault.setSyncHiddenFiles(true);
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/foo', content: FileContent.fromPlainText('{"theme":"dark"}') },
+			], []);
+			await syncAndHandleResult(fitSync, createMockNotice()); // 1st: observes remote content, caches SHA only
+			await syncAndHandleResult(fitSync, createMockNotice()); // 2nd: reconciles, establishes tracked baseline
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
+			await syncAndHandleResult(fitSync, createMockNotice()); // path goes ineligible
+			localVault.setFile('.obsidian/foo', '{"theme":"light"}'); // local edit while ineligible
+			localVault.failNextReadOf('.obsidian/foo'); // reconcile's read fails once; the scan and later reads succeed
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				[FITATTRIBUTES_PATH]: textRule, // the rules edit itself, pushed as usual
+				'.obsidian/foo': '{"theme":"dark"}', // not overwritten by local's edit
+			});
+		});
+
 		it('pulls fresh content for a re-eligible path whose local file was deleted while ineligible', async () => {
 			// The actual stuck-forever bug: local file absent when the path becomes eligible
 			// again, remote content never changed (see docs/sync-logic.md § Tracking transition).

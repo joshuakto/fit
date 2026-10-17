@@ -56,6 +56,11 @@ export class Fit {
 	// otherwise make shouldSyncPath flip back to untracked for the rest of this same sync,
 	// undoing the reconciliation. Recomputed fresh every sync — not a cross-sync opt-in.
 	private trackedForCurrentSync: Set<string> = new Set();
+	// Same-sync-only, unpersisted: reconcile candidates whose local file could not be read, so
+	// nothing shows whether they match remote. They sit out this sync entirely (neither pushed nor
+	// pulled) and are retried next sync, instead of being pushed as a local-only ADDED over remote
+	// if this sync's scan happens to read them.
+	private deferredTrackingForCurrentSync: Set<string> = new Set();
 
 
 	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
@@ -158,10 +163,10 @@ export class Fit {
 			// Tracked purely by git content presence, never a local toggle — orthogonal
 			// to isEligibleForTracking below (a path can be fully eligible and still not
 			// tracked yet).
-			const isTracked =
+			const isTracked = !this.deferredTrackingForCurrentSync.has(path) && (
 				path in this.localShas ||
 				path in this.lastFetchedRemoteShas ||
-				this.trackedForCurrentSync.has(path);
+				this.trackedForCurrentSync.has(path));
 			if (!isTracked) return false;
 
 			// scope:"subset" only ever comes from format:"json" (see resolveScope) — routed
@@ -320,6 +325,11 @@ export class Fit {
 	/** Same-sync-only tracking override — see the trackedForCurrentSync field comment. */
 	markTrackedForCurrentSync(paths: string[]): void {
 		this.trackedForCurrentSync = new Set(paths);
+	}
+
+	/** Same-sync-only: keep these paths untracked this sync — see the deferredTrackingForCurrentSync field comment. */
+	deferTrackingForCurrentSync(paths: string[]): void {
+		this.deferredTrackingForCurrentSync = new Set(paths);
 	}
 
 	/**
@@ -515,6 +525,7 @@ export class Fit {
 			// scope:"subset" paths are not sync candidates here (their own lane syncs them) but are read all the same.
 			unreadablePaths: [...unreadable].filter(path =>
 				this.localVault.shouldTrackState(path) && (this.shouldSyncPath(path) ||
+					this.deferredTrackingForCurrentSync.has(path) ||
 					(this.resolveSyncFormat(path) === 'json' && this.resolveScope(path) === 'subset')))
 		};
 	}

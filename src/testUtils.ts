@@ -478,6 +478,13 @@ export class FakeLocalVault implements IVault<"local"> {
 		this.unreadableInScan = inScan;
 	}
 
+	private failNextDirectReads = new Map<string, number>();
+
+	/** The next direct read of `path` fails once (a transient error); the scan and later reads succeed. */
+	failNextReadOf(path: string): void {
+		this.failNextDirectReads.set(path, 1);
+	}
+
 	private unlistablePaths: string[] = [];
 
 	/** Simulates paths the hidden-path scan failed to list this sync (reported, not hidden). */
@@ -664,6 +671,11 @@ export class FakeLocalVault implements IVault<"local"> {
 		}
 
 		if (this.unreadableFiles.has(path)) throw new Error(`EACCES: permission denied, ${path}`);
+		const failuresLeft = this.failNextDirectReads.get(path) ?? 0;
+		if (failuresLeft > 0) {
+			this.failNextDirectReads.set(path, failuresLeft - 1);
+			throw new Error(`EIO: transient read error, ${path}`);
+		}
 
 		const content = this.files.get(path);
 		if (content === undefined) {

@@ -1465,6 +1465,7 @@ export class FitSync implements IFitSync {
 			// lastFetchedRemoteShas, always current) but no local baseline yet — excluding
 			// pendingClashes paths, whose missing baseline is a deliberate mid-clash state, not
 			// "never synced". See docs/sync-logic.md § Tracking transition for the full reasoning.
+			this.fit.deferTrackingForCurrentSync([]); // per-sync only: nothing carries over from the last sync
 			const pendingClashSet = new Set(this.fit.pendingClashes);
 			const reconcileCandidates = Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
 				path.startsWith(".obsidian/") &&
@@ -1490,15 +1491,18 @@ export class FitSync implements IFitSync {
 				// before it's even used. See Fit.trackedForCurrentSync's own comment.
 				this.fit.markTrackedForCurrentSync(reconcilePaths);
 				fitLogger.log('[FitSync] Reconciling newly-tracked paths', { paths: reconcilePaths });
+				const unreadableReconcilePaths: string[] = [];
 				for (const path of reconcilePaths) {
 					const cachedRemoteSha = this.fit.lastFetchedRemoteShas[path];
 					delete this.fit.protectedPathShas[path]; // stale once reconciled here
 					const local = await this.fit.localVault.readPath(path);
 					if (local.status === 'unknown') {
 						// Unreadable: nothing shows whether it matches what was last seen on remote, and
-						// "absent" must not be inferred. Leave both baselines alone; the path stays a
-						// reconcile candidate, so it is retried once it reads (and the scan reports it).
-						fitLogger.log('[FitSync] Reconcile: local file unreadable, leaving baselines untouched', { path, error: local.error });
+						// "absent" must not be inferred. Leave both baselines alone and keep the path out of
+						// this sync altogether (see below), so a scan that happens to read it cannot push it
+						// over remote as a local-only ADDED. It stays a reconcile candidate for the next sync.
+						fitLogger.log('[FitSync] Reconcile: local file unreadable, deferring it to the next sync', { path, error: local.error });
+						unreadableReconcilePaths.push(path);
 						continue;
 					}
 					const currentSha = local.status === 'present'
@@ -1522,6 +1526,7 @@ export class FitSync implements IFitSync {
 						delete this.fit.lastFetchedRemoteShas[path];
 					}
 				}
+				this.fit.deferTrackingForCurrentSync(unreadableReconcilePaths);
 			}
 
 			// Get local and remote changes in parallel
