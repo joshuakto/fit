@@ -998,7 +998,10 @@ describe('FitSync', () => {
 			localVault.setUnreadableFiles([]);
 			const { result: followUp } = await syncWithNotice(fitSync);
 
-			expect(followUp).toEqual(expect.objectContaining({ success: true, clash: [expect.objectContaining({ path: '.obsidian/foo' })] }));
+			expect(followUp).toEqual(expect.objectContaining({
+				success: true,
+				clash: [{ path: '.obsidian/foo', localState: 'ADDED', remoteOp: 'ADDED' }],
+			}));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				'_fit/.obsidian/foo': '{"theme":"dark"}', // readable now and differing from remote: the ordinary clash
 				[FITATTRIBUTES_PATH]: textRule,
@@ -1023,6 +1026,32 @@ describe('FitSync', () => {
 			expect(remoteVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: textRule, // the rules edit itself, pushed as usual
 				'.obsidian/foo': '{"theme":"dark"}', // not overwritten by local's edit
+			});
+		});
+
+		it('Explain reports a re-eligible path deferred as unreadable by the last sync once it can be read', async () => {
+			// Deferral is for one sync only; it must not keep hiding the path from Explain afterwards.
+			const fitSync = createFitSync();
+			const textRule = await givenTrackedTextPath(fitSync, '.obsidian/foo', '{"theme":"dark"}');
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({}));
+			await syncWithNotice(fitSync); // path goes ineligible
+			localVault.setFile('.obsidian/foo', '{"theme":"light"}'); // local edit while ineligible
+			localVault.setUnreadableFiles(['.obsidian/foo']);
+			localVault.setFile(FITATTRIBUTES_PATH, textRule);
+			await syncWithNotice(fitSync); // deferred: unreadable
+			localVault.setUnreadableFiles([]);
+
+			const explanation = await fitSync.explainStatus();
+
+			expect(explanation).toEqual({
+				kind: 'issues',
+				fitAttributesNote: null,
+				scanNote: null,
+				sections: [{
+					heading: '1 local change pending next sync',
+					description: 'These local edits will be pushed the next time you run Fit Sync.',
+					items: [{ cls: 'file-ADDED', path: '.obsidian/foo' }], // no longer hidden by last sync's deferral
+				}],
 			});
 		});
 
@@ -2670,7 +2699,7 @@ describe('FitSync', () => {
 
 				expect(result).toEqual(expect.objectContaining({
 					success: true,
-					clash: [expect.objectContaining({ path: 'bad-file.md', remoteOp: 'MODIFIED' })],
+					clash: [{ path: 'bad-file.md', localState: 'MODIFIED', remoteOp: 'MODIFIED' }],
 				}));
 				expect(remoteVault.getAllFilesAsRaw()).toEqual({
 					'bad-file.md': 'remote edit', // not overwritten by the unreadable local file
@@ -2701,7 +2730,7 @@ describe('FitSync', () => {
 
 				expect(result).toEqual(expect.objectContaining({
 					success: true,
-					clash: [expect.objectContaining({ path: 'bad-file.md', remoteOp: 'REMOVED' })],
+					clash: [{ path: 'bad-file.md', localState: 'MODIFIED', remoteOp: 'REMOVED' }],
 				}));
 				expect(remoteVault.getAllFilesAsRaw()).toEqual({
 					// 'bad-file.md' absent: remote deleted it
@@ -4314,7 +4343,7 @@ describe('FitSync', () => {
 
 			expect(result).toEqual(expect.objectContaining({
 				success: true,
-				clash: [expect.objectContaining({ path: '.obsidian/appearance.json' })],
+				clash: [{ path: '.obsidian/appearance.json', localState: 'MODIFIED', remoteOp: 'MODIFIED' }],
 			}));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
 				[FITATTRIBUTES_PATH]: rules, // untouched

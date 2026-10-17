@@ -1934,6 +1934,9 @@ export class FitSync implements IFitSync {
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			fitLogger.log('❌ [FitSync] Sync failed', { errorType: 'unknown', message: errorMessage });
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
+		} finally {
+			// Same-sync-only: must not outlive the sync, or explainStatus() would hide the path.
+			this.fit.deferTrackingForCurrentSync([]);
 		}
 	}
 
