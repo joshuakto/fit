@@ -34,6 +34,12 @@ type VaultReadResultMap = {
 		 * (a rule only gates adding new paths, as in git); reported so the user is told.
 		 */
 		ignoredTrackedPaths: string[];
+		/**
+		 * Paths the scan tried to read and could not (permissions, I/O error, a stale index entry).
+		 * They are absent from `state` without being deleted, so callers must leave a stored
+		 * baseline entry for one alone, and never read the absence as a local deletion.
+		 */
+		unreadablePaths: Array<{ path: string; error: unknown }>;
 	};
 	/** Remote vault result - includes commit SHA and tree SHA */
 	"remote": {

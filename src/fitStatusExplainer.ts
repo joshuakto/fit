@@ -76,7 +76,8 @@ const CHANGE_CLS: Record<string, string> = {
  * Classifies current sync state into a {@link StatusExplanation}.
  * @param snapshot - Cached store state (no I/O); read from fit.pendingClashes, unpushedFiles, etc.
  * @param localChanges - Result of getLocalChanges(); null if the scan threw (partial failure).
- * @param scanFailedPaths - Paths that failed during scan, surfaced in scanNote when localChanges is null.
+ * @param scanFailedPaths - Paths the scan could not read, surfaced in scanNote (alongside `localChanges` when
+ *   the rest of the scan succeeded, or when it is null because the scan threw).
  */
 export function buildStatusExplanation(
 	snapshot: SyncStatusSnapshot,
@@ -91,13 +92,11 @@ export function buildStatusExplanation(
 	const sections: StatusSection[] = [];
 
 	let scanNote: string | null = null;
-	if (localChanges === null) {
-		if (scanFailedPaths && scanFailedPaths.length > 0) {
-			const names = scanFailedPaths.join(', ');
-			scanNote = `Couldn't read: ${names} — local changes may be incomplete`;
-		} else {
-			scanNote = "Couldn't scan all files — local changes may be incomplete";
-		}
+	if (scanFailedPaths && scanFailedPaths.length > 0) {
+		const names = scanFailedPaths.join(', ');
+		scanNote = `Couldn't read: ${names} — local changes may be incomplete`;
+	} else if (localChanges === null) {
+		scanNote = "Couldn't scan all files — local changes may be incomplete";
 	}
 
 	if (pendingClashes.length > 0) {

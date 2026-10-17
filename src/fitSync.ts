@@ -430,12 +430,12 @@ export class FitSync implements IFitSync {
 	 * object, and the normal pipeline's own error handling covers a genuine fetch failure.
 	 */
 	private async needsMaskedOverlayForPull(path: string): Promise<boolean> {
-		let localText: string;
-		try {
-			localText = (await this.fit.localVault.readFileContent(path)).toPlainText();
-		} catch {
-			return false; // no local content yet - nothing an opaque pull could drop
-		}
+		const local = await this.fit.localVault.readPath(path);
+		// No local file: nothing an opaque pull could drop. Undetermined: route to the subset lane,
+		// which skips the path this sync rather than overwrite a file it could not read.
+		if (local.status === 'absent') return false;
+		if (local.status === 'unknown') return true;
+		const localText = local.content.toPlainText();
 		let remoteText: string;
 		try {
 			remoteText = (await this.fit.remoteVault.readFileContent(path)).toPlainText();
@@ -468,12 +468,17 @@ export class FitSync implements IFitSync {
 		const remoteObj = Object.fromEntries(Object.entries(remoteParsed.value).filter(([k]) => !denylist.includes(k)));
 		const trackedFields = Object.keys(remoteObj).sort();
 
-		let localText: string | null;
-		try {
-			localText = (await this.fit.localVault.readFileContent(path)).toPlainText();
-		} catch {
-			localText = null;
+		const local = await this.fit.localVault.readPath(path);
+		if (local.status === 'unknown') {
+			// Nothing to compare against, so the outcome is the one for "both sides changed" when remote
+			// moved: keep local, save remote's copy to _fit/. If remote did not move there is nothing to
+			// pull or clash with, and local is neither pushed nor deleted.
+			const remoteMoved = this.fit.lastFetchedRemoteShas[path] !== remoteSha;
+			fitLogger.log(`[FitSync] subset-scope: could not determine local content, ${remoteMoved ? 'clashing' : 'leaving the path alone this sync'}`, { path, error: local.error });
+			if (!remoteMoved) return { path, kind: 'skip' };
+			return { path, kind: 'clash', previewContent: JSON.stringify(remoteObj, null, '\t') };
 		}
+		const localText: string | null = local.status === 'present' ? local.content.toPlainText() : null;
 
 		const localMaskedResult = extractMask(localText ?? '{}', trackedFields);
 		const localMaskedObj = localMaskedResult.ok ? localMaskedResult.value : {};
@@ -775,20 +780,21 @@ export class FitSync implements IFitSync {
 			} else if (!localExists) {
 				resolutions.set(path, { status: 'pending' });
 			} else {
-				try {
-					const [fitContent, localContent] = await Promise.all([
-						this.fit.localVault.readFileContent(`_fit/${path}`),
-						this.fit.localVault.readFileContent(path),
-					]);
+				const [fitRead, localRead] = await Promise.all([
+					this.fit.localVault.readPath(`_fit/${path}`),
+					this.fit.localVault.readPath(path),
+				]);
+				if (fitRead.status !== 'present' || localRead.status !== 'present') {
+					// Either side unreadable (or gone since the stat): cannot show they match, so still pending.
+					resolutions.set(path, { status: 'pending' });
+				} else {
 					const [fitSha, localSha] = await Promise.all([
-						LocalVault.fileSha1(path, fitContent),
-						LocalVault.fileSha1(path, localContent),
+						LocalVault.fileSha1(path, fitRead.content),
+						LocalVault.fileSha1(path, localRead.content),
 					]);
 					resolutions.set(path, fitSha === localSha
-						? { status: 'resolved', fitCopyExists, localExists, localContent }
+						? { status: 'resolved', fitCopyExists, localExists, localContent: localRead.content }
 						: { status: 'pending' });
-				} catch {
-					resolutions.set(path, { status: 'pending' });
 				}
 			}
 		}
@@ -875,15 +881,14 @@ export class FitSync implements IFitSync {
 
 		const currentShas = new Map<string, BlobSha>();
 		for (const path of pathsNeedingShaCheck) {
-			try {
-				// readFileContent now handles both indexed and unindexed files (hidden files)
-				const content = await this.fit.localVault.readFileContent(path);
-				const sha = await LocalVault.fileSha1(path, content);
-				currentShas.set(path, sha);
-			} catch (error) {
-				// If we can't read the file for SHA computation, skip it
-				// The file will be treated as changed (conservative behavior)
-				fitLogger.log(`⚠️ [FitSync] Could not read file for SHA check: ${path}`, error);
+			// readPath handles both indexed and unindexed files (hidden files)
+			const local = await this.fit.localVault.readPath(path);
+			if (local.status === 'present') {
+				currentShas.set(path, await LocalVault.fileSha1(path, local.content));
+			} else {
+				// Unreadable (or gone since the stat): no SHA, so the path reads as changed and
+				// resolveUntrackedState blocks it conservatively instead of letting a remote change through.
+				fitLogger.log(`⚠️ [FitSync] Could not read file for SHA check: ${path}`, local);
 			}
 		}
 
@@ -993,6 +998,7 @@ export class FitSync implements IFitSync {
 		protectedRemote: FileChange[],
 		pendingReminderPaths: Set<string>,
 		existenceMap: Map<string, "file" | "folder" | "nonexistent">,
+		unreadableBaselines: FileStates,
 		syncNotice: FitNotice
 	): Promise<SyncExecutionResult> {
 		// Prepare safe remote changes for pulling
@@ -1077,8 +1083,10 @@ export class FitSync implements IFitSync {
 		await Promise.all(
 			jsonClashCandidates.map(async (clash) => {
 				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
-				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
-				if (remoteContent === null || localContent === null) return;
+				const local = await this.fit.localVault.readPath(clash.path);
+				// Anything but readable content on both sides stays a plain clash.
+				if (remoteContent === null || local.status !== 'present') return;
+				const localContent = local.content;
 				const baseText = jsonBaseTexts.get(clash.path) ?? null;
 				let result: MergeResult;
 				try {
@@ -1118,8 +1126,9 @@ export class FitSync implements IFitSync {
 		await Promise.all(
 			textClashCandidates.map(async (clash) => {
 				const remoteContent = await this.fit.remoteVault.readFileContent(clash.path).catch(() => null);
-				const localContent = await this.fit.localVault.readFileContent(clash.path).catch(() => null);
-				if (remoteContent === null || localContent === null) return;
+				const local = await this.fit.localVault.readPath(clash.path);
+				if (remoteContent === null || local.status !== 'present') return;
+				const localContent = local.content;
 				textRemoteContents.set(clash.path, remoteContent);
 
 				// Null-byte check first: encoding tags can't be trusted here (remote
@@ -1395,7 +1404,14 @@ export class FitSync implements IFitSync {
 			// TODO: Remove filterSyncedState after fixing bug where remote _fit/ files are passed to applyChanges
 			// Currently remote _fit/ paths bypass shouldSyncPath filtering and get SHAs computed.
 			// Once fixed, newBaselineStates will only contain syncable paths (no filtering needed).
-			localShas: { ...this.fit.filterSyncedState(newLocalState), ...subsetLocalShas },
+			// An unreadable path is absent from newLocalState without being deleted; keep its baseline
+			// (unless it clashed) so the next sync compares against it instead of reading ADDED.
+			localShas: {
+				...this.fit.filterSyncedState(newLocalState),
+				...subsetLocalShas,
+				...Object.fromEntries(Object.entries(unreadableBaselines)
+					.filter(([path]) => newLocalState[path] === undefined && !clashes.some(c => c.path === path))),
+			},
 			unpushedFiles: this.fit.unpushedFiles,
 			pendingClashes: this.fit.pendingClashes,
 			protectedPathShas: this.fit.protectedPathShas,
@@ -1450,6 +1466,7 @@ export class FitSync implements IFitSync {
 			// lastFetchedRemoteShas, always current) but no local baseline yet — excluding
 			// pendingClashes paths, whose missing baseline is a deliberate mid-clash state, not
 			// "never synced". See docs/sync-logic.md § Tracking transition for the full reasoning.
+			this.fit.resetSyncScopedTracking(); // nothing carries over from the last sync
 			const pendingClashSet = new Set(this.fit.pendingClashes);
 			const reconcileCandidates = Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
 				path.startsWith(".obsidian/") &&
@@ -1475,35 +1492,42 @@ export class FitSync implements IFitSync {
 				// before it's even used. See Fit.trackedForCurrentSync's own comment.
 				this.fit.markTrackedForCurrentSync(reconcilePaths);
 				fitLogger.log('[FitSync] Reconciling newly-tracked paths', { paths: reconcilePaths });
+				const unreadableReconcilePaths: string[] = [];
 				for (const path of reconcilePaths) {
 					const cachedRemoteSha = this.fit.lastFetchedRemoteShas[path];
 					delete this.fit.protectedPathShas[path]; // stale once reconciled here
-					try {
-						const content = await this.fit.localVault.readFileContent(path);
-						const currentSha = await LocalVault.fileSha1(path, content);
-						if (currentSha === cachedRemoteSha) {
-							// Genuinely safe: local already matches what was last seen on remote.
-							// lastFetchedRemoteShas[path] already holds cachedRemoteSha — only
-							// localShas needs setting to make this a full no-op (no download).
-							this.fit.localShas[path] = currentSha;
-						} else {
-							// Local differs from the cached remote SHA. That SHA was only ever
-							// passively observed while this path was excluded, never established by an
-							// actual sync — it doesn't count as a baseline. Leave localShas unset so
-							// local shows as ADDED, and explicitly clear lastFetchedRemoteShas so
-							// remote also shows as ADDED. Without clearing it, remote would show as
-							// unchanged and local's ADDED would go straight to safeLocal, silently
-							// pushing local's content over remote's — the same bug in the opposite
-							// direction. Both sides showing changed is what makes the normal
-							// pipeline resolve this as a genuine clash.
-							delete this.fit.lastFetchedRemoteShas[path];
-						}
-					} catch {
-						// File absent locally. Clear the cached remote SHA so remote appears as
-						// ADDED and gets pulled this sync.
+					const local = await this.fit.localVault.readPath(path);
+					if (local.status === 'unknown') {
+						// Unreadable: nothing shows whether it matches what was last seen on remote, and
+						// "absent" must not be inferred. Leave both baselines alone and keep the path out of
+						// this sync altogether (see below), so a scan that happens to read it cannot push it
+						// over remote as a local-only ADDED. It stays a reconcile candidate for the next sync.
+						fitLogger.log('[FitSync] Reconcile: local file unreadable, deferring it to the next sync', { path, error: local.error });
+						unreadableReconcilePaths.push(path);
+						continue;
+					}
+					const currentSha = local.status === 'present'
+						? await LocalVault.fileSha1(path, local.content)
+						: undefined;
+					if (currentSha !== undefined && currentSha === cachedRemoteSha) {
+						// Genuinely safe: local already matches what was last seen on remote.
+						// lastFetchedRemoteShas[path] already holds cachedRemoteSha — only
+						// localShas needs setting to make this a full no-op (no download).
+						this.fit.localShas[path] = currentSha;
+					} else {
+						// Local is absent (remote then pulls as ADDED) or differs from the cached remote
+						// SHA. That SHA was only ever passively observed while this path was excluded,
+						// never established by an actual sync — it doesn't count as a baseline. Leave
+						// localShas unset so local shows as ADDED, and explicitly clear
+						// lastFetchedRemoteShas so remote also shows as ADDED. Without clearing it,
+						// remote would show as unchanged and local's ADDED would go straight to safeLocal,
+						// silently pushing local's content over remote's — the same bug in the opposite
+						// direction. Both sides showing changed is what makes the normal pipeline resolve
+						// this as a genuine clash.
 						delete this.fit.lastFetchedRemoteShas[path];
 					}
 				}
+				this.fit.deferTrackingForCurrentSync(unreadableReconcilePaths);
 			}
 
 			// Get local and remote changes in parallel
@@ -1525,7 +1549,7 @@ export class FitSync implements IFitSync {
 			}
 
 			// Both succeeded, extract values
-			const {changes: localChanges, state: currentLocalState, scanCoverage, unlistablePaths, ignoredTrackedPaths} = localResult.value;
+			const {changes: localChanges, state: currentLocalState, scanCoverage, unlistablePaths, ignoredTrackedPaths, unreadablePaths} = localResult.value;
 			const {changes: remoteChanges, state: remoteTreeSha, commitSha: remoteCommitSha} = remoteResult.value;
 			fitLogger.log('.. ✅ [Sync] Change detection complete');
 
@@ -1730,8 +1754,13 @@ export class FitSync implements IFitSync {
 					.filter(p => !reclassifiedFromSafeRemote.has(p))
 					.filter(p => !initialClashes.some(c => c.path === p))
 			);
+			// An unreadable file's remote change clashes as "unverifiable local state". Recording it as a
+			// local edit makes it a pending clash like any tracked path: shielded from push and from
+			// overwrite until the user resolves it, instead of local silently winning once it reads again.
+			const unreadableSet = new Set(unreadablePaths);
 			const clashes = [
-				...initialClashes,
+				...initialClashes.map(c => unreadableSet.has(c.path) && c.localState === 'untracked'
+					? { ...c, localState: 'MODIFIED' as const } : c),
 				...initialSafeRemote
 					.filter(c => activePendingPaths.has(c.path))
 					.map(c => ({ path: c.path, localState: 'pending' as const, remoteOp: c.type })),
@@ -1769,6 +1798,8 @@ export class FitSync implements IFitSync {
 				protectedRemote,
 				pendingReminderPaths,
 				existenceMap,
+				Object.fromEntries(unreadablePaths.flatMap(path =>
+					this.fit.localShas[path] === undefined ? [] : [[path, this.fit.localShas[path]]])),
 				syncNotice
 			);
 
@@ -1800,7 +1831,9 @@ export class FitSync implements IFitSync {
 
 			// One headline plus independent detail blocks, set via a single setMessage call below —
 			// not one setMessage per condition, since those silently clobber each other.
-			const headline = rateLimitedPaths.length > 0 || localFailedPaths.length > 0
+			// An unreadable local file whose remote copy also changed is reported as a clash instead.
+			const unreadableLeftAlone = unreadablePaths.filter(p => !conflicts.some(c => c.path === p));
+			const headline = rateLimitedPaths.length > 0 || localFailedPaths.length > 0 || unreadableLeftAlone.length > 0
 				? `Sync incomplete`
 				: executedConflicts.length === 0
 					? `Sync successful`
@@ -1815,13 +1848,16 @@ export class FitSync implements IFitSync {
 				detailBlocks.push(`${remainingUnpushed.length} file(s) still need manual sync:\n${fileList}`);
 			}
 
-			if (unlistablePaths.length > 0) {
+			// Only the unlistable paths the sync actually had to see through (a scanCoverage lookup hit
+			// them while deciding local or remote changes); the scan already logged the rest.
+			const unlistableAffectingSync = unlistablePaths.filter(dir => scanCoverage.prefixesConsulted().has(dir));
+			if (unlistableAffectingSync.length > 0) {
 				// '/' means the root listing failed, so the whole hidden-file scan was skipped.
-				const pathList = unlistablePaths
+				const pathList = unlistableAffectingSync
 					.map(p => p === '/' ? '• / (the whole hidden-file scan)' : `• ${p}`)
 					.join('\n');
 				detailBlocks.push(
-					`${unlistablePaths.length} path(s) couldn't be scanned for hidden files, possibly due to an ` +
+					`${unlistableAffectingSync.length} path(s) couldn't be scanned for hidden files, possibly due to an ` +
 					`unreadable entry inside, so hidden files under them are not syncing:\n${pathList}`
 				);
 			}
@@ -1834,6 +1870,16 @@ export class FitSync implements IFitSync {
 					`${ignoredTrackedPaths.length} file(s) match .gitignore but are still syncing, since an ` +
 					`ignore rule doesn't untrack them. To stop syncing one, move it aside, sync, then move it back; ` +
 					`to remove it everywhere, delete it and sync:\n${shown.join('\n')}`
+				);
+			}
+
+			if (unreadableLeftAlone.length > 0) {
+				// Capped: a folder of unreadable files (#415) must not flood the notice.
+				const shown = unreadableLeftAlone.slice(0, 10).map(p => `• ${p}`);
+				if (unreadableLeftAlone.length > shown.length) shown.push(`• ...and ${unreadableLeftAlone.length - shown.length} more`);
+				detailBlocks.push(
+					`${unreadableLeftAlone.length} file(s) couldn't be read locally, so they were left alone ` +
+					`this sync (not uploaded, deleted or overwritten). They will be retried automatically on the next sync.\n${shown.join('\n')}`
 				);
 			}
 
@@ -1889,6 +1935,9 @@ export class FitSync implements IFitSync {
 					: `Generic error: ${String(error)}`; // May result in '[object Object]' but it's the best we can do
 			fitLogger.log('❌ [FitSync] Sync failed', { errorType: 'unknown', message: errorMessage });
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
+		} finally {
+			// Same-sync-only: must not outlive the sync, or explainStatus() and the next sync would see it.
+			this.fit.resetSyncScopedTracking();
 		}
 	}
 
@@ -1906,6 +1955,7 @@ export class FitSync implements IFitSync {
 		// Prepare files to write and delete by reading content from local vault
 		const filesToWrite: Array<{path: string, content: FileContent}> = [];
 		const filesToDelete: Array<string> = [];
+		const unreadableAtPush: string[] = [];
 
 		for (const change of localUpdate.localChanges) {
 			if (change.type === 'REMOVED') {
@@ -1927,12 +1977,23 @@ export class FitSync implements IFitSync {
 				}
 				filesToDelete.push(change.path);
 			} else {
-				const content = await this.fit.localVault.readFileContent(change.path);
-				filesToWrite.push({ path: change.path, content });
+				const local = await this.fit.localVault.readPath(change.path);
+				if (local.status !== 'present') {
+					// Readable at the scan but not now (or gone since): leave it for the next sync, as for a
+					// transient upload failure, instead of failing the whole push.
+					fitLogger.log('[FitSync] Skipping push - local file could not be read now', { path: change.path, local });
+					unreadableAtPush.push(change.path);
+					continue;
+				}
+				filesToWrite.push({ path: change.path, content: local.content });
 			}
 		}
 
-		const result = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete, { clashPaths: new Set() });
+		const applied = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete, { clashPaths: new Set() });
+		// Retried next sync like a rate-limited upload: the pre-sync baseline is restored for these paths.
+		const result = unreadableAtPush.length === 0
+			? applied
+			: { ...applied, rateLimitedPaths: [...(applied.rateLimitedPaths ?? []), ...unreadableAtPush] };
 
 		// Show user warning if encoding issues detected during upload
 		if (result.userWarning) {
@@ -2076,6 +2137,7 @@ export class FitSync implements IFitSync {
 
 		try {
 			const result = await this.fit.getLocalChanges();
+			scanFailedPaths = result.unreadablePaths;
 			// A resolved clash whose local file is also gone has no baseline, so the scan reports
 			// nothing for it, but the next sync pushes the deletion.
 			const reportedPaths = new Set(result.changes.map(c => c.path));

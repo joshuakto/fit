@@ -56,6 +56,11 @@ export class Fit {
 	// otherwise make shouldSyncPath flip back to untracked for the rest of this same sync,
 	// undoing the reconciliation. Recomputed fresh every sync — not a cross-sync opt-in.
 	private trackedForCurrentSync: Set<string> = new Set();
+	// Same-sync-only, unpersisted: reconcile candidates whose local file could not be read, so
+	// nothing shows whether they match remote. They sit out this sync entirely (neither pushed nor
+	// pulled) and are retried next sync, instead of being pushed as a local-only ADDED over remote
+	// if this sync's scan happens to read them.
+	private deferredTrackingForCurrentSync: Set<string> = new Set();
 
 
 	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
@@ -158,10 +163,10 @@ export class Fit {
 			// Tracked purely by git content presence, never a local toggle — orthogonal
 			// to isEligibleForTracking below (a path can be fully eligible and still not
 			// tracked yet).
-			const isTracked =
+			const isTracked = !this.deferredTrackingForCurrentSync.has(path) && (
 				path in this.localShas ||
 				path in this.lastFetchedRemoteShas ||
-				this.trackedForCurrentSync.has(path);
+				this.trackedForCurrentSync.has(path));
 			if (!isTracked) return false;
 
 			// scope:"subset" only ever comes from format:"json" (see resolveScope) — routed
@@ -322,6 +327,23 @@ export class Fit {
 		this.trackedForCurrentSync = new Set(paths);
 	}
 
+	/** Same-sync-only: keep these paths untracked this sync — see the deferredTrackingForCurrentSync field comment. */
+	deferTrackingForCurrentSync(paths: string[]): void {
+		this.deferredTrackingForCurrentSync = new Set(paths);
+	}
+
+	/**
+	 * Drop every same-sync-only tracking override. Called when a sync starts and when it ends (however it
+	 * ends), so neither set can leak into the next sync or into explainStatus() between syncs. Any new
+	 * same-sync-only set belongs here too. The end-of-sync call is observable through the deferred set
+	 * (Explain test); the reconcile's own set has no separate observable effect, since a path it marks is
+	 * also tracked through the remote tree unless the remote dropped it mid-sync, so it rides on that call.
+	 */
+	resetSyncScopedTracking(): void {
+		this.trackedForCurrentSync = new Set();
+		this.deferredTrackingForCurrentSync = new Set();
+	}
+
 	/**
 	 * Filter a FileState to include only paths that should be synced.
 	 * Used when updating LocalStores to ensure excluded paths (like _fit/) aren't tracked.
@@ -375,17 +397,9 @@ export class Fit {
 			}
 		} catch (err) {
 			// Exists but unreadable (I/O error, permission issue, etc.) — distinct from a
-			// parse failure above. Unlike that case, this one can't reliably surface as a
-			// visible Notice: the caller reached this catch either via getLocalChanges (whose
-			// own LocalVault.readFromSource() already reads this same file as part of its
-			// normal per-file scan, and throws/aborts the WHOLE sync on any unreadable tracked
-			// file before this code path would even run for a failing read) or via
-			// refreshFitAttributesForReconcile's eager path (which does reach here, but
-			// getLocalChanges's later readFromSource call re-attempts the same failing read
-			// and aborts the sync anyway, before the warning-Notice code downstream is
-			// reached). So: log for debugging, but don't claim a user-visible warning that
-			// can't actually appear — treat as unconfigured, matching the parse-failure case's
-			// "nothing configured" fallback without pretending it's equally visible.
+			// parse failure above. The scan reports the same file as unreadable (it is an
+			// ordinary synced path), and the sync notice lists it, so this only logs. Treated as
+			// unconfigured, matching the parse-failure case's "nothing configured" fallback.
 			const reason = err instanceof Error ? err.message : String(err);
 			fitLogger.log(`[Fit] .fitattributes.json exists but could not be read (${reason})`);
 			this.setFitAttributes({});
@@ -417,7 +431,9 @@ export class Fit {
 		state: FileStates,
 		scanCoverage: ScanCoverage,
 		unlistablePaths: string[],
-		ignoredTrackedPaths: string[]
+		ignoredTrackedPaths: string[],
+		/** Sync-candidate paths the scan could not read: absent from `state`, never read as deleted. */
+		unreadablePaths: string[]
 	}> {
 		// Feed the tracked-path set to local hidden-path discovery before scanning, and the
 		// baseline so a .gitignore rule only gates adding new paths.
@@ -494,8 +510,12 @@ export class Fit {
 		// shouldSyncPath: sync policy allows pushing (filters _fit/, .obsidian/, etc.).
 		// Both required — protected paths like .obsidian/ are readable but never pushed,
 		// and would appear as phantom ADDED changes without this combined filter.
+		// An unreadable file is absent from the scan without being deleted, so it is excluded from the
+		// comparison the same way and reported separately.
+		const unreadable = new Set(readResult.unreadablePaths.map(u => u.path));
 		const isSyncCandidate = (path: string) =>
-			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path) && !isUnscanned(path);
+			this.localVault.shouldTrackState(path) && this.shouldSyncPath(path) && !isUnscanned(path) &&
+			!unreadable.has(path);
 
 		const trackableLocalShas: FileStates = {};
 		for (const [path, sha] of Object.entries(this.localShas)) {
@@ -513,7 +533,12 @@ export class Fit {
 		return {
 			changes, state: currentState, scanCoverage,
 			unlistablePaths: readResult.unlistablePaths,
-			ignoredTrackedPaths: readResult.ignoredTrackedPaths
+			ignoredTrackedPaths: readResult.ignoredTrackedPaths,
+			// scope:"subset" paths are not sync candidates here (their own lane syncs them) but are read all the same.
+			unreadablePaths: [...unreadable].filter(path =>
+				this.localVault.shouldTrackState(path) && (this.shouldSyncPath(path) ||
+					this.deferredTrackingForCurrentSync.has(path) ||
+					(this.resolveSyncFormat(path) === 'json' && this.resolveScope(path) === 'subset')))
 		};
 	}
 

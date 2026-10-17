@@ -16,6 +16,7 @@ import { FilePath, detectNormalizationIssues } from "./util/filePath";
 import { withSlowOperationMonitoring } from "./util/asyncMonitoring";
 import { findSuspiciousCorrespondences } from "./util/pathPattern";
 import { GitignoreFilter } from "./util/gitignore";
+import { LocalPathRead, readLocalPath } from "./util/readLocalPath";
 import { isPluginNodeModulesRoot } from "./util/protectedPaths";
 
 /**
@@ -446,23 +447,8 @@ export class LocalVault implements IVault<"local"> {
 			}
 		});
 
-		// If any files failed, throw a VaultError with details.
-		// TODO: Instead of aborting on partial failure, skip unreadable files and include
-		// partialState (Object.fromEntries(shaEntries)) in details so callers can process
-		// the files that succeeded. This would unblock sync for vaults with permission-restricted
-		// files (e.g. EACCES) — see related issue for sync-level graceful degradation.
-		if (failedPaths.length > 0) {
-			throw new VaultError(
-				'filesystem',
-				// Paths live in details; listing them here would flood the sync notice and the log.
-				`Failed to read ${failedPaths.length} file(s) from local vault`,
-				{
-					failedPaths: failedPaths.map(f => f.path),
-					errors: failedPaths.map(f => ({ path: f.path, error: f.error }))
-				}
-			);
-		}
-
+		// Unreadable files are reported, not fatal: the caller leaves each one's baseline alone and
+		// handles it as "local state unknown" (docs/sync-logic.md § Unreadable local files).
 		const newState = Object.fromEntries(shaEntries);
 
 		// Log computed SHAs for provenance tracking, with normalization diagnostics
@@ -476,7 +462,8 @@ export class LocalVault implements IVault<"local"> {
 			state: { ...newState },
 			orphanedScanPrefixes: new Set(orphanedScanPrefixes),
 			unlistablePaths,
-			ignoredTrackedPaths
+			ignoredTrackedPaths,
+			unreadablePaths: failedPaths
 		};
 	}
 
@@ -600,6 +587,14 @@ export class LocalVault implements IVault<"local"> {
 	 */
 	async readFileContent(path: string): Promise<FileContent> {
 		return readFileContent(this.vault, path);
+	}
+
+	/**
+	 * Read one file, telling a file that is gone from one that could not be read. Prefer this over
+	 * `readFileContent` wherever the result decides what to push, pull or delete.
+	 */
+	readPath(path: string): Promise<LocalPathRead> {
+		return readLocalPath(this, path);
 	}
 
 	/**

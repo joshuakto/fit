@@ -10,6 +10,7 @@ import { FileContent, Base64Content, PlainTextContent } from './util/contentEnco
 import { FilePath, isUnderAnyPrefix } from './util/filePath';
 import { BlobSha, CommitSha, computeGitBlobSha, computeSha1, TreeSha } from "./util/hashing";
 import { LocalVault } from './localVault';
+import { LocalPathRead, readLocalPath } from './util/readLocalPath';
 import { fitLogger } from './logger';
 import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 
@@ -464,6 +465,26 @@ export class FakeLocalVault implements IVault<"local"> {
 		this.orphanedScanPrefixes = new Set(prefixes);
 	}
 
+	private unreadableFiles: Set<string> = new Set();
+
+	private unreadableInScan = true;
+
+	/**
+	 * Simulates files that are on disk but fail to read, in the scan and in direct reads alike.
+	 * With `inScan: false` only direct reads fail, for a file that is readable at the scan but not later.
+	 */
+	setUnreadableFiles(paths: string[], { inScan = true }: { inScan?: boolean } = {}): void {
+		this.unreadableFiles = new Set(paths);
+		this.unreadableInScan = inScan;
+	}
+
+	private failNextDirectReads = new Map<string, number>();
+
+	/** The next direct read of `path` fails once (a transient error); the scan and later reads succeed. */
+	failNextReadOf(path: string): void {
+		this.failNextDirectReads.set(path, 1);
+	}
+
 	private unlistablePaths: string[] = [];
 
 	/** Simulates paths the hidden-path scan failed to list this sync (reported, not hidden). */
@@ -474,7 +495,12 @@ export class FakeLocalVault implements IVault<"local"> {
 	// Mirrors LocalVault: ordinary (non-hidden) files come from Obsidian's index, so an
 	// orphaned prefix only hides the hidden paths under it from the scan.
 	private isUnderOrphanedPrefix(path: string): boolean {
-		return FilePath.isHidden(FilePath.create(path)) && isUnderAnyPrefix(path, this.orphanedScanPrefixes);
+		return FilePath.isHidden(FilePath.create(path)) && isUnderAnyPrefix(path, this.unscannedPrefixes());
+	}
+
+	// Like LocalVault, whose skipped paths (pruned and unlistable alike) are the unscanned prefixes.
+	private unscannedPrefixes(): Set<string> {
+		return new Set([...this.orphanedScanPrefixes, ...this.unlistablePaths]);
 	}
 
 	/**
@@ -599,6 +625,7 @@ export class FakeLocalVault implements IVault<"local"> {
 					await this.mockWriteFile(path);
 				}
 
+				if (this.unreadableInScan && this.unreadableFiles.has(path)) throw new Error(`EACCES: permission denied, ${path}`);
 				const content = this.files.get(path)!;
 				const sha = await LocalVault.fileSha1(path, content);
 				return { path, sha };
@@ -607,8 +634,7 @@ export class FakeLocalVault implements IVault<"local"> {
 
 		// Collect successful results and failures
 		const state: FileStates = {};
-		const failedPaths: string[] = [];
-		const errors: Array<{ path: string; error: unknown }> = [];
+		const unreadablePaths: Array<{ path: string; error: unknown }> = [];
 
 		for (let i = 0; i < settledResults.length; i++) {
 			const result = settledResults[i];
@@ -618,28 +644,21 @@ export class FakeLocalVault implements IVault<"local"> {
 				state[result.value.path] = result.value.sha;
 			} else {
 				fitLogger.log(`❌ [LocalVault] Failed to process file: ${path}`, result.reason);
-				failedPaths.push(path);
-				errors.push({ path, error: result.reason });
+				unreadablePaths.push({ path, error: result.reason });
 			}
-		}
-
-		// If any files failed, throw VaultError with details
-		if (failedPaths.length > 0) {
-			throw VaultError.filesystem(
-				`Failed to read ${failedPaths.length} file(s) from local vault`,
-				{
-					failedPaths,
-					errors
-				}
-			);
 		}
 
 		return {
 			state,
-			orphanedScanPrefixes: new Set(this.orphanedScanPrefixes),
+			orphanedScanPrefixes: this.unscannedPrefixes(),
 			unlistablePaths: [...this.unlistablePaths],
-			ignoredTrackedPaths: []
+			ignoredTrackedPaths: [],
+			unreadablePaths
 		};
+	}
+
+	readPath(path: string): Promise<LocalPathRead> {
+		return readLocalPath(this, path);
 	}
 
 	async readFileContent(path: string): Promise<FileContent> {
@@ -649,6 +668,13 @@ export class FakeLocalVault implements IVault<"local"> {
 			// Wrap in VaultError.filesystem to match real LocalVault behavior
 			const message = error instanceof Error ? error.message : `Failed to read file content: ${String(error)}`;
 			throw VaultError.filesystem(message, { originalError: error });
+		}
+
+		if (this.unreadableFiles.has(path)) throw new Error(`EACCES: permission denied, ${path}`);
+		const failuresLeft = this.failNextDirectReads.get(path) ?? 0;
+		if (failuresLeft > 0) {
+			this.failNextDirectReads.set(path, failuresLeft - 1);
+			throw new Error(`EIO: transient read error, ${path}`);
 		}
 
 		const content = this.files.get(path);

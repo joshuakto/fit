@@ -94,6 +94,13 @@ describe('renderExplanation', () => {
 			}));
 		});
 
+		it('modal — unreadable paths are noted even when the rest of the scan succeeded', () => {
+			const result = explain(snapshot(), [], { scanFailedPaths: ['secret.md'] });
+			expect(result).toEqual(expect.objectContaining({
+				scanNote: "Couldn't read: secret.md — local changes may be incomplete",
+			}));
+		});
+
 		it('modal — singular failed path', () => {
 			const result = explain(snapshot(), null, { scanFailedPaths: ['secret.md'] });
 			expect(result).toEqual(expect.objectContaining({

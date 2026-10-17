@@ -43,13 +43,15 @@ export function hasExtension(path: string, ext: string): boolean {
  */
 export function isUnderAnyPrefix(path: string, prefixes: ReadonlySet<string>): boolean {
 	for (const prefix of prefixes) {
-		if (prefix === '/') {
-			if (path.split('/').some(segment => segment.startsWith('.'))) return true;
-		} else if (path === prefix || path.startsWith(`${prefix}/`)) {
-			return true;
-		}
+		if (isUnderPrefix(path, prefix)) return true;
 	}
 	return false;
+}
+
+/** The single-prefix form of {@link isUnderAnyPrefix}, for callers that need to know which prefix matched. */
+export function isUnderPrefix(path: string, prefix: string): boolean {
+	if (prefix === '/') return path.split('/').some(segment => segment.startsWith('.'));
+	return path === prefix || path.startsWith(`${prefix}/`);
 }
 
 /**
