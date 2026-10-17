@@ -780,20 +780,21 @@ export class FitSync implements IFitSync {
 			} else if (!localExists) {
 				resolutions.set(path, { status: 'pending' });
 			} else {
-				try {
-					const [fitContent, localContent] = await Promise.all([
-						this.fit.localVault.readFileContent(`_fit/${path}`),
-						this.fit.localVault.readFileContent(path),
-					]);
+				const [fitRead, localRead] = await Promise.all([
+					this.fit.localVault.readPath(`_fit/${path}`),
+					this.fit.localVault.readPath(path),
+				]);
+				if (fitRead.status !== 'present' || localRead.status !== 'present') {
+					// Either side unreadable (or gone since the stat): cannot show they match, so still pending.
+					resolutions.set(path, { status: 'pending' });
+				} else {
 					const [fitSha, localSha] = await Promise.all([
-						LocalVault.fileSha1(path, fitContent),
-						LocalVault.fileSha1(path, localContent),
+						LocalVault.fileSha1(path, fitRead.content),
+						LocalVault.fileSha1(path, localRead.content),
 					]);
 					resolutions.set(path, fitSha === localSha
-						? { status: 'resolved', fitCopyExists, localExists, localContent }
+						? { status: 'resolved', fitCopyExists, localExists, localContent: localRead.content }
 						: { status: 'pending' });
-				} catch {
-					resolutions.set(path, { status: 'pending' });
 				}
 			}
 		}
@@ -1465,7 +1466,7 @@ export class FitSync implements IFitSync {
 			// lastFetchedRemoteShas, always current) but no local baseline yet — excluding
 			// pendingClashes paths, whose missing baseline is a deliberate mid-clash state, not
 			// "never synced". See docs/sync-logic.md § Tracking transition for the full reasoning.
-			this.fit.deferTrackingForCurrentSync([]); // per-sync only: nothing carries over from the last sync
+			this.fit.resetSyncScopedTracking(); // nothing carries over from the last sync
 			const pendingClashSet = new Set(this.fit.pendingClashes);
 			const reconcileCandidates = Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
 				path.startsWith(".obsidian/") &&
@@ -1935,8 +1936,8 @@ export class FitSync implements IFitSync {
 			fitLogger.log('❌ [FitSync] Sync failed', { errorType: 'unknown', message: errorMessage });
 			return { success: false, error: SyncErrors.unknown(errorMessage, { originalError: error }) };
 		} finally {
-			// Same-sync-only: must not outlive the sync, or explainStatus() would hide the path.
-			this.fit.deferTrackingForCurrentSync([]);
+			// Same-sync-only: must not outlive the sync, or explainStatus() and the next sync would see it.
+			this.fit.resetSyncScopedTracking();
 		}
 	}
 

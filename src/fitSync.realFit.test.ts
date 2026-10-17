@@ -1029,6 +1029,21 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('a tracking override set for one sync does not outlive it', async () => {
+			// The reconcile marks a newly tracked path as tracked for its own sync only; with no baseline and
+			// no remote copy, a later sync must not keep treating it as tracked.
+			const fitSync = createFitSync();
+			localVault.setFile(FITATTRIBUTES_PATH, JSON.stringify({ '.obsidian/foo': { format: 'text' } }));
+			localVault.setSyncHiddenFiles(true);
+			await fitSync.fit.refreshFitAttributesForReconcile(); // loads the rule, as the reconcile does before marking
+			fitSync.fit.markTrackedForCurrentSync(['.obsidian/foo']);
+			expect(fitSync.fit.shouldSyncPath('.obsidian/foo')).toBe(true); // the override works while it is set
+
+			await syncWithNotice(fitSync);
+
+			expect(fitSync.fit.shouldSyncPath('.obsidian/foo')).toBe(false);
+		});
+
 		it('Explain reports a re-eligible path deferred as unreadable by the last sync once it can be read', async () => {
 			// Deferral is for one sync only; it must not keep hiding the path from Explain afterwards.
 			const fitSync = createFitSync();

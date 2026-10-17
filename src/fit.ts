@@ -333,6 +333,16 @@ export class Fit {
 	}
 
 	/**
+	 * Drop every same-sync-only tracking override. Called when a sync starts and when it ends (however it
+	 * ends), so neither set can leak into the next sync or into explainStatus() between syncs. Any new
+	 * same-sync-only set belongs here too.
+	 */
+	resetSyncScopedTracking(): void {
+		this.trackedForCurrentSync = new Set();
+		this.deferredTrackingForCurrentSync = new Set();
+	}
+
+	/**
 	 * Filter a FileState to include only paths that should be synced.
 	 * Used when updating LocalStores to ensure excluded paths (like _fit/) aren't tracked.
 	 *
