@@ -1494,6 +1494,13 @@ export class FitSync implements IFitSync {
 					const cachedRemoteSha = this.fit.lastFetchedRemoteShas[path];
 					delete this.fit.protectedPathShas[path]; // stale once reconciled here
 					const local = await this.fit.localVault.readPath(path);
+					if (local.status === 'unknown') {
+						// Unreadable: nothing shows whether it matches what was last seen on remote, and
+						// "absent" must not be inferred. Leave both baselines alone; the path stays a
+						// reconcile candidate, so it is retried once it reads (and the scan reports it).
+						fitLogger.log('[FitSync] Reconcile: local file unreadable, leaving baselines untouched', { path, error: local.error });
+						continue;
+					}
 					const currentSha = local.status === 'present'
 						? await LocalVault.fileSha1(path, local.content)
 						: undefined;
@@ -1503,11 +1510,11 @@ export class FitSync implements IFitSync {
 						// localShas needs setting to make this a full no-op (no download).
 						this.fit.localShas[path] = currentSha;
 					} else {
-						// Local is absent (remote then pulls as ADDED), unreadable (so not shown to match),
-						// or differs from the cached remote SHA. That SHA was only ever passively observed
-						// while this path was excluded, never established by an actual sync — it doesn't
-						// count as a baseline. Leave localShas unset so local shows as ADDED, and explicitly
-						// clear lastFetchedRemoteShas so remote also shows as ADDED. Without clearing it,
+						// Local is absent (remote then pulls as ADDED) or differs from the cached remote
+						// SHA. That SHA was only ever passively observed while this path was excluded,
+						// never established by an actual sync — it doesn't count as a baseline. Leave
+						// localShas unset so local shows as ADDED, and explicitly clear
+						// lastFetchedRemoteShas so remote also shows as ADDED. Without clearing it,
 						// remote would show as unchanged and local's ADDED would go straight to safeLocal,
 						// silently pushing local's content over remote's — the same bug in the opposite
 						// direction. Both sides showing changed is what makes the normal pipeline resolve

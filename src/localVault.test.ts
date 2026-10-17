@@ -316,10 +316,8 @@ describe('LocalVault', () => {
 			const localVault = new LocalVault(mockVault as any as Vault);
 			const { state, unreadablePaths } = await localVault.readFromSource();
 
-			expect({ state, unreadablePaths }).toEqual({
-				state: {},
-				unreadablePaths: paths.map(path => ({ path, error: expect.any(Error) })),
-			});
+			expect(state).toEqual({}); // nothing readable
+			expect(unreadablePaths).toEqual(paths.map(path => ({ path, error: expect.any(Error) })));
 		});
 	});
 
