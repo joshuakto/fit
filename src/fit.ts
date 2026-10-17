@@ -335,7 +335,9 @@ export class Fit {
 	/**
 	 * Drop every same-sync-only tracking override. Called when a sync starts and when it ends (however it
 	 * ends), so neither set can leak into the next sync or into explainStatus() between syncs. Any new
-	 * same-sync-only set belongs here too.
+	 * same-sync-only set belongs here too. The end-of-sync call is observable through the deferred set
+	 * (Explain test); the reconcile's own set has no separate observable effect, since a path it marks is
+	 * also tracked through the remote tree unless the remote dropped it mid-sync, so it rides on that call.
 	 */
 	resetSyncScopedTracking(): void {
 		this.trackedForCurrentSync = new Set();
