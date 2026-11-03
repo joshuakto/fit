@@ -660,10 +660,18 @@ export class LocalVault implements IVault<"local"> {
 				} else {
 					// File doesn't exist - create new
 					await this.ensureFolderExists(path);
-					if (isPlaintext) {
-						await this.vault.create(path, rawContent.content);
+					if (path.startsWith('.')) {
+						if (isPlaintext) {
+							await this.vault.adapter.write(path, rawContent.content);
+						} else {
+							await this.vault.adapter.writeBinary(path, contentToArrayBuffer(content));
+						}
 					} else {
-						await this.vault.createBinary(path, contentToArrayBuffer(content));
+						if (isPlaintext) {
+							await this.vault.create(path, rawContent.content);
+						} else {
+							await this.vault.createBinary(path, contentToArrayBuffer(content));
+						}
 					}
 					changeType = 'ADDED';
 				}
