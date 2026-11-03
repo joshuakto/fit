@@ -456,6 +456,27 @@ describe('FitSync', () => {
 			});
 		});
 
+		it('does not push Phase 0 clash deletions for .obsidian/ paths when syncObsidian is disabled', async () => {
+			localStoreState.pendingClashes = ['.obsidian/plugins/my-plugin/main.js'];
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			fitSync.fit.syncObsidian = false;
+
+			// Remote has the file
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("remote");') },
+			], []);
+
+			// User resolved clash by deleting both _fit/ copy and the local file (neither exists locally).
+			// Phase 0 checks resolutions: _fitCopyExists is false, localExists is false -> pendingDeletions.push
+			// Because syncObsidian is false, shouldSyncPath is false and it must NOT be pushed as REMOVED to remote.
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			// Remote file must still exist on remote
+			expect(remoteVault.getAllFilesAsRaw()['.obsidian/plugins/my-plugin/main.js']).toBe('console.log("remote");');
+		});
+
 		it('should exclude 📁 _fit/ directory from sync operations', async () => {
 			// === SETUP: Initial synced state ===
 			const fitSync = createFitSync();

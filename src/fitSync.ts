@@ -1688,7 +1688,9 @@ export class FitSync implements IFitSync {
 					// opaquely diffed/overwritten by the normal pipeline. See the comment above
 					// subsetScopeResult's call site for why this can't just be "never scanned".
 					.filter(c => !subsetScopeHandledPaths.has(c.path)),
-				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),
+				...pendingDeletions
+					.filter(path => this.fit.shouldSyncPath(path))
+					.map(path => ({ path, type: 'REMOVED' as const })),
 			];
 			// Paths the local scan did not look at are out of scope in both directions this
 			// sync: local side is excluded in Fit.getLocalChanges, and a remote change here
