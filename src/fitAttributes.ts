@@ -66,8 +66,8 @@ const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt', '.js'];
  *   be field-masked via scope:"subset".
  */
 const WHOLE_FILE_TEXT_JSON_PATHS = [
-	/^\.obsidian\/community-plugins\.json$/,
-	/^\.obsidian\/plugins\/[^/]+\/manifest\.json$/,
+	/^\.obsidian\/community-plugins\.json$/i,
+	/^\.obsidian\/plugins\/[^/]+\/manifest\.json$/i,
 ];
 
 /**

@@ -660,7 +660,7 @@ export class LocalVault implements IVault<"local"> {
 				} else {
 					// File doesn't exist - create new
 					await this.ensureFolderExists(path);
-					if (path.startsWith('.')) {
+					if (isHiddenPath(path)) {
 						if (isPlaintext) {
 							await this.vault.adapter.write(path, rawContent.content);
 						} else {

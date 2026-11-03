@@ -433,11 +433,13 @@ describe('FitSync', () => {
 		it('completely excludes .obsidian/ directory when syncObsidian setting is disabled', async () => {
 			const fitSync = createFitSync();
 			localVault.setSyncHiddenFiles(true);
-			(fitSync as any).fit.syncObsidian = false;
+			fitSync.fit.syncObsidian = false;
 
 			await remoteVault.applyChanges([
 				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("hello");') },
+				{ path: '.obsidian/plugins/my-plugin/data.json', content: FileContent.fromPlainText('{"setting": true}') },
 				{ path: '.obsidian/community-plugins.json', content: FileContent.fromPlainText('["my-plugin"]') },
+				{ path: '.obsidian/hotkeys.json', content: FileContent.fromPlainText('{"command": []}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
 
@@ -446,7 +448,11 @@ describe('FitSync', () => {
 
 			expect(result).toEqual(expect.objectContaining({ success: true }));
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				'normal.md': 'Normal file'
+				// '.obsidian/community-plugins.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/hotkeys.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/plugins/my-plugin/data.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/plugins/my-plugin/main.js' absent — syncObsidian disabled, remote push ignored
+				'normal.md': 'Normal file' // Pulled from remote (first sync)
 			});
 		});
 

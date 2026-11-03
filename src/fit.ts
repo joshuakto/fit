@@ -51,7 +51,10 @@ export class Fit {
 	remoteVault: IRemoteVault = new UnconfiguredRemoteVault(); // Real vault once a PAT is configured (see loadSettings)
 	private ownPluginDir: string | null = null; // e.g. ".obsidian/plugins/fit"
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
-	private syncObsidian: boolean = false;
+	syncObsidian: boolean = false;
+	get isObsidianSyncEnabled(): boolean {
+		return this.syncObsidian;
+	}
 	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
 	// current sync. Needed because the reconcile block's own "local absent" branch clears
 	// lastFetchedRemoteShas[path] (to force correct ADDED-detection downstream), which would
