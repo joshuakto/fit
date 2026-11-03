@@ -29,12 +29,10 @@ describe('isHardDenylistedObsidianPath', () => {
 		{ name: 'node_modules dir itself inside a plugin dir', path: '.obsidian/plugins/some-plugin/node_modules', expected: false },
 		{ name: 'git dir inside a plugin dir', path: '.obsidian/plugins/some-plugin/.git/config', expected: true },
 		{ name: 'file merely named node_modules, not a directory', path: '.obsidian/plugins/some-plugin/node_modules.json', expected: false },
-	])('$name → $expected', ({ path, expected }) => {
-		expect(isHardDenylistedObsidianPath(path)).toBe(expected);
-	});
-
-	it('respects dynamic ownPluginDir', () => {
-		expect(isHardDenylistedObsidianPath('.obsidian/plugins/fit-dev/main.js', '.obsidian/plugins/fit-dev')).toBe(true);
-		expect(isHardDenylistedObsidianPath('.obsidian/plugins/fit/main.js', '.obsidian/plugins/fit-dev')).toBe(false);
+		// Dynamic ownPluginDir overrides
+		{ name: 'custom ownPluginDir main.js', path: '.obsidian/plugins/fit-dev/main.js', ownPluginDir: '.obsidian/plugins/fit-dev', expected: true },
+		{ name: 'other plugin when custom ownPluginDir is set', path: '.obsidian/plugins/fit/main.js', ownPluginDir: '.obsidian/plugins/fit-dev', expected: false },
+	])('$name → $expected', ({ path, ownPluginDir, expected }: { name: string; path: string; ownPluginDir?: string; expected: boolean }) => {
+		expect(isHardDenylistedObsidianPath(path, ownPluginDir)).toBe(expected);
 	});
 });

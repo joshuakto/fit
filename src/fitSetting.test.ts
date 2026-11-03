@@ -507,7 +507,8 @@ describe('FitSettingTab - Obsidian config sync', () => {
 		syncObsidianToggle.checked = true;
 		syncObsidianToggle.dispatchEvent(new Event('change'));
 
+		// Toggle change triggers saveSettings and persists setting value
 		await vi.waitFor(() => expect(fakePlugin.saveSettings).toHaveBeenCalledTimes(1));
-		expect(fakePlugin.settings.syncObsidian).toBe(true);
+		expect(fakePlugin.settings.syncObsidian).toBe(true); // Persisted to plugin settings
 	});
 });
