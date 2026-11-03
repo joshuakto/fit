@@ -116,6 +116,10 @@ function enhanceElement<T extends HTMLElement>(el: T): T {
 		return enhanced.createEl('div', opts);
 	};
 
+	enhanced.createSpan = (opts?: { cls?: string; attr?: Record<string, string>; text?: string }) => {
+		return enhanced.createEl('span', opts);
+	};
+
 	enhanced.empty = () => { el.innerHTML = ''; return enhanced; };
 	enhanced.addClass = (cls: string) => { el.classList.add(cls); return enhanced; };
 	enhanced.removeClass = (cls: string) => { el.classList.remove(cls); return enhanced; };
@@ -123,6 +127,30 @@ function enhanceElement<T extends HTMLElement>(el: T): T {
 	enhanced.setText = (text: string) => { el.textContent = text; return enhanced; };
 
 	return enhanced;
+}
+
+if (typeof DocumentFragment !== 'undefined') {
+	const proto = DocumentFragment.prototype as any;
+	if (!proto.createEl) {
+		proto.createEl = function(tag: string, opts?: { cls?: string; attr?: Record<string, string>; text?: string }) {
+			const child = document.createElement(tag);
+			if (opts?.cls) child.className = opts.cls;
+			if (opts?.attr) Object.entries(opts.attr).forEach(([k, v]) => child.setAttribute(k, v));
+			if (opts?.text) child.textContent = opts.text;
+			this.appendChild(child);
+			return enhanceElement(child);
+		};
+	}
+	if (!proto.createSpan) {
+		proto.createSpan = function(opts?: { cls?: string; attr?: Record<string, string>; text?: string }) {
+			return this.createEl('span', opts);
+		};
+	}
+	if (!proto.createDiv) {
+		proto.createDiv = function(opts?: { cls?: string; attr?: Record<string, string>; text?: string }) {
+			return this.createEl('div', opts);
+		};
+	}
 }
 
 export class PluginSettingTab {

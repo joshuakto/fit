@@ -51,7 +51,8 @@ describe('FitSync', () => {
 		owner: 'test-owner',
 		repo: 'test-repo',
 		branch: 'test-branch',
-		deviceName: 'test-device'
+		deviceName: 'test-device',
+		syncObsidian: true,
 	};
 
 	function createFit(initialLocalStoreState: LocalStores, pluginDir?: string) : Fit {
@@ -426,6 +427,26 @@ describe('FitSync', () => {
 				'.obsidian/plugins/my-plugin/manifest.json': '{"id":"my-plugin","name":"My Plugin"}',
 				'.obsidian/plugins/my-plugin/styles.css': '.my-plugin { color: red; }',
 				'.obsidian/community-plugins.json': '["my-plugin"]',
+			});
+		});
+
+		it('completely excludes .obsidian/ directory when syncObsidian setting is disabled', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			(fitSync as any).fit.syncObsidian = false;
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("hello");') },
+				{ path: '.obsidian/community-plugins.json', content: FileContent.fromPlainText('["my-plugin"]') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				'normal.md': 'Normal file'
 			});
 		});
 
