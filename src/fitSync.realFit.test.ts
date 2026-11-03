@@ -473,8 +473,13 @@ describe('FitSync', () => {
 			const result = await syncAndHandleResult(fitSync, createMockNotice());
 
 			expect(result).toEqual(expect.objectContaining({ success: true }));
-			// Remote file must still exist on remote
-			expect(remoteVault.getAllFilesAsRaw()['.obsidian/plugins/my-plugin/main.js']).toBe('console.log("remote");');
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				// Remote copy untouched — syncObsidian is off, so the resolved-clash deletion was not pushed
+				'.obsidian/plugins/my-plugin/main.js': 'console.log("remote");',
+			});
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// Local file was deleted as part of user resolving the clash
+			});
 		});
 
 		it('should exclude 📁 _fit/ directory from sync operations', async () => {
