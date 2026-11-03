@@ -51,6 +51,7 @@ export class Fit {
 	remoteVault: IRemoteVault = new UnconfiguredRemoteVault(); // Real vault once a PAT is configured (see loadSettings)
 	private ownPluginDir: string | null = null; // e.g. ".obsidian/plugins/fit"
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
+	private syncObsidian: boolean = false;
 	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
 	// current sync. Needed because the reconcile block's own "local absent" branch clears
 	// lastFetchedRemoteShas[path] (to force correct ADDED-detection downstream), which would
@@ -80,6 +81,7 @@ export class Fit {
 		// TODO: Use DI to pass the right impl from FitSync caller.
 
 		// Apply local vault settings unconditionally (don't require PAT)
+		this.syncObsidian = setting.syncObsidian ?? false;
 		this.localVault.configure({
 			syncHiddenFiles: setting.syncHiddenFiles,
 		});
@@ -164,6 +166,8 @@ export class Fit {
 		}
 
 		if (path.startsWith(".obsidian/")) {
+			if (!this.syncObsidian) return false;
+
 			// Tracked purely by git content presence, never a local toggle — orthogonal
 			// to isEligibleForTracking below (a path can be fully eligible and still not
 			// tracked yet).
@@ -316,6 +320,7 @@ export class Fit {
 	 * docs/sync-logic.md § Baseline Recording for Untracked Files (#169).
 	 */
 	trackedObsidianPaths(): string[] {
+		if (!this.syncObsidian) return [];
 		const paths = new Set<string>();
 		for (const path of Object.keys(this.localShas)) {
 			if (path.startsWith(".obsidian/")) paths.add(path);

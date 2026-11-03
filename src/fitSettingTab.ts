@@ -754,18 +754,33 @@ export default class FitSettingTab extends PluginSettingTab {
 			.setName("Obsidian config sync (advanced)")
 			.setDesc(headingDesc);
 
+		new Setting(containerEl)
+			.setName("Sync .obsidian folder")
+			.setDesc("Enable syncing of supported .obsidian/ configuration files (community plugins, hotkeys, snippets).")
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncObsidian)
+				.onChange(async (value) => {
+					this.plugin.settings.syncObsidian = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
 		const fitAttributesExists = !!(await this.plugin.app.vault.adapter.stat(FITATTRIBUTES_PATH));
 		const fit = this.plugin.fit;
-		const enabled = fit.trackedObsidianPaths().some(path => fit.isEligibleForTracking(path));
+		const enabled = this.plugin.settings.syncObsidian && fit.trackedObsidianPaths().some(path => fit.isEligibleForTracking(path));
 
 		const statusDesc = document.createDocumentFragment();
-		statusDesc.createSpan({ text: enabled
-			? 'Enabled — at least one .obsidian/ path is tracked and configured to sync.'
-			: 'Disabled — no .obsidian/ path is currently both tracked and configured with format: "text".' });
-		statusDesc.createEl('br');
-		statusDesc.createSpan({ text: 'For details on what is or isn\'t syncing, run ' });
-		statusDesc.createEl('code', { text: 'Fit: Explain sync status' });
-		statusDesc.createSpan({ text: ' from the command palette.' });
+		if (!this.plugin.settings.syncObsidian) {
+			statusDesc.createSpan({ text: 'Disabled — turn on the toggle above to enable syncing .obsidian/ configuration.' });
+		} else {
+			statusDesc.createSpan({ text: enabled
+				? 'Enabled — at least one .obsidian/ path is tracked and configured to sync.'
+				: 'Enabled — no .obsidian/ path is currently tracked in git or configured with format: "text".' });
+			statusDesc.createEl('br');
+			statusDesc.createSpan({ text: 'For details on what is or isn\'t syncing, run ' });
+			statusDesc.createEl('code', { text: 'Fit: Explain sync status' });
+			statusDesc.createSpan({ text: ' from the command palette.' });
+		}
 
 		new Setting(containerEl)
 			.setName('Status')

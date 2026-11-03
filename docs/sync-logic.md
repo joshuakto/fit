@@ -254,7 +254,8 @@ FIT implements three layers of path filtering:
 
 - **Filtered by:** `Fit.shouldSyncPath()`
 - **Applied to:** Both ⬆️ local→remote and ⬇️ remote→local
-- **Reason:** Protect critical system directories by default; other `.obsidian/` paths become tracked automatically once content for them exists in the remote git tree
+- **Reason:** Protect critical system directories by default; other `.obsidian/` paths become tracked automatically once content for them exists in the remote git tree and the `.obsidian` sync setting is enabled
+- **Toggle setting (`syncObsidian`):** Controlled by the "Sync .obsidian folder" toggle in the settings tab. When disabled (default: off), all `.obsidian/` paths are excluded unconditionally. When enabled, eligible `.obsidian/` paths tracked in git are synchronized.
 
 **The trigger is git, not FIT.** There is no settings toggle, no "start syncing this file" action, no local opt-in of any kind. A `.obsidian/` path becomes tracked purely because content for it exists in the remote git tree — added via the GitHub web UI, `git`/`gh` CLI, or another device that's already syncing it. The very next sync on any device sees that content and starts considering the path for sync in both directions from then on. Direct consequence, accepted rather than special-cased: adding a new tracked path is inherently clash-prone if the content you add doesn't match what's already on your other devices — there's no reconciliation smoothing beyond the ordinary [Baseline](#baseline)/clash machinery for that first sync.
 
