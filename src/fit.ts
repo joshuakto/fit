@@ -49,6 +49,7 @@ export class Fit {
 	fitAttributesWarning: string | null = null;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: IRemoteVault = new UnconfiguredRemoteVault(); // Real vault once a PAT is configured (see loadSettings)
+	private ownPluginDir: string | null = null; // e.g. ".obsidian/plugins/fit"
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
 	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
 	// current sync. Needed because the reconcile block's own "local absent" branch clears
@@ -65,7 +66,10 @@ export class Fit {
 
 	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
 		this.localVault = new LocalVault(vault);
-		if (pluginDir) this.ownDataPath = `${pluginDir}/data.json`;
+		if (pluginDir) {
+			this.ownPluginDir = pluginDir;
+			this.ownDataPath = `${pluginDir}/data.json`;
+		}
 		this.loadSettings(setting);  // NOTE: creates this.remoteVault
 		this.loadLocalStore(localStores);
 	}
@@ -244,7 +248,7 @@ export class Fit {
 
 	/** Path-level hard denylist — see src/util/protectedPaths.ts for the "why". */
 	isHardDenylistedPath(path: string): boolean {
-		return isHardDenylistedObsidianPath(path);
+		return isHardDenylistedObsidianPath(path, this.ownPluginDir);
 	}
 
 	/** Replaces the parsed .fitattributes.json content used by shouldSyncPath's format gate. */

@@ -4,7 +4,7 @@
  * see docs/sync-logic.md § `.fitattributes.json` (#337).
  */
 import { describe, it, expect } from 'vitest';
-import { parseFitAttributes } from '@/fitAttributes';
+import { parseFitAttributes, detectSyncFormat, resolveSyncFormat, resolveScope } from '@/fitAttributes';
 
 describe('parseFitAttributes', () => {
 	it('parses a valid multi-path config', () => {
@@ -120,5 +120,21 @@ describe('parseFitAttributes', () => {
 			value: { '.obsidian/graph.json': { format: 'json', scope: 'subset' } },
 			invalidRules: [],
 		});
+	});
+});
+
+describe('detectSyncFormat & resolveScope for plugin, hotkey, and snippet assets', () => {
+	it.each([
+		{ path: '.obsidian/plugins/dataview/main.js', expectedFormat: 'text', expectedScope: 'full' },
+		{ path: '.obsidian/plugins/dataview/styles.css', expectedFormat: 'text', expectedScope: 'full' },
+		{ path: '.obsidian/plugins/dataview/manifest.json', expectedFormat: 'text', expectedScope: 'full' },
+		{ path: '.obsidian/community-plugins.json', expectedFormat: 'text', expectedScope: 'full' },
+		{ path: '.obsidian/plugins/dataview/data.json', expectedFormat: 'json', expectedScope: 'subset' },
+		{ path: '.obsidian/hotkeys.json', expectedFormat: 'json', expectedScope: 'subset' },
+		{ path: '.obsidian/snippets/custom.css', expectedFormat: 'text', expectedScope: 'full' },
+	])('$path resolves to format: $expectedFormat, scope: $expectedScope', ({ path, expectedFormat, expectedScope }) => {
+		expect(detectSyncFormat(path)).toBe(expectedFormat);
+		expect(resolveSyncFormat(path, {})).toBe(expectedFormat);
+		expect(resolveScope(path, {})).toBe(expectedScope);
 	});
 });
