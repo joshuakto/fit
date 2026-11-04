@@ -478,7 +478,7 @@ describe('FitSync', () => {
 				'.obsidian/plugins/my-plugin/main.js': 'console.log("remote");',
 			});
 			expect(localVault.getAllFilesAsRaw()).toEqual({
-				// Local file was deleted as part of user resolving the clash
+				// '.obsidian/plugins/my-plugin/main.js' absent — deleted locally when the user resolved the clash
 			});
 		});
 
