@@ -240,6 +240,9 @@ export class FitSync implements IFitSync {
 		commitSha?: CommitSha;
 		handledPaths: string[];
 	}> {
+		if (!this.fit.syncObsidian) {
+			return { localOps: [], remoteOps: [], clashes: [], handledPaths: [] };
+		}
 		// Cross-device rule disagreement, rule-based half — full mechanism in
 		// docs/sync-logic.md § .fitattributes.json. Gated to remote's EXPLICIT rule
 		// (`path in remoteFitAttributes`), not its bare default: the default heuristic is a
@@ -1468,7 +1471,7 @@ export class FitSync implements IFitSync {
 			// "never synced". See docs/sync-logic.md § Tracking transition for the full reasoning.
 			this.fit.resetSyncScopedTracking(); // nothing carries over from the last sync
 			const pendingClashSet = new Set(this.fit.pendingClashes);
-			const reconcileCandidates = Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
+			const reconcileCandidates = !this.fit.syncObsidian ? [] : Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
 				path.startsWith(".obsidian/") &&
 				!(path in this.fit.localShas) &&
 				!pendingClashSet.has(path)
@@ -1685,7 +1688,9 @@ export class FitSync implements IFitSync {
 					// opaquely diffed/overwritten by the normal pipeline. See the comment above
 					// subsetScopeResult's call site for why this can't just be "never scanned".
 					.filter(c => !subsetScopeHandledPaths.has(c.path)),
-				...pendingDeletions.map(path => ({ path, type: 'REMOVED' as const })),
+				...pendingDeletions
+					.filter(path => this.fit.shouldSyncPath(path))
+					.map(path => ({ path, type: 'REMOVED' as const })),
 			];
 			// Paths the local scan did not look at are out of scope in both directions this
 			// sync: local side is excluded in Fit.getLocalChanges, and a remote change here
@@ -2168,7 +2173,7 @@ export class FitSync implements IFitSync {
 			// remote baseline at all is untracked, same as any other git-mask path: nothing to
 			// sync, regardless of what format/scope it would default to.
 			const subsetScopePaths = new Set(
-				Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
+				!this.fit.syncObsidian ? [] : Object.keys(this.fit.lastFetchedRemoteShas).filter(path =>
 					path.startsWith('.obsidian/') &&
 					!this.fit.isHardDenylistedPath(path) &&
 					this.fit.resolveSyncFormat(path) === 'json' &&

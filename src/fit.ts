@@ -49,7 +49,12 @@ export class Fit {
 	fitAttributesWarning: string | null = null;
 	localVault: LocalVault;                 // Local vault (tracks local file state)
 	remoteVault: IRemoteVault = new UnconfiguredRemoteVault(); // Real vault once a PAT is configured (see loadSettings)
+	private ownPluginDir: string | null = null; // e.g. ".obsidian/plugins/fit"
 	private ownDataPath: string | null = null; // e.g. ".obsidian/plugins/fit/data.json"
+	syncObsidian: boolean = false;
+	get isObsidianSyncEnabled(): boolean {
+		return this.syncObsidian;
+	}
 	// Same-sync-only, unpersisted: paths reconciled from untracked→tracked earlier in the
 	// current sync. Needed because the reconcile block's own "local absent" branch clears
 	// lastFetchedRemoteShas[path] (to force correct ADDED-detection downstream), which would
@@ -65,7 +70,10 @@ export class Fit {
 
 	constructor(setting: FitSettings, localStores: LocalStores, vault: Vault, pluginDir?: string) {
 		this.localVault = new LocalVault(vault);
-		if (pluginDir) this.ownDataPath = `${pluginDir}/data.json`;
+		if (pluginDir) {
+			this.ownPluginDir = pluginDir;
+			this.ownDataPath = `${pluginDir}/data.json`;
+		}
 		this.loadSettings(setting);  // NOTE: creates this.remoteVault
 		this.loadLocalStore(localStores);
 	}
@@ -76,6 +84,7 @@ export class Fit {
 		// TODO: Use DI to pass the right impl from FitSync caller.
 
 		// Apply local vault settings unconditionally (don't require PAT)
+		this.syncObsidian = setting.syncObsidian ?? false;
 		this.localVault.configure({
 			syncHiddenFiles: setting.syncHiddenFiles,
 		});
@@ -160,6 +169,8 @@ export class Fit {
 		}
 
 		if (path.startsWith(".obsidian/")) {
+			if (!this.syncObsidian) return false;
+
 			// Tracked purely by git content presence, never a local toggle — orthogonal
 			// to isEligibleForTracking below (a path can be fully eligible and still not
 			// tracked yet).
@@ -244,7 +255,7 @@ export class Fit {
 
 	/** Path-level hard denylist — see src/util/protectedPaths.ts for the "why". */
 	isHardDenylistedPath(path: string): boolean {
-		return isHardDenylistedObsidianPath(path);
+		return isHardDenylistedObsidianPath(path, this.ownPluginDir);
 	}
 
 	/** Replaces the parsed .fitattributes.json content used by shouldSyncPath's format gate. */
@@ -312,6 +323,7 @@ export class Fit {
 	 * docs/sync-logic.md § Baseline Recording for Untracked Files (#169).
 	 */
 	trackedObsidianPaths(): string[] {
+		if (!this.syncObsidian) return [];
 		const paths = new Set<string>();
 		for (const path of Object.keys(this.localShas)) {
 			if (path.startsWith(".obsidian/")) paths.add(path);

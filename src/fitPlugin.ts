@@ -594,7 +594,7 @@ export default class FitPlugin extends Plugin {
 					if (key == "checkEveryXMinutes" || key == "fileChangesNoticeDurationSec") {
 						obj[key] = Number(settings[key]);
 					}
-					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging" || key === "syncHiddenFiles" || key === "syncOnSave" || key === "syncOnOpen") {
+					else if (key === "notifyChanges" || key === "notifyConflicts" || key === "enableDebugLogging" || key === "syncHiddenFiles" || key === "syncOnSave" || key === "syncOnOpen" || key === "syncObsidian") {
 						obj[key] = Boolean(settings[key]);
 					}
 					else {

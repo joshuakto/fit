@@ -52,11 +52,23 @@ export const FITATTRIBUTES_PATH = '.fitattributes.json';
  * Filetype extensions whose sync format is detectable without an explicit
  * .fitattributes.json entry — a tracked `.obsidian/` path with no explicit config
  * falls back to this instead of staying detection-only. .css is the original
- * motivating case (#358, CSS snippets); .md/.txt are the same "plainly plaintext,
+ * motivating case (#358, CSS snippets); .md/.txt/.js are the same "plainly plaintext,
  * no reason to require boilerplate config" reasoning, same as how ordinary
  * (non-`.obsidian/`) files of these types are already always treated as text.
  */
-const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt'];
+const HEURISTIC_TEXT_EXTENSIONS = ['.css', '.md', '.txt', '.js'];
+
+/**
+ * Known .obsidian/ JSON files that must sync as opaque whole-file text:
+ * - community-plugins.json: root-level JSON array; jsonMerge fails on root arrays,
+ *   while text-mode line merge merges enabled plugins cleanly.
+ * - plugin manifest.json: static plugin metadata owned as a whole file; should not
+ *   be field-masked via scope:"subset".
+ */
+const WHOLE_FILE_TEXT_JSON_PATHS = [
+	/^\.obsidian\/community-plugins\.json$/i,
+	/^\.obsidian\/plugins\/[^/]+\/manifest\.json$/i,
+];
 
 /**
  * Filetype extensions whose sync format defaults to structural JSON merge
@@ -71,9 +83,10 @@ const HEURISTIC_JSON_EXTENSIONS = ['.json', '.canvas'];
  * The sync format a path's filetype implies on its own, with no `.fitattributes.json`
  * entry — `null` if unknown (stays detection-only until explicitly configured).
  * Applied the same way for every path, protected or not: `.json`/`.canvas` default to
- * `"json"` (structural merge), `.css`/`.md`/`.txt` default to `"text"`.
+ * `"json"` (structural merge), `.css`/`.md`/`.txt`/`.js` and whole-file JSON manifests default to `"text"`.
  */
 export function detectSyncFormat(path: string): FitAttributeRule['format'] | null {
+	if (WHOLE_FILE_TEXT_JSON_PATHS.some(re => re.test(path))) return 'text';
 	if (HEURISTIC_JSON_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'json';
 	if (HEURISTIC_TEXT_EXTENSIONS.some(ext => hasExtension(path, ext))) return 'text';
 	return null;

@@ -6,7 +6,11 @@
  * content is off-limits.
  */
 
-const PLUGIN_MANAGED_ASSET = /^\.obsidian\/plugins\/[^/]+\/(main\.js|manifest\.json|styles\.css)$/;
+// Internal cache directories in .obsidian/ that should never sync across devices
+const OBSIDIAN_CACHE_FILES = /^\.obsidian\/\.?cache(\/.*)?$/;
+
+// VCS metadata directories checked into plugin folders
+const PLUGIN_VCS_DIRS = /^\.obsidian\/plugins\/[^/]+\/\.(git|github)(\/.*)?$/;
 
 // A plugin dev's own node_modules/ checked into their plugin dir — never something anyone
 // intends to track/push, scoped to plugin dirs specifically (not a blanket anywhere-in-vault
@@ -17,15 +21,35 @@ const PLUGIN_NODE_MODULES_ROOT_SOURCE = String.raw`^\.obsidian\/plugins\/[^/]+\/
 const PLUGIN_NODE_MODULES = new RegExp(`${PLUGIN_NODE_MODULES_ROOT_SOURCE}\\/`);
 const PLUGIN_NODE_MODULES_ROOT = new RegExp(`${PLUGIN_NODE_MODULES_ROOT_SOURCE}$`);
 
+function isFitOwnAsset(path: string, ownPluginDir: string): boolean {
+	if (!path.startsWith(`${ownPluginDir}/`)) return false;
+	const subpath = path.slice(ownPluginDir.length + 1);
+	if (/^(main\.js|manifest\.json|styles\.css)$/.test(subpath)) return true;
+	if (/^debug\.log(\..*)?$/.test(subpath)) return true;
+	return false;
+}
+
 /**
  * Hard, git-content-independent denylist — content never fetched or inspected,
- * enforced independently of `Fit.shouldSyncPath`. Plugin-managed assets
- * (main.js/manifest.json/styles.css) are permanent: owned by Obsidian's plugin loader,
- * no "safe subset of fields" concept applies. FIT's own data.json is NOT here — see
- * `FIT_OWN_SETTINGS_DENYLIST` below, its field denylist instead.
+ * enforced independently of `Fit.shouldSyncPath`.
+ *
+ * Excludes:
+ * - FIT's own runtime assets (main.js, manifest.json, styles.css, debug logs), protecting
+ *   the running plugin from self-overwrite while allowing its data.json to sync via subset masking.
+ * - Plugin node_modules/ and VCS metadata (.git, .github).
+ * - Obsidian cache directories.
+ *
+ * Community plugins (main.js, manifest.json, styles.css, data.json) outside FIT itself
+ * are sync-eligible.
  */
-export function isHardDenylistedObsidianPath(path: string): boolean {
-	return PLUGIN_MANAGED_ASSET.test(path) || PLUGIN_NODE_MODULES.test(path);
+export function isHardDenylistedObsidianPath(path: string, ownPluginDir?: string | null): boolean {
+	const fitDir = ownPluginDir || '.obsidian/plugins/fit';
+	if (isFitOwnAsset(path, fitDir)) return true;
+	return (
+		PLUGIN_NODE_MODULES.test(path) ||
+		PLUGIN_VCS_DIRS.test(path) ||
+		OBSIDIAN_CACHE_FILES.test(path)
+	);
 }
 
 /**

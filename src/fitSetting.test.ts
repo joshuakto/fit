@@ -469,3 +469,46 @@ describe('FitSettingTab - auto-sync triggers (#65)', () => {
 		expect(fakePlugin.settings.syncOnOpen).toBe(true);
 	});
 });
+
+describe('FitSettingTab - Obsidian config sync', () => {
+	it('renders Sync .obsidian folder toggle that persists on change', async () => {
+		const mockLogger = new FitLogger({ adapter: null });
+		const fakeFit: any = {
+			trackedObsidianPaths: () => [],
+			isEligibleForTracking: () => false,
+		};
+		const fakePlugin: any = {
+			app: { vault: { adapter: { stat: vi.fn().mockResolvedValue(null) } } },
+			manifest: { dir: '.obsidian/plugins/fit' },
+			settings: { ...DEFAULT_SETTINGS, syncObsidian: false },
+			saveSettings: vi.fn().mockResolvedValue(undefined),
+			logger: mockLogger,
+			fit: fakeFit,
+		};
+
+		const settingTab = new FitSettingTab({} as any, fakePlugin);
+		await settingTab.obsidianSyncInfoBlock();
+
+		const findToggleByLabel = (labelText: string): HTMLInputElement | null => {
+			const settings = Array.from(settingTab.containerEl.querySelectorAll('.setting-item'));
+			for (const setting of settings) {
+				const nameEl = setting.querySelector('.setting-item-name');
+				if (nameEl?.textContent === labelText) {
+					return setting.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+				}
+			}
+			return null;
+		};
+
+		const syncObsidianToggle = findToggleByLabel('Sync .obsidian folder')!;
+		expect(syncObsidianToggle).not.toBeNull();
+		expect(syncObsidianToggle.checked).toBe(false);
+
+		syncObsidianToggle.checked = true;
+		syncObsidianToggle.dispatchEvent(new Event('change'));
+
+		// Toggle change triggers saveSettings and persists setting value
+		await vi.waitFor(() => expect(fakePlugin.saveSettings).toHaveBeenCalledTimes(1));
+		expect(fakePlugin.settings).toEqual({ ...DEFAULT_SETTINGS, syncObsidian: true }); // Whole settings asserted — only syncObsidian flipped, no unrelated setting touched
+	});
+});
