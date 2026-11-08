@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'crypto';
 import { Vault } from 'obsidian';
 import { Fit } from './fit';
 import { FitSync } from './fitSync';
@@ -45,8 +46,15 @@ describe('sync operation counts', () => {
 	let localStore: LocalStores;
 
 	beforeEach(() => {
-		// Recorded calls take virtual time; setImmediate stays real so crypto digests can finish.
+		// Recorded calls take virtual time. Nothing else may wait on the real event loop, or the
+		// virtual clock could move on before it finishes: SubtleCrypto digests run on a real thread,
+		// so answer them in a microtask instead.
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+		vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (_algorithm, data) => {
+			const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+			const hash = createHash('sha1').update(bytes).digest();
+			return hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength) as ArrayBuffer;
+		});
 		vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
 		initEncryption({ settings: { encryptionPassword: '' } } as any);
 		octokit = new FakeOctokit('test-owner', 'test-repo', 'main');

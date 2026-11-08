@@ -1212,11 +1212,10 @@ export class OpRecorder {
 	/**
 	 * Calls in start order with consecutive same-kind calls merged into one phase, e.g.
 	 * `GET git/blobs ×100 (peak 100 in flight)`. A phase that never overlaps itself omits the peak.
-	 * Calls that start at the same instant are ordered by kind: the order they were issued in
-	 * depends on async scheduling, which would make the snapshot flaky.
+	 * Calls that start at the same instant are listed in the order they were issued.
 	 */
 	phases(): string[] {
-		const ordered = [...this.ops].sort((a, b) => a.start - b.start || a.kind.localeCompare(b.kind));
+		const ordered = [...this.ops].sort((a, b) => a.start - b.start);
 		const runs: { kind: string; ops: typeof ordered }[] = [];
 		for (const op of ordered) {
 			const last = runs[runs.length - 1];
@@ -1282,16 +1281,15 @@ export function instrumentOps(recorder: OpRecorder, octokit: FakeOctokit, vault:
 }
 
 /**
- * Await `promise` while advancing vitest fake timers (which must fake `setTimeout` and `Date`,
- * not `setImmediate`) so that `OpRecorder` latencies elapse in virtual time.
+ * Await `promise` while advancing vitest fake timers (which must fake `setTimeout` and `Date`) so
+ * that `OpRecorder` latencies elapse in virtual time. The code under test must not wait on real
+ * async work (threads, I/O), which this cannot see; the clock would move on without it.
  */
 export async function settleWithVirtualTime<T>(promise: Promise<T>): Promise<T> {
 	let settled = false;
 	const done = promise.finally(() => { settled = true; });
 	// Bounded so a hang fails the test instead of spinning.
 	for (let i = 0; !settled && i < 100_000; i++) {
-		// Let real async work (crypto digests) finish before moving the virtual clock.
-		await new Promise(resolve => setImmediate(resolve));
 		await vi.advanceTimersToNextTimerAsync();
 	}
 	return done;
