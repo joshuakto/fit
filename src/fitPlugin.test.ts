@@ -801,42 +801,78 @@ describe('FitPlugin sync-on-open trigger', () => {
 	});
 });
 
-describe('FitPlugin remind-mode timer', () => {
-	// `remind` only checks the remote for changes on each tick. The tick runs from an interval
-	// callback nobody awaits, so an error that escapes it is an unhandled rejection.
-	function makeRemindPlugin(getRemoteChanges: Mock) {
+describe('FitPlugin auto-sync timer errors', () => {
+	// The timer tick runs from an interval callback nobody awaits, so an error that escapes it is
+	// an unhandled rejection. The real logger writes into an in-memory debug.log.
+	let debugLog = '';
+	const readDebugLog = async () => {
+		await fitLogger.flush();
+		return debugLog;
+	};
+
+	beforeEach(() => {
+		debugLog = '';
+		const vault = {
+			adapter: {
+				exists: async () => debugLog !== '',
+				read: async () => debugLog,
+				append: async (_path: string, data: string) => { debugLog += data; },
+				rename: async () => {},
+				remove: async () => {},
+			},
+		};
+		fitLogger.configure(vault as any, 'plugins/fit');
+		fitLogger.setEnabled(true);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		fitLogger.setEnabled(false);
+	});
+
+	function makeTimerPlugin(autoSync: 'remind' | 'on', getRemoteChanges: Mock = vi.fn()) {
 		const plugin = makePlugin();
 		plugin.settings = {
 			...DEFAULT_SETTINGS,
 			pat: 'token', owner: 'alice', repo: 'notes', branch: 'main',
-			autoSync: 'remind',
+			autoSync,
 		};
 		plugin.fit = { loadSettings: vi.fn(), getRemoteChanges } as any;
 		return plugin;
 	}
 
-	it('given the remote check fails, should log the error with its type and details instead of rejecting', async () => {
-		const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
-		vi.spyOn(console, 'error').mockImplementation(() => {});
+	it('given the remind-mode remote check fails with a VaultError, should write its type, message and details to the debug log instead of rejecting', async () => {
 		const error = VaultError.authentication('Bad credentials', { authSubtype: 'rate_limited' });
-		const plugin = makeRemindPlugin(vi.fn().mockRejectedValue(error));
+		const plugin = makeTimerPlugin('remind', vi.fn().mockRejectedValue(error));
 
 		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
 
-		expect(logSpy).toHaveBeenCalledWith('[Plugin] Remind-mode remote check failed', {
-			type: 'authentication',
-			message: 'Bad credentials',
-			details: { authSubtype: 'rate_limited' },
-		});
+		// Each entry is prefixed with a timestamp, so the body is asserted whole after it.
+		expect(await readDebugLog()).toContain(
+			'[Plugin] Auto-sync timer failed: {\n' +
+			'  "type": "authentication",\n' +
+			'  "message": "Bad credentials",\n' +
+			'  "details": {\n' +
+			'    "authSubtype": "rate_limited"\n' +
+			'  }\n' +
+			'}');
 	});
 
-	it('given the remote check fails with a plain Error, should log its message instead of rejecting', async () => {
-		const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
-		vi.spyOn(console, 'error').mockImplementation(() => {});
-		const plugin = makeRemindPlugin(vi.fn().mockRejectedValue(new Error('socket hang up')));
+	it('given the remind-mode remote check fails with a plain Error, should write its message to the debug log instead of rejecting', async () => {
+		const plugin = makeTimerPlugin('remind', vi.fn().mockRejectedValue(new Error('socket hang up')));
 
 		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
 
-		expect(logSpy).toHaveBeenCalledWith('[Plugin] Remind-mode remote check failed', { message: 'socket hang up' });
+		expect(await readDebugLog()).toContain('[Plugin] Auto-sync timer failed: {\n  "message": "socket hang up"\n}');
+	});
+
+	it('given settings are incomplete and Obsidian settings API is unavailable, should write the error to the debug log instead of rejecting', async () => {
+		const plugin = makeTimerPlugin('remind');
+		plugin.settings = { ...plugin.settings, pat: '' }; // not configured: the guard opens the settings dialog
+		// makePlugin's app has no `setting`, so opening the dialog throws
+
+		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
+
+		expect(await readDebugLog()).toContain('[Plugin] Auto-sync timer failed');
 	});
 });
