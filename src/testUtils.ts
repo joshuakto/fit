@@ -2,6 +2,7 @@
  * Test utilities for FIT plugin tests
  */
 
+import { vi } from 'vitest';
 import { TFile } from 'obsidian';
 import { TreeNode } from './remoteGitHubVault';
 import { ApplyChangesResult, IVault, VaultError, VaultReadResult } from './vault';
@@ -137,6 +138,30 @@ export class FakeObsidianVault {
 			this.filesOnDisk.delete(path);
 		}
 	};
+
+	/**
+	 * Give the adapter a `list()` like Obsidian's: the direct children of a folder as full
+	 * vault-relative paths ('/' is the root, as the hidden-path scan passes it). Files are stored
+	 * flat here, so a folder's children are found by path prefix. Opt-in: tests written before it
+	 * existed rely on the scan finding nothing.
+	 */
+	enableAdapterList(): this {
+		(this.adapter as any).list = async (dir: string) => {
+			const folder = dir.replace(/^\/+|\/+$/g, ''); // '/' and '' are the root
+			const prefix = folder && folder + '/';
+			const files: string[] = [];
+			const folders = new Set<string>();
+			for (const path of this.filesOnDisk.keys()) {
+				if (!path.startsWith(prefix)) continue;
+				const rest = path.slice(prefix.length);
+				const slash = rest.indexOf('/');
+				if (slash === -1) files.push(path);
+				else folders.add(prefix + rest.slice(0, slash));
+			}
+			return { files, folders: [...folders] };
+		};
+		return this;
+	}
 
 	// Vault methods (work only for indexed files)
 	readBinary = async (file: TFile) => {
@@ -1146,4 +1171,128 @@ export class FakeRemoteVault implements IVault<"remote"> {
 		// No filtering for remote vault
 		return true;
 	}
+}
+
+/**
+ * Records every call to the instrumented test doubles (GitHub requests and local vault
+ * filesystem calls) so a test can report operation counts and how they are sequenced.
+ *
+ * Each call takes a fixed virtual latency, so calls that overlap in time really were issued
+ * together and the elapsed time is the critical path of the sync. This needs vitest fake timers
+ * for `setTimeout` and `Date` (see `settleWithVirtualTime`); without them it waits in real time.
+ */
+export class OpRecorder {
+	private ops: { kind: string; start: number; end: number }[] = [];
+
+	/** Run `fn` as an operation of `kind`, taking `latencyMs` of (virtual) time to complete. */
+	async record<T>(kind: string, latencyMs: number, fn: () => Promise<T> | T): Promise<T> {
+		const op = { kind, start: Date.now(), end: -1 };
+		this.ops.push(op);
+		try {
+			const result = await fn();
+			await new Promise(resolve => setTimeout(resolve, latencyMs));
+			return result;
+		} finally {
+			op.end = Date.now();
+		}
+	}
+
+	/** Forget everything recorded so far, to measure only what follows. */
+	reset(): void {
+		this.ops = [];
+	}
+
+	/** Number of calls per kind, sorted by kind. */
+	counts(): Record<string, number> {
+		const counts: Record<string, number> = {};
+		for (const { kind } of this.ops) counts[kind] = (counts[kind] ?? 0) + 1;
+		return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
+	}
+
+	/**
+	 * Calls in start order with consecutive same-kind calls merged into one phase, e.g.
+	 * `GET git/blobs ×100 (peak 100 in flight)`. A phase that never overlaps itself omits the peak.
+	 * Calls that start at the same instant are ordered by kind: the order they were issued in
+	 * depends on async scheduling, which would make the snapshot flaky.
+	 */
+	phases(): string[] {
+		const ordered = [...this.ops].sort((a, b) => a.start - b.start || a.kind.localeCompare(b.kind));
+		const runs: { kind: string; ops: typeof ordered }[] = [];
+		for (const op of ordered) {
+			const last = runs[runs.length - 1];
+			if (last?.kind === op.kind) last.ops.push(op);
+			else runs.push({ kind: op.kind, ops: [op] });
+		}
+		return runs.map(({ kind, ops }) => {
+			if (ops.length === 1) return kind;
+			const peak = peakOverlap(ops);
+			return `${kind} ×${ops.length}` + (peak > 1 ? ` (peak ${peak} in flight)` : '');
+		});
+	}
+
+	/** Time from the first call starting to the last one ending: the critical path. */
+	elapsedMs(): number {
+		if (this.ops.length === 0) return 0;
+		return Math.max(...this.ops.map(op => op.end)) - Math.min(...this.ops.map(op => op.start));
+	}
+
+	/** Counts, critical path and phases, as plain text for a snapshot. */
+	report(): string {
+		const counts = Object.entries(this.counts()).map(([kind, n]) => `${kind}: ${n}`);
+		return [...counts, '', `critical path: ${this.elapsedMs()} ms`, '', 'phases:', ...this.phases().map((phase, i) => `${i + 1}. ${phase}`), ''].join('\n');
+	}
+}
+
+function peakOverlap(ops: { start: number; end: number }[]): number {
+	const edges = ops
+		.flatMap(op => [{ at: op.start, delta: 1 }, { at: op.end, delta: -1 }])
+		// A call starting the instant another ends did not overlap it: process ends first.
+		.sort((a, b) => a.at - b.at || a.delta - b.delta);
+	let current = 0;
+	let peak = 0;
+	for (const { delta } of edges) {
+		current += delta;
+		peak = Math.max(peak, current);
+	}
+	return peak;
+}
+
+/** Virtual latency of one GitHub request and one local vault call; only the ratio matters. */
+const REMOTE_LATENCY_MS = 100;
+const LOCAL_LATENCY_MS = 20;
+
+/**
+ * Route every `FakeOctokit.request` and `FakeObsidianVault` filesystem call through `recorder`.
+ * Mutates the doubles in place; call before handing them to the code under test.
+ */
+export function instrumentOps(recorder: OpRecorder, octokit: FakeOctokit, vault: FakeObsidianVault): void {
+	const request = octokit.request;
+	octokit.request = (route, params) =>
+		recorder.record(route.replace('/repos/{owner}/{repo}/', ''), REMOTE_LATENCY_MS, () => request(route, params));
+
+	const adapter = vault.adapter as Record<string, (...args: any[]) => Promise<unknown>>;
+	for (const name of ['stat', 'read', 'readBinary', 'write', 'writeBinary', 'remove', 'list']) {
+		const original = adapter[name];
+		adapter[name] = (...args) => recorder.record(`fs.${name}`, LOCAL_LATENCY_MS, () => original(...args));
+	}
+	for (const name of ['readBinary', 'create', 'createBinary', 'modify', 'modifyBinary', 'delete'] as const) {
+		const original = vault[name] as (...args: any[]) => Promise<unknown>;
+		(vault as any)[name] = (...args: unknown[]) => recorder.record(`vault.${name}`, LOCAL_LATENCY_MS, () => original(...args));
+	}
+}
+
+/**
+ * Await `promise` while advancing vitest fake timers (which must fake `setTimeout` and `Date`,
+ * not `setImmediate`) so that `OpRecorder` latencies elapse in virtual time.
+ */
+export async function settleWithVirtualTime<T>(promise: Promise<T>): Promise<T> {
+	let settled = false;
+	const done = promise.finally(() => { settled = true; });
+	// Bounded so a hang fails the test instead of spinning.
+	for (let i = 0; !settled && i < 100_000; i++) {
+		// Let real async work (crypto digests) finish before moving the virtual clock.
+		await new Promise(resolve => setImmediate(resolve));
+		await vi.advanceTimersToNextTimerAsync();
+	}
+	return done;
 }

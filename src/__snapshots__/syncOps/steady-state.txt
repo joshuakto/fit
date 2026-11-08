@@ -1,0 +1,15 @@
+fs.list: 2
+fs.stat: 2
+GET commits/{ref}: 1
+GET git/trees/{tree_sha}: 1
+vault.readBinary: 100
+
+critical path: 200 ms
+
+phases:
+1. fs.list
+2. GET commits/{ref}
+3. fs.list
+4. fs.stat ×2 (peak 2 in flight)
+5. vault.readBinary ×100 (peak 100 in flight)
+6. GET git/trees/{tree_sha}

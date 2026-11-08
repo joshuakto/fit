@@ -1,0 +1,25 @@
+fs.list: 2
+fs.stat: 2
+GET commits/{ref}: 2
+GET git/trees/{tree_sha}: 1
+PATCH git/refs/{ref}: 1
+POST git/blobs: 100
+POST git/commits: 1
+POST git/trees: 1
+vault.readBinary: 200
+
+critical path: 2700 ms
+
+phases:
+1. fs.list
+2. GET commits/{ref}
+3. fs.list
+4. fs.stat ×2 (peak 2 in flight)
+5. vault.readBinary ×100 (peak 100 in flight)
+6. GET git/trees/{tree_sha}
+7. vault.readBinary ×100
+8. GET commits/{ref}
+9. POST git/blobs ×100 (peak 100 in flight)
+10. POST git/trees
+11. POST git/commits
+12. PATCH git/refs/{ref}
