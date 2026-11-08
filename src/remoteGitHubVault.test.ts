@@ -97,6 +97,18 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
+			it("given a recursive tree GitHub cut off as too large, should fail instead of reading the missing files as remote deletions", async () => {
+				// GitHub caps a recursive tree at about 100,000 entries or 7 MB and sets `truncated`.
+				fakeOctokit.setupInitialState(COMMIT123_SHA, TREE456_SHA, [
+					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA }
+				]);
+				fakeOctokit.truncateTrees();
+
+				const error = await vault.readFromSource().catch((e: unknown) => e);
+
+				expect(error).toEqual(expect.objectContaining({ name: 'VaultError', type: 'remote_too_large' }));
+			});
+
 			it("should return all paths without filtering", async () => {
 				const mockTree: TreeNode[] = [
 					{ path: "file1.md", type: "blob", mode: "100644", sha: BLOB1_SHA },

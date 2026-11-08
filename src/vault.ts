@@ -105,6 +105,7 @@ export type VaultErrorType =
   | 'network'           // General networking problem (request failure without HTTP status)
   | 'remote_not_found'  // Remote repository, branch, or access issues (404)
   | 'authentication'    // Authentication/authorization failures (401, 403)
+  | 'remote_too_large'  // Remote file listing exceeds what GitHub returns in one response (truncated tree)
   | 'filesystem';       // Local file system errors
 
 /**
@@ -159,6 +160,9 @@ export class VaultError extends Error {
 
 	/** Authentication/authorization failure (401, 403). See `details.authSubtype` for a narrower cause. */
 	static authentication = VaultError.create('authentication');
+
+	/** Remote is too large to list in one request: GitHub truncated the recursive tree */
+	static remoteTooLarge = VaultError.create('remote_too_large');
 
 	/** Local file system error (EACCES, ENOENT, etc.) */
 	static filesystem = VaultError.create('filesystem');

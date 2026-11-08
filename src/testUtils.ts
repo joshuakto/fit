@@ -294,6 +294,13 @@ export class FakeOctokit {
 
 	private _persistentErrors: Set<string> = new Set();
 
+	private treesTruncated = false;
+
+	/** Make tree responses report `truncated: true`, as GitHub does when a recursive tree is too large. */
+	truncateTrees(): void {
+		this.treesTruncated = true;
+	}
+
 	/**
 	 * Add a blob to the fake repository.
 	 */
@@ -381,7 +388,7 @@ export class FakeOctokit {
 			if (!tree) {
 				throw new Error(`Tree not found: ${treeSha}`);
 			}
-			return { data: { tree } };
+			return { data: { tree, ...(this.treesTruncated && { truncated: true }) } };
 		}
 
 		// GET /repos/{owner}/{repo}/git/blobs/{file_sha}
