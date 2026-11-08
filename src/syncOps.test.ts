@@ -97,7 +97,7 @@ describe('sync operation counts', () => {
 		});
 		const notice = { setMessage: vi.fn(), remove: vi.fn() };
 		const result = await settleWithVirtualTime(fitSync.sync(notice as any));
-		expect(result.success).toBe(true);
+		expect(result).toEqual(expect.objectContaining({ success: true }));
 	}
 
 	/** Sync once unrecorded to reach a settled state, then record the next sync. */
