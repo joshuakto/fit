@@ -459,6 +459,26 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
+			it("given binary content read from disk, should upload it to the blob API as base64 exactly as FileContent encodes it", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+				const requestSpy = vi.spyOn(fakeOctokit, 'request');
+				// Bytes that are not valid UTF-8, so sending them as text would corrupt them.
+				const bytes = new Uint8Array([0xff, 0x00, 0xfe, 0x80, 0x01]).buffer;
+
+				await vault.applyChanges(
+					[{ path: "image.png", content: FileContent.fromArrayBuffer(bytes, 'base64') }],
+					[]
+				);
+
+				// The expected string comes from FileContent itself, so this checks that the vault
+				// uploads what FileContent produces, not how base64 is computed.
+				const blobUpload = requestSpy.mock.calls.find(([route]) => route === "POST /repos/{owner}/{repo}/git/blobs");
+				expect(blobUpload?.[1]).toEqual(expect.objectContaining({
+					content: FileContent.fromArrayBuffer(bytes, 'base64').toBase64(),
+					encoding: 'base64'
+				}));
+			});
+
 			it("should skip changes when no tree nodes created", async () => {
 				const existingBlobSha = fakeOctokit.hashContent("Same content") as BlobSha;
 				const mockTree: TreeNode[] = [
