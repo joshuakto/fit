@@ -12,10 +12,6 @@ jobs:
   quality-checks:
     runs-on: ubuntu-latest
 
-    env:
-      # Required for crypto module on node <19 (for SHA-1 digest)
-      NODE_OPTIONS: "--experimental-global-webcrypto"
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v7
@@ -23,8 +19,8 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v7
       with:
-        # Corresponds to Obsidian 1.4.0
-        node-version: '18.x'
+        # Node in the Electron of the earliest supported Obsidian (1.11.4 -> Electron 39 -> Node 22)
+        node-version: '22.x'
         cache: 'npm'
 
     - name: Install dependencies

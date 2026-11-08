@@ -12,11 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
-
-    env:
-      # Required for crypto module on node <19 (for SHA-1 digest)
-      NODE_OPTIONS: ${{ matrix.node-version == '18.x' && '--experimental-global-webcrypto' || '' }}
+        # Node in the Electron of the earliest (1.11.4 -> Electron 39 -> Node 22) and latest (1.15.0 -> Electron 43 -> Node 24) supported Obsidian
+        node-version: [22.x, 24.x]
 
     steps:
     - name: Checkout code
