@@ -459,6 +459,25 @@ describe("RemoteGitHubVault", () => {
 				});
 			});
 
+			it("given binary content read from disk, should store it on the remote as base64 exactly as FileContent encodes it", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+				// Bytes that are not valid UTF-8, so sending them as text would corrupt them.
+				const bytes = new Uint8Array([0xff, 0x00, 0xfe, 0x80, 0x01]).buffer;
+
+				await vault.applyChanges(
+					[{ path: "image.png", content: FileContent.fromArrayBuffer(bytes, 'base64') }],
+					[]
+				);
+
+				// The expected string comes from FileContent itself, so this checks that the vault
+				// uploads what FileContent produces, not how base64 is computed.
+				const [node] = fakeOctokit.getCurrentTree()!;
+				expect(fakeOctokit.getBlob(node.sha as BlobSha)).toEqual({
+					content: FileContent.fromArrayBuffer(bytes, 'base64').toBase64(),
+					encoding: 'base64'
+				});
+			});
+
 			it("should skip changes when no tree nodes created", async () => {
 				const existingBlobSha = fakeOctokit.hashContent("Same content") as BlobSha;
 				const mockTree: TreeNode[] = [

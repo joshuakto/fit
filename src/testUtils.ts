@@ -243,6 +243,7 @@ export class FakeOctokit {
 	private commits: Map<CommitSha, { tree: TreeSha; parents: CommitSha[]; message: string }> = new Map();
 	private trees: Map<TreeSha, TreeNode[]> = new Map();
 	private blobs: Map<BlobSha, string> = new Map(); // blob SHA -> content
+	private blobEncodings: Map<BlobSha, string> = new Map(); // blob SHA -> encoding it was uploaded with
 	private repoExists: boolean = true; // Simulate whether repository exists
 	private errorSimulations: Map<string, Error> = new Map(); // route -> error to throw
 
@@ -298,6 +299,12 @@ export class FakeOctokit {
 	 */
 	addBlob(sha: BlobSha, content: string): void {
 		this.blobs.set(sha, content);
+	}
+
+	/** A blob as the fake holds it: the content and the encoding it was uploaded with (GitHub's default is utf-8). */
+	getBlob(sha: BlobSha): { content: string; encoding: string } | undefined {
+		const content = this.blobs.get(sha);
+		return content === undefined ? undefined : { content, encoding: this.blobEncodings.get(sha) ?? 'utf-8' };
 	}
 
 	/**
@@ -392,6 +399,7 @@ export class FakeOctokit {
 			// Create a simple hash from content for deterministic SHA generation
 			const sha = this.hashContent(params.content) as BlobSha;
 			this.blobs.set(sha, params.content);
+			this.blobEncodings.set(sha, params.encoding ?? 'utf-8');
 			return { data: { sha } };
 		}
 
