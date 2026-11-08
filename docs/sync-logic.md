@@ -1193,7 +1193,8 @@ sequenceDiagram
    - Local SHA computation taking > 10 seconds (hundreds of files on mobile)
 
 Conditional extra-cost mechanisms beyond this general model (e.g. per-clash base-blob fetches):
-[Sync Performance Inventory](./sync-performance-inventory.md).
+[Sync Performance Inventory](./sync-performance-inventory.md), which also links snapshots of the
+operation counts of whole syncs (`src/syncOps.test.ts`).
 
 ### Optimizations
 
