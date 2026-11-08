@@ -62,5 +62,8 @@
 		"@octokit/plugin-retry": "^8.0.3",
 		"ignore": "^7.0.5",
 		"node-diff3": "^3.2.1"
+	},
+	"overrides": {
+		"moment": "^2.31.0"
 	}
 }
