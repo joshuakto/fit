@@ -11,6 +11,8 @@ import { FITATTRIBUTES_PATH } from '@/fitAttributes';
 import type { LocalStores } from '@/localStores';
 import type { BlobSha } from '@/util/hashing';
 import { FakeSecretStorage } from './testUtils';
+import { VaultError } from '@/vault';
+import { fitLogger } from '@/logger';
 
 vi.mock('@/fitStatusModal', () => ({
 	// Must use a regular function (not arrow) so it can be used as a constructor with `new`.
@@ -796,5 +798,45 @@ describe('FitPlugin sync-on-open trigger', () => {
 		await (plugin as any).handleSyncOnOpen();
 
 		expect(stub.sync).not.toHaveBeenCalled();
+	});
+});
+
+describe('FitPlugin remind-mode timer', () => {
+	// `remind` only checks the remote for changes on each tick. The tick runs from an interval
+	// callback nobody awaits, so an error that escapes it is an unhandled rejection.
+	function makeRemindPlugin(getRemoteChanges: Mock) {
+		const plugin = makePlugin();
+		plugin.settings = {
+			...DEFAULT_SETTINGS,
+			pat: 'token', owner: 'alice', repo: 'notes', branch: 'main',
+			autoSync: 'remind',
+		};
+		plugin.fit = { loadSettings: vi.fn(), getRemoteChanges } as any;
+		return plugin;
+	}
+
+	it('given the remote check fails, should log the error with its type and details instead of rejecting', async () => {
+		const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const error = VaultError.authentication('Bad credentials', { authSubtype: 'rate_limited' });
+		const plugin = makeRemindPlugin(vi.fn().mockRejectedValue(error));
+
+		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
+
+		expect(logSpy).toHaveBeenCalledWith('[Plugin] Remind-mode remote check failed', {
+			type: 'authentication',
+			message: 'Bad credentials',
+			details: { authSubtype: 'rate_limited' },
+		});
+	});
+
+	it('given the remote check fails with a plain Error, should log its message instead of rejecting', async () => {
+		const logSpy = vi.spyOn(fitLogger, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const plugin = makeRemindPlugin(vi.fn().mockRejectedValue(new Error('socket hang up')));
+
+		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
+
+		expect(logSpy).toHaveBeenCalledWith('[Plugin] Remind-mode remote check failed', { message: 'socket hang up' });
 	});
 });

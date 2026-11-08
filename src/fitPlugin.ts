@@ -5,6 +5,7 @@ import { Fit } from '@/fit';
 import FitNotice from '@/fitNotice';
 import FitSettingTab from '@/fitSettingTab';
 import { FitSync } from '@/fitSync';
+import { VaultError } from '@/vault';
 import { showFileChanges, showUnappliedConflicts } from '@/utils';
 import { fitLogger } from '@/logger';
 import { LocalStores, parseLocalStore } from '@/localStores';
@@ -446,11 +447,24 @@ export default class FitPlugin extends Plugin {
 			if (this.settings.autoSync === "on" || this.settings.autoSync === "muted") {
 				await this.executeSyncWithUICoordination('auto');
 			} else if (this.settings.autoSync === "remind") {
-				const { changes } = await this.fit.getRemoteChanges();
-				if (changes.length > 0) {
-					const initialMessage = "Remote update detected, please pull the latest changes.";
-					const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
-					intervalNotice.remove("static");
+				try {
+					const { changes } = await this.fit.getRemoteChanges();
+					if (changes.length > 0) {
+						const initialMessage = "Remote update detected, please pull the latest changes.";
+						const intervalNotice = new FitNotice(this.fit, ["static"], initialMessage);
+						intervalNotice.remove("static");
+					}
+				} catch (error) {
+					// The timer's promise is not awaited, so an error escaping here would be an unhandled
+					// rejection that never reaches the debug log. Only logged: showing a notice each tick
+					// is a separate decision (#450).
+					const message = error instanceof Error ? error.message : String(error);
+					fitLogger.log('[Plugin] Remind-mode remote check failed', {
+						...(error instanceof VaultError && { type: error.type }),
+						message,
+						...(error instanceof VaultError && { details: error.details || {} }),
+					});
+					console.error(`Remind-mode remote check failed: ${message}`, error);
 				}
 			}
 		}
