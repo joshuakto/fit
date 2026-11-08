@@ -2073,6 +2073,9 @@ export class FitSync implements IFitSync {
 				case 'remote_not_found':
 					baseMessage = `${syncError.message}. Check your repo and branch settings.`;
 					break;
+				case 'remote_too_large':
+					baseMessage = syncError.message;
+					break;
 				case 'filesystem':
 					baseMessage = `File system error: ${syncError.message}`;
 					break;

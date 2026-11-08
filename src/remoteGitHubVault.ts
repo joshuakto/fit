@@ -258,19 +258,30 @@ export class RemoteGitHubVault implements IRemoteVault {
 	 * Get the git tree for a given tree SHA
 	 */
 	private async getTree(tree_sha: TreeSha): Promise<TreeNode[]> {
+		let tree;
 		try {
-			const { data: tree } = await this.octokit.request(
+			({ data: tree } = await this.octokit.request(
 				`GET /repos/{owner}/{repo}/git/trees/{tree_sha}`, {
 					owner: this.owner,
 					repo: this.repo,
 					tree_sha,
 					recursive: 'true',
 					headers: this.headers
-				});
-			return tree.tree as TreeNode[];
+				}));
 		} catch (error) {
 			return await this.wrapOctokitError(error, 'repo-or-branch');
 		}
+		// GitHub caps a recursive tree (about 100,000 entries or 7 MB) and sets `truncated` instead
+		// of failing. Files missing from a cut-off tree would read as remote deletions and be
+		// deleted locally, so stop the sync.
+		if (tree.truncated) {
+			throw VaultError.remoteTooLarge(
+				'The remote repository has too many files for FIT to list in one request ' +
+				'(GitHub returned only part of the file list, which can happen above about 100,000 files or 7 MB). ' +
+				'Sync stopped so that no files are deleted by mistake.'
+			);
+		}
+		return tree.tree as TreeNode[];
 	}
 
 
