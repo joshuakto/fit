@@ -1072,13 +1072,11 @@ lastFetchedRemoteShas = {
 **Problem:**
 - Device A pushes changes
 - Device B pushes changes before pulling A's changes
-- Commit SHAs diverge
+- If B's push takes A's new commit as its parent, B records A's files as part of B's new remote baseline without ever downloading them. They are absent locally, and no later sync detects them as remote changes, so they are never pulled.
 
-**GitHub Protection:** Branch update requires parent commit SHA
-- Second push fails with 422 error
-- Device must pull and retry
+**Protection:** `applyChanges` receives `expectedParentCommitSha` — the commit the sync read before preparing its push. It re-reads the branch before creating any blob or commit; if the branch has moved, it refuses the push with a `remote_moved` `VaultError` instead of adopting the newer commit. Both the normal push and the `scope:"subset"` lane's own push pass this value, and the next sync pulls the other device's changes before pushing.
 
-**Handling:** Sync fails gracefully, user can retry
+**Handling:** Sync fails gracefully with "Sync again to pull the new changes"; user can retry. A commit landing in the small window between that check and the ref update is still rejected by GitHub's fast-forward requirement (422).
 
 ### Network Interruption
 

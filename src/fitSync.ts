@@ -234,7 +234,8 @@ export class FitSync implements IFitSync {
 	private async syncSubsetScopePaths(
 		remoteTreeSha: FileStates,
 		remoteFitAttributes: FitAttributesFile,
-		previouslyPendingClashPaths: Set<string>
+		previouslyPendingClashPaths: Set<string>,
+		expectedParentCommitSha: CommitSha
 	): Promise<{
 		localOps: FileChange[]; remoteOps: FileChange[]; clashes: FileClash[];
 		commitSha?: CommitSha;
@@ -380,7 +381,10 @@ export class FitSync implements IFitSync {
 
 		let commitSha: CommitSha | undefined;
 		if (pushes.length > 0 || deletions.length > 0) {
-			const result = await this.fit.remoteVault.applyChanges(pushes, deletions, { clashPaths: new Set() });
+			const result = await this.fit.remoteVault.applyChanges(pushes, deletions, {
+				clashPaths: new Set(),
+				expectedParentCommitSha
+			});
 			commitSha = result.commitSha;
 			for (const { path } of pushes) {
 				const newSha = result.newState[path];
@@ -1671,7 +1675,7 @@ export class FitSync implements IFitSync {
 			// would just be re-askable once remote's rule is known, not baked into an
 			// already-produced list from a scan that ran before that rule existed.
 			const remoteFitAttributes = await this.resolveRemoteFitAttributes(remoteTreeSha);
-			const subsetScopeResult = await this.syncSubsetScopePaths(remoteTreeSha, remoteFitAttributes, previouslyPendingClashPaths);
+			const subsetScopeResult = await this.syncSubsetScopePaths(remoteTreeSha, remoteFitAttributes, previouslyPendingClashPaths, remoteCommitSha);
 			const subsetScopeHandledPaths = new Set(subsetScopeResult.handledPaths);
 
 			// localChanges is pre-filtered by getLocalChanges() (shouldTrackState + shouldSyncPath).
@@ -1989,7 +1993,10 @@ export class FitSync implements IFitSync {
 			}
 		}
 
-		const applied = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete, { clashPaths: new Set() });
+		const applied = await this.fit.remoteVault.applyChanges(filesToWrite, filesToDelete, {
+			clashPaths: new Set(),
+			expectedParentCommitSha: localUpdate.parentCommitSha
+		});
 		// Retried next sync like a rate-limited upload: the pre-sync baseline is restored for these paths.
 		const result = unreadableAtPush.length === 0
 			? applied
@@ -2074,6 +2081,9 @@ export class FitSync implements IFitSync {
 					baseMessage = `${syncError.message}. Check your repo and branch settings.`;
 					break;
 				case 'remote_too_large':
+					baseMessage = syncError.message;
+					break;
+				case 'remote_moved':
 					baseMessage = syncError.message;
 					break;
 				case 'filesystem':
