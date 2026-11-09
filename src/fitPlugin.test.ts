@@ -873,6 +873,8 @@ describe('FitPlugin auto-sync timer errors', () => {
 
 		await expect((plugin as any).handleAutoSyncTimer()).resolves.toBeUndefined();
 
-		expect(await readDebugLog()).toContain('[Plugin] Auto-sync timer failed');
+		// The TypeError text differs between JS engines, so the whole entry is matched with any
+		// non-empty message instead of a literal.
+		expect(await readDebugLog()).toMatch(/\[Plugin\] Auto-sync timer failed: \{\n {2}"message": ".+"\n\}/);
 	});
 });
