@@ -151,6 +151,8 @@ const arrayBuffer = await vault.adapter.readBinary(path);
 
 ## Automated Validation
 
+The rules in this document apply to the plugin code that ships in the bundle. Test files, `src/__mocks__/` and `src/testUtils.ts` run in Node, never on mobile, so they may import Node built-ins (the lint rules below exclude them for that reason).
+
 Compatibility issues are caught mechanically by:
 1. ✅ **ESLint rules for plugin source** (`eslint.config.js`, `src/**` excluding tests), each checked by a snippet test in [src/apiCompatibility.test.ts](../src/apiCompatibility.test.ts):
    - `no-restricted-globals`: `Buffer`, `require`, `process`
