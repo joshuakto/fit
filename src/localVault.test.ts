@@ -591,8 +591,8 @@ describe('LocalVault', () => {
 			// Should NOT try to create folder (it already exists)
 			expect(mockVault.createFolder).not.toHaveBeenCalled();
 			expect(mockVault.adapter.mkdir).not.toHaveBeenCalled();
-			// Should create the file using text API (JSON is plaintext)
-			expect(mockVault.create).toHaveBeenCalledWith(
+			// Should create the file using adapter API (hidden parent path is not indexed by vault)
+			expect(mockVault.adapter.write).toHaveBeenCalledWith(
 				'_fit/.obsidian/workspace.json',
 				'{}'
 			);

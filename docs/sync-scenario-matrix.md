@@ -184,6 +184,7 @@ fitSync.realFit.test.ts
 └ FitSync
   ├ Protected path handling (📁 shouldSyncPath filtering)
   │ ├ 'should exclude 📁 _fit/ directory from sync operations'
+  │ ├ 'syncs community plugin code assets (main.js, manifest.json, styles.css) to local vault'
   │ ├ 'syncs a tracked %s path as format:"text" with no .fitattributes.json entry' (.each)
   │ ├ 'leaves an unedited .obsidian/ file on disk when remote removes it, instead of...'
   │ ├ 'treats a locally-edited .obsidian/ path as an ordinary clash (not an untrack...'

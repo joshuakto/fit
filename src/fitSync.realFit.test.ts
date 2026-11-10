@@ -51,7 +51,8 @@ describe('FitSync', () => {
 		owner: 'test-owner',
 		repo: 'test-repo',
 		branch: 'test-branch',
-		deviceName: 'test-device'
+		deviceName: 'test-device',
+		syncObsidian: true,
 	};
 
 	function createFit(initialLocalStoreState: LocalStores, pluginDir?: string) : Fit {
@@ -367,7 +368,7 @@ describe('FitSync', () => {
 			// === STEP 1: Remote has files in .obsidian/ directory ===
 			// These are filtered by BOTH shouldSyncPath (protected) and shouldTrackState (hidden)
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/plugins/plugin1/main.js', content: FileContent.fromPlainText('Plugin code') },
+				{ path: '.obsidian/plugins/fit/main.js', content: FileContent.fromPlainText('Plugin code') },
 				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('{"theme":"dark"}') },
 				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
 			], []);
@@ -400,8 +401,84 @@ describe('FitSync', () => {
 				},
 				protectedPathShas: {
 					'.obsidian/unconfigured': expect.any(String),
-					'.obsidian/plugins/plugin1/main.js': expect.any(String)
+					'.obsidian/plugins/fit/main.js': expect.any(String)
 				}
+			});
+		});
+
+		it('syncs community plugin code assets (main.js, manifest.json, styles.css) to local vault', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("hello");') },
+				{ path: '.obsidian/plugins/my-plugin/manifest.json', content: FileContent.fromPlainText('{"id":"my-plugin","name":"My Plugin"}') },
+				{ path: '.obsidian/plugins/my-plugin/styles.css', content: FileContent.fromPlainText('.my-plugin { color: red; }') },
+				{ path: '.obsidian/community-plugins.json', content: FileContent.fromPlainText('["my-plugin"]') },
+			], []);
+
+			// Two syncs to establish tracking (standard shape for protected .obsidian/ paths)
+			await syncAndHandleResult(fitSync, createMockNotice());
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true, clash: [] }));
+			expect(localVault.getAllFilesAsRaw()).toMatchObject({
+				'.obsidian/plugins/my-plugin/main.js': 'console.log("hello");',
+				'.obsidian/plugins/my-plugin/manifest.json': '{"id":"my-plugin","name":"My Plugin"}',
+				'.obsidian/plugins/my-plugin/styles.css': '.my-plugin { color: red; }',
+				'.obsidian/community-plugins.json': '["my-plugin"]',
+			});
+		});
+
+		it('completely excludes .obsidian/ directory when syncObsidian setting is disabled', async () => {
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			fitSync.fit.syncObsidian = false;
+
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("hello");') },
+				{ path: '.obsidian/plugins/my-plugin/data.json', content: FileContent.fromPlainText('{"setting": true}') },
+				{ path: '.obsidian/community-plugins.json', content: FileContent.fromPlainText('["my-plugin"]') },
+				{ path: '.obsidian/hotkeys.json', content: FileContent.fromPlainText('{"command": []}') },
+				{ path: 'normal.md', content: FileContent.fromPlainText('Normal file') }
+			], []);
+
+			await syncAndHandleResult(fitSync, createMockNotice());
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// '.obsidian/community-plugins.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/hotkeys.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/plugins/my-plugin/data.json' absent — syncObsidian disabled, remote push ignored
+				// '.obsidian/plugins/my-plugin/main.js' absent — syncObsidian disabled, remote push ignored
+				'normal.md': 'Normal file' // Pulled from remote (first sync)
+			});
+		});
+
+		it('does not push Phase 0 clash deletions for .obsidian/ paths when syncObsidian is disabled', async () => {
+			localStoreState.pendingClashes = ['.obsidian/plugins/my-plugin/main.js'];
+			const fitSync = createFitSync();
+			localVault.setSyncHiddenFiles(true);
+			fitSync.fit.syncObsidian = false;
+
+			// Remote has the file
+			await remoteVault.applyChanges([
+				{ path: '.obsidian/plugins/my-plugin/main.js', content: FileContent.fromPlainText('console.log("remote");') },
+			], []);
+
+			// User resolved clash by deleting both _fit/ copy and the local file (neither exists locally).
+			// Phase 0 checks resolutions: _fitCopyExists is false, localExists is false -> pendingDeletions.push
+			// Because syncObsidian is false, shouldSyncPath is false and it must NOT be pushed as REMOVED to remote.
+			const result = await syncAndHandleResult(fitSync, createMockNotice());
+
+			expect(result).toEqual(expect.objectContaining({ success: true }));
+			expect(remoteVault.getAllFilesAsRaw()).toEqual({
+				// Remote copy untouched — syncObsidian is off, so the resolved-clash deletion was not pushed
+				'.obsidian/plugins/my-plugin/main.js': 'console.log("remote");',
+			});
+			expect(localVault.getAllFilesAsRaw()).toEqual({
+				// '.obsidian/plugins/my-plugin/main.js' absent — deleted locally when the user resolved the clash
 			});
 		});
 
@@ -496,10 +573,10 @@ describe('FitSync', () => {
 			localVault.setFile('.obsidian/hotkeys.json', '{}');
 
 			await remoteVault.applyChanges([
-				// Hard-denylisted regardless of remote content — a plugin-managed code asset.
+				// Hard-denylisted regardless of remote content — FIT's own code asset.
 				// FIT's own data.json is masked instead (format:"json" + scope:"subset" with
 				// a field denylist), not on this hard-denylist.
-				{ path: '.obsidian/plugins/some-plugin/main.js', content: FileContent.fromPlainText('console.log(1)') },
+				{ path: '.obsidian/plugins/fit/main.js', content: FileContent.fromPlainText('console.log(1)') },
 				// Tracked, no .fitattributes.json entry, no extension so no filetype default -> unconfigured.
 				{ path: '.obsidian/unconfigured', content: FileContent.fromPlainText('theme=dark') },
 				// Tracked and format:"text" -> actually syncing.
@@ -510,7 +587,7 @@ describe('FitSync', () => {
 
 			expectLoggerCalledWith('[FitSync] Protected-path detection', {
 				trackedSyncing: ['.obsidian/graph.json'],
-				hardDenylisted: ['.obsidian/plugins/some-plugin/main.js'],
+				hardDenylisted: ['.obsidian/plugins/fit/main.js'],
 				trackedUnconfigured: ['.obsidian/unconfigured'],
 				untracked: ['.obsidian/hotkeys.json'],
 			});
@@ -527,14 +604,14 @@ describe('FitSync', () => {
 			for (const path of untrackedPaths) localVault.setFile(path, '{}');
 			// Tracked, so the detection log fires even though no other bucket would need it.
 			await remoteVault.applyChanges([
-				{ path: '.obsidian/plugins/some-plugin/main.js', content: FileContent.fromPlainText('console.log(1)') },
+				{ path: '.obsidian/plugins/fit/main.js', content: FileContent.fromPlainText('console.log(1)') },
 			], []);
 
 			await syncAndHandleResult(fitSync, createMockNotice());
 
 			expectLoggerCalledWith('[FitSync] Protected-path detection', {
 				trackedSyncing: [],
-				hardDenylisted: ['.obsidian/plugins/some-plugin/main.js'],
+				hardDenylisted: ['.obsidian/plugins/fit/main.js'],
 				trackedUnconfigured: [],
 				untracked: untrackedPaths,
 			});
@@ -1207,7 +1284,7 @@ describe('FitSync', () => {
 			expect(localVault.getAllFilesAsRaw()['_fit/.obsidian/workspace.json']).toBeUndefined();
 		});
 
-		it.each(['.css', '.md', '.txt', '.CSS', '.Md'])('syncs a tracked %s path as format:"text" with no .fitattributes.json entry', async (ext) => {
+		it.each(['.css', '.md', '.txt', '.js', '.CSS', '.Md'])('syncs a tracked %s path as format:"text" with no .fitattributes.json entry', async (ext) => {
 			const fitSync = createFitSync();
 			localVault.setSyncHiddenFiles(true);
 			const path = `.obsidian/snippets/custom${ext}`;

@@ -254,13 +254,18 @@ FIT implements three layers of path filtering:
 
 - **Filtered by:** `Fit.shouldSyncPath()`
 - **Applied to:** Both ⬆️ local→remote and ⬇️ remote→local
-- **Reason:** Protect critical system directories by default; other `.obsidian/` paths become tracked automatically once content for them exists in the remote git tree
+- **Reason:** Protect critical system directories by default; other `.obsidian/` paths become tracked automatically once content for them exists in the remote git tree and the `.obsidian` sync setting is enabled
+- **Toggle setting (`syncObsidian`):** Controlled by the "Sync .obsidian folder" toggle in the settings tab. When disabled (default: off), all `.obsidian/` paths are excluded unconditionally. When enabled, eligible `.obsidian/` paths tracked in git are synchronized.
 
-**The trigger is git, not FIT.** There is no settings toggle, no "start syncing this file" action, no local opt-in of any kind. A `.obsidian/` path becomes tracked purely because content for it exists in the remote git tree — added via the GitHub web UI, `git`/`gh` CLI, or another device that's already syncing it. The very next sync on any device sees that content and starts considering the path for sync in both directions from then on. Direct consequence, accepted rather than special-cased: adding a new tracked path is inherently clash-prone if the content you add doesn't match what's already on your other devices — there's no reconciliation smoothing beyond the ordinary [Baseline](#baseline)/clash machinery for that first sync.
+**Opt-in is global, tracking is git-driven.** Syncing of `.obsidian/` configuration is globally gated by the "Sync .obsidian folder" (`syncObsidian`) setting toggle (off by default). Once enabled, individual `.obsidian/` paths become tracked purely because content for them exists in the remote git tree — added via the GitHub web UI, `git`/`gh` CLI, or another device that's already syncing it — without requiring per-path settings toggles or manual local opt-in. The very next sync sees that remote content and starts considering the path for sync in both directions from then on. Direct consequence, accepted rather than special-cased: adding a new tracked path is inherently clash-prone if the content you add doesn't match what's already on your other devices — there's no reconciliation smoothing beyond the ordinary [Baseline](#baseline)/clash machinery for that first sync.
 
 **Hard denylist, `Fit.isHardDenylistedPath()`** ([`src/util/protectedPaths.ts`](../src/util/protectedPaths.ts)) — checked before any tracked-content logic, wins unconditionally even for a path with matching remote git content and an explicit `.fitattributes.json` entry:
-- Plugin-managed code assets — `main.js`, `manifest.json`, `styles.css` under any `.obsidian/plugins/<id>/`, including FIT's own — owned by Obsidian's plugin loader, not a preferences file at all; writing them via git-driven sync fights the plugin manager. This one *is* permanent — there's no "safe subset of fields" concept for a JS bundle, field-level masking doesn't change anything here.
+- FIT's own runtime assets — `main.js`, `manifest.json`, `styles.css`, and active `debug.log*` under FIT's own install directory (`.obsidian/plugins/<pluginDir>/`) — protecting the running plugin from self-overwrite and execution corruption. (FIT's own `data.json` is masked via `FIT_OWN_SETTINGS_DENYLIST`, not hard-denylisted).
 - A plugin's `node_modules/` folder (`.obsidian/plugins/<id>/node_modules/`), which is never something to sync.
+- Embedded VCS metadata directories in plugins (`.obsidian/plugins/<id>/.git/`, `.obsidian/plugins/<id>/.github/`).
+- Internal cache directories (`.obsidian/cache/`, `.obsidian/.cache/`).
+
+Community plugins (`.obsidian/plugins/<id>/(main.js|manifest.json|styles.css|data.json)`) outside FIT itself are sync-eligible once tracked in git.
 
 **FIT's own `<pluginDir>/data.json` is NOT on the hard denylist** — it gets `format:"json"` + `scope:"subset"` the same way any other protected path gets a default. `<pluginDir>` is resolved dynamically from the actual install dir, not a hardcoded literal, so this follows an alternate install name (e.g. `fit-dev`) correctly.
 
@@ -774,7 +779,7 @@ interface FitAttributeRule {
 }
 ```
 
-**`format: "text"`** — opaque whole-file sync regardless of content shape: full-content replace, `_fit/` clash on both-sides-changed (diff3 line merge still applies, see below). No field awareness, JSON-shaped or not — deliberately identical to the retired `obsidianSyncRules`'s `"replace"` strategy (see Migration below). `.obsidian/` paths ending `.css`/`.md`/`.txt` (#358) default to this with no `.fitattributes.json` entry needed; an explicit entry still overrides either direction.
+**`format: "text"`** — opaque whole-file sync regardless of content shape: full-content replace, `_fit/` clash on both-sides-changed (diff3 line merge still applies, see below). No field awareness, JSON-shaped or not — deliberately identical to the retired `obsidianSyncRules`'s `"replace"` strategy (see Migration below). `.obsidian/` paths ending `.css`/`.md`/`.txt`/`.js` (#358) default to this with no `.fitattributes.json` entry needed; `.obsidian/community-plugins.json` and plugin `manifest.json` also default to whole-file text sync. An explicit entry still overrides either direction.
 
 **`format: "json"` + `scope: "full"`** — whole-file structural merge via [`src/util/jsonMerge.ts`](../src/util/jsonMerge.ts), the same engine `.canvas` uses (see [Semantic JSON Merge](#semantic-json-merge) above). Concurrent edits to different top-level keys merge instead of clashing; a device-local field mixed into an otherwise-shared file still syncs along with everything else — that's what `scope: "subset"` is for. For an ordinary vault `.json`/`.canvas` path this applies by default (`scope` is irrelevant there). For a protected `.obsidian/` path, whole-file sync needs an explicit `scope: "full"`; the default is `"subset"`.
 
