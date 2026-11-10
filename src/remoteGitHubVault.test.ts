@@ -364,6 +364,69 @@ describe("RemoteGitHubVault", () => {
 				]));
 			});
 
+			it("given the branch still points at the commit the sync read, should commit on top of it", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+
+				const result = await vault.applyChanges(
+					[{ path: "newfile.md", content: FileContent.fromPlainText("Hello World") }],
+					[],
+					{ expectedParentCommitSha: PARENTCOMMIT123_SHA }
+				);
+
+				expect(result.changes).toEqual([{ path: "newfile.md", type: "ADDED" }]);
+				expect(fakeOctokit.getLatestCommitSha()).toBe(result.commitSha);
+			});
+
+			it("given another device committed after the sync read the branch, should refuse the push and leave the branch where it is", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+				const otherDevice = new RemoteGitHubVault(
+					"other-token", "testowner", "testrepo", "main", "other-device", "github.com");
+				await otherDevice.applyChanges(
+					[{ path: "other.md", content: FileContent.fromPlainText("from the other device") }],
+					[]
+				);
+				const movedTo = fakeOctokit.getLatestCommitSha();
+
+				await expect(vault.applyChanges(
+					[{ path: "newfile.md", content: FileContent.fromPlainText("Hello World") }],
+					[],
+					{ expectedParentCommitSha: PARENTCOMMIT123_SHA }
+				)).rejects.toMatchObject({ type: "remote_moved" });
+				expect(fakeOctokit.getLatestCommitSha()).toBe(movedTo);
+			});
+
+			it("given the branch moved but the push has nothing to commit, should not fail the sync", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+				const otherDevice = new RemoteGitHubVault(
+					"other-token", "testowner", "testrepo", "main", "other-device", "github.com");
+				await otherDevice.applyChanges(
+					[{ path: "other.md", content: FileContent.fromPlainText("from the other device") }],
+					[]
+				);
+				const movedTo = fakeOctokit.getLatestCommitSha();
+
+				const result = await vault.applyChanges([], [], { expectedParentCommitSha: PARENTCOMMIT123_SHA });
+
+				expect(result.changes).toEqual([]);
+				expect(result.commitSha).toBe(movedTo);
+			});
+
+			it("given the branch moved and only a deletion is pending, should still refuse the push", async () => {
+				fakeOctokit.setupInitialState(PARENTCOMMIT123_SHA, TREE456_SHA, []);
+				const otherDevice = new RemoteGitHubVault(
+					"other-token", "testowner", "testrepo", "main", "other-device", "github.com");
+				await otherDevice.applyChanges(
+					[{ path: "other.md", content: FileContent.fromPlainText("from the other device") }],
+					[]
+				);
+
+				await expect(vault.applyChanges(
+					[],
+					["gone.md"],
+					{ expectedParentCommitSha: PARENTCOMMIT123_SHA }
+				)).rejects.toMatchObject({ type: "remote_moved" });
+			});
+
 			it("given a symlink entry (mode 120000) and content pushed to its path, should not convert it to a regular file (BUG: the node is created as 100644)", async () => {
 				// Asserts today's (buggy) behavior for the scenario matrix row "symlink on remote,
 				// pulled earlier as a regular file": every pushed node is created as 100644, so the

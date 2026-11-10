@@ -106,6 +106,7 @@ export type VaultErrorType =
   | 'remote_not_found'  // Remote repository, branch, or access issues (404)
   | 'authentication'    // Authentication/authorization failures (401, 403)
   | 'remote_too_large'  // Remote file listing exceeds what GitHub returns in one response (truncated tree)
+  | 'remote_moved'      // Branch advanced after the sync read it, before this push could commit
   | 'filesystem';       // Local file system errors
 
 /**
@@ -163,6 +164,9 @@ export class VaultError extends Error {
 
 	/** Remote is too large to list in one request: GitHub truncated the recursive tree */
 	static remoteTooLarge = VaultError.create('remote_too_large');
+
+	/** Branch advanced after this sync read it; retry so its changes are pulled before pushing */
+	static remoteMoved = VaultError.create('remote_moved');
 
 	/** Local file system error (EACCES, ENOENT, etc.) */
 	static filesystem = VaultError.create('filesystem');
@@ -248,12 +252,15 @@ export interface IVault<T extends VaultCategory> {
 	 * @param options.clashPaths - Set of paths that should be written as clash files.
 	 *   For LocalVault: writes to `_fit/{path}` but computes SHA for `{path}`.
 	 *   For RemoteVault: ignored (no clash concept on remote).
+	 * @param options.expectedParentCommitSha - For RemoteVault: the commit this sync read
+	 *   before preparing the push. If the branch no longer points at it, the push is refused
+	 *   so another device's changes are pulled first instead of becoming the push baseline.
 	 * @returns Operations performed and vault-specific metadata (type determined by T)
 	 */
 	applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>,
-		options?: { clashPaths?: Set<string> }
+		options?: { clashPaths?: Set<string>; expectedParentCommitSha?: CommitSha }
 	): Promise<ApplyChangesResult<T>>;
 
 	// ===== Metadata =====

@@ -635,15 +635,31 @@ export class RemoteGitHubVault implements IRemoteVault {
 	 * Accepts PlainTextContent for text files or Base64Content for binary files
 	 *
 	 * @param options.clashPaths - Ignored by RemoteVault (no _fit/ concept on remote)
+	 * @param options.expectedParentCommitSha - Commit the sync read before preparing this
+	 *   push. If the branch no longer points at it, another device committed in between;
+	 *   refuse the push so its changes are pulled before they become the push baseline.
 	 */
 	async applyChanges(
 		filesToWrite: Array<{path: string, content: FileContent}>,
 		filesToDelete: Array<string>,
-		_options?: { clashPaths?: Set<string> }
+		options?: { clashPaths?: Set<string>; expectedParentCommitSha?: CommitSha }
 	): Promise<ApplyChangesResult<"remote">> {
 		// Note: clashPaths is ignored - remote doesn't have _fit/ directory concept
 		// Get current state using cache when available
 		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
+
+		// Nothing to commit means nothing can build on a stale parent, so the check is
+		// skipped: an unpushable change (unconfirmed deletion, file unreadable at push
+		// time) must not fail the sync and keep the moved branch from being pulled.
+		const hasChangesToPush = filesToWrite.length > 0 || filesToDelete.length > 0;
+		const expectedParentCommitSha = options?.expectedParentCommitSha;
+		if (hasChangesToPush && expectedParentCommitSha !== undefined && expectedParentCommitSha !== parentCommitSha) {
+			throw VaultError.remoteMoved(
+				`The remote branch moved from ${expectedParentCommitSha.slice(0, 7)} to ` +
+				`${parentCommitSha.slice(0, 7)} while FIT was preparing the upload. ` +
+				'Sync again to pull the new changes.'
+			);
+		}
 
 		for (const path of filesToWrite.map(f => f.path).filter(p => this.latestKnownSymlinkPaths.has(p))) {
 			fitLogger.log(`⚠️ [RemoteVault] Pushing '${path}' over a remote symlink: it will be replaced by a regular file (mode 100644)`);
