@@ -82,26 +82,37 @@ describe('sync push vs. another device', () => {
 
 		await vault.modify(StubTFile.ofPath('a.md'), 'A-local');
 
+		// The sync reads the branch to plan the push, then applyChanges re-reads it just
+		// before uploading. Another device commits in that window: hook the GitHub API
+		// boundary so the real applyChanges runs unmodified.
+		const githubRequest = octokit.request;
+		let branchReads = 0;
 		let moved = false;
-		const originalApplyChanges = RemoteGitHubVault.prototype.applyChanges;
-		const applySpy = vi.spyOn(RemoteGitHubVault.prototype, 'applyChanges').mockImplementation(
-			async function (this: RemoteGitHubVault, filesToWrite, filesToDelete, options) {
-				if (!moved) {
+		octokit.request = async (route: string, params?: any) => {
+			if (!moved && route === 'GET /repos/{owner}/{repo}/commits/{ref}' && params?.ref === 'main') {
+				branchReads += 1;
+				if (branchReads === 2) {
 					moved = true;
 					const otherDevice = new RemoteGitHubVault(
 						'other-token', 'test-owner', 'test-repo', 'main', 'other-device', 'github.com');
-					await originalApplyChanges.call(otherDevice, [
+					await otherDevice.applyChanges([
 						{ path: 'b.md', content: FileContent.fromBase64(Content.encodeToBase64('B-other')) },
 						{ path: 'other.md', content: FileContent.fromBase64(Content.encodeToBase64('FROM-OTHER-DEVICE')) }
 					], []);
 				}
-				return originalApplyChanges.call(this, filesToWrite, filesToDelete, options);
-			});
+			}
+			return githubRequest(route, params);
+		};
 
 		const afterRace = await sync();
-		applySpy.mockRestore();
+		octokit.request = githubRequest;
 
 		expect(moved).toBe(true);
+
+		expect(afterRace.success).toBe(false);
+		if (afterRace.success) throw new Error('expected the raced sync to fail');
+		expect(afterRace.error).toBeInstanceOf(VaultError);
+		expect((afterRace.error as VaultError).type).toBe('remote_moved');
 
 		expect(await sync()).toEqual(expect.objectContaining({ success: true }));
 		expect(vault.getAllFilesAsRaw()).toEqual({
@@ -109,10 +120,5 @@ describe('sync push vs. another device', () => {
 			'b.md': 'B-other',
 			'other.md': 'FROM-OTHER-DEVICE'
 		});
-
-		expect(afterRace.success).toBe(false);
-		if (afterRace.success) throw new Error('expected the raced sync to fail');
-		expect(afterRace.error).toBeInstanceOf(VaultError);
-		expect((afterRace.error as VaultError).type).toBe('remote_moved');
 	});
 });

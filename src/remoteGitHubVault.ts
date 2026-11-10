@@ -648,8 +648,12 @@ export class RemoteGitHubVault implements IRemoteVault {
 		// Get current state using cache when available
 		const { state: currentState, commitSha: parentCommitSha, treeSha: parentTreeSha } = await this.readFromSource();
 
+		// Nothing to commit means nothing can build on a stale parent, so the check is
+		// skipped: an unpushable change (unconfirmed deletion, file unreadable at push
+		// time) must not fail the sync and keep the moved branch from being pulled.
+		const hasChangesToPush = filesToWrite.length > 0 || filesToDelete.length > 0;
 		const expectedParentCommitSha = options?.expectedParentCommitSha;
-		if (expectedParentCommitSha !== undefined && expectedParentCommitSha !== parentCommitSha) {
+		if (hasChangesToPush && expectedParentCommitSha !== undefined && expectedParentCommitSha !== parentCommitSha) {
 			throw VaultError.remoteMoved(
 				`The remote branch moved from ${expectedParentCommitSha.slice(0, 7)} to ` +
 				`${parentCommitSha.slice(0, 7)} while FIT was preparing the upload. ` +
